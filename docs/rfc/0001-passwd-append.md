@@ -1,11 +1,11 @@
 ---
 rfc: 0001
 title: passwd-append
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-08-23
 updated: 2026-08-23
-decided:
+decided: 2026-08-23
 brick: bins/passwd-append
 supersedes: []
 superseded-by: []
@@ -19,7 +19,8 @@ superseded-by: []
 `/etc/passwd` and `/etc/group` at startup, so that tooling which asks "who am I and where is my
 home" gets an answer instead of an error. It reproduces, byte for byte, the entries che-code's
 `entrypoint-volume.sh` writes today, and replaces the shell snippet currently
-copy-pasted across the Weebo images. It is the first brick of `weebo-si-hardening` and the
+copy-pasted across the Weebo images. It writes those entries **once per container and never
+twice**, with no flag to override that. It is the first brick of `weebo-si-hardening` and the
 reference case for "a brick that does *not* need hexagonal layering".
 
 ## Motivation
@@ -27,8 +28,6 @@ reference case for "a brick that does *not* need hexagonal layering".
 OpenShift — and any cluster with a comparable SCC/PSA posture — runs containers under an
 arbitrary UID from the namespace's allocated range, with GID `0`. That UID exists nowhere in the
 image's `/etc/passwd`. The image was built expecting `1000` or `user`; it gets `1000730000`.
-
-To be taken into account, a future RFC will add a block allowing only the write to `/etc/passwd` and `/etc/group` from `passwd-append` to be allowed, and no other writes to those files. In addition, i'm thinking about adding the "uid" and "gid" per namespace to the `weebo-si-hardening` brick, so that the `passwd-append` can be used in a more generic way, and not only for OpenShift.
 
 What breaks, concretely:
 
@@ -60,7 +59,7 @@ fi
 the two bare `echo`s it is often quoted as: `! whoami` is the "does this UID already resolve"
 check, so it is idempotent, and `[ -w /etc/passwd ]` means it declines rather than erroring when
 the file is read-only. Those two decisions are inherited wholesale by this design — they are
-steps 2 and 5 of *Behaviour* below.
+the single-shot check and the writability handling in *Behaviour* below, which take both further.
 
 What it still costs:
 
@@ -125,7 +124,19 @@ produces, on an image that has bash. On an image that does not, the shell field 
 fallback chain below instead of naming a binary that is not there.
 
 When the UID already resolves — the ordinary case on a cluster that does *not* randomize UIDs,
-and on every re-run — it logs one line and execs immediately. Nothing to undo.
+and on every container restart — it logs one line and execs immediately. Nothing to undo.
+
+The entry is written **once per container and never twice**. Calling the binary again is harmless
+and does nothing — there is no flag that appends a second entry for the same UID:
+
+```console
+$ passwd-append
+WARN  passwd-append: uid 1000730000 already resolves to 'user', nothing to do
+$ echo $?
+0
+```
+
+Details, and what that does and does not guarantee, in *Single-shot* below.
 
 When `/etc/passwd` is not writable, the default is to warn and continue:
 
@@ -189,14 +200,64 @@ entrypoint.
 **Behaviour**
 
 1. Read the effective UID.
-2. If the UID already resolves in the passwd database, skip the passwd append. Independently, if
-   the name or the GID already resolves in the group database, skip the group append. Both
-   skipped means there is nothing to do — go to step 6.
-3. Build each entry and validate it (below).
-4. Append with an `O_APPEND` write, ensuring the file ends in a newline first.
-5. On write failure: warn and continue, or exit `3` under `--strict`. The two files are handled
+2. Build each entry and validate it (below). Validation happens before any file is touched, so a
+   bad field costs nothing.
+3. For each target file, in turn:
+   1. Take an exclusive `flock` on it.
+   2. **Under the lock**, scan it. If the UID already resolves in the passwd database, skip the
+      passwd append; if the name or the GID already resolves in the group database, skip the
+      group append.
+   3. Otherwise ensure the file ends in a newline, append with an `O_APPEND` write, and release
+      the lock.
+4. On write failure: warn and continue, or exit `3` under `--strict`. The two files are handled
    independently — a read-only `/etc/group` does not prevent the passwd entry.
+5. If nothing was appended because everything was already present, apply the single-shot rule
+   below.
 6. If a command followed `--`, `execvp` it. Otherwise exit `0`.
+
+**Single-shot: the entry is written once per container, and never twice**
+
+Two separate mechanisms, because they defend against two different things.
+
+*Against a race.* Steps 3.ii and 3.iii are check-then-act, and check-then-act without a lock is
+not idempotent — it only looks idempotent when nothing runs concurrently. Two invocations that
+both read `/etc/passwd` before either writes will both conclude the UID is absent, and both
+append. The upstream snippet has exactly this hole; it has never been hit because nothing calls
+it twice at once. Holding an exclusive `flock` across the read *and* the write closes it, and
+costs one syscall. The scan is deliberately re-done **inside** the lock — scanning before taking
+it would reintroduce the window it exists to close.
+
+*Against re-invocation.* Once an entry for the effective UID exists, there is nothing this binary
+can legitimately do, so it does nothing — in every mode, whatever the flags:
+
+```console
+$ passwd-append
+WARN  passwd-append: uid 1000730000 already resolves to 'user', nothing to do
+$ echo $?
+0
+```
+
+**There is no flag to append anyway.** No `--force`, no `--allow-duplicate`, no second `--name`
+that writes a second entry for the same UID. The binary writes at most one passwd entry and one
+group entry per container lifetime, for its own effective UID only, and that is not overridable
+from the command line. See *Security considerations* for why that property is load-bearing.
+
+**Be precise about what this guarantees.** Re-invocation is *neutralised*, not *refused*: a second
+call succeeds and exits `0`, it simply writes nothing. Exiting non-zero was considered and
+rejected — an already-present entry is the normal case on every container restart and on every
+cluster that does not randomize UIDs, and an init container running `passwd-append` would go
+`CrashLoopBackOff` on the second restart of a perfectly healthy pod. Turning a non-event into an
+outage is the opposite of what this brick is for. The cost is that a caller looping on the binary
+learns nothing from the exit code; the `WARN` line is the only signal, which is why it is `WARN`
+and not `INFO`.
+
+The property that actually matters is the write, and it is unconditional: no second entry is ever
+appended for a UID that already resolves, by any caller, through any flag combination.
+
+The check keys on the **UID** for passwd and on the **name or GID** for group — not on the exact
+line we would have written. A caller that reruns with a different `--home` or `--gecos` therefore
+gets refused rather than appending a second, differing entry for the same UID. That is the case
+this rule exists to stop.
 
 **Entry formats**
 
@@ -227,10 +288,12 @@ colon out of a path produces a wrong home directory that nobody notices for a we
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Entries appended, or already present, or `--dry-run`. If a command was given, this is the command's own exit code after `exec`. |
-| `1` | Internal error (cannot read own UID, cannot stat a target file). |
+| `0` | Entries appended, already present, or `--dry-run`. If a command was given, this is the command's own exit code after `exec`. |
+| `1` | Internal error (cannot read own UID, cannot stat or lock a target file). |
 | `2` | Usage error: bad flag, or a field that failed validation. |
 | `3` | An append failed and `--strict` was set. |
+
+"Already present" is deliberately not its own exit code — see *Single-shot* above.
 
 **Stability.** Exit codes, flag names, `USER_NAME`, and the emitted line formats are the
 contract; changing any of them needs a new RFC.
@@ -265,9 +328,14 @@ LD_PRELOAD-based approach cannot make that claim, which is half the reason this 
 
 ### Data and state
 
-Stateless. It reads `/etc/passwd` and `/etc/group` (or the `NSS_WRAPPER_*` targets) and appends
-to them. Each write is a single `O_APPEND` `write(2)` of one line — atomic enough for our case,
-since we are the only writer inside the container and the line is far under `PIPE_BUF`.
+Stateless — and deliberately so. It keeps no marker, no lock file, no record of having run: the
+only thing that says "this was already done" is the target file itself, read under the lock right
+before the write. That is what makes the single-shot rule impossible to desynchronise, because
+there are not two things that could disagree.
+
+Each write is a single `O_APPEND` `write(2)` of one line, under an exclusive `flock` held across
+the preceding scan. The line is far under `PIPE_BUF`, so the write itself is atomic; the lock is
+there for the check-then-act window, not for the write.
 
 The mutation lives in the container's writable layer or in an `emptyDir`, and dies with the
 container. Every restart re-derives it. There is nothing to migrate and nothing to back up.
@@ -299,9 +367,22 @@ cluster.
 password material (`x` placeholder), but this is why `--gecos` is validated and why nothing else
 from the environment is ever echoed.
 
-**Refusing UID 0.** If the effective UID is `0`, root already resolves and step 2 short-circuits.
-The binary never constructs an entry for a UID other than its own effective one — there is no
-flag to override it, deliberately.
+**Refusing UID 0.** If the effective UID is `0`, root already resolves and the single-shot check
+short-circuits. The binary never constructs an entry for a UID other than its own effective one —
+there is no flag to override it, deliberately.
+
+**Bounded write primitive.** Between the single-shot rule, the fixed UID, and the absence of any
+`--force`, the binary's total authority over a container is: *at most one passwd line and one
+group line, for its own effective UID, once*. That bound is deliberate and worth stating as a
+property rather than an implementation detail, because it is what makes the binary safe to be the
+**only** permitted writer of those files — the direction the confinement work in *Future work*
+takes. A tool that can be called repeatedly is a repeatable write primitive; once the file is
+writable by nothing else, that primitive is the whole attack surface. Bounding it now, while the
+binary has no users, costs nothing; bounding it later is a breaking change.
+
+What it does **not** buy: an attacker who can already write `/etc/passwd` directly does not need
+this binary, and the single-shot rule does not slow them down. It is only meaningful in
+combination with the confinement that removes every other writer.
 
 **Shell probe.** The probe only `stat`s a fixed list of three absolute paths. It never reads
 `PATH`, never follows a caller-supplied candidate list, and cannot be steered into naming a
@@ -317,7 +398,7 @@ cause instead of a confusing downstream error.
 
 **Rollout.** Per image, one line in a Containerfile. No cluster-side component, no coordination,
 no ordering constraint. Images that keep the shell snippet keep working, and an image running
-both is safe: step 2 makes whichever runs second a no-op. That overlap is what makes the
+both is safe: the single-shot check makes whichever runs second a no-op. That overlap is what makes the
 migration incremental — the snippet can be deleted per image, on its own schedule.
 
 **Rollback.** Revert the image tag. There is no persistent state to unwind.
@@ -357,6 +438,18 @@ posture this repo exists to avoid asking for.
 **Set `HOME` and let tools cope.** Fixes the most common symptom and nothing else — `whoami`,
 `git` and `os.userInfo()` still fail. Not a substitute; it is what people try first and abandon.
 
+**A marker file (`/run/passwd-append.done`) to enforce single-shot**, instead of re-reading the
+target. Rejected: the marker and the thing it describes have different lifetimes. `/run` is a
+fresh tmpfs on every container start while `/etc/passwd` may live on an `emptyDir` that outlives
+it, so the two can disagree in both directions — a marker with no entry, or an entry with no
+marker. Reading the file we are about to write cannot drift from it. A marker beside the target
+(`/etc/.passwd-append.done`) would have matching lifetimes but needs `/etc` itself to be
+group-writable, which the `chmod g=u /etc/passwd /etc/group` recipe deliberately does not grant.
+
+**Making the file immutable afterwards** (`chattr +i`) so a second write is impossible. Rejected:
+it needs `CAP_LINUX_IMMUTABLE`, which is exactly the kind of capability this repo exists to avoid
+requesting, and it would also block the legitimate writers that still exist today.
+
 **Do it from the operator, via a mutating webhook.** A later brick could inject this binary and
 its entrypoint into pods that did not opt in. That is a genuinely useful follow-up, but it needs
 the binary to exist first, and it is a separate contract with a separate blast radius.
@@ -372,31 +465,52 @@ the binary to exist first, and it is a separate contract with a separate blast r
 - The shell probe makes the emitted entry depend on the image's contents, so the same invocation
   produces different output in different images. That is the point, and it is also the thing that
   will confuse someone diffing two `/etc/passwd` files.
+- `flock` is advisory. It serialises `passwd-append` against itself, which is what the single-shot
+  rule needs, but it does nothing about a concurrent `echo >> /etc/passwd` from elsewhere in the
+  container. Only the confinement in *Future work* closes that, and until it lands the lock is a
+  correctness fix rather than a security boundary.
+- The single-shot rule is invisible in the exit code. A script that calls `passwd-append` in a
+  loop gets `0` every time and never learns that only the first call did anything. That was the
+  accepted trade against breaking init containers, but it means the `WARN` line is the only
+  signal, and log lines are the first thing people stop reading.
 
 ## Unresolved questions
 
-**Blocking acceptance:**
+None. All of them were closed at acceptance; the ones that changed the design are in the
+*Changelog*, the rest are recorded here so they are not reopened by accident.
 
-- **The name.** This brick writes `/etc/group` too, so `passwd-append` undersells it. Keep the
-  name (treating "passwd" as shorthand for the NSS pair, and `--no-group` as the escape hatch),
-  or rename to something like `nss-append`? Cheap to decide now, annoying later — the binary name
-  is in every Containerfile that adopts it.
-
-**Not blocking:**
-
-- **The group entry's GID field.** The snippet writes the UID there, while the passwd entry's GID
-  field is `0`. So the group named `user` gets GID = UID and is nobody's primary group — `id`
-  reports `uid=1000730000(user) gid=0(root)` and the `user` group dangles. Harmless, and quite
-  possibly a copy-paste artifact rather than a decision. Default is to reproduce it faithfully;
-  worth a look before this is set in contract.
-- **Empty shell field when no candidate exists.** Relying on `getpwnam`'s "empty means `/bin/sh`"
-  is correct per `passwd(5)` but obscure. Writing `/bin/sh` unconditionally would be more legible
-  and occasionally a lie.
-- Is `--dry-run` worth its weight, or is it a flag nobody will ever type?
-- Should `--strict` be the default, with images opting into leniency instead?
+- **The name.** Resolved: **keep `passwd-append`.** "passwd" is read as shorthand for the NSS
+  passwd/group pair, and `--no-group` is the escape hatch for the passwd-only case. `nss-append`
+  was the alternative; it describes the scope more precisely and was rejected as not worth
+  changing a name that is already in use in conversation and would end up in every Containerfile.
+- **The group entry's GID field.** Resolved: **reproduce the upstream line faithfully**, UID in
+  the GID field and an empty member list, per the instruction that
+  [`entrypoint-volume.sh#L64-L65`](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L64-L65)
+  is the format of record. The oddity is documented under *Entry formats*; changing it would be a
+  divergence from the format, which is a new RFC by the *Stability* rule.
+- **Standalone exit code when the entry is already present.** Resolved: **`0` with a `WARN`**, not
+  a dedicated non-zero code. Reasoning and the cost of that choice are under *Single-shot* and in
+  *Drawbacks*.
+- **Empty shell field when no candidate exists.** Resolved: keep it empty and let `getpwnam` apply
+  its `/bin/sh` default. Writing `/bin/sh` unconditionally would be more legible but would assert
+  a path we did not verify, which is the thing the probe exists to avoid.
+- **`--dry-run` and the `--strict` default.** Resolved: keep `--dry-run`, keep `--strict` off.
+  Fail-open is argued under *Operational considerations*, and `--dry-run` costs one branch in a
+  binary whose whole job is to write to `/etc/passwd`.
 
 ## Future work
 
+- **Confining writes to `/etc/passwd` and `/etc/group` to this binary alone**, so that no other
+  process in the container may modify them. Its own RFC. This is what turns the single-shot rule
+  from tidiness into a real control: once `passwd-append` is the only permitted writer, "it can be
+  called once" and "the file can be written once" become the same statement. The design here is
+  built to be ready for that — see *Bounded write primitive* — but it does not depend on it.
+- **Per-namespace `uid`/`gid` supplied by the `weebo-si-hardening` operator**, rather than read
+  from the running process. That would make this brick useful beyond OpenShift's arbitrary-UID
+  model, on clusters where the identity is assigned rather than discovered. Its own RFC, and note
+  it collides with *Refusing UID 0*: today the binary writes its own effective UID and nothing
+  else, deliberately. Accepting an externally supplied UID reopens that decision and needs the
+  threat model redone, not just a flag added.
 - **Operator-side injection** of the binary and entrypoint via a mutating webhook, for pods that
   never opted in. Its own RFC.
 - **Multi-arch builds** (`arm64`) once anything in the fleet needs them.
@@ -411,10 +525,14 @@ the binary to exist first, and it is a separate contract with a separate blast r
 - [ ] `entry.rs` — passwd and group entry construction and validation, with the table-driven test
       suite covering every rejection rule (`:`, newline, relative path, bad name, UID 0)
 - [ ] `nss.rs` — passwd/group lookup, shell probe against an injected prober, trailing-newline
-      handling, `O_APPEND` write
+      handling, `flock` + re-scan-under-lock + `O_APPEND` write
 - [ ] `main.rs` — flag/env precedence, `--` split, `execvp` handover, exit codes
 - [ ] Integration test over temp files: fresh append, idempotent re-run, file with no trailing
       newline, read-only target under both default and `--strict`, `--no-group`
+- [ ] Single-shot tests: a re-run writes nothing and exits `0` with the `WARN` line, in both
+      standalone and entrypoint mode; a re-run with a different `--home`/`--gecos` still writes
+      nothing; N concurrent invocations against one temp file produce exactly one entry (the test
+      that would fail without the lock)
 - [ ] Golden test asserting the default output is byte-identical to what
       [che-code's `entrypoint-volume.sh#L64-L65`](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L64-L65)
       produces, on an image where `/bin/bash` exists. This is the test that pins the contract —
@@ -439,3 +557,5 @@ the binary to exist first, and it is a separate contract with a separate blast r
 
 | Date | Change |
 | --- | --- |
+| 2026-08-23 | Accepted. Name kept as `passwd-append` rather than `nss-append`, despite the brick also writing `/etc/group`. |
+| 2026-08-23 | Accepted with a change: a re-invocation whose entry is already present now exits `0` with a `WARN` in every mode, instead of `4` in standalone mode. Rejecting the non-zero code was an init-container call — `CrashLoopBackOff` on the second restart of a healthy pod is a worse failure than a caller not learning that its call was a no-op. The write-side guarantee is untouched. |

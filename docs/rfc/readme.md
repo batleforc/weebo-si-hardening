@@ -83,7 +83,7 @@ fails if it is stale.
 
 | # | Title | Status | Brick |
 | --- | --- | --- | --- |
-| [0001](./0001-passwd-append.md) | passwd-append | `Draft` | `bins/passwd-append` |
+| [0001](./0001-passwd-append.md) | passwd-append | `Accepted` | `bins/passwd-append` |
 
 <!-- rfc-index:end -->
 
@@ -101,3 +101,19 @@ state whether it uses [hexagonal layering](../architecture/hexagonal.md) and why
 the template itself, since every RFC is copied from it.
 
 It runs in the pre-commit hook via `task lint`.
+
+## Language
+
+**RFCs are written in English.** Not because English is better, but because these bricks sit on
+upstream Kubernetes, DevWorkspace and Eclipse Che vocabulary that has no settled French
+translation, and half a RFC's value is being quotable in an upstream issue.
+
+Thinking in French and writing in English is the normal way this goes wrong, so `rfc:check`
+detects it: a curated list of French function words with no English or technical homograph, matched
+case-insensitively and whole-word. One hit is enough. Words that spell something else in English
+or in this repo's vocabulary — `est`/EST, `des`/DES, `du`/`du -sh`, `sans`/sans-serif, `ces`/CES,
+`elle`/Elle, `tout`/to tout — are deliberately left out rather than guarded by a threshold.
+
+If it fires on a legitimate English sentence, the fix is to remove the offending word from
+`FRENCH_MARKERS` in `scripts/rfc-check.sh` and say why in the comment above the list — not to add
+an exception for the file.

@@ -13,7 +13,8 @@ REPO_ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 # Failures are counted in a file rather than a variable: some checks run inside a pipeline,
 # which is a subshell, and a variable incremented there would not survive.
 counter=$(mktemp)
-trap 'rm -f "$counter"' EXIT INT TERM
+french_markers=$(mktemp)
+trap 'rm -f "$counter" "$french_markers"' EXIT INT TERM
 
 fail() {
   printf '  ✗ %s\n' "$1" >&2
@@ -55,6 +56,106 @@ superseded-by'
 
 is_iso_date() {
   printf '%s' "$1" | grep -qE '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+}
+
+# --- English only ----------------------------------------------------------------------------
+# The docs are English (docs/rfc/readme.md says so), and the author drifts into French when
+# thinking hard. This catches it before review does.
+#
+# The list is only French function words with no English or technical homograph, so a single hit
+# is conclusive. Deliberately absent, each one because it fires on ordinary English or on this
+# repo's own vocabulary:
+#
+#   est   EST, the timezone            des   DES, the cipher
+#   du    `du -sh`                     sans  sans-serif
+#   ces   CES, the trade show          elle  Elle, the magazine
+#   tout  "we don't tout this as..."   on / pour / plus / ton / non / aux / car
+#
+# Matching is case-insensitive and whole-word, so "biggest", "modes" or "one" cannot trip it.
+FRENCH_MARKERS="ainsi
+alors
+aucun
+aucune
+aussi
+avec
+beaucoup
+c'est
+ceci
+cela
+celle
+celles
+celui
+cependant
+cet
+cette
+ceux
+chaque
+d'un
+d'une
+dans
+depuis
+donc
+elles
+ensuite
+faut
+fichier
+fichiers
+ils
+jamais
+jusqu'à
+leur
+leurs
+lorsque
+lui
+mais
+même
+n'est
+nous
+parce
+pendant
+permet
+peut
+peuvent
+plusieurs
+pourquoi
+pourtant
+puis
+qu'elle
+qu'il
+quand
+que
+quel
+quelle
+quelques
+qui
+s'il
+sont
+sous
+toujours
+tous
+toute
+toutes
+très
+utilise
+utiliser
+voici
+voilà
+vous
+être
+"
+
+printf '%s\n' "$FRENCH_MARKERS" > "$french_markers"
+
+# One hit is enough. An earlier version required two distinct markers to guard against "ces"/CES
+# and "elle"/Elle, but that let short sentences through — "Ceci est un test." only ever trips one
+# marker. Removing the ambiguous words instead of raising the threshold keeps both properties.
+check_english_only() {
+  file=$1
+  found=$(grep -iowFf "$french_markers" "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sort -u || true)
+  if [ -n "$found" ]; then
+    line=$(grep -inowFf "$french_markers" "$file" 2>/dev/null | head -n 1 | cut -d: -f1 || true)
+    fail "Max... tu avais dis Englais only ! (line ${line:-?}: $(printf '%s' "$found" | tr '\n' ' '))"
+  fi
 }
 
 check_file() {
@@ -145,6 +246,9 @@ check_file() {
   if [ "$is_template" = 0 ] && grep -qF 'Copy this file with' "$file"; then
     fail "still contains the template's own instruction block — delete it"
   fi
+
+  # --- language -----------------------------------------------------------------------------
+  check_english_only "$file"
 }
 
 # The template is validated too: it is the source every RFC is copied from, so a section
