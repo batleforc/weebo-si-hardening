@@ -1,4 +1,17 @@
 # Documentation
 
-Every project keeps its documentation here, either as plain markdown or as a
-[fumadocs](https://fumadocs.dev/) static site (ask the project owner which one they want).
+Documentation for `weebo-si-hardening` is plain markdown, versioned next to the code.
+No static site generator: a RFC has to be readable in a diff and in the forge UI.
+
+## Map
+
+| Path | What lives there |
+| --- | --- |
+| [`rfc/`](./rfc/readme.md) | The RFC process, the template, and every RFC. **Start here.** |
+| [`architecture/`](./architecture/readme.md) | Cross-cutting conventions every brick follows (hexagonal layering, repo layout). |
+
+## Reading order for a newcomer
+
+1. [`rfc/readme.md`](./rfc/readme.md) — how a feature gets from idea to merged code.
+2. [`architecture/hexagonal.md`](./architecture/hexagonal.md) — how a non-trivial brick is laid out, and when that layout is *not* warranted.
+3. The RFC index in [`rfc/readme.md`](./rfc/readme.md#index) — what exists and what is being built.

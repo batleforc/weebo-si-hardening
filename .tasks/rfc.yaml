@@ -1,0 +1,64 @@
+version: "3"
+
+vars:
+  RFC_DIR: '{{.ROOT_DIR}}/docs/rfc'
+
+tasks:
+  new:
+    desc: 'Scaffold the next RFC from the template (usage: task rfc:new TITLE="restrict container images")'
+    requires:
+      vars: [TITLE]
+    silent: true
+    cmds:
+      - |
+        set -eu
+        dir="{{.RFC_DIR}}"
+        last=$(ls "$dir" | grep -oE '^[0-9]{4}' | sort -n | tail -1)
+        next=$(printf '%04d' $((10#$last + 1)))
+        slug=$(printf '%s' "{{.TITLE}}" \
+          | tr '[:upper:]' '[:lower:]' \
+          | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//')
+        if [ -z "$slug" ]; then
+          echo "TITLE produced an empty slug" >&2
+          exit 1
+        fi
+        file="$dir/$next-$slug.md"
+        if [ -e "$file" ]; then
+          echo "$file already exists" >&2
+          exit 1
+        fi
+        today=$(date +%F)
+        sed -e "s|^rfc: 0000$|rfc: $next|" \
+            -e "s|^title: Template$|title: {{.TITLE}}|" \
+            -e "s|^created: 1970-01-01$|created: $today|" \
+            -e "s|^updated: 1970-01-01$|updated: $today|" \
+            -e "s|^# RFC 0000 — Template$|# RFC $next — {{.TITLE}}|" \
+            "$dir/0000-template.md" > "$file"
+        echo "Created $file"
+        echo "Next: fill it in, then add the row to the index in docs/rfc/readme.md"
+
+  check:
+    desc: "Validate every RFC against the format in docs/rfc/readme.md (run by the pre-commit hook)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/rfc-check.sh"
+
+  index:
+    desc: "Regenerate the RFC index table in docs/rfc/readme.md from the front-matter"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/rfc-index.sh"
+
+  list:
+    desc: "List every RFC with its current status"
+    silent: true
+    cmds:
+      - |
+        set -eu
+        printf '%-6s %-12s %s\n' '#' 'STATUS' 'TITLE'
+        for f in {{.RFC_DIR}}/[0-9][0-9][0-9][0-9]-*.md; do
+          num=$(basename "$f" | cut -c1-4)
+          # the template is not a RFC ('&& continue' would trip set -e when false)
+          if [ "$num" = "0000" ]; then continue; fi
+          status=$(sed -n 's/^status: *//p' "$f" | head -1)
+          title=$(sed -n 's/^title: *//p' "$f" | head -1)
+          printf '%-6s %-12s %s\n' "$num" "${status:-?}" "$title"
+        done

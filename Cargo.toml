@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+# Cargo rejects a glob that matches nothing, so this stays empty until the first brick lands.
+# The moment `bins/` or `crates/` holds a real member, switch to:
+#   members = ["bins/*", "crates/*"]
+# `task rust:*` skips itself while this list is empty, so the pre-commit hook stays green.
+members = []
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/batleforc/weebo-si-hardening"
+
+# Shared dependency versions. A member crate opts in with `dep = { workspace = true }`
+# so every brick stays on the same version of the ecosystem crates.
+[workspace.dependencies]
+
+# Lints applied to every member via `[lints] workspace = true`.
+# The hardening bricks run as root-adjacent tooling inside other people's pods:
+# a panic or a silently swallowed error is an outage, so the bar is deliberately high.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "warn"
+unimplemented = "deny"

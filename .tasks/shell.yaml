@@ -1,0 +1,11 @@
+version: "3"
+
+tasks:
+  lint:
+    desc: "Run shellcheck over the repo's shell scripts"
+    cmds:
+      # scripts/ is ours, so it is held to POSIX sh and every severity.
+      - shellcheck -s sh {{.ROOT_DIR}}/scripts/*.sh
+      # .hooks/ came from the weebo-base template. Linted from `warning` up so real bugs are
+      # caught without demanding a rewrite of style choices we did not make.
+      - shellcheck -S warning {{.ROOT_DIR}}/.hooks/*.sh

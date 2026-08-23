@@ -6,3 +6,10 @@ task = "latest"
 gitleaks = "latest"
 claude = "latest"
 rtk = "latest"
+
+# `task audit`
+"aqua:EmbarkStudios/cargo-deny" = "latest"
+trivy = "latest"
+
+# `task lint` — the RFC tooling in scripts/ runs in the pre-commit hook, so it gets linted
+shellcheck = "latest"

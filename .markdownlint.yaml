@@ -1,0 +1,23 @@
+# markdownlint rules for the RFC and architecture docs.
+# YAML rather than JSON so each exception can say why it exists.
+
+default: true
+
+# Prose is hard-wrapped at ~100 by hand; the rule's own limit fights that on tables and links.
+MD013: false
+
+# MD025 counts the front-matter `title:` as the document's H1, which makes the real
+# `# RFC NNNN — <title>` line look like a duplicate. Every RFC has both, by design:
+# the front-matter title is data (the index is generated from it), the heading is prose.
+MD025:
+  front_matter_title: ""
+
+# The same section names recur across RFCs, and `### Contract` appears under `## Design`
+# in every one. Only flag duplicates that are actual siblings.
+MD024:
+  siblings_only: true
+
+# The RFCs use bold runs (**Privileges.**, **Rollout.**) as labelled paragraphs inside a
+# section. Promoting them to real headings would bury the section structure under a dozen
+# H4s and make the document harder to skim, not easier.
+MD036: false

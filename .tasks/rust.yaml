@@ -1,0 +1,59 @@
+version: "3"
+
+# Every task here no-ops while the Cargo workspace has no member. Cargo refuses to run against
+# an empty virtual manifest, and `task lint` runs in the pre-commit hook — so the guard is what
+# keeps committing docs-only changes possible before the first brick exists.
+
+vars:
+  HAS_MEMBER:
+    sh: 'ls {{.ROOT_DIR}}/bins/*/Cargo.toml {{.ROOT_DIR}}/crates/*/Cargo.toml 2>/dev/null | head -1'
+
+tasks:
+  fmt:
+    desc: "Format every crate in the workspace"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo fmt --all
+
+  fmt:check:
+    desc: "Check formatting without rewriting anything (CI)"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo fmt --all --check
+
+  clippy:
+    desc: "Run clippy over every crate and target, warnings are errors"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  check:
+    desc: "Type-check the workspace without producing binaries"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo check --workspace --all-targets
+
+  build:
+    desc: "Build every crate in release mode"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo build --workspace --release
+
+  test:
+    desc: "Run the whole test suite"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo test --workspace --all-features
+
+  audit:
+    desc: "Check Rust dependencies for known CVEs (RUSTSEC advisories)"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo deny check advisories bans licenses sources
