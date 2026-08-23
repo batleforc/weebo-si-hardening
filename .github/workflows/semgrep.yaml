@@ -38,17 +38,27 @@ jobs:
       # not a `p/` pack because there is no bash *pack* in the registry —
       # `p/bash` 404s, and a 404 config is a hard error (exit 7), which is what
       # failed this workflow rather than any finding.
+      # The report lands in RUNNER_TEMP, not the workspace. A SARIF written next
+      # to the sources is itself scanned by the gate pass below — it embeds every
+      # rule's regex as metadata, so `p/secrets` matches its own patterns and the
+      # gate fails on a finding in the report rather than in the code.
       - name: Semgrep scan (SARIF)
+        id: sarif
         run: |
           semgrep scan \
             --config p/rust --config r/bash --config p/secrets \
             --severity ERROR \
-            --sarif --output semgrep.sarif
+            --sarif --output "$RUNNER_TEMP/semgrep.sarif"
+      # This step sits *before* the gate, so it needs no `always()` to survive it.
+      # The one thing that leaves nothing to upload is the scan above failing
+      # outright (a bad `--config`, a network error) — hence the explicit success
+      # check rather than `always()`. `hashFiles` cannot be used to probe for the
+      # report: it only resolves paths under GITHUB_WORKSPACE.
       - name: Upload SARIF
-        if: always()
+        if: steps.sarif.outcome == 'success'
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
-          sarif_file: semgrep.sarif
+          sarif_file: ${{ runner.temp }}/semgrep.sarif
           category: semgrep
       # The gate — non-zero on any ERROR-severity finding. Separate from the run
       # above so the report reaches the Security tab even when the gate trips.
