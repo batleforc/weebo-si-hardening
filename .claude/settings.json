@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "weebo": {
+      "source": {
+        "source": "github",
+        "repo": "batleforc/weebo-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "monofolio-design@weebo": true,
+    "batlehub@weebo": true
+  }
+}
