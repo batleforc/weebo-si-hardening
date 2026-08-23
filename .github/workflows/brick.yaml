@@ -1,0 +1,154 @@
+name: Brick
+# Reusable: build one brick, scan its image, keep the artifacts.
+#
+# One caller per brick, each with its own `paths:` filter, rather than one
+# workflow that computes what changed. GitHub's path filters are per *workflow*,
+# not per job, so the alternative is a change-detection action deciding which
+# jobs to skip — which means a third-party action in the trigger path and jobs
+# that report "skipped" instead of never running. With two bricks the duplication
+# is two twelve-line callers, and "build it if its own code changed" stays a
+# native filter rather than a computed one.
+#
+# Workspace-level changes (Cargo.toml, Cargo.lock) are in *both* callers' filters
+# on purpose: a dependency bump changes what every binary links, so both rebuild.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Cargo package name, which is also the binary name"
+        required: true
+        type: string
+      path:
+        description: "Directory holding the brick, relative to the repo root"
+        required: true
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  binary:
+    name: musl binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # musl, not gnu: RFC 0001 argues the binary has to run in a distroless or
+      # scratch final stage, and a dynamically linked build silently cannot.
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ inputs.crate }}-musl
+
+      # No `musl-tools` install: every dependency here is pure Rust, so the
+      # target's self-contained linking produces a static binary on its own —
+      # verified, not assumed. The moment a crate arrives with a `cc` build
+      # script the link will fail, and the fix is to add
+      # `sudo apt-get install -y --no-install-recommends musl-tools` here.
+
+      # --locked: the build has to fail on a Cargo.lock that does not match the
+      # manifests, rather than quietly resolving something else than what was
+      # audited by `dep-audit.yaml` and `postmortem.yaml`.
+      - name: Build
+        run: >-
+          cargo build --release --locked
+          --package ${{ inputs.crate }}
+          --target x86_64-unknown-linux-musl
+
+      # The same assertion the Containerfile makes. Worth repeating here because
+      # this is the artifact a human downloads, and "it is static" is the only
+      # reason it can be copied into an image that has no loader.
+      - name: Assert the binary is static
+        run: |
+          bin="target/x86_64-unknown-linux-musl/release/${{ inputs.crate }}"
+          file "$bin"
+          if ldd "$bin" 2>/dev/null | grep -q 'ld-'; then
+            echo "::error::${{ inputs.crate }} is dynamically linked"
+            exit 1
+          fi
+
+      # CycloneDX of the workspace member, so a crate CVE disclosed *after* this
+      # build can be matched against this exact artifact:
+      #   trivy sbom sbom-<crate>.cdx.json
+      - name: SBOM (CycloneDX)
+        run: |
+          cargo install --locked cargo-cyclonedx
+          cargo cyclonedx --format json --manifest-path "${{ inputs.path }}/Cargo.toml"
+          cp "${{ inputs.path }}/${{ inputs.crate }}.cdx.json" "sbom-${{ inputs.crate }}.cdx.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.crate }}-x86_64-unknown-linux-musl
+          path: |
+            target/x86_64-unknown-linux-musl/release/${{ inputs.crate }}
+            sbom-${{ inputs.crate }}.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+  image:
+    name: image + Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      # load, never push: this repo has no registry decision yet. The image is
+      # built so it can be *scanned*, and so a Containerfile that stopped
+      # building is caught by CI rather than at release time.
+      - name: Build image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./${{ inputs.path }}/Containerfile
+          load: true
+          push: false
+          tags: ${{ inputs.crate }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Report first, gate second. If the scan itself failed the build, the SARIF
+      # upload below would be skipped and the findings would never reach the
+      # Security tab — the same report-then-gate shape as `semgrep.yaml`.
+      - name: Trivy (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ inputs.crate }}:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: trivy-results.sarif
+          # Distinct per brick, so the two uploads do not supersede each other.
+          category: trivy-${{ inputs.crate }}
+
+      - name: Trivy (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ inputs.crate }}:ci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Misconfiguration scan of the Containerfile itself — the same check
+      # `task audit` runs locally through `trivy fs --scanners misconfig`.
+      - name: Trivy (Containerfile misconfiguration)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ${{ inputs.path }}/Containerfile
+          severity: HIGH,CRITICAL
+          exit-code: "1"

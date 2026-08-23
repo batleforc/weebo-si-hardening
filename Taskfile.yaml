@@ -5,6 +5,7 @@ includes:
   rust: ./.tasks/rust.yaml
   rfc: ./.tasks/rfc.yaml
   shell: ./.tasks/shell.yaml
+  ci: ./.tasks/ci.yaml
 
 tasks:
   init:
@@ -25,6 +26,7 @@ tasks:
       - task: rust:clippy
       - task: shell:lint
       - task: rfc:check
+      - task: ci:lint
 
   test:
     desc: "Run the whole test suite"
@@ -47,3 +49,12 @@ tasks:
           exit 0
         fi
         trivy fs --scanners vuln,secret,misconfig --exit-code 1 --severity HIGH,CRITICAL .
+
+  supply-chain:
+    desc: "Dependency supply-chain gate (postmortem) — reputation and vulns, not just advisories"
+    cmds:
+      # Deliberately not folded into `task audit`: this one goes over the
+      # network on every run and anonymous vuln.mlab.sh is capped at 8 scans an
+      # hour, so making it part of the audit everyone runs would throttle the
+      # audit everyone runs. CI schedules it daily.
+      - task: ci:postmortem

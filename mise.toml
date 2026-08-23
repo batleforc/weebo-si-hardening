@@ -11,5 +11,13 @@ rtk = "latest"
 "aqua:EmbarkStudios/cargo-deny" = "latest"
 trivy = "latest"
 
+# `task postmortem` — the dependency supply-chain gate. Pinned to the same
+# version the composite action downloads in .github/workflows/postmortem.yaml,
+# so the local run and the CI gate are the identical scanner.
+"github:mlab-sh/postmortem" = "2.0.0"
+
+# `task ci:lint` — validates the workflow files themselves
+actionlint = "latest"
+
 # `task lint` — the RFC tooling in scripts/ runs in the pre-commit hook, so it gets linted
 shellcheck = "latest"

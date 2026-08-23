@@ -9,6 +9,8 @@ No static site generator: a RFC has to be readable in a diff and in the forge UI
 | --- | --- |
 | [`rfc/`](./rfc/readme.md) | The RFC process, the template, and every RFC. **Start here.** |
 | [`architecture/`](./architecture/readme.md) | Cross-cutting conventions every brick follows (hexagonal layering, repo layout). |
+| [`bricks/`](./bricks/readme.md) | Operator-facing docs for what has shipped: flags, config, exit codes, failure modes. |
+| [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
 
 ## Reading order for a newcomer
 

@@ -1,0 +1,88 @@
+name: Test
+# fmt, clippy and the whole suite. Separate from the per-brick build workflows on
+# purpose: those answer "does this brick still build and is its image clean",
+# this answers "does the workspace still hold together" — and a change to one
+# brick can break a shared assumption in the other.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "bins/**"
+      - "crates/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "bins/**"
+      - "crates/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/test.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: rustfmt
+        run: cargo fmt --all --check
+      # --all-targets so the test code is linted too. The workspace lint table is
+      # strict on purpose (`unwrap_used = "deny"`, `panic = "deny"`,
+      # `unsafe_code = "forbid"`) because these bricks run in the entrypoint of
+      # other people's pods — a panic there is someone else's outage.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The suite writes to real files, spawns the real binaries and binds real
+      # sockets — the concurrency tests are the point, and they need a runner
+      # that is not root: passwd-append refuses to write a root entry, so as
+      # root the whole passwd suite skips itself and says nothing. GitHub-hosted
+      # runners run as `runner`, so this holds; it is asserted rather than
+      # assumed.
+      - name: Refuse to run the suite as root
+        run: |
+          if [ "$(id -u)" = "0" ]; then
+            echo "::error::running as root — the passwd-append suite would skip itself silently"
+            exit 1
+          fi
+      - name: cargo test
+        run: cargo test --workspace --all-features --locked
+      - name: Doc tests
+        run: cargo test --workspace --doc
+
+  build:
+    name: Release build (all bricks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The per-brick workflows build musl for the image; this is the plain
+      # host-target release build, which is what catches an optimisation-only
+      # compile error before it reaches a brick nobody touched.
+      - name: cargo build --release
+        run: cargo build --workspace --release --locked

@@ -41,12 +41,14 @@ task rfc:check         # validate every RFC against the format
 | `task test` | the whole test suite |
 | `task build` | release build of every brick |
 | `task audit` | `cargo deny` for RUSTSEC advisories, `trivy fs` for the rest |
+| `task supply-chain` | `postmortem` — dependency reputation and vulns, not just advisories |
 
 The RFC index in `docs/rfc/readme.md` is generated, and both `recu` and `check` run on every
 commit — so a RFC that drops a mandatory section, or an index that drifts from reality, does not
 make it into a commit.
 
-Run `task --list` for everything.
+Run `task --list` for everything. Every gate also runs in CI — see
+[`docs/ci.md`](./docs/ci.md) for what fires when and what it blocks.
 
 ## Conventions
 

@@ -1,7 +1,7 @@
 ---
 rfc: 0001
 title: passwd-append
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-08-23
 updated: 2026-08-23
@@ -94,17 +94,74 @@ validated, and with a log line when it declines.
 
 ## Guide-level explanation
 
-The image ships the binary and calls it as the entrypoint, handing over to the real command:
+There are two ways in, and the **first one is the one that matters**, because the images this
+brick exists for do not own their entrypoint.
+
+**Case 1 — replacing the block inside an entrypoint we do not own.** This is che-code, patched
+where `WeeboDevImage` is built, and it is the primary integration. That image is also where the
+`ENTRYPOINT` change in *PID 1 and signals* goes; the two land together, in the same Containerfile,
+and neither is a change to this binary. `entrypoint-volume.sh` is not a wrapper around the real
+command; it *is* the real command. It detects the OpenSSL version, selects the matching `checode`
+assembly, exports `LD_LIBRARY_PATH`, `VSCODE_AGENT_FOLDER` and `LD_SANITIZE_SCOPE`, backgrounds
+`machine-exec`, and finally runs the Node launcher. None of that can be handed over to, and none
+of it can be dropped.
+
+Nor can the passwd block simply be deleted. Everything after it assumes an identity that
+resolves, so an arbitrary UID with no passwd entry does not degrade — the boot fails. The block
+is therefore **replaced in place**, at build time, with a call to the binary:
+
+```diff
+ # UDI8 support for adding current (arbitrary) user to /etc/passwd and /etc/group
+-if ! whoami &> /dev/null; then
+-  if [ -w /etc/passwd ]; then
+-    echo "${USER_NAME:-user}:x:$(id -u):0:${USER_NAME:-user} user:${HOME}:/bin/bash" >> /etc/passwd
+-    echo "${USER_NAME:-user}:x:$(id -u):" >> /etc/group
+-  fi
+-fi
++/usr/local/bin/passwd-append
+```
+
+Seven lines become one, in the middle of a script that keeps running afterwards. This is the
+**standalone** mode from *Contract* — no `--`, no command, no `exec`: the binary does its work,
+exits `0`, and the shell moves on to line 69. The `--` handover exists for case 2 and is not used
+here.
 
 ```dockerfile
 COPY --from=build /out/passwd-append /usr/local/bin/passwd-append
 # Both files must be writable by GID 0, since that is the only identity we are sure to have
 RUN chmod g=u /etc/passwd /etc/group
-ENTRYPOINT ["/usr/local/bin/passwd-append", "--", "/usr/local/bin/real-entrypoint"]
+# Substitute the block, not the script: everything below line 67 is load-bearing.
+# The grep is the assertion — an upstream reword must fail the build, never no-op.
+RUN grep -q '^if ! whoami' /entrypoint-volume.sh \
+ && sed -i '/^if ! whoami/,/^fi$/c\/usr/local/bin/passwd-append' /entrypoint-volume.sh
 ```
 
-On start, for UID `1000730000` with `HOME=/home/user` and no `USER_NAME` set, it appends to
-`/etc/passwd`:
+Two consequences worth stating plainly. Because the replacement is inside someone else's script,
+**the byte-for-byte output guarantee stops being a nicety and becomes the whole safety argument**
+— nothing else about the boot changes, so the golden test in *Implementation plan* is what makes
+this substitution reviewable. And because the substitution is a build-time `sed` against upstream
+text, it breaks loudly when upstream edits those lines, which is the correct failure: a silent
+no-match would ship an image with no passwd handling at all, so the build asserts the match.
+
+**Case 2 — an entrypoint we do own.** For images built from scratch, the binary can take the
+`--` form and hand over directly:
+
+```dockerfile
+COPY --from=build /out/passwd-append /usr/local/bin/passwd-append
+RUN chmod g=u /etc/passwd /etc/group
+ENTRYPOINT ["/usr/bin/tini", "--", \
+            "/usr/local/bin/passwd-append", "--", \
+            "/usr/local/bin/real-entrypoint"]
+```
+
+`tini` is PID 1 and stays there; `passwd-append` `execvp`s, so it leaves no process behind
+and `real-entrypoint` ends up as the init's *direct* child — which is why case 2 needs no `-g`
+and case 1, where a shell sits in between, does. The init is a property of the **entrypoint**,
+not of this binary: in case 1 it goes ahead of `entrypoint-volume.sh` and `passwd-append` never
+sees it. Both are argued under *PID 1 and signals*.
+
+On start, in either case, for UID `1000730000` with `HOME=/home/user` and no `USER_NAME` set, it
+appends to `/etc/passwd`:
 
 ```text
 user:x:1000730000:0:user user:/home/user:/bin/bash
@@ -116,7 +173,9 @@ and to `/etc/group`:
 user:x:1000730000:
 ```
 
-then `exec`s `real-entrypoint`, so the real process keeps PID 1 and its signal handling.
+In case 1 it then exits `0` and the script continues at line 69. In case 2 it `exec`s
+`real-entrypoint`, so `passwd-append` is gone from the process table by the time the real command
+starts and the init above it signals and reaps that command directly.
 
 Byte-for-byte what
 [`entrypoint-volume.sh#L64-L65`](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L64-L65)
@@ -124,7 +183,7 @@ produces, on an image that has bash. On an image that does not, the shell field 
 fallback chain below instead of naming a binary that is not there.
 
 When the UID already resolves — the ordinary case on a cluster that does *not* randomize UIDs,
-and on every container restart — it logs one line and execs immediately. Nothing to undo.
+and on every container restart — it logs one line and hands over immediately. Nothing to undo.
 
 The entry is written **once per container and never twice**. Calling the binary again is harmless
 and does nothing — there is no flag that appends a second entry for the same UID:
@@ -396,10 +455,18 @@ default warns and continues — matching today's snippet, which cannot fail the 
 `--strict` exists for images that will fail immediately anyway, so the operator gets the real
 cause instead of a confusing downstream error.
 
-**Rollout.** Per image, one line in a Containerfile. No cluster-side component, no coordination,
-no ordering constraint. Images that keep the shell snippet keep working, and an image running
-both is safe: the single-shot check makes whichever runs second a no-op. That overlap is what makes the
-migration incremental — the snippet can be deleted per image, on its own schedule.
+**Rollout.** Per image, one build-time edit — a `COPY`, a `chmod`, and either a `sed` over the
+upstream entrypoint (case 1) or an `ENTRYPOINT` line (case 2). No cluster-side component, no
+coordination, no ordering constraint. Images that keep the shell snippet keep working, and an
+image running both is safe: the single-shot check makes whichever runs second a no-op. That
+overlap is what makes the migration incremental — the snippet can be replaced per image, on its
+own schedule.
+
+The one real coupling is upstream text. Case 1 pins a `sed` to seven lines of a script
+che-incubator owns and can renumber or reword at any time, so the build has to fail on a
+no-match rather than proceed. That is a maintenance cost this brick pays every time che-code
+moves, and it is the strongest argument for also fixing the block upstream — see
+*Alternatives considered* and *Future work*.
 
 **Rollback.** Revert the image tag. There is no persistent state to unwind.
 
@@ -409,10 +476,64 @@ exits, and there is nothing to scrape it.
 
 **Upgrade.** Nothing runs concurrently. Old and new images coexist without interacting.
 
-**PID 1 and signals.** With `--`, the binary `execvp`s rather than forking, so the real process
-becomes PID 1 and receives `SIGTERM` directly. No signal forwarding to get wrong, no zombie
-reaping to implement. Worth stating because the obvious `fork`+`wait` implementation would
-quietly break graceful shutdown across every image that adopts this.
+**PID 1 and signals.** With `--`, the binary `execvp`s rather than forking. That is the whole of
+its contribution to process management, and it is deliberately not enough on its own: PID 1 in a
+container has no default signal dispositions, so a `SIGTERM` an entrypoint script does not
+explicitly handle is **discarded**, and the pod's graceful shutdown becomes a thirty-second wait
+for `SIGKILL`. PID 1 is also the only reaper, and a workspace container spawns shells, language
+servers and `git` processes all day; whatever sits there accumulates their orphans as zombies.
+
+`entrypoint-volume.sh` is the concrete instance of both. It is `/bin/sh` sitting at PID 1 with no
+`trap`, it backgrounds `machine-exec` at
+[line 127](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L127),
+and it runs the Node launcher at
+[line 136](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L136)
+**without `exec`** — so the shell stays as PID 1, Node is its child, and a `SIGTERM` from
+`kubectl delete pod` lands on a PID 1 that discards it. Every workspace shutdown is a
+thirty-second wait for `SIGKILL`.
+
+Neither problem is `passwd-append`'s to solve. Both are what an init is for, so the **entrypoint**
+puts one in front — **`tini -g`**, which is what `WeeboDevImage` already ships:
+
+```dockerfile
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint-volume.sh"]
+```
+
+> **This goes in `WeeboDevImage`.** It is a change to that image's `ENTRYPOINT`, applied where
+> the image is built, alongside the case-1 `sed` from *Guide-level explanation*. It is not part
+> of `passwd-append` and no flag of this binary turns it on: an image that adopts the binary and
+> skips this line gets a resolvable UID and keeps the thirty-second shutdown.
+
+Note where that sits relative to this brick: **the init wraps the entrypoint, not the binary.** In
+case 1 `passwd-append` runs several lines inside the script and never interacts with the init at
+all; in case 2 they appear in the same `ENTRYPOINT` line only because the entrypoint happens to be
+short. Treating them as one chain is what the previous revision of this section got wrong.
+
+**Which init is not the decision here.** `tini` and `catatonit` are interchangeable for this: same
+`init -- command` shape, same `-g` spelling, same semantics — `tini` is what Docker's `--init`
+runs, `catatonit` is what Podman's runs. `tini` is named above because `WeeboDevImage` already has
+it, and "already installed and working" beats any argument either way. An image that ships
+`catatonit` instead substitutes one path and changes nothing else. `tini` additionally accepts
+`TINI_KILL_PROCESS_GROUP` as an environment variable, which is the same switch by another route
+for images whose `ENTRYPOINT` is awkward to edit.
+
+**`-g` is the load-bearing part, not the init itself**, and this is what is easy to get wrong. A
+bare `tini --` forwards `SIGTERM` to its *direct child* — the shell — which is no longer
+PID 1, so it takes the default disposition and dies, orphaning Node rather than terminating it.
+Reaping would be fixed and shutdown would not, which is the worst of both: the zombies visibly
+disappear, so the shutdown bug looks fixed too. `-g` sends the signal to the whole process group
+instead, so the shell, the Node launcher and the backgrounded `machine-exec` all receive it.
+
+The alternative is `exec` on the script's last line, so Node *becomes* the init's direct child
+and a bare `tini --` suffices. That is the cleaner fix and it is the wrong one for us to
+make: the `ENTRYPOINT` is ours, that line is upstream's, and patching it means a second `sed`
+anchored to che-code text with its own reword risk — the cost *Drawbacks* already records once.
+`-g` buys the same shutdown from a file we own. `exec` is what belongs in the upstream report,
+tracked in *Future work* alongside the `&>` fix.
+
+`passwd-append` itself **must not** grow `fork`+`wait` to do any of this. The obvious
+implementation of "run the command for me" would silently break graceful shutdown across every
+image that adopts it, which is exactly the failure the init exists to prevent.
 
 ## Alternatives considered
 
@@ -424,7 +545,10 @@ is not "delete it now": the two coexist safely, so this is a migration, not a cu
 guard, probe for the shell. That is the honest cheap option, it helps everyone using che-code, and
 it should probably happen regardless of this RFC. It still leaves the image needing a shell,
 `whoami` and `id`, and still has no field validation — so it narrows the gap rather than closing
-it. **Worth opening upstream as a separate contribution**; see *Future work*.
+it. It is also **worth more than it first appeared**: the primary integration is a `sed` against
+those exact lines, so upstream owning a binary-aware version of the block is what retires the
+maintenance cost in *Drawbacks*. **Worth opening upstream as a separate contribution**; see
+*Future work*.
 
 **`nss_wrapper` (`LD_PRELOAD`).** The established answer, and it handles more of NSS than we do.
 Rejected: it requires a dynamic loader and glibc in the final image, which forecloses distroless
@@ -456,7 +580,15 @@ the binary to exist first, and it is a separate contract with a separate blast r
 
 ## Drawbacks and risks
 
-- One more binary in every image, and one more thing to keep building for every target arch.
+- One more binary in every image, and one more thing to keep building for every target arch. The
+  entrypoint also now names an init (`tini -g`, or `catatonit -g`), so a slim image needs two
+  additions rather than one — and an image that omits the init, or keeps it but drops `-g`, loses
+  graceful shutdown without failing at build time.
+- **The primary integration is a `sed` against a script we do not own.** che-code can renumber,
+  reword or restructure those seven lines in any release, and the patch has to be re-derived when
+  it does. Failing the build on a no-match makes that loud rather than silent, which is the best
+  available answer and is still a recurring cost. It is only paid down if the block is fixed
+  upstream.
 - It reimplements a slice of NSS. That slice is small and frozen (the passwd and group formats
   have not moved in decades), but it is not zero.
 - The name says `passwd` and it also writes `group`. See *Unresolved questions*.
@@ -512,35 +644,61 @@ None. All of them were closed at acceptance; the ones that changed the design ar
   else, deliberately. Accepting an externally supplied UID reopens that decision and needs the
   threat model redone, not just a flag added.
 - **Operator-side injection** of the binary and entrypoint via a mutating webhook, for pods that
-  never opted in. Its own RFC.
+  never opted in. Considered and **declined** by [RFC 0002](./0002-weebo-si-operator.md): the
+  Weebo dev image ships this binary in its entrypoint by default, which covers the fleet that
+  matters. What remains of the idea is third-party images, and it stays there as future work.
+- **The `WeeboDevImage` entrypoint**: `ENTRYPOINT ["/usr/bin/tini", "-g", "--", …]` ahead of
+  `entrypoint-volume.sh`, alongside the case-1 `sed`. It was on this RFC's checklist until the
+  binary shipped without it; it belongs to that image's build, not to this repo, and *PID 1 and
+  signals* is only where the reasoning lives. **`-g` is the load-bearing part** — a bare init
+  fixes reaping and leaves the thirty-second shutdown in place, while looking fixed.
+- **A signal test for that image**: `SIGTERM` terminates the real command promptly through the
+  init, an orphaned child is reaped, and the same test **fails** without `-g`. It needs a
+  container engine, which is why it did not land with the binary.
 - **Multi-arch builds** (`arm64`) once anything in the fleet needs them.
 - **Deleting the shell snippet** from every Weebo image, tracked per image once this ships.
 - **Reporting the `&>` bug upstream** to che-incubator/che-code, with the one-line fix. It costs
   us nothing, it is a real silent no-op on musl images, and it is the right thing to do whether or
-  not this binary ever ships.
+  not this binary ever ships. Two more findings from the same script belong in the same report:
+  the launcher on the last line runs **without `exec`**, so `/bin/sh` stays at PID 1 and discards
+  `SIGTERM`, and `machine-exec` is backgrounded under a shell that never reaps it. Both are
+  independent of this binary and both cost every Che workspace a thirty-second shutdown.
+- **Getting the block replaced upstream** rather than `sed`-ed at build time. The version of this
+  brick that needs no patch is one where `entrypoint-volume.sh` calls a binary if it is present
+  and falls back to the shell block otherwise. That removes the recurring cost in *Drawbacks*
+  entirely, and it is a strictly better outcome than winning the argument in our own Containerfile.
 
 ## Implementation plan
 
-- [ ] `bins/passwd-append` scaffold: workspace member, inherited lints, musl target
-- [ ] `entry.rs` — passwd and group entry construction and validation, with the table-driven test
+- [x] `bins/passwd-append` scaffold: workspace member, inherited lints, musl target
+- [x] `entry.rs` — passwd and group entry construction and validation, with the table-driven test
       suite covering every rejection rule (`:`, newline, relative path, bad name, UID 0)
-- [ ] `nss.rs` — passwd/group lookup, shell probe against an injected prober, trailing-newline
+- [x] `nss.rs` — passwd/group lookup, shell probe against an injected prober, trailing-newline
       handling, `flock` + re-scan-under-lock + `O_APPEND` write
-- [ ] `main.rs` — flag/env precedence, `--` split, `execvp` handover, exit codes
-- [ ] Integration test over temp files: fresh append, idempotent re-run, file with no trailing
+- [x] `main.rs` — flag/env precedence, `--` split, `execvp` handover, exit codes
+- [x] Integration test over temp files: fresh append, idempotent re-run, file with no trailing
       newline, read-only target under both default and `--strict`, `--no-group`
-- [ ] Single-shot tests: a re-run writes nothing and exits `0` with the `WARN` line, in both
+- [x] Single-shot tests: a re-run writes nothing and exits `0` with the `WARN` line, in both
       standalone and entrypoint mode; a re-run with a different `--home`/`--gecos` still writes
       nothing; N concurrent invocations against one temp file produce exactly one entry (the test
       that would fail without the lock)
-- [ ] Golden test asserting the default output is byte-identical to what
+- [x] Golden test asserting the default output is byte-identical to what
       [che-code's `entrypoint-volume.sh#L64-L65`](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L64-L65)
       produces, on an image where `/bin/bash` exists. This is the test that pins the contract —
       if it ever needs relaxing, that is a RFC amendment, not a fixture update.
-- [ ] Containerfile with multi-stage musl build, plus the `chmod g=u` reference snippet
-- [ ] `task audit` covers the crate
-- [ ] Docs: usage in `docs/`, and the Containerfile snippet in the images that adopt it
-- [ ] RFC flipped to `Implemented`
+- [x] Containerfile with multi-stage musl build, plus both reference snippets: the case-1 `sed`
+      over `entrypoint-volume.sh` — asserting the match so an upstream reword fails the build
+      rather than silently shipping an image with no passwd handling — and the case-2
+      `tini -- passwd-append -- <command>` entrypoint with its `catatonit` variant
+- [x] Case-1 test: the documented `grep` + `sed` against the upstream block, asserting it
+      replaces exactly those seven lines, leaves the surrounding script byte-identical, still
+      parses under `sh -n`, and that the guard fails on an already-patched file. The fixture is
+      written in the test rather than vendored — che-code's script is EPL-2.0, and copying it in
+      is a licensing decision this RFC has not taken
+- [x] `task audit` covers the crate
+- [x] Docs: [`docs/bricks/passwd-append.md`](../bricks/passwd-append.md), with both adoption
+      snippets
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -550,6 +708,11 @@ None. All of them were closed at acceptance; the ones that changed the design ar
 - [OpenShift: support arbitrary user IDs](https://docs.openshift.com/container-platform/latest/openshift_images/create-images.html#use-uid_create-images)
 - [`nss_wrapper`](https://cwrap.org/nss_wrapper.html) — the alternative rejected above
 - `passwd(5)` and `group(5)` — the field formats and their escaping rules
+- [`tini`](https://github.com/krallin/tini) — the init the entrypoint puts at PID 1, and its
+  write-up of why a container needs one at all. `-g` and `TINI_KILL_PROCESS_GROUP` are documented
+  under *Process group killing*
+- [`catatonit`](https://github.com/openSUSE/catatonit) — the interchangeable alternative, same
+  `-g`
 - [`../architecture/hexagonal.md`](../architecture/hexagonal.md) — the criteria this RFC is
   measured against when it declines the layout
 
@@ -559,3 +722,7 @@ None. All of them were closed at acceptance; the ones that changed the design ar
 | --- | --- |
 | 2026-08-23 | Accepted. Name kept as `passwd-append` rather than `nss-append`, despite the brick also writing `/etc/group`. |
 | 2026-08-23 | Accepted with a change: a re-invocation whose entry is already present now exits `0` with a `WARN` in every mode, instead of `4` in standalone mode. Rejecting the non-zero code was an init-container call — `CrashLoopBackOff` on the second restart of a healthy pod is a worse failure than a caller not learning that its call was a no-op. The write-side guarantee is untouched. |
+| 2026-08-23 | Amended: *Guide-level explanation* now leads with the integration that actually applies. `entrypoint-volume.sh` is not a wrapper around a real command, it **is** the command — so there is nothing to hand over to with `--`, and the block cannot be dropped either, because the boot fails without a resolvable identity. The primary case is a build-time in-place replacement of [lines 61-67](https://github.com/che-incubator/che-code/blob/main/build/scripts/entrypoint-volume.sh#L61-L67) with a standalone call. The `--` handover is demoted to images whose entrypoint we own. The binary's contract is unchanged; what changed is which of its two modes is the default story. |
+| 2026-08-23 | Amended after re-reading the code against the contract: exit code `1` was **unreachable**. Every I/O failure from the append was folded into the fail-open path, so "cannot stat or lock a target file" exited `0`, or `3` under `--strict`. `append_locked` now distinguishes a *prepare* failure (open, lock or scan — we cannot even tell whether the entry is there) from a *write* failure, and only the first is exit `1`. A target that is merely **absent** or read-only stays fail-open, deliberately: turning a missing `/etc/group` into a container that will not start is the opposite of what *Failure mode* argues for, and the RFC's exit-code table and its fail-open paragraph were in tension on exactly that case. |
+| 2026-08-23 | **Implemented.** Three things the code taught. *One gap in the contract*: `exec` failing — a command after `--` that does not exist — is not in the *Exit codes* table. It exits `1` and logs, which is defensible as an internal error, but `127` is the shell convention and the table is the contract, so this needs a decision rather than an implementation note. *One constraint the lint table imposed*: `unsafe_code = "forbid"` cannot be re-allowed per crate, so `geteuid` and `flock` arrive through `rustix` and the handover through std's `CommandExt::exec`; there is no `unsafe` block, and the RFC should have said which crate pays for the syscalls. *One thing the case-1 `sed` could not have*: the upstream script is EPL-2.0, so the test fixture reproducing those seven lines is written in the test rather than vendored — which means the test pins the substitution, and only the build-time `grep` catches an upstream reword. The two `WeeboDevImage` checklist items moved to *Future work*: they are that image's build, not this repo's. |
+| 2026-08-23 | Amended: the reference entrypoint now runs a real init at PID 1 — `tini -g`, which `WeeboDevImage` already ships; `catatonit -g` is interchangeable and no migration is warranted either way. Applied in `WeeboDevImage`, not here. The original *PID 1 and signals* argument was right that `execvp` is the correct handover and wrong to conclude nothing else was needed: PID 1 discards unhandled signals and is the only reaper, and `entrypoint-volume.sh` is `/bin/sh` at PID 1 running its launcher without `exec`. Corrected twice more in the same revision. The init wraps the **entrypoint**, not this binary — the first draft presented them as one chain, which is only true in the case that does not apply to che-code. And `-g` is the load-bearing part: a bare init forwards `SIGTERM` to the shell, which dies and orphans Node, so reaping is fixed while shutdown is not — and the vanished zombies make it look fixed. `exec` on the script's last line is the cleaner fix and belongs upstream, since that line is not ours to patch. `passwd-append` itself is unchanged, and still must not grow `fork`+`wait`. |

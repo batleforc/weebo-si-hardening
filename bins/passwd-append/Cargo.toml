@@ -1,0 +1,17 @@
+[package]
+name = "passwd-append"
+version = "0.1.0"
+description = "Give the container's arbitrary UID a real /etc/passwd and /etc/group entry"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rustix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

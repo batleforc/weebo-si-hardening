@@ -83,7 +83,9 @@ fails if it is stale.
 
 | # | Title | Status | Brick |
 | --- | --- | --- | --- |
-| [0001](./0001-passwd-append.md) | passwd-append | `Accepted` | `bins/passwd-append` |
+| [0001](./0001-passwd-append.md) | passwd-append | `Implemented` | `bins/passwd-append` |
+| [0002](./0002-weebo-si-operator.md) | weebo-si-operator | `Proposed` | `crates/weebo-si-operator` |
+| [0003](./0003-preauth-proxy.md) | preauth-proxy | `Implemented` | `bins/preauth-proxy` |
 
 <!-- rfc-index:end -->
 

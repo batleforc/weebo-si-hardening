@@ -1,0 +1,42 @@
+# Build context is the repository root:
+#   podman build -f bins/passwd-append/Containerfile -t passwd-append .
+#
+# The result is a `scratch` image carrying one static binary and nothing else. It is not meant to
+# be run — it is meant to be copied from:
+#
+#   COPY --from=passwd-append / /usr/local/bin/passwd-append
+#
+# See docs/bricks/passwd-append.md for the adopting image's side of the recipe.
+
+# --- build ------------------------------------------------------------------------------------
+FROM docker.io/library/rust:1-alpine AS build
+
+# musl-dev for the C runtime the musl target links against; the alpine image is already musl.
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+
+# The whole workspace is copied because `cargo build -p` still needs every member's manifest to
+# resolve the workspace. --locked so the image is reproducible from Cargo.lock.
+COPY Cargo.toml Cargo.lock ./
+COPY bins ./bins
+
+RUN cargo build --release --locked --package passwd-append \
+      --target "$(rustc -vV | sed -n 's/^host: //p')" \
+ && install -D -m 0755 \
+      "target/$(rustc -vV | sed -n 's/^host: //p')/release/passwd-append" \
+      /out/passwd-append
+
+# The binary must not have picked up a dynamic loader — that is the whole point of the musl
+# build, and it is cheaper to assert here than to discover it in a distroless image at runtime.
+RUN ! ldd /out/passwd-append 2>/dev/null | grep -q 'ld-' || \
+      (echo 'passwd-append is dynamically linked' >&2; exit 1)
+
+# --- carrier ----------------------------------------------------------------------------------
+FROM scratch
+COPY --from=build /out/passwd-append /passwd-append
+
+# This stage is a file carrier, not a runnable image — there is no entrypoint and nothing to run.
+# The USER is here so a scanner reading it as a workload does not have to guess, and so that a
+# `podman run` against it by mistake is not root.
+USER 65532:65532

@@ -1,10 +1,8 @@
 [workspace]
 resolver = "3"
-# Cargo rejects a glob that matches nothing, so this stays empty until the first brick lands.
-# The moment `bins/` or `crates/` holds a real member, switch to:
-#   members = ["bins/*", "crates/*"]
-# `task rust:*` skips itself while this list is empty, so the pre-commit hook stays green.
-members = []
+# Cargo rejects a glob that matches nothing, so `crates/*` joins this list the moment
+# RFC 0002's operator lands and the directory has a real member.
+members = ["bins/*"]
 
 [workspace.package]
 edition = "2024"
@@ -15,6 +13,37 @@ repository = "https://github.com/batleforc/weebo-si-hardening"
 # Shared dependency versions. A member crate opts in with `dep = { workspace = true }`
 # so every brick stays on the same version of the ecosystem crates.
 [workspace.dependencies]
+# `unsafe_code = "forbid"` below is not negotiable and cannot be re-allowed per crate, so every
+# syscall this workspace needs arrives through a crate that already did the unsafe part:
+# rustix for geteuid/flock, std's CommandExt::exec for the handover.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+
+# preauth-proxy's HTTP stack. hyper directly rather than a framework: the brick's whole job is
+# forwarding one request to another origin with precise control over headers and body streaming,
+# which is what a framework abstracts away.
+bytes = "1.10"
+# The pure HTTP data types. Not a client, not a framework — usable from the domain layer,
+# which is why preauth-proxy's ports are expressed in them.
+http = "1.3"
+http-body-util = "0.1"
+hyper = { version = "1.7", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server", "http1"] }
+tokio = { version = "1.48", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "sync",
+  "signal",
+  "io-util",
+] }
+
+serde = { version = "1.0", features = ["derive"] }
+# YAML, chosen for the panic-free parsing it advertises: the config is the one file an operator
+# hand-writes, and `panic = "deny"` means a malformed document has to be an error value.
+serde_yaml_bw = "2.5"
+
+# Test-only.
+tempfile = "3.24"
 
 # Lints applied to every member via `[lints] workspace = true`.
 # The hardening bricks run as root-adjacent tooling inside other people's pods:

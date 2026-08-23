@@ -1,0 +1,47 @@
+version: "3"
+
+# The gates that live in CI, runnable locally. Everything here is what
+# `.github/workflows/` runs — if the two drift, the local one is wrong, because
+# CI is the one that blocks a merge.
+
+tasks:
+  lint:
+    desc: "Validate the GitHub Actions workflow files (actionlint)"
+    cmds:
+      # Catches the failure modes YAML syntax does not: an unknown `uses:` input,
+      # a job referencing an output that no step declares, a shell snippet
+      # shellcheck would reject inside a `run:`.
+      - actionlint
+
+  postmortem:
+    desc: "Dependency supply-chain gate — source-repo reputation + known vulns, from Cargo.lock"
+    cmds:
+      # Rebuilds the dependency forest from the lockfile (no install, no
+      # lifecycle scripts), resolves each dependency to its source repo and
+      # scores it (stars, age, last activity, archived, typosquat), then
+      # cross-checks vuln.mlab.sh.
+      #
+      # `--fail-on-vuln high` is the same bar as the Trivy image gate.
+      #
+      # `--max-high 0 --max-sus 0` because the baseline is genuinely clean: a full
+      # run over this tree reports 63 nodes / 10 direct at 0 high-risk and 0
+      # suspicious. Zero is the current state, not a round number — the gate
+      # exists to keep it there. `--max-risk` / `--max-dep` stay unset: they score
+      # a degree rather than a count, and pinning a degree at 0 would fail on a
+      # dependency going slightly stale rather than on anything worth acting on.
+      #
+      # Keep in sync with .github/workflows/postmortem.yaml. Export GITHUB_TOKEN
+      # to raise the anonymous limit on the reputation lookups; anonymous
+      # vuln.mlab.sh is capped at 8 scans/hour.
+      - postmortem tree . --online --vulns --fail-on-vuln high --max-high 0 --max-sus 0
+
+  image:
+    desc: 'Build and Trivy-scan one brick''s image exactly as CI does (usage: task ci:image BRICK=passwd-append)'
+    requires:
+      vars: [BRICK]
+    cmds:
+      # Needs a container engine, which the Che workspace does not have — this is
+      # for a laptop, or for reproducing a CI failure somewhere that does.
+      - podman build -f bins/{{.BRICK}}/Containerfile -t {{.BRICK}}:ci .
+      - trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 {{.BRICK}}:ci
+      - trivy config --severity HIGH,CRITICAL --exit-code 1 bins/{{.BRICK}}/Containerfile

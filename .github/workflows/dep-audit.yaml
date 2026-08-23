@@ -1,0 +1,47 @@
+name: Dependency audit
+# The repo's own gate, run exactly as `task audit` runs it locally: `deny.toml`
+# decides, not the workflow. Four checks, and the two nobody expects to fail are
+# the ones worth having — a copyleft dependency in a brick we redistribute inside
+# other people's images is a legal decision, and a crate from an unexpected
+# registry is a supply-chain one.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/dep-audit.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/dep-audit.yaml"
+  # Daily: the advisory database moves without the lockfile moving.
+  schedule:
+    - cron: "50 23 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+      # taiki-e/install-action rather than a cargo-deny-specific action: it is
+      # already pinned across these repos, and it installs the same binary
+      # mise.toml pins for local runs.
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: cargo deny check advisories bans licenses sources

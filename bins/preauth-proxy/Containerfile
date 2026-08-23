@@ -1,0 +1,42 @@
+# Build context is the repository root:
+#   podman build -f bins/preauth-proxy/Containerfile -t preauth-proxy .
+#
+# Unlike passwd-append's carrier image, this one is meant to be run:
+#   podman run --rm -v ./config.yaml:/etc/preauth-proxy/config.yaml:ro \
+#              -e CRED_USER -e CRED_SECRET preauth-proxy
+
+# --- build ------------------------------------------------------------------------------------
+FROM docker.io/library/rust:1-alpine AS build
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY bins ./bins
+
+RUN cargo build --release --locked --package preauth-proxy \
+      --target "$(rustc -vV | sed -n 's/^host: //p')" \
+ && install -D -m 0755 \
+      "target/$(rustc -vV | sed -n 's/^host: //p')/release/preauth-proxy" \
+      /out/preauth-proxy
+
+RUN ! ldd /out/preauth-proxy 2>/dev/null | grep -q 'ld-' || \
+      (echo 'preauth-proxy is dynamically linked' >&2; exit 1)
+
+# --- final ------------------------------------------------------------------------------------
+# scratch, not alpine: the process needs no shell, no package manager and no writable filesystem.
+# There is nothing in this image to exec into, which is the point.
+FROM scratch
+
+COPY --from=build /out/preauth-proxy /preauth-proxy
+
+# A fixed non-root UID. The proxy needs no identity beyond "not root" — it reads a config file and
+# opens a socket, and RFC 0001's arbitrary-UID problem does not apply because nothing here asks
+# who it is.
+USER 65532:65532
+
+EXPOSE 8080
+
+# No shell form: there is no shell. The process reaps nothing and spawns nothing, so it is its own
+# init — the tini/catatonit argument in RFC 0001 is about images that run a process tree.
+ENTRYPOINT ["/preauth-proxy"]

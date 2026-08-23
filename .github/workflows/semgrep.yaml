@@ -1,0 +1,57 @@
+name: Semgrep
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "scripts/**"
+      - ".hooks/**"
+      - ".github/workflows/semgrep.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "scripts/**"
+      - ".hooks/**"
+      - ".github/workflows/semgrep.yaml"
+  schedule:
+    - cron: "50 23 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # pipx is preinstalled on GitHub-hosted runners.
+      - name: Install Semgrep
+        run: pipx install semgrep
+      # p/bash covers scripts/ and .hooks/, which are not incidental here: they
+      # run in the pre-commit hook and one of them (`rfc-check.sh`) is the thing
+      # that decides whether a RFC is well-formed.
+      - name: Semgrep scan (SARIF)
+        run: |
+          semgrep scan \
+            --config p/rust --config p/bash --config p/secrets \
+            --severity ERROR \
+            --sarif --output semgrep.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      # The gate — non-zero on any ERROR-severity finding. Separate from the run
+      # above so the report reaches the Security tab even when the gate trips.
+      - name: Semgrep scan (gate)
+        run: |
+          semgrep scan \
+            --config p/rust --config p/bash --config p/secrets \
+            --severity ERROR \
+            --error

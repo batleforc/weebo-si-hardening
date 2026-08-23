@@ -1,0 +1,118 @@
+name: Supply chain (postmortem)
+# Dependency supply-chain gate: reconstructs the dependency forest from the
+# committed lockfile, scores each dependency's source repo (reputation,
+# activity, archived/abandoned, identity signals) and cross-checks it against
+# known vulnerabilities, then uploads the findings as SARIF.
+#
+# This complements — it does not replace — `dep-audit.yaml`, which runs the
+# repo's own `deny.toml` gate. cargo-deny only knows about *advisories* and
+# *licences*; postmortem also flags the "no advisory yet" shape of supply-chain
+# risk: unmaintained or archived upstreams, typosquats, unresolvable repos.
+#
+# One job, because this workspace has exactly one dependency root — postmortem's
+# detection only looks at lockfiles sitting directly in the scanned directory and
+# does not recurse, so a second root would need a second *job*, not a matrix. The
+# reason it must not be a matrix is worth writing down before there is one:
+# postmortem emits every result with `artifactLocation.uri = "."` whatever it
+# scanned, so uploads are told apart only by their analysis category, which
+# `upload-sarif` computes from `GITHUB_JOB` plus its `matrix` input — and that
+# input's `${{ toJson(matrix) }}` default does not resolve from inside a
+# composite action, as it does here. A matrix would hand every upload the same
+# category and let them supersede each other.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postmortem.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postmortem.yaml"
+  # Daily, same slot as the other dependency audits: reputation and vulnerability
+  # data are fetched live, so a dependency that goes archived — or gets an
+  # advisory — after the last commit still trips CI the next morning.
+  schedule:
+    - cron: "50 23 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+# Anonymous vuln.mlab.sh allows 8 scans/hour. One run spends 1 here, but a PR
+# pushed to repeatedly still burns quota for no verdict that survives. Superseded
+# runs are cancelled rather than left to run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    name: postmortem — Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Pinned to the v2.0.1 commit. `version` — the scanner binary the composite
+      # action downloads from the release assets — is pinned separately and must
+      # stay at a tag that actually publishes binaries; v2.0.1 ships none, so it
+      # resolves to the v2.0.0 release, which is also the action's default. The
+      # same version is pinned in mise.toml, so `task postmortem` and this gate
+      # run the identical scanner.
+      #
+      # soft-fail is on *by design*: the action's SARIF upload is the step after
+      # the scan, so a hard failure there would skip it and the findings would
+      # never reach the Security tab. The scan reports, the gate step below fails
+      # the job.
+      #
+      # Two caveats the SHA pin does *not* cover, both inside the composite
+      # action: it installs the scanner with `curl | tar` and no checksum
+      # verification, and its SARIF upload calls `github/codeql-action/upload-sarif@v3`,
+      # a floating tag where every other codeql-action use here is pinned by SHA.
+      # Closing either needs an upstream change or a fork.
+      #
+      # `fail-on-vuln: high` is the same bar as the Trivy image gate.
+      #
+      # The reputation thresholds ARE set, and that is a decision this repo can
+      # take where a larger one could not: a full local run over this tree scores
+      # 63 nodes / 10 direct at risk 0, dep 0, 0 high-risk, 0 suspicious. With a
+      # clean baseline, `0` is not a guess — it is the current state, and the
+      # gate's job is to keep it there. Every one of these dependencies is either
+      # rust-lang, tokio-rs, hyperium or serde-rs; the first one that is not is
+      # worth a conversation rather than a silent merge.
+      #
+      # max-risk / max-dep are left unset: they score a *degree* rather than a
+      # count, and pinning a degree at 0 would fail on a dependency going
+      # slightly stale rather than on anything anyone should act on.
+      - name: postmortem supply-chain scan (Rust)
+        id: scan
+        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        with:
+          path: "."
+          version: v2.0.0
+          online: "true" # source-repo reputation (uses github-token below)
+          vulns: "true" # known advisories via vuln.mlab.sh
+          fail-on-vuln: high
+          max-high: "0" # no high-risk dependency: typosquat, install hook, fresh repo
+          max-sus: "0" # no suspicious dependency: new maintainer, dormant, no repo
+          sarif: "true"
+          soft-fail: "true"
+          github-token: ${{ github.token }}
+          # Optional: anonymous vuln.mlab.sh is capped at 8 scans/hour. An absent
+          # secret resolves to an empty string, i.e. anonymous, which is what the
+          # action defaults to anyway — safe to leave unset.
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
+      # exit-code: 0 pass · 1 gate tripped · 2 misconfig / no ecosystem detected.
+      # A 2 is a real failure here — the repo root is known to hold Cargo.lock, so
+      # "no ecosystem" means the scan silently covered nothing. Read through the
+      # environment, never interpolated into the script: a bare `exit` with an
+      # empty argument returns the *previous* command's status, so a lost output
+      # would turn a missing verdict into a silent pass.
+      - name: Gate
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+        run: exit "${CODE:-1}"
