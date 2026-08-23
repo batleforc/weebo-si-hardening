@@ -59,14 +59,17 @@ jobs:
           --package ${{ inputs.crate }}
           --target x86_64-unknown-linux-musl
 
-      # The same assertion the Containerfile makes. Worth repeating here because
-      # this is the artifact a human downloads, and "it is static" is the only
-      # reason it can be copied into an image that has no loader.
+      # The same assertion the Containerfile makes, in the same terms: no
+      # PT_INTERP segment. `ldd` is not the test — under musl it prints the
+      # loader's name for a static-PIE that self-loads, and under glibc it
+      # answers a different question about a musl binary. Worth repeating here
+      # because this is the artifact a human downloads, and "it is static" is
+      # the only reason it can be copied into an image that has no loader.
       - name: Assert the binary is static
         run: |
           bin="target/x86_64-unknown-linux-musl/release/${{ inputs.crate }}"
           file "$bin"
-          if ldd "$bin" 2>/dev/null | grep -q 'ld-'; then
+          if readelf -l "$bin" | grep -q INTERP; then
             echo "::error::${{ inputs.crate }} is dynamically linked"
             exit 1
           fi
@@ -126,8 +129,11 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
 
+      # `always()` alone would also run this when the *build* failed, where there
+      # is no SARIF to upload — a second red step that says nothing about the
+      # real one. Upload only if the scan actually produced a report.
       - name: Upload SARIF
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
           sarif_file: trivy-results.sarif

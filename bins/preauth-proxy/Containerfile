@@ -20,8 +20,12 @@ RUN cargo build --release --locked --package preauth-proxy \
       "target/$(rustc -vV | sed -n 's/^host: //p')/release/preauth-proxy" \
       /out/preauth-proxy
 
-RUN ! ldd /out/preauth-proxy 2>/dev/null | grep -q 'ld-' || \
-      (echo 'preauth-proxy is dynamically linked' >&2; exit 1)
+# The absence of a PT_INTERP segment, not the output of `ldd`: this is a static-PIE, and musl's
+# `ldd` prints `/lib/ld-musl-x86_64.so.1` for one because the binary self-loads — which reads as
+# "dynamically linked" to any grep for a loader name while the binary has no interpreter at all.
+RUN if readelf -l /out/preauth-proxy | grep -q INTERP; then \
+      echo 'preauth-proxy is dynamically linked' >&2; exit 1; \
+    fi
 
 # --- final ------------------------------------------------------------------------------------
 # scratch, not alpine: the process needs no shell, no package manager and no writable filesystem.

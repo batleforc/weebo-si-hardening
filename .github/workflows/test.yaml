@@ -68,8 +68,19 @@ jobs:
           fi
       - name: cargo test
         run: cargo test --workspace --all-features --locked
+      # `--doc` is an error, not an empty run, when no workspace member has a lib
+      # target — and today both bricks are binaries. The guard is here rather
+      # than a deleted step because `crates/` is coming: the day a shared crate
+      # lands, its doc examples get tested without anyone remembering to re-add
+      # this. jq is preinstalled on GitHub-hosted runners.
       - name: Doc tests
-        run: cargo test --workspace --doc
+        run: |
+          if cargo metadata --no-deps --format-version 1 \
+             | jq -e '.packages[].targets[] | select(.kind[] == "lib")' >/dev/null; then
+            cargo test --workspace --doc
+          else
+            echo "No lib target in the workspace — nothing to doc-test."
+          fi
 
   build:
     name: Release build (all bricks)

@@ -32,13 +32,16 @@ jobs:
       # pipx is preinstalled on GitHub-hosted runners.
       - name: Install Semgrep
         run: pipx install semgrep
-      # p/bash covers scripts/ and .hooks/, which are not incidental here: they
+      # r/bash covers scripts/ and .hooks/, which are not incidental here: they
       # run in the pre-commit hook and one of them (`rfc-check.sh`) is the thing
-      # that decides whether a RFC is well-formed.
+      # that decides whether a RFC is well-formed. It is the rule namespace and
+      # not a `p/` pack because there is no bash *pack* in the registry —
+      # `p/bash` 404s, and a 404 config is a hard error (exit 7), which is what
+      # failed this workflow rather than any finding.
       - name: Semgrep scan (SARIF)
         run: |
           semgrep scan \
-            --config p/rust --config p/bash --config p/secrets \
+            --config p/rust --config r/bash --config p/secrets \
             --severity ERROR \
             --sarif --output semgrep.sarif
       - name: Upload SARIF
@@ -52,6 +55,6 @@ jobs:
       - name: Semgrep scan (gate)
         run: |
           semgrep scan \
-            --config p/rust --config p/bash --config p/secrets \
+            --config p/rust --config r/bash --config p/secrets \
             --severity ERROR \
             --error

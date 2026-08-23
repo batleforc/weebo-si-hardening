@@ -29,8 +29,14 @@ RUN cargo build --release --locked --package passwd-append \
 
 # The binary must not have picked up a dynamic loader — that is the whole point of the musl
 # build, and it is cheaper to assert here than to discover it in a distroless image at runtime.
-RUN ! ldd /out/passwd-append 2>/dev/null | grep -q 'ld-' || \
-      (echo 'passwd-append is dynamically linked' >&2; exit 1)
+#
+# The test is the absence of a PT_INTERP segment, not the output of `ldd`: this is a static-PIE,
+# and musl's `ldd` prints `/lib/ld-musl-x86_64.so.1` for one because the binary self-loads. That
+# reads as "dynamically linked" to any grep for a loader name while the binary has no interpreter
+# at all — which is exactly the false positive that used to fail this build.
+RUN if readelf -l /out/passwd-append | grep -q INTERP; then \
+      echo 'passwd-append is dynamically linked' >&2; exit 1; \
+    fi
 
 # --- carrier ----------------------------------------------------------------------------------
 FROM scratch
