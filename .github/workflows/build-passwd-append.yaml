@@ -33,6 +33,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      packages: write
     with:
       crate: passwd-append
       path: bins/passwd-append

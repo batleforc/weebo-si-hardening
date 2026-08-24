@@ -87,6 +87,7 @@ fails if it is stale.
 | [0002](./0002-weebo-si-operator.md) | weebo-si-operator | `Implemented` | `crates/weebo-si-operator` |
 | [0003](./0003-preauth-proxy.md) | preauth-proxy | `Implemented` | `bins/preauth-proxy` |
 | [0004](./0004-network-profiles.md) | network-profiles | `Implemented` | `crates/weebo-si-network-profiles` |
+| [0005](./0005-image-policy.md) | image-policy | `Draft` | `crates/weebo-si-image-policy` |
 
 <!-- rfc-index:end -->
 
