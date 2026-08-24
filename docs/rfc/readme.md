@@ -86,6 +86,7 @@ fails if it is stale.
 | [0001](./0001-passwd-append.md) | passwd-append | `Implemented` | `bins/passwd-append` |
 | [0002](./0002-weebo-si-operator.md) | weebo-si-operator | `Proposed` | `crates/weebo-si-operator` |
 | [0003](./0003-preauth-proxy.md) | preauth-proxy | `Implemented` | `bins/preauth-proxy` |
+| [0004](./0004-network-profiles.md) | network-profiles | `Draft` | `crates/weebo-si-operator` |
 
 <!-- rfc-index:end -->
 
