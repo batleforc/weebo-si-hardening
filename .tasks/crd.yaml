@@ -1,0 +1,12 @@
+version: "3"
+
+tasks:
+  gen:
+    desc: "Regenerate crates/weebo-si-operator/deploy/crd.yaml when the CRD schema is staged for commit"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/crd-regen.sh"
+
+  check:
+    desc: "Validate crates/weebo-si-operator/deploy/crd.yaml is not stale (run by the pre-commit hook via task lint)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/crd-regen.sh --check"

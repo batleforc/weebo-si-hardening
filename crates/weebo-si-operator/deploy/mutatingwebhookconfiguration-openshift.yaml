@@ -1,0 +1,40 @@
+# The OpenShift variant, verbatim from RFC 0002's *Webhook configuration* — the CA bundle is
+# injected by the platform (`service.beta.openshift.io/inject-cabundle`) once `service.yaml`'s
+# `weebo-si-operator-webhook` Service carries
+# `service.beta.openshift.io/serving-cert-secret-name: weebo-si-operator-webhook-tls`, which is
+# what actually issues the certificate into that Secret. Apply this file instead of
+# `mutatingwebhookconfiguration-cert-manager.yaml`, never both.
+#
+#   oc annotate service/weebo-si-operator-webhook -n weebo-si-hardening \
+#     service.beta.openshift.io/serving-cert-secret-name=weebo-si-operator-webhook-tls
+#
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: weebo-si-hardening-devworkspaces
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+webhooks:
+  - name: devworkspaces.hardening.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    reinvocationPolicy: IfNeeded
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["controller.devfile.io"]
+        apiVersions: ["v1alpha1"]
+        resources: ["devworkspaces"]
+        scope: Namespaced
+    namespaceSelector:
+      matchExpressions:
+        - key: hardening.weebo.io/exclude
+          operator: DoesNotExist
+    clientConfig:
+      service:
+        name: weebo-si-operator-webhook
+        namespace: weebo-si-hardening
+        path: /mutate/v1alpha1/devworkspaces
+        port: 443

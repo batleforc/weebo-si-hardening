@@ -153,6 +153,20 @@ is a routing decision outside this process.
 
 ## Deploying
 
+**Helm**: `charts/preauth-proxy/`. `credentials.existingSecret` is required — the chart renders no
+Secret of its own, deliberately, so a credential never has a path through `helm install --set`.
+`values.config` is the whole `config.yaml` body, verbatim; the default matches the example just
+below.
+
+```console
+$ kubectl create secret generic upstream-service-account \
+    --from-literal=user="$CRED_USER" --from-literal=secret="$CRED_SECRET"
+$ helm install preauth-proxy charts/preauth-proxy \
+    --set credentials.existingSecret=upstream-service-account
+```
+
+Raw manifest, equivalent to what the chart renders:
+
 ```yaml
 # Point the route at the proxy Service instead of the upstream Service. Until that change,
 # nothing is affected; the switch is the cutover and its inverse is the rollback.

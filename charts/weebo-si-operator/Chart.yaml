@@ -1,0 +1,15 @@
+apiVersion: v2
+name: weebo-si-operator
+description: Admission webhook and controller for weebo-si-hardening's runtime feature-flagged hardening features
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - devworkspace
+  - eclipse-che
+  - admission-webhook
+home: https://github.com/batleforc/weebo-si-hardening
+sources:
+  - https://github.com/batleforc/weebo-si-hardening
+maintainers:
+  - name: batleforc

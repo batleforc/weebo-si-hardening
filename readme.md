@@ -36,8 +36,8 @@ task rfc:check         # validate every RFC against the format
 
 | Task | Does |
 | --- | --- |
-| `task lint` | `cargo fmt`, `clippy -D warnings`, `shellcheck`, `rfc:check` (also runs in the pre-commit hook) |
-| `task recu` | regenerates what is derived from source — today the RFC index (also in the hook) |
+| `task lint` | `cargo fmt`, `clippy -D warnings`, `shellcheck`, `rfc:check`, `crd:check`, `helm:lint` (also runs in the pre-commit hook) |
+| `task recu` | regenerates what is derived from source — the RFC index, and `crates/weebo-si-operator/deploy/crd.yaml` when the CRD schema is staged (also in the hook) |
 | `task test` | the whole test suite |
 | `task build` | release build of every brick |
 | `task audit` | `cargo deny` for RUSTSEC advisories, `trivy fs` for the rest |
@@ -45,7 +45,9 @@ task rfc:check         # validate every RFC against the format
 
 The RFC index in `docs/rfc/readme.md` is generated, and both `recu` and `check` run on every
 commit — so a RFC that drops a mandatory section, or an index that drifts from reality, does not
-make it into a commit.
+make it into a commit. `crates/weebo-si-operator/deploy/crd.yaml` follows the same rule: `recu`
+regenerates it whenever `crates/weebo-si-crd` is part of the commit, and `lint`'s `crd:check`
+step fails the commit if it drifts from what the schema now generates.
 
 Run `task --list` for everything. Every gate also runs in CI — see
 [`docs/ci.md`](./docs/ci.md) for what fires when and what it blocks.

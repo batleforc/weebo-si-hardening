@@ -1,0 +1,177 @@
+# `image:` is a placeholder — this repo has no registry decision yet (see the comment in
+# `.github/workflows/brick.yaml`'s `image` job). Replace `weebo-si-operator:latest` with the
+# built image before applying.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weebo-si-operator-webhook
+  namespace: weebo-si-hardening
+  labels:
+    app.kubernetes.io/name: weebo-si-operator
+    app.kubernetes.io/component: webhook
+spec:
+  # RFC 0002's *Operational considerations*, *Upgrade*: "Two replicas behind a
+  # PodDisruptionBudget, rolling, maxUnavailable: 0 — at Fail a moment with no ready endpoint is
+  # a moment when no workspace starts."
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weebo-si-operator
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weebo-si-operator
+        app.kubernetes.io/component: webhook
+    spec:
+      serviceAccountName: weebo-si-operator-webhook
+      # "Two replicas across nodes" — a node failure or drain must not be able to take out both
+      # at once. `preferred`, not `required`: a single-node cluster (dev, a small pilot) should
+      # still schedule two replicas rather than wedge on an unsatisfiable constraint.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: weebo-si-operator
+                    app.kubernetes.io/component: webhook
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: weebo-si-operator
+          image: weebo-si-operator:latest
+          args: ["webhook"]
+          ports:
+            - name: https
+              containerPort: 9443
+            - name: http-health
+              containerPort: 8081
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: webhook-tls
+              mountPath: /etc/webhook/certs
+              readOnly: true
+          # In-process caches only, no cache directory — RFC 0002's *Data and state*: "Nothing
+          # is persisted to disk."
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        # The Secret name here must match whichever of `mutatingwebhookconfiguration-*.yaml` is
+        # applied: `weebo-si-operator-webhook-tls` for both the OpenShift and cert-manager
+        # variants in this directory. Neither generates, stores or rotates the private key here —
+        # RFC 0002's *Webhook configuration*, *Certificates*.
+        - name: webhook-tls
+          secret:
+            secretName: weebo-si-operator-webhook-tls
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weebo-si-operator-controller
+  namespace: weebo-si-hardening
+  labels:
+    app.kubernetes.io/name: weebo-si-operator
+    app.kubernetes.io/component: controller
+spec:
+  # Two replicas race for the lease (`--leader-election`); only the holder reconciles, per
+  # `weebo-si-controller::run`. Rolling with no explicit maxUnavailable: a moment with zero
+  # replicas ready costs a reconcile delay, not an admission-path outage, so it does not need the
+  # webhook Deployment's stricter rollout.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weebo-si-operator
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weebo-si-operator
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: weebo-si-operator-controller
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: weebo-si-operator
+                    app.kubernetes.io/component: controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: weebo-si-operator
+          image: weebo-si-operator:latest
+          args: ["controller", "--leader-election"]
+          # `POD_NAMESPACE` names the lease's namespace; `HOSTNAME` (the lease's holder identity)
+          # is set by the kubelet to the pod name automatically and needs no entry here — see
+          # `controller_cmd.rs`'s own comment on both fallbacks.
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http-health
+              containerPort: 8081
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

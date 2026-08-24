@@ -1,0 +1,34 @@
+{{- if .Values.webhook.podDisruptionBudget.enabled }}
+# RFC 0002's Operational considerations, Upgrade: at failurePolicy: Fail, a voluntary
+# disruption (a node drain, a cluster-autoscaler eviction) taking down a replica while the other
+# is also unavailable stops every DevWorkspace create and start/stop cluster-wide.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.webhook.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.controller.podDisruptionBudget.enabled }}
+---
+# Not required by RFC 0002's own text — the controller is not in the admission path. Standard HA
+# hygiene now that the controller runs multiple replicas behind leader election.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.controller.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 6 }}
+{{- end }}

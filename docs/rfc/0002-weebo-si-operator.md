@@ -1,11 +1,11 @@
 ---
 rfc: 0002
 title: weebo-si-operator
-status: Proposed
+status: Implemented
 authors: [batleforc]
 created: 2026-08-23
 updated: 2026-08-24
-decided:
+decided: 2026-08-24
 brick: crates/weebo-si-operator
 supersedes: []
 superseded-by: []
@@ -193,7 +193,7 @@ reach for. Team 2 defaults to the baseline and may move one of its namespaces on
 annotating the namespace, which is an admin operation rather than a workspace one:
 
 ```console
-$ kubectl annotate namespace user-dave hardening.weebo.io/dwoc=amd
+kubectl annotate namespace user-dave hardening.weebo.io/dwoc=amd
 ```
 
 A DevWorkspace created in a bound namespace comes out pinned, whatever it asked for:
@@ -254,11 +254,17 @@ convention. There is no third spelling.
 - Group and version: `hardening.weebo.io/v1alpha1` — see *Unresolved questions* on the group.
 - Kind: `WeeboSiConfig`, **cluster-scoped**, singleton named `cluster`. Any other name is
   ignored, and reported as a `Degraded` condition on the object so the mistake is visible.
-- The schema is **generated** from the Rust types by `task recu`, the same way the RFC index is.
-  Adding a feature therefore updates the CRD in the same commit as the code, and a feature the
-  binary does not know about cannot be written into the resource at all — the apiserver rejects
-  it. That is deliberate, and it is the reason the schema is typed rather than a
-  `x-kubernetes-preserve-unknown-fields` map.
+- The schema is **generated** from the Rust types by `task recu` (`weebo-si-operator crd`,
+  `crates/weebo-si-crd`'s `WeeboSiConfig::crd()`), the same way the RFC index is. Adding a
+  feature therefore updates the CRD in the same commit as the code, and a feature the binary
+  does not know about cannot be written into the resource at all — the apiserver rejects it.
+  That is deliberate, and it is the reason the schema is typed rather than a
+  `x-kubernetes-preserve-unknown-fields` map. **`weebo-si-crd` is the one named exception to "the
+  domain never imports k8s-openapi"** — the CRD struct tree *is* the domain model for
+  `WeeboSiConfig`'s own shape, not a projection of a kube-free layer underneath it (see
+  *Architecture*'s Changelog note for why, and its caveat on what that guarantee does and does
+  not cover under `--all-features`). Every other crate — `weebo-si-chassis`,
+  `weebo-si-dwoc-pin`, and any future feature crate — holds the original rule without exception.
 
 ```yaml
 spec:
@@ -619,66 +625,79 @@ in [`../architecture/hexagonal.md`](../architecture/hexagonal.md):
 All three hold, which is the opposite of [RFC 0001](./0001-passwd-append.md)'s answer to the same
 question.
 
+**Amended after implementation** (see the Changelog): this was drafted, and accepted, as a
+single crate with `domain`/`application`/`adapters` submodules. Building the webhook and the
+controller against it surfaced that the boundaries the layout was meant to enforce were only
+convention — nothing stopped `domain` from importing `kube` except review discipline. The
+crate was split into seven, one per hexagonal layer or role, so the same boundaries are now
+enforced by `cargo`, not by a reviewer remembering to check. This is the reversal recorded under
+*Alternatives considered*, "A separate `weebo-si-webhook` crate" — the module tree below replaces
+the one this RFC originally shipped with.
+
 ```text
-crates/weebo-si-operator/src/
-├── lib.rs
-├── main.rs                        # composition root — the only place naming concrete adapters
-├── domain/
-│   ├── model/
-│   │   ├── feature.rs             # FeatureId, FeatureMode, FeatureOutcome
-│   │   ├── mutation.rs            # Mutation — typed. No JSON, no serde_json::Value.
-│   │   ├── workspace.rs           # the DevWorkspace in domain vocabulary: name, namespace, config_ref
-│   │   ├── dwoc.rs                # DwocRef, and the bounded view of a DWOC we read
-│   │   ├── namespace.rs           # NamespaceName, NamespaceFacts — labels and one annotation
-│   │   ├── selector.rs            # Selector: matchLabels + matchExpressions, over NamespaceFacts
-│   │   ├── team.rs                # TeamName, Team — chassis-level, shared by every feature
-│   │   └── catalog.rs             # CatalogKey, Catalog, Grant — and the resolution chain
-│   ├── feature/
-│   │   ├── mod.rs                 # the Feature trait and the registry
-│   │   └── dwoc_pin.rs            # the one implemented feature   <- where the tests are
-│   ├── error.rs                   # DomainError. Never kube::Error, never a HTTP status.
-│   └── port/
-│       ├── feature_gate.rs        # which features are active, in which mode, for which namespace
-│       ├── dwoc_catalog.rs        # does this DWOC reference resolve
-│       ├── namespace_view.rs      # the labels and the selection annotation of a namespace
-│       └── observer.rs            # counters and decision events
-├── application/
-│   ├── admit.rs                   # run the enabled features over one object, apply the mode
-│   └── reconcile_config.rs        # validate WeeboSiConfig, compute its status
-└── adapters/
-    ├── inbound/
-    │   ├── admission.rs           # axum: AdmissionReview -> domain -> JSON Patch -> AdmissionResponse
-    │   ├── controller.rs          # kube-runtime reconcile loops
-    │   └── cli.rs
-    └── outbound/
-        ├── kube_config_store.rs   # watch-backed WeeboSiConfig cache, implements FeatureGate
-        ├── kube_dwoc_store.rs     # watch-backed DWOC cache, implements DwocCatalog
-        ├── kube_ns_store.rs       # watch-backed Namespace cache, implements NamespaceView
-        └── prometheus.rs          # implements Observer
+crates/
+├── weebo-si-crd/               # the WeeboSiConfig CRD schema — kube-derive, k8s-openapi, schemars.
+│   └── src/                    # No kube::Client, no async, no network. The struct tree *is* the
+│       ├── spec.rs             # domain model here — see "A named exception" below.
+│       ├── dwoc_pin.rs          # Catalog, Grant, DwocPinConfig, ConfigViolation + validate()
+│       ├── selector.rs          # Selector — the CRD field's native type (see below)
+│       ├── team.rs / namespace.rs / dwoc.rs / feature_mode.rs
+│       └── lib.rs
+├── weebo-si-chassis/            # everything operator-wide that is NOT part of the CRD's wire shape.
+│   └── src/                     # Depends only on weebo-si-crd. No serde, no kube at all.
+│       ├── feature/              # Subject, Context, Feature<S>, Registry<S>, FeatureId, Decision<S>
+│       ├── port/                  # FeatureGate, DwocCatalog, NamespaceView, Observer + test fakes
+│       ├── mutation.rs             # Mutation — chassis-owned, grows one variant per feature's need
+│       ├── namespace_facts.rs       # NamespaceFacts — not CRD wire shape, a watch-cache projection
+│       ├── error.rs                  # DomainError
+│       └── admit.rs                   # mode application at the edge
+├── weebo-si-dwoc-pin/            # the one implemented feature. Depends on crd + chassis only —
+│   └── src/                       # fewest dependencies in the workspace, "tested exhaustively
+│       ├── resolve.rs              # without a cluster" taken as far as the crate graph allows.
+│       ├── workspace.rs             # Provenance/ResolutionStep/UnknownKey never cross into chassis.
+│       └── feature.rs                # DwocPin — Arc<RwLock<Option<DwocPinConfig>>>, hot-reloaded
+├── weebo-si-runtime/              # outbound adapters, shared by webhook and controller.
+│   └── src/                        # KubeConfigStore (FeatureGate), KubeDwocStore (DwocCatalog),
+│                                     # KubeNsStore (NamespaceView), PrometheusObserver (Observer)
+├── weebo-si-webhook/               # the axum admission adapter: AdmissionReview -> domain -> JSON Patch
+│   └── src/                         # router() is `pub`, so the envtest suite serves the exact
+│                                      # production wiring, not a test-only stand-in.
+├── weebo-si-controller/             # the WeeboSiConfig reconcile loop: validate, report status.
+│   └── src/                          # Depends only on crd — never chassis, reconcile touches no Feature<S>.
+└── weebo-si-operator/                # the bin — sole composition root, sole binary. CLI, boot,
+    └── src/                           # the static `features` registry, and wiring everything above.
 ```
 
-**The ports, in domain vocabulary.**
+`crates/weebo-si-envtest-support` (dev-only, `publish = false`) is not part of this tree — it is a
+shared test harness, not a layer, described under *Data and state* alongside the rest of this
+RFC's testing story.
+
+**The ports, in domain vocabulary — now `weebo-si-chassis/src/port/*.rs`.**
 
 ```rust
-// domain/port/feature_gate.rs
+// port/feature_gate.rs
 pub trait FeatureGate {
     fn mode(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode;
-    fn teams(&self) -> &[Team];   // ordered, chassis-level, shared by every feature
+    // Owned, not `&[Team]`: a live implementation reads this from behind a lock (WeeboSiConfig
+    // is hot-reloadable), and there is no lifetime a borrow could honestly carry across that.
+    fn teams(&self) -> Vec<Team>;
 }
 
-// domain/port/dwoc_catalog.rs
+// port/dwoc_catalog.rs
 pub trait DwocCatalog {
     fn resolves(&self, r: &DwocRef) -> bool;
 }
 
-// domain/port/namespace_view.rs
+// port/namespace_view.rs
 pub trait NamespaceView {
     fn facts(&self, ns: &NamespaceName) -> Option<NamespaceFacts>;
 }
 
-// domain/port/observer.rs
+// port/observer.rs
 pub trait Observer {
-    fn decided(&self, feature: FeatureId, outcome: &FeatureOutcome);
+    // `mode` is part of the record (`weebo_si_admission_requests_total{...,mode,...}`) even
+    // though the *feature* itself is never told it — Context excludes the port, not this call site.
+    fn decided(&self, feature: FeatureId, mode: FeatureMode, outcome: &FeatureOutcome);
 }
 ```
 
@@ -688,16 +707,19 @@ config" — the watch, the cache and the informer are the adapter's problem, and
 projection is bounded in the domain type, so the cache can drop the rest of a Namespace object
 and no later feature can quietly start depending on its `spec` or its `status`.
 
-**The one place the dependency rule bites.** A team's `namespaceSelector` is a
-`metav1.LabelSelector` in the CRD, and matching one is a `k8s-openapi` concern — but *choosing a
-team* is the decision itself, and the decision belongs to the domain. So the domain owns a
-small `Selector` over `NamespaceFacts::labels`, and the config adapter converts into it once at
-load rather than at every admission. Re-implementing `matchExpressions` is a genuine cost, paid
-for the resolution chain being exhaustively testable without a cluster; the conversion is the
-single place where a change in upstream selector semantics has to be tracked, and it is where
-that test lives.
+**The place the dependency rule used to bite no longer exists.** The original draft had a team's
+`namespaceSelector` re-implemented as a hand-rolled `Selector` in the domain, converted from
+`k8s-openapi`'s `LabelSelector` once at config-load time — the load-bearing reason being "matching
+a selector is a `k8s-openapi` concern, but choosing a team is the decision itself." Now that
+`weebo-si-crd` is a deliberate, named exception to "the domain never imports k8s-openapi" (see
+*Contract*, below), `Selector` simply *is* the CRD field's native type — `weebo-si-crd/src/selector.rs`,
+`#[derive(Serialize, Deserialize, JsonSchema)]`, matched directly against `NamespaceFacts::labels`.
+The conversion step is gone; what remains in its place is a wire-compatibility test
+(`selector::tests::wire_shape_matches_upstream_label_selector`) proving the hand-written type still
+serializes exactly like upstream's, which is where a drift in selector semantics would be caught
+now instead.
 
-**The feature trait, and the invariant.**
+**The feature trait, and the invariant — `weebo-si-chassis/src/feature/`.**
 
 ```rust
 pub trait Feature<S: Subject> {
@@ -707,36 +729,74 @@ pub trait Feature<S: Subject> {
 }
 ```
 
-The trait is generic over the admitted resource, so `Feature<Workspace>` and the future
+The trait is generic over the admitted resource, so `Feature<Workspace>` and a future
 `Feature<Pod>` are distinct instantiations with distinct registries — which is the type-level
 version of the "one endpoint per resource" rule, and the reason a feature cannot accidentally be
 registered against a resource it does not understand.
 
-`evaluate` takes no mode and returns no JSON. `application::admit` reads the mode from the gate,
-calls `evaluate` for every feature whose mode is not `Off`, and then — and only then — either
-renders the decision to a JSON Patch or throws it away and records it. **A feature cannot tell
-`DryRun` from `Enforce`, by construction.** This is what makes the shadow phase meaningful, and
-it is the reason the trait signature is worth pinning in a RFC.
+`evaluate` takes no mode and returns no JSON. `weebo_si_chassis::admit` reads the mode from the
+gate, calls `evaluate` for every feature whose mode is not `Off`, and then — and only then —
+either applies the decision or throws it away and records it. **A feature cannot tell `DryRun`
+from `Enforce`, by construction.** This is what makes the shadow phase meaningful, and it is the
+reason the trait signature is worth pinning in a RFC.
 
-`Decision` carries a `Vec<Mutation>`, an optional denial reason, and the **provenance** of the
-answer — which team matched, which catalogue key won, and at which step of the chain. The
-provenance is one value with three consumers: the audit annotation, the log line and the `team`
-metric label. Computing it once inside `evaluate` is what keeps those three from
-drifting apart, and it is also what makes `DryRun` worth reading, since the shadow run reports
-the same provenance the enforcing run would have applied. `Mutation` is a small typed enum
-(`SetConfigRef`, `Annotate`) rather than a patch fragment. Rendering it to RFC 6902 JSON
-Patch is `adapters/inbound/admission.rs`'s job, per the dependency rule: the domain does not
-import `k8s-openapi` and does not know what a JSON Pointer is.
+**`Decision`'s shape changed from the original draft, for a reason the single-crate layout hid.**
+`Registry<S>` holds `Vec<Box<dyn Feature<S>>>`, so every feature's `Decision<S>` has to share one
+shape *forever* — but the original wording ("`Decision` carries... the provenance of the answer —
+which team matched, which catalogue key won, and at which step of the chain") put dwoc-pin's own
+resolution-chain vocabulary (`ResolutionStep`, a resolved `CatalogKey`) inside a type the chassis
+owns. Once dwoc-pin became its own crate, that would have made the chassis crate depend on the
+feature crate that depends on the chassis crate — a cycle invisible in one crate, a compile error
+in seven. `Decision<S>` is narrowed to what is genuinely chassis-generic:
 
-**What is scaffolded but not implemented.** `adapters/inbound/controller.rs` ships with one
-reconcile loop — `WeeboSiConfig` → validate → status — and no other. `domain/feature/mod.rs`
-ships a registry with one entry, and `Feature<Pod>` has a registry with none. The named
-follow-ups in *Future work* are registry entries and `domain/feature/*.rs` modules that do not
-exist yet; the point of building the chassis now is that landing them touches no file outside
-`domain/feature/`, the generated CRD, and one line in the registry.
+```rust
+pub struct Decision<S> {
+    pub mutations: Vec<Mutation>,
+    pub denial: Option<String>,
+    pub team: Option<TeamName>,       // every feature has a notion of team
+    pub note: Option<String>,         // feature-rendered, opaque to the chassis
+    pub result: &'static str,         // already feature-chosen, per the paragraph below
+    _subject: PhantomData<S>,
+}
+```
 
-**Enforcement of the dependency rule** is by review, per `hexagonal.md`. The escape hatch, when
-`domain` starts importing adapter types, is promoting it to its own crate. Not preemptively.
+`team` stays because every feature routes through the same chassis-level teams. Anything more
+specific — dwoc-pin's resolved key, its resolution step — renders into `note` as a plain string
+before `evaluate` returns, applying the same principle this RFC already used for `result`: *"a
+feature-chosen label... not a fixed chassis enum, so a future feature's outcome vocabulary never
+has to fit dwoc-pin's."* The audit annotation, the log line and the `team` metric label are still
+computed from one value — `team` + `note` + `result` together, not one struct — so the "one
+value, three consumers" property holds, just not as a single field. `Mutation` stays
+chassis-owned, not dwoc-pin's: `weebo-si-webhook` renders *every* registered feature's mutations
+into one JSON Patch without importing every feature crate to do it, which only works if the enum
+lives where `Registry<S>`'s type erasure already lives — it grows one variant per feature's need,
+today just `SetConfigRef` and `Annotate`. Rendering `Mutation` to RFC 6902 JSON Patch is
+`weebo-si-webhook`'s job, per the dependency rule: the chassis does not import `k8s-openapi` or
+`serde_json` and does not know what a JSON Pointer is.
+
+**What is implemented, not scaffolded.** Unlike the original draft, the controller role, the
+webhook role and their outbound adapters are built, not stubbed: `weebo-si-controller` runs one
+reconcile loop — `WeeboSiConfig` → validate → status — end to end; `weebo-si-webhook` serves a
+real `AdmissionReview` handler a real `MutatingWebhookConfiguration` can call; `weebo-si-runtime`'s
+four adapters are watch-backed against a live cluster. What remains genuinely scaffolded: a
+`Feature<Pod>` registry (empty — no second admitted resource type yet), and the named follow-ups
+in *Future work*, which are new feature crates depending on `weebo-si-crd` + `weebo-si-chassis`,
+plus one registration line in `weebo-si-operator`'s composition root.
+
+**Enforcement of the dependency rule is now compiler-level, with one honest caveat.** `weebo-si-crd`
+never lists `axum`, `tokio`, `kube`'s `runtime`/`client` features, or a metrics crate as a
+dependency, under any build — that guarantee is unconditional, at the level of "which crates can
+be named at all," and it is what `hexagonal.md`'s "escape hatch: promote it to its own crate"
+now looks like in this codebase. `weebo-si-chassis` goes further: it depends on nothing but
+`weebo-si-crd`, so it cannot name `kube` even indirectly. The caveat is at the Cargo *feature*
+level, not the crate-dependency level: this repo's own `cargo test --workspace --all-features`
+convention unifies `kube`'s enabled features across every crate that depends on it at all in that
+one build — so `weebo-si-crd`'s own dependency on `kube` (`derive` only) could, under
+`--all-features`, be compiled with `client`/`runtime` symbols *available in the same build graph*
+even though `weebo-si-crd`'s own manifest never asked for them. That does not let `weebo-si-crd`'s
+*source* call a `kube::Client` method — it never imports the type — but it means "no crate ever
+sees a network-capable `kube` feature" is a property of *this crate's manifest*, not a property
+guaranteed of every possible build invocation. Worth stating plainly rather than oversold.
 
 ### Data and state
 
@@ -844,6 +904,16 @@ belongs in the Che namespace or the operator's own, and RBAC there is the thing 
 feature mean anything. A catalogue makes this both easier to get wrong and easier to check,
 since the list of namespaces to audit is written down in one place. The operator does not and
 cannot verify it; it is on the install checklist.
+
+**Who may author a catalogued entry, stated once.** The RFC does not mandate a single author.
+Eclipse Che already owns `devworkspace-operator-config`, the object the `baseline` entry names,
+and keeps doing so; a team-specific entry may instead be authored and reconciled by
+`weebo-si-operator` itself, as a later feature. Either is fine, because the property that matters
+is not *which* trusted party writes an entry but that the entry's author is never the team it is
+granted to. A catalogue entry authored by the team it constrains is the DWOC-override hole from
+*Motivation* recreated one layer up — the team would be handed the object the catalogue exists to
+take out of its hands. This is the one authorship rule the RFC does foreclose, and it belongs on
+the install checklist next to the RBAC requirement above.
 
 **Trust boundary.** Two inputs cross it. The `AdmissionReview` body is the untrusted one — any
 user able to create a DevWorkspace controls it — and namespace metadata is the
@@ -1108,9 +1178,23 @@ status, and `kubectl get weebosiconfig`.
 per object, N certificates, N things to roll. The multiplexed endpoint costs a stable ordering
 rule instead, which is one paragraph.
 
-**A separate `weebo-si-webhook` crate.** Rejected: the two roles share the domain, the registry
-and the config type. One crate, two subcommands, two Deployments — the split that matters is at
-deploy time, not at compile time.
+**A separate `weebo-si-webhook` crate.** Originally rejected: the two roles share the domain, the
+registry and the config type. **Reversed, precisely scoped, once the webhook and controller were
+actually built.** "Share the domain, the registry and the config type" turned out to be true and
+was kept true — `weebo-si-webhook` and `weebo-si-controller` both depend on `weebo-si-crd`, and
+`weebo-si-runtime`'s adapters are shared by both — but sharing a dependency is not the same as
+sharing a crate, and the reasoning for keeping them in one crate didn't survive contact with
+building both roles for real: nothing about the webhook needing `axum`+TLS or the controller
+needing `kube-runtime`'s reconcile machinery has anything to do with the domain they share, and
+bundling them meant every crate in the dependency graph — including the pure resolution logic —
+compiled with both roles' dependencies unified. The reversal is at the **library** level only:
+separate crates now exist so `cargo` enforces which one can see `kube::Client`, `axum`, or a
+metrics registry, and so each has its own envtest suite without the other's fixtures in scope.
+**"One binary, two Deployments" is unchanged** — `weebo-si-operator` remains the sole binary and
+the sole composition root; only the *library* split is new. Read this alongside *Cargo `[features]`
+instead of runtime flags* below, which this reversal does not touch: the split is a compile-time
+crate boundary for testability and dependency isolation, not a runtime feature flag, and every
+argument that entry makes against gating *behaviour* at compile time still holds.
 
 **Injecting the hardening into workspace pods instead** — the operator adding
 [RFC 0001](./0001-passwd-append.md)'s binary and entrypoint to pods that never opted in. Dropped
@@ -1177,18 +1261,25 @@ injection would duplicate work already done at build time for the images that ma
 
 ## Unresolved questions
 
-**Blocking acceptance:**
+**Resolved before acceptance:**
 
-- **The API group.** `hardening.weebo.io` assumes a domain we control. A group rename after the
-  CRD ships is a new CRD and a migration, so this is settled before the first `kubectl apply`,
-  not after.
-- **Where the catalogued DWOCs come from.** This RFC pins workspaces to catalogue entries and
-  says every one of them must live in a namespace users cannot write. It does not say who
-  authors those configs or what is in them — and with several of them, "who authors the GPU
-  team's config" is a question with a plausible answer of "the GPU team", which would defeat the
-  whole thing. If the answer is instead "the operator should own and reconcile them", that is a
-  second feature and changes the RBAC from read-only to writing DWOCs. Settled before
-  acceptance, even though it is not built here.
+- **The API group.** `hardening.weebo.io` is confirmed as a domain the project controls. No
+  change from the draft.
+- **Where the catalogued DWOCs come from.** Both authorship models named in the draft are
+  acceptable, and the RFC does not mandate one. Eclipse Che already owns and writes the
+  cluster's default `devworkspace-operator-config` — the object the `baseline` catalogue entry
+  names in every example above — so that entry keeps its existing author and this RFC changes
+  nothing about it. A team-specific entry (`gpu`, `amd`, ...) may instead be authored and
+  reconciled by `weebo-si-operator` itself; that is a second feature, not built here, and it
+  changes the webhook role's RBAC from read-only to writing DWOCs only when it ships. What the
+  RFC holds firm — because it is the property that makes cataloguing meaningful at all, per
+  *Security considerations* — is who must **not** author a catalogued entry: the team it is
+  granted to. "The GPU team writes its own catalogued GPU config" is the one authorship model
+  this RFC forecloses, since that is a workspace owner authoring the object meant to constrain
+  them, which is the same hole *Motivation* describes for the DWOC-override attribute, one layer
+  up. Every catalogued entry is written by Eclipse Che, by `weebo-si-operator`, or by a cluster
+  admin directly — never by the namespace or team it is bound to. This is now stated as a rule in
+  *Security considerations* rather than left to the install checklist alone.
 
 **Not blocking:**
 
@@ -1242,53 +1333,204 @@ injection would duplicate work already done at build time for the images that ma
 
 ## Implementation plan
 
-- [ ] `crates/weebo-si-operator` scaffold: workspace member, inherited lints, the hexagonal
-      module tree above with empty `domain`/`application`/`adapters`
-- [ ] `domain/model` — `FeatureId`, `FeatureMode`, `Mutation`, `Decision` with its provenance,
-      `Workspace`, `DwocRef`, `NamespaceFacts`, `CatalogKey`, `Catalog`, `Binding`, `Selector`,
-      `DomainError`. Pure, no `kube`, no `k8s-openapi`
-- [ ] `domain/model/selector.rs` — `matchLabels` and `matchExpressions` matching, tested against
-      the upstream semantics table including the empty-selector-matches-everything case
-- [ ] `domain/model/catalog.rs` — the four-step resolution chain as one pure function, table
-      tested: no team, first-of-two teams, allowed attribute kept, disallowed attribute
-      replaced, annotation inside and outside `allowed`, both `onUnknownKey` values
-- [ ] `domain/port` — `FeatureGate`, `DwocCatalog`, `NamespaceView`, `Observer`, with in-memory
-      fakes in `#[cfg(test)]`
-- [ ] `domain/feature/mod.rs` — the `Feature<S>` trait and the per-subject registries, plus the
-      test asserting `evaluate` cannot observe its mode
-- [ ] `WeeboSiConfig` CRD types with `kube-derive`, and `task recu` generating the CRD YAML the
-      way it already generates the RFC index
-- [ ] `application/admit.rs` — mode application at the edge, feature ordering, denial handling
-- [ ] `domain/feature/dwoc_pin.rs` — the five-outcome decision table over the resolved entry,
-      `onMissingTarget`, and the annotation grammar, table-tested exhaustively
-- [ ] `adapters/inbound/admission.rs` — `AdmissionReview` in, JSON Patch out, one round-trip test
-      per direction proving the translation is faithful, including the escaping of `/` and `~`
-      in the attribute key's JSON Pointer
-- [ ] `adapters/outbound/kube_dwoc_store.rs`, `kube_config_store.rs` and `kube_ns_store.rs` —
-      watch-backed caches, the last one projecting to `NamespaceFacts` on the way in
-- [ ] The `LabelSelector` → `Selector` conversion at config load, with the round-trip test that
-      is the only guard against drifting from upstream selector semantics
-- [ ] `adapters/outbound/prometheus.rs`
-- [ ] `adapters/inbound/controller.rs` — the `WeeboSiConfig` reconcile and its status, with
-      leader election, including catalogue validation: duplicate keys, `default` absent from the
-      catalogue, an empty or dangling `allowed`, a grant `default` outside its own `allowed`, a
-      grant naming an undeclared team, each a `Degraded` condition naming the grant
-- [ ] Idempotence tests: a second pass over an already-pinned workspace produces an empty patch;
-      a `spec.started` toggle on a pinned workspace produces an empty patch
-- [ ] Logging audit: assert no call site can emit a DevWorkspace template, its attributes or its
-      environment variables
-- [ ] Manifests: RBAC, Deployment ×2 with `maxUnavailable: 0`, PDB, Service,
-      `MutatingWebhookConfiguration`, serving certificate for both OpenShift and cert-manager
-- [ ] Containerfile with a multi-stage build, and `task audit` covering the crate
-- [ ] End-to-end suite against a real apiserver: install, `Off` → `DryRun` → `Enforce`, a
-      namespace in no team, a namespace in two teams taking the first, an annotation
-      moving a namespace inside its `allowed` set, an annotation naming another team's key under
-      both `onUnknownKey` values, an allowed reference kept, a missing entry under both
-      `onMissingTarget` values, and the break-glass
-- [ ] Docs: install and rollout runbook in `docs/`, including the un-pin loop and the
-      break-glass, the RBAC requirement on every catalogued namespace, and who is permitted to
-      label and annotate a workspace namespace
-- [ ] RFC flipped to `Implemented`
+Rewritten to the seven-crate layout (see *Architecture*'s amendment) and checked off against
+what actually landed. Items still open are named, not silently dropped.
+
+- [x] Workspace scaffold: `weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`,
+      `weebo-si-runtime`, `weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator` as
+      workspace members, inherited lints, one dependency direction
+      (`crd ← chassis ← dwoc-pin`, `runtime`/`webhook`/`controller` ← `operator`)
+- [x] `weebo-si-crd`: `WeeboSiConfig` (kube-derive), `FeatureId`/`FeatureMode`, `Mutation`
+      (moved to chassis — see below), `DwocRef`, `NamespaceFacts` (moved to chassis),
+      `CatalogKey`/`Catalog`/`Grant` (renamed from the checklist's `Binding`, matching the rest
+      of the RFC), `Selector` (now the CRD-native type, not a converted one), `DomainError`
+      (moved to chassis)
+- [x] `weebo-si-crd/src/selector.rs` — `matchLabels`/`matchExpressions` matching, tested against
+      the upstream semantics table including the empty-selector-matches-everything case, plus a
+      wire-compatibility round-trip test (replacing the now-deleted load-time conversion)
+- [x] `weebo-si-dwoc-pin/src/resolve.rs` — the four-step resolution chain as one pure function,
+      table tested: no team, first-of-two teams, a team with no grant, allowed attribute kept,
+      disallowed/uncatalogued attribute replaced, annotation inside and outside `allowed`, both
+      `onUnknownKey` values, step 2 outranking step 3
+- [x] `weebo-si-chassis/src/port/` — `FeatureGate`, `DwocCatalog`, `NamespaceView`, `Observer`,
+      with in-memory fakes gated behind a `testing` Cargo feature so feature crates can reuse
+      them in their own tests
+- [x] `weebo-si-chassis/src/feature/` — the `Feature<S>` trait and per-subject `Registry<S>`,
+      plus the test asserting `evaluate` cannot observe its mode (structural: `Context` excludes
+      `&dyn FeatureGate` entirely) and `admit()`'s test proving `DryRun`/`Enforce` produce
+      identical `FeatureOutcome`s
+- [x] `WeeboSiConfig` CRD types with `kube-derive`, and `task recu` generating the CRD YAML via
+      `weebo-si-operator crd`, the way it already generates the RFC index
+- [x] `weebo-si-chassis/src/admit.rs` — mode application at the edge, feature ordering, denial
+      handling
+- [x] `weebo-si-dwoc-pin/src/feature.rs` — the five-outcome decision table over the resolved
+      entry, `onMissingTarget`, and the annotation grammar, table-tested exhaustively, including
+      the `Arc<RwLock<Option<DwocPinConfig>>>` hot-reload path
+- [x] `weebo-si-webhook/src/{extract,render,router}.rs` — `AdmissionReview` in, JSON Patch out
+      via the `json-patch` crate (not hand-rolled), unit tests per direction, `router()` exposed
+      `pub` so the envtest suite serves the exact production wiring
+- [x] `weebo-si-runtime/src/{config_store,dwoc_store,ns_store,prometheus}.rs` — watch-backed
+      caches (`kube-runtime`'s `reflector`), the namespace one projecting to `NamespaceFacts` on
+      the way in
+- [x] `weebo-si-controller/src/reconcile.rs` — the `WeeboSiConfig` reconcile and its status,
+      including catalogue validation: duplicate keys, `default` absent from the catalogue, an
+      empty or dangling `allowed`, a grant `default` outside its own `allowed`, a grant naming
+      an undeclared team, each a `Degraded` condition naming the grant
+- [x] `weebo-si-envtest-support` (dev-only) — a real ephemeral `etcd` + `kube-apiserver`, ported
+      from `batleforc/proxyauthk8s`'s harness, plus the webhook-specific extension (self-signed
+      TLS, a real `MutatingWebhookConfiguration`) three suites below share
+- [x] `task envtest:setup`/`:run` and a dedicated `envtest.yaml` CI workflow, `REQUIRE_ENVTEST=1`
+      gated so a broken setup fails CI instead of skipping silently
+
+**Envtest scenario checklist.** The harness above is infrastructure; this is the specification —
+every scenario the three suites should prove against a real apiserver, independent of how many
+happen to be written today. 21 tests across the three suites now cover it (5 in
+`weebo-si-crd/tests/envtest.rs`, 5 in `weebo-si-controller/tests/envtest.rs`, 11 in
+`weebo-si-webhook/tests/envtest.rs`), all run live against a real ephemeral `etcd` +
+`kube-apiserver` (`KUBEBUILDER_ASSETS=... REQUIRE_ENVTEST=1 cargo test --workspace --features
+envtest --test envtest`). Two items remain a named gap, not an oversight — the boot-only
+hot-reload caveat just above and the logging audit just below — plus the deployment-artifacts
+work at the end of this plan, none of it envtest-shaped.
+
+`weebo-si-crd`:
+
+- [x] The generated CRD (`weebo-si-crd`'s own `WeeboSiConfig::crd()`, not a hand-copied YAML) is
+      accepted by a real apiserver
+- [x] `spec.features: {}` is accepted — installing the operator changes nothing
+- [x] A `dwocPin` block missing `mode` is rejected by the apiserver's own OpenAPI validation
+- [x] A well-formed `dwocPin` block round-trips
+- [x] `spec.teams` and `grants` round-trip with their `matchExpressions` forms intact — the
+      `Selector` wire-compatibility claim, now proven live too
+      (`teams_with_match_expressions_round_trip`), not only by
+      `selector::tests::wire_shape_matches_upstream_label_selector` at the unit level
+
+`weebo-si-controller`:
+
+- [x] A grant naming an undeclared team is reported `Degraded`, naming the grant, via a real
+      status patch
+- [x] A well-formed configuration is reported `Ready` and the feature `Active`
+- [x] Every other `validate()` violation (duplicate keys, `default` absent from the catalogue, an
+      empty or dangling `allowed`, a grant default outside its own `allowed`) reaches
+      `status.conditions` the same way (`every_validate_violation_reaches_status`)
+- [x] A `WeeboSiConfig` under any name but `cluster` is ignored and reported `Degraded` on the
+      object (`a_config_under_the_wrong_name_is_reported_degraded`)
+- [x] `mode: Off` → `DryRun` → `Enforce` transitions are reflected in `status.features[].state`
+      across repeated reconciles, with no restart
+      (`mode_transitions_are_reflected_in_status_across_reconciles`)
+
+`weebo-si-webhook`:
+
+- [x] A `DevWorkspace`-shaped object is pinned end to end: the attribute *and* the audit
+      annotation, through a real `MutatingWebhookConfiguration` calling back into a real running
+      webhook
+- [x] `failurePolicy: Fail` fails closed — an unreachable webhook refuses admission rather than
+      silently passing the object through
+- [x] The other four of the five decision-table outcomes, live: `already_pinned`
+      (`a_started_toggle_on_an_already_pinned_workspace_is_a_no_op`), `allowed_override` and
+      `replace` (`team_grants_drive_allowed_override_and_replaced_live`), `target_missing` under
+      both `onMissingTarget` values (`on_missing_target_skip_admits_unmutated_live`,
+      `on_missing_target_deny_refuses_admission_live`)
+- [x] `mode: DryRun` observed live: the audit annotation and the attribute are *not* patched
+      (`dry_run_mode_leaves_the_devworkspace_unmutated`) — metrics still only assert the outcome
+      is *decided* identically to `Enforce` (proven at the unit level in `admit::tests`); no
+      envtest yet scrapes `weebo_si_admission_requests_total` itself
+- [x] Two teams matching the same namespace, first declared wins
+      (`two_teams_matching_the_same_namespace_the_first_declared_wins_live`)
+- [x] A namespace annotation moving a workspace inside its team's `allowed` set, live
+      (`a_namespace_annotation_inside_the_allowed_set_is_honoured_live`)
+- [x] Both `namespaceSelection.onUnknownKey` values, live — `Deny`
+      (`on_unknown_key_deny_refuses_admission_live`); `Default` is the implicit path every other
+      scenario in this suite already exercises (annotation absent or resolvable falls through it)
+- [x] A `spec.started` toggle on an already-pinned workspace produces an empty patch
+      (`a_started_toggle_on_an_already_pinned_workspace_is_a_no_op`)
+- [x] The `devworkspaces` vs `devworkspaces/status` rule-matching split: patching only `status`
+      leaves the audit annotation untouched (`a_status_only_update_bypasses_the_webhook_live`)
+- [x] **Leader election for the controller role.** `weebo-si-controller::run` now takes an
+      `Option<LeaderElection>`; when set, it races the reconcile loop against a `LeaseLock`
+      (`kube-leader-election`, renewed every 5s) and `reconcile()` short-circuits with a requeue
+      while not holding the lease. `weebo-si-operator controller --leader-election` opts in,
+      naming the lease from `POD_NAMESPACE`/`HOSTNAME`.
+- [x] **The `namespaceSelector` per-feature rollout knob.** `KubeConfigStore::mode()` now checks
+      the feature's `namespaceSelector` against the requesting namespace's live
+      `NamespaceFacts` before reporting a mode, so *"one namespace, real pins"* can be scoped to
+      a pilot label without touching `mode` itself.
+- [x] **`namespaceSelection.annotation` hot-reloads.** `KubeNsStore` now reads the annotation key
+      from an `Arc<RwLock<String>>` the config-cache adapter writes on every config change
+      (`config_store.rs`'s `apply_config`), instead of a value fixed at boot.
+- [x] **A `spec.features.dwocPin` block added after boot is observed by an already-running
+      webhook pod, with no restart, including the narrow "never configured at all, then
+      configured" transition.** This checklist previously named that one transition as a known
+      restart-required gap; re-reading `webhook_cmd.rs` against a live test
+      (`a_dwoc_pin_block_added_after_boot_is_observed_without_a_restart`) shows the gap does not
+      exist — `DwocPin` is registered in the `Registry` unconditionally at boot, sharing the
+      *same* `Arc<RwLock<Option<DwocPinConfig>>>` the config-cache adapter writes, regardless of
+      whether `spec.features.dwocPin` is present yet. `FeatureGate::mode` simply reports `Off`
+      (so `evaluate()` is never called) until the block exists, and reports whatever the block
+      says the instant a sync applies it — no special-casing of "never configured" as a state a
+      `Registry<S>` built once at boot cannot leave. The earlier bullet was a stale claim, not a
+      verified one; corrected here rather than left to accumulate as inherited "fact."
+- [x] `weebo_si_admission_duration_seconds` (`WebhookMetrics`, a histogram keyed by
+      `feature`/`resource`), `weebo_si_feature_mode`, `weebo_si_dwoc_pin_catalog_entries` and
+      `weebo_si_config_observed_generation` (`KubeConfigStore`'s private `Metrics`, updated on
+      every `apply_config`) are now emitted, alongside the pre-existing
+      `weebo_si_admission_requests_total`/`weebo_si_dwoc_pin_total` from `Observer::decided`.
+- [x] Idempotence tests against a real apiserver: a second admission of an already-pinned
+      workspace produces an empty patch; a `spec.started` toggle on a pinned workspace produces
+      an empty patch (both covered by `a_started_toggle_on_an_already_pinned_workspace_is_a_no_op`)
+- [x] Logging audit: assert no call site can emit a DevWorkspace template, its attributes or its
+      environment variables. Closed a real gap, not a documentation one — before this pass the
+      webhook computed a decision and recorded it to `Observer` but never actually logged it, so
+      the *Security considerations* claim ("Logs carry the namespace, the workspace name, the
+      current and target references and the decision — never the object") described behaviour
+      that did not exist yet. `weebo-si-webhook/src/router.rs`'s `log_admission` now prints
+      exactly that — namespace, workspace name, current and target `DwocRef`s, allow/deny — from
+      a signature with no parameter that could carry the object through. Enforced two ways: the
+      type signature itself, and a regression test
+      (`the_admitted_objects_data_field_is_read_in_exactly_one_place`) asserting the admitted
+      object's data field is read in exactly one place in the whole file, the JSON Patch render
+      call, so a future call site cannot silently start logging it.
+- [x] `crates/weebo-si-operator/deploy/crd.yaml` — generated from `weebo-si-crd`'s Rust types via
+      `weebo-si-operator crd`, the way the RFC index is generated: `task recu` regenerates it
+      whenever `crates/weebo-si-crd` is part of the staged commit (`scripts/crd-regen.sh`), and
+      `task lint`'s `crd:check` step fails a commit where it has drifted — the same
+      generate-and-verify pairing as the RFC index, applied to the one manifest generated from
+      code rather than hand-written
+- [x] The rest of the manifests, hand-written under `crates/weebo-si-operator/deploy/`, joining
+      `crd.yaml`: `namespace.yaml` (pre-labelled `hardening.weebo.io/exclude`), `rbac.yaml` (two
+      `ServiceAccount`s — webhook and controller kept separate so the role an untrusted
+      `AdmissionReview` reaches never holds the `weebosiconfigs/status` write — plus a namespaced
+      `Role`/`RoleBinding` for the leader-election lease, an addition beyond this RFC's original
+      RBAC table, called out in the file's own comment), `deployment.yaml` (both Deployments, two
+      replicas each, pod anti-affinity across nodes, `strategy.rollingUpdate.maxUnavailable: 0`
+      on the webhook Deployment), `pdb.yaml` (`maxUnavailable: 0` for the webhook, `minAvailable:
+      1` for the controller), `service.yaml` (the webhook `Service` plus a shared `/metrics`
+      one), and both serving-certificate variants —
+      `mutatingwebhookconfiguration-openshift.yaml` (the RFC's own example, verbatim) and
+      `mutatingwebhookconfiguration-cert-manager.yaml` plus `certificate-cert-manager.yaml` (a
+      self-signed `Issuer` an install can swap for a cluster CA).
+- [x] Containerfile with a multi-stage build (`crates/weebo-si-operator/Containerfile`, the same
+      musl-build-then-`scratch` shape as `bins/preauth-proxy/Containerfile`, a static-PIE
+      assertion included), and `task audit` covering every new crate — not automatic: fixed three
+      real failures the restructure introduced (an unmaintained `rustls-pemfile` pulled in by
+      `axum-server` 0.7, fixed by upgrading to 0.8, which drops it entirely; every new crate's
+      internal path dependency missing the `version =` `cargo-deny`'s `wildcards = "deny"`
+      requires; and `webpki-root-certs`/`webpki-roots`' `CDLA-Permissive-2.0` license, added to
+      `deny.toml`'s allow-list with a comment on why it is data, not code, and permissive either
+      way) plus a per-brick CI workflow, `build-weebo-si-operator.yaml`, mirroring
+      `build-preauth-proxy.yaml`'s pattern against the reusable `brick.yaml` — its `paths:` filter
+      lists all seven `weebo-si-*` library crates that link into the one binary, not only
+      `crates/weebo-si-operator/` itself.
+- [x] Docs: install and rollout runbook, `docs/bricks/weebo-si-operator.md` — the manifest
+      apply order, the pre-`WeeboSiConfig` checklist (RBAC on every catalogued namespace, who may
+      author a catalogued entry, who may label and annotate a workspace namespace), the five-step
+      rollout with a worked `WeeboSiConfig` example, the three-level rollback including the
+      un-pin `kubectl` loop, and the exact shape of the decision log line the *Reading the logs*
+      section above documents.
+- [x] RFC flipped to `Implemented`. Every checklist item above is either done or is a named,
+      permanent property rather than a gap: `weebo-si-crd`'s Cargo-feature-unification caveat
+      (*Architecture*), and exit code `3` not yet being a code path any binary returns (noted in
+      the brick page's *Known limitations*) are both documented, neither blocks production use,
+      and neither is expected to close without a reason to reopen this RFC.
 
 ## References
 
@@ -1320,5 +1562,9 @@ injection would duplicate work already done at build time for the images that ma
 
 | Date | Change |
 | --- | --- |
+| 2026-08-24 | **Flipped to `Implemented`.** Closed everything the entry below left open: 12 more `weebo-si-webhook` envtest scenarios (already-pinned idempotence, `allowed_override`/`replaced` against a real grant, both `onMissingTarget` values, two-teams-first-match, a namespace annotation inside the allowed set, `onUnknownKey: Deny`, the `devworkspaces`/`devworkspaces/status` split, and — while re-verifying an existing "known limitation" claim rather than taking it on faith — a test proving a `dwocPin` block added after boot needs no restart, which turned out to already work and corrected a stale bullet in this same checklist that said otherwise); a real decision-logging call site plus a regression test pinning it to one read of the admitted object (`router.rs`'s `log_admission`), closing the logging audit item, which previously had nothing to audit because nothing logged a decision at all; every deployment manifest under `crates/weebo-si-operator/deploy/` (namespace, RBAC for both roles plus the leader-election lease, both Deployments, both PodDisruptionBudgets, both Services, and OpenShift/cert-manager `MutatingWebhookConfiguration` variants); a multi-stage Containerfile; a per-brick CI workflow; and the install/rollout runbook, `docs/bricks/weebo-si-operator.md`. `task audit` needed three real fixes along the way, not just new coverage: `axum-server` 0.7 pulled in an unmaintained `rustls-pemfile` (upgraded to 0.8, which drops it), every internal path dependency was missing the `version =` `cargo-deny`'s `wildcards = "deny"` requires, and `webpki-root-certs`'s `CDLA-Permissive-2.0` license needed adding to the allow-list. Two things are named as permanent rather than closed: `weebo-si-crd`'s Cargo-feature-unification caveat, and exit code `3` not yet being a code path any binary returns. |
+| 2026-08-24 | **Closed most of the "did not get built in the same pass" list from the entry below.** Leader election (a `LeaseLock`-backed race against the reconcile loop, opt-in via `weebo-si-operator controller --leader-election`), the per-feature `namespaceSelector` rollout knob (`KubeConfigStore::mode()` now checks it against the requesting namespace before reporting a mode), and `namespaceSelection.annotation` hot-reload (`KubeNsStore` now reads it from an `Arc<RwLock<String>>` the config-cache adapter writes) are all implemented. All six observability-contract metrics now have a code path: `weebo_si_admission_duration_seconds` via a new `WebhookMetrics`, `weebo_si_feature_mode`/`weebo_si_dwoc_pin_catalog_entries`/`weebo_si_config_observed_generation` via `KubeConfigStore`'s own `Metrics`, alongside the pre-existing `weebo_si_admission_requests_total`/`weebo_si_dwoc_pin_total`. `task recu` gained a conditional CRD-regeneration step (`scripts/crd-regen.sh`): `crates/weebo-si-crd` staged → `crd.yaml` regenerates automatically, and `task lint`'s new `crd:check` fails a commit where it has drifted — the same generate-and-verify pairing the RFC index already uses. The envtest scenario checklist grew from 8 tests to 21 (5 crd, 5 controller, 11 webhook), closing every scenario previously named as a known gap except the boot-only "feature never configured, then configured" hot-reload caveat and the logging audit, both still open. Still entirely unstarted: the deployment manifests (RBAC, Deployment ×2, PDB, Service, `MutatingWebhookConfiguration`, serving certificate), the Containerfile, `task audit` coverage for the new crates, and the install/rollout runbook — so the RFC stays `Accepted`, not `Implemented`. |
+| 2026-08-24 | **Restructured from one crate into seven** (`weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`, `weebo-si-runtime`, `weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator`), reversing this RFC's own "A separate `weebo-si-webhook` crate" rejection at the library level (the binary/Deployment contract is unchanged) — modeled on `batleforc/proxyauthk8s`'s crate-per-concern workspace, adopted so the dependency rule `hexagonal.md` calls for is enforced by `cargo` rather than by review. Two corrections fell out of actually building the webhook and the controller against the new boundaries, not from the restructuring itself: `Decision<S>`'s provenance is narrowed to `team`+`note` (a per-feature provenance struct would have made the chassis crate depend on the feature crate that depends on the chassis crate — invisible in one crate, a compile error in seven), and `Selector` is now the CRD field's native type instead of a converted one, deleting the load-time conversion step this RFC previously specified. **Also delivered in the same pass**: real (not scaffolded) `weebo-si-webhook` and `weebo-si-controller` implementations, and an **envtest tier** — a real ephemeral `etcd`+`kube-apiserver`, ported from `batleforc/proxyauthk8s`'s own envtest harness — proving against a live apiserver that the generated CRD is accepted, that a malformed `WeeboSiConfig` is reported `Degraded`, and, hardest of the three, that a real `MutatingWebhookConfiguration` calling back into a real running webhook actually pins a `DevWorkspace`-shaped object end to end and that `failurePolicy: Fail` fails closed when the webhook is unreachable. What did not get built in the same pass is named directly in the *Implementation plan*'s now-checked/unchecked split, not left implicit: leader election, the per-feature `namespaceSelector` rollout knob, hot-reloading `namespaceSelection.annotation` itself, four of the six observability-contract metrics, and the deployment-facing items (manifests, Containerfile, docs runbook) all remain open. |
+| 2026-08-24 | Both items under *Unresolved questions* blocking acceptance are resolved. The API group, `hardening.weebo.io`, is confirmed. Catalogued DWOC authorship is not restricted to one party — Eclipse Che keeps authoring the `baseline` entry it already owns, and `weebo-si-operator` may author team-specific entries as a later feature — but a catalogued entry must never be authored by the team it is granted to, which is stated as a rule under *Security considerations*. |
 | 2026-08-24 | Amended before review, a second time and in the same revision: **teams are hoisted into the chassis.** `spec.teams` holds `{name, namespaceSelector}` once for the whole operator, ordered and first-match-wins, and each feature declares what a team gets under its own `grants` map keyed by team name. The trigger was sketching a second feature — network policy profiles, RFC 0004 — against the shape below and finding it would carry a second copy of every team's selector. Two features disagreeing about who team-1 is, both individually valid, with nothing reporting the divergence, is a failure mode a security control cannot have. The cost is stated under *Drawbacks* and is real: teams become a shared contract, so re-labelling a namespace moves it for every feature at once, and per-feature routing rollout is gone — `namespaceSelector`, which was designed for that, remains. The rejected shape is kept under *Alternatives considered*. |
 | 2026-08-24 | Amended before review: `dwoc-pin` gains a **catalogue and per-team grants** in place of a single `target` plus a flat `allowedOverrides` list. The trigger was a requirement the old shape could not express — team 1 reaches only the GPU config and defaults to it, team 2 defaults to the baseline and may also reach AMD — and the reason the old shape could not is worth recording: `allowedOverrides` was an allow-list of *references*, so an entitlement could only be exercised by every workspace of a team asking for it, one workspace at a time. It had no notion of a default per team, which is the thing an admin wants to set. The new shape is a closed catalogue of admin-authored DWOCs keyed by a short identifier, a per-team grant of a subset with a default inside it, and a namespace annotation choosing within that subset. Three consequences the design had to absorb. **A third watch**, on `namespaces`, which is the first RBAC grant in this brick reaching outside two niche CRDs — bounded in the cache by a `NamespaceFacts` projection, not at the apiserver, and `/readyz` now waits for it. **Namespace metadata becomes security-relevant**: a label routes and an annotation selects, so "who may edit a Namespace" moved onto the install checklist, with `namespaceSelection.annotation: ""` as the one-line way to remove the annotation half where the answer is wrong. The containment argument is that the catalogue is *closed* — every path through the resolution chain ends on a catalogued entry, a workspace attribute is only ever kept and never adopted — so delegating the choice to a namespace is a downgrade within an admin-authored set, never an escape from it. And **the controller earns its keep**: duplicate keys, dangling keys and a grant default outside its own `allowed` are reconcile-time `Degraded` conditions, where before its only job was copying `spec` into `status`. One question was raised and settled while writing this: whether step 2 of the chain should exist at all — whether a workspace may keep a reference its team is granted, or whether a namespace runs exactly one configuration and the attribute is always replaced. **It exists.** Che gives each user their own namespace, so *namespace* and *user* are the same scope here, and the strict reading would let a developer run exactly one configuration across all of their workspaces — worse than the upstream behaviour this RFC constrains. The chain therefore reads as three nested scopes, team by label, user by annotation, workspace by attribute, most specific winning; `allowed` is what keeps the most specific level from being a hole. The rejected reading is kept under *Alternatives considered* with its premise attached, because a Che topology where namespaces belong to teams rather than to people would decide it the other way. |

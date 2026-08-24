@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weebo-si-operator.webhookServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+  {{- if eq .Values.certificates.provider "openshift" }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ include "weebo-si-operator.tlsSecretName" . }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.webhook.service.port }}
+      targetPort: {{ .Values.webhook.service.targetPort }}
+{{- if .Values.metrics.service.enabled }}
+---
+# `/metrics` for both roles, one Service so a single ServiceMonitor/scrape config covers both —
+# selects on `app.kubernetes.io/name`+`instance` alone, no `component` label, which is the two
+# labels every pod this chart renders shares.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "weebo-si-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-metrics
+      port: {{ .Values.metrics.service.port }}
+      targetPort: {{ .Values.metrics.service.port }}
+{{- end }}

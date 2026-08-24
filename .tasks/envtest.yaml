@@ -1,0 +1,48 @@
+version: "3"
+
+# envtest runs a real, ephemeral kube-apiserver backed by etcd. It covers what a mock cannot:
+# CRD admission against the actual generated schema, a live MutatingWebhookConfiguration
+# actually calling back into a locally running weebo-si-webhook, and the controller's status
+# writes actually landing.
+#
+# Binaries live under ENVTEST_DIR (default ~/.local/share/kubebuilder-envtest) and are
+# downloaded once. Every envtest suite is behind its crate's `envtest` Cargo feature, so a plain
+# `task test` / `cargo test` never needs the binaries.
+
+vars:
+  ENVTEST_K8S_VERSION: '{{ .ENVTEST_K8S_VERSION | default "1.32.0" }}'
+  ENVTEST_DIR: '{{ .ENVTEST_DIR | default (printf "%s/.local/share/kubebuilder-envtest" .HOME) }}'
+
+tasks:
+  setup:
+    desc: "Download the kube-apiserver and etcd binaries used by the envtest suites"
+    silent: true
+    status:
+      - test -x "{{ .ENVTEST_DIR }}/kube-apiserver"
+      - test -x "{{ .ENVTEST_DIR }}/etcd"
+    cmds:
+      - echo "Fetching envtest binaries for Kubernetes {{ .ENVTEST_K8S_VERSION }}"
+      - mkdir -p "{{ .ENVTEST_DIR }}"
+      - |
+        curl -sSL -o /tmp/envtest.tar.gz \
+          "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{{ .ENVTEST_K8S_VERSION }}/envtest-v{{ .ENVTEST_K8S_VERSION }}-linux-amd64.tar.gz"
+      - tar xzf /tmp/envtest.tar.gz -C "{{ .ENVTEST_DIR }}" --strip-components=2
+      - rm -f /tmp/envtest.tar.gz
+      - echo "envtest binaries installed in {{ .ENVTEST_DIR }}"
+  clean:
+    desc: "Remove the downloaded envtest binaries"
+    silent: true
+    cmds:
+      - rm -rf "{{ .ENVTEST_DIR }}"
+  run:
+    desc: "Run every envtest suite against a real ephemeral kube-apiserver"
+    silent: true
+    deps:
+      - setup
+    env:
+      KUBEBUILDER_ASSETS: "{{ .ENVTEST_DIR }}"
+    cmds:
+      - echo "Running the envtest suites"
+      # Serialised: each test owns an apiserver, and running several at once only multiplies
+      # the memory footprint for no wall-clock gain.
+      - cargo test --workspace --features envtest --test envtest -- --test-threads=1

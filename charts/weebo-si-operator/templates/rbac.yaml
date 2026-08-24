@@ -1,0 +1,119 @@
+{{- if .Values.rbac.create }}
+# RFC 0002's Security considerations: "The webhook role needs, cluster-wide: get, list, watch on
+# weebosiconfigs / devworkspaceoperatorconfigs / namespaces ... and the controller role adds
+# update and patch on weebosiconfigs/status, plus create on events." Shared by both
+# ServiceAccounts, never granted through one combined role — the webhook role, the one an
+# untrusted AdmissionReview body reaches, never holds the write permission only the controller
+# needs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-watch
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebosiconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["controller.devfile.io"]
+    resources: ["devworkspaceoperatorconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-webhook-watch
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "weebo-si-operator.fullname" . }}-watch
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.webhookServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-watch
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "weebo-si-operator.fullname" . }}-watch
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# What only the controller role adds — "It has no permission on DevWorkspaces at all — not even
+# read," and it has none here either.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-status
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebosiconfigs/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-status
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-status
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.controller.leaderElection }}
+---
+# The leader-election lease — namespaced, not part of RFC 0002's original three-row RBAC table
+# (added after the RFC's original acceptance, alongside `--leader-election` itself). A lease is
+# per-namespace by construction and the controller only ever takes one, in its own namespace, so
+# this stays a Role/RoleBinding rather than a ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-lease
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-lease
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-lease
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

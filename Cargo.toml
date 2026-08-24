@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-# Cargo rejects a glob that matches nothing, so `crates/*` joins this list the moment
-# RFC 0002's operator lands and the directory has a real member.
-members = ["bins/*"]
+# bins/ — simple binaries, no ports, no adapters. crates/ — hexagonal bricks. See
+# docs/architecture/repo-layout.md for the split.
+members = ["bins/*", "crates/*"]
 
 [workspace.package]
 edition = "2024"
@@ -35,15 +35,71 @@ tokio = { version = "1.48", features = [
   "sync",
   "signal",
   "io-util",
+  # kube-runtime's watcher backoff/retry timers.
+  "time",
 ] }
 
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 # YAML, chosen for the panic-free parsing it advertises: the config is the one file an operator
 # hand-writes, and `panic = "deny"` means a malformed document has to be an error value.
 serde_yaml_bw = "2.5"
 
+# weebo-si-operator's Kubernetes surface. `default-features = false` at the workspace level so
+# each crate opts into exactly what it needs: weebo-si-crd takes only `derive` (the
+# CustomResource macro and its ::crd() -> k8s-openapi type), weebo-si-webhook takes only
+# `admission` (AdmissionReview), weebo-si-runtime/weebo-si-controller take `client`+`runtime`.
+# This is a convention enforced at the crate-dependency level (weebo-si-crd never lists `axum`,
+# `tokio`, or kube-runtime's reconcile machinery as a dependency under any build) — not a full
+# guarantee at the Cargo *feature* level, since `cargo test --workspace --all-features` unifies
+# `kube`'s features across every crate that depends on it at all. See RFC 0002's amendment.
+kube = { version = "4", default-features = false }
+# The generated API types kube-derive's CustomResource::crd() returns, and the type the
+# watch-backed adapters list/watch against. Pinned exactly (not a range) because `kube` itself
+# depends on a specific k8s-openapi version with no version feature of its own (by that crate's
+# own design — only a final consumer should choose one); a looser requirement here lets Cargo
+# resolve a second, incompatible copy that never gets a v1_* feature from anyone and fails to
+# build. `v1_32` is pinned to the same Kubernetes minor the envtest harness downloads, so a
+# schema drift is a compile error, not a cluster surprise.
+k8s-openapi = { version = "=0.28.0", features = ["v1_32", "schemars"] }
+# JsonSchema derive, which kube-derive's CustomResource macro needs to generate WeeboSiConfig's
+# OpenAPI schema.
+schemars = "1"
+
+# The admission webhook's HTTP layer. Unlike preauth-proxy's raw hyper (RFC 0001: precise control
+# over header/body streaming for a reverse proxy), the webhook is a small typed JSON-in/JSON-out
+# endpoint routed across /mutate and /validate paths, where axum's extractors and Router pay for
+# themselves and streaming control is not the concern.
+axum = "0.8"
+# TLS termination for axum with no reverse proxy in front — both in production (serving cert from
+# a mounted Secret) and in the envtest harness (a self-signed cert generated with openssl,
+# mirroring the service-account keypair envtest already generates).
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# RFC 6902 JSON Patch construction, specifically to avoid hand-rolling the JSON Pointer escaping
+# of "/" and "~" in the attribute key — a maintained crate removes that footgun rather than
+# adding a unit test for it.
+json-patch = "4"
+# json-patch's own pointer type, for building paths with PointerBuf::from_tokens (escaping done
+# for us) rather than hand-formatting "/a/b/c" strings.
+jsonptr = "0.7"
+
+# The Observer port's outbound implementation. Direct `prometheus`, not a facade crate: the
+# metric set is small, fixed and typed against RFC 0002's own Observability contract table, so a
+# facade buys nothing here.
+prometheus = "0.14"
+# The controller role's leader election — a thin wrapper over a coordination.k8s.io/v1 Lease.
+# Not hand-rolled: renewal, TTL handling and split-brain avoidance on a missed renewal are exactly
+# the kind of thing worth a maintained crate rather than a bespoke retry loop.
+kube-leader-election = "0.44"
+# Driving kube-runtime's reflector streams (weebo-si-runtime's watch-backed caches).
+futures-util = "0.3"
+
 # Test-only.
 tempfile = "3.24"
+# The envtest harness's own HTTP client, polling `/healthz` while etcd/kube-apiserver start up.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # Lints applied to every member via `[lints] workspace = true`.
 # The hardening bricks run as root-adjacent tooling inside other people's pods:

@@ -1,0 +1,23 @@
+[package]
+name = "weebo-si-runtime"
+version = "0.1.0"
+description = "Watch-backed outbound adapters shared by the webhook and the controller"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+kube = { workspace = true, features = ["client", "runtime"] }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true }
+prometheus = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

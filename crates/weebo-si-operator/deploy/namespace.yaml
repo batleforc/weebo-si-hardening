@@ -1,0 +1,10 @@
+# The operator's own namespace. Carries the exclusion label per RFC 0002's *Self-deadlock*:
+# redundant by construction (the operator is not a DevWorkspace and cannot block its own
+# creation), kept because a mutating webhook that must run to allow its own pods is unrecoverable
+# without editing the webhook configuration by hand.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weebo-si-hardening
+  labels:
+    hardening.weebo.io/exclude: "true"

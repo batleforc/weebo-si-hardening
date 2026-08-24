@@ -1,0 +1,78 @@
+# Default values for preauth-proxy.
+# See docs/bricks/preauth-proxy.md and RFC 0003 for the design — in particular the warning that
+# opens that page: **the gateway is the authentication**. This chart puts no forward-auth
+# middleware in front of the proxy's Service; that is the deploying application's job, not this
+# chart's. Installing this chart alone publishes an unauthenticated upstream.
+
+image:
+  repository: preauth-proxy
+  tag: ""  # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# The proxy has no config-reload story — see RFC 0003's Future work — so a config change needs a
+# rollout. `checksum/config` in the pod template annotations (below) forces one automatically.
+service:
+  port: 8080
+
+# The whole preauth-proxy config.yaml body, verbatim — see docs/bricks/preauth-proxy.md's
+# Configuration section for every key. Rendered into a ConfigMap unmodified: it is safe in git,
+# since it carries only `${ENV}` references and never a secret value.
+config: |
+  listen: "[::]:8080"
+  upstream: "http://app:3000"
+
+  # A request already carrying this marker is forwarded untouched.
+  passthrough:
+    header: Cookie
+    contains: "session="
+
+  # The exchange that mints a credential.
+  credential:
+    origin: "http://app-auth:8000"
+    request:
+      method: POST
+      path: "/login"
+      headers:
+        Content-Type: "application/x-www-form-urlencoded"
+      # trivy:ignore:KSV-0109 — the scanner's secret heuristic fires on the literal string
+      # `password=${CRED_SECRET}` below. That is an unresolved `${ENV}` reference, not a value:
+      # substitution happens in the binary at request time, from the environment, never from
+      # this ConfigMap — see docs/bricks/preauth-proxy.md's *Secrets*.
+      body: "email=${CRED_USER}&password=${CRED_SECRET}"
+    accept_status: [200, 302, 303]
+    extract:
+      from_header: "Set-Cookie"
+      take: cookie-pair
+
+  # How the minted credential rides on forwarded requests.
+  inject:
+    header: Cookie
+    mode: append
+
+  # What the upstream returns when the credential is stale.
+  renew:
+    on_status: [401]
+    max_replays: 1
+
+# `${CRED_USER}`/`${CRED_SECRET}` (or whatever names the `config` above references) are resolved
+# from the environment at startup — never from this chart. Bring your own Secret; this chart
+# renders none, deliberately, so a credential never has a path through `helm install --set`.
+credentials:
+  existingSecret: ""  # required
+  userKey: user
+  secretKey: secret
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

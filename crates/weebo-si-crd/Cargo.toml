@@ -1,0 +1,30 @@
+[package]
+name = "weebo-si-crd"
+version = "0.1.0"
+description = "The WeeboSiConfig CRD: its schema, and the config it carries"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kube = { workspace = true, features = ["derive"] }
+k8s-openapi = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+# Not used directly — required in scope for `#[derive(CustomResource)]`'s generated `crd()`
+# method, which names `serde_json` from the call site.
+serde_json = { workspace = true }
+
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`). No deps behind the
+# feature itself — the gate is purely so a plain `cargo test` never needs the binaries.
+envtest = []
+
+[dev-dependencies]
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

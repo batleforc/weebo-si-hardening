@@ -1,0 +1,30 @@
+[package]
+name = "weebo-si-operator"
+version = "0.1.0"
+description = "Admission webhook and controller for weebo-si-hardening's runtime feature-flagged hardening features"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
+weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
+# `client` alone builds no TLS backend at all (kube-client's own `default` feature bundles
+# `ring` for exactly this reason, but the workspace disables kube's default features so every
+# crate opts in explicitly) — without `rustls-tls` + `ring`, `Client::try_default()` fails at
+# runtime with an opaque "TLS required but no TLS stack selected".
+kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
+tokio = { workspace = true }
+axum = { workspace = true }
+axum-server = { workspace = true }
+prometheus = { workspace = true }
+serde_yaml_bw = { workspace = true }
+rustls = { workspace = true }
+
+[lints]
+workspace = true

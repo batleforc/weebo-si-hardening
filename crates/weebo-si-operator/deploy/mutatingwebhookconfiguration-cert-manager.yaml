@@ -1,0 +1,34 @@
+# The cert-manager variant: apply `certificate-cert-manager.yaml` first (or point `issuerRef` at
+# an existing one), then this file — `cert-manager.io/inject-ca-from` names the `Certificate`
+# object whose CA bundle to inject, in `<namespace>/<name>` form. Apply this file instead of
+# `mutatingwebhookconfiguration-openshift.yaml`, never both.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: weebo-si-hardening-devworkspaces
+  annotations:
+    cert-manager.io/inject-ca-from: weebo-si-hardening/weebo-si-operator-webhook
+webhooks:
+  - name: devworkspaces.hardening.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    reinvocationPolicy: IfNeeded
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["controller.devfile.io"]
+        apiVersions: ["v1alpha1"]
+        resources: ["devworkspaces"]
+        scope: Namespaced
+    namespaceSelector:
+      matchExpressions:
+        - key: hardening.weebo.io/exclude
+          operator: DoesNotExist
+    clientConfig:
+      service:
+        name: weebo-si-operator-webhook
+        namespace: weebo-si-hardening
+        path: /mutate/v1alpha1/devworkspaces
+        port: 443

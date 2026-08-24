@@ -1,0 +1,20 @@
+[package]
+name = "weebo-si-chassis"
+version = "0.1.0"
+description = "Operator-wide runtime abstractions shared by every hardening feature"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+
+[features]
+# In-memory fakes for the four ports, otherwise only built under `cfg(test)`. Feature crates
+# (e.g. weebo-si-dwoc-pin) that need them for their own tests enable it as a dev-dependency —
+# a real (non-dev, non-test) build of anything downstream never sees them.
+testing = []
+
+[lints]
+workspace = true

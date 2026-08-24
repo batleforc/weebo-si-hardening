@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preauth-proxy.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preauth-proxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "preauth-proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "preauth-proxy.selectorLabels" . | nindent 8 }}
+      annotations:
+        # RFC 0003 has no config-reload story — a config change needs a rollout, and this is
+        # that rollout: the checksum changes, the pod template changes, the Deployment rolls.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # RFC 0003's Security considerations: "None beyond an unprivileged network listener. No
+      # RBAC, no Linux capabilities, no filesystem writes." No ServiceAccount token needed either.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: preauth-proxy
+          image: {{ include "preauth-proxy.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/preauth-proxy/config.yaml"]
+          env:
+            - name: CRED_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "credentials.existingSecret is required — preauth-proxy mints no credential of its own" .Values.credentials.existingSecret }}
+                  key: {{ .Values.credentials.userKey }}
+            - name: CRED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "credentials.existingSecret is required — preauth-proxy mints no credential of its own" .Values.credentials.existingSecret }}
+                  key: {{ .Values.credentials.secretKey }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/preauth-proxy
+              readOnly: true
+          # No `/healthz` yet — RFC 0003's Known limitations: "No metrics yet." A TCP probe
+          # against the listener is the best available signal without one; startup acquisition
+          # happens before the listener binds, so a ready TCP port already implies acquisition
+          # succeeded.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "preauth-proxy.fullname" . }}

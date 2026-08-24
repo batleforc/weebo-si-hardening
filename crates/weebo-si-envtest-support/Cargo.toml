@@ -1,0 +1,20 @@
+[package]
+name = "weebo-si-envtest-support"
+version = "0.1.0"
+description = "Test-only: a real, ephemeral kube-apiserver for the envtest tier"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+secrecy = "0.10"
+
+[lints]
+workspace = true

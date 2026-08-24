@@ -1,0 +1,32 @@
+# RFC 0002's *Operational considerations*, *Upgrade*: "Two replicas behind a
+# PodDisruptionBudget" — `maxUnavailable: 0` because at `failurePolicy: Fail`, a voluntary
+# disruption (a node drain, a cluster-autoscaler eviction) taking down a replica while the other
+# is also unavailable stops every DevWorkspace create and start/stop cluster-wide. This is the
+# one lever that makes an admin's routine node maintenance safe against that outage.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: weebo-si-operator-webhook
+  namespace: weebo-si-hardening
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weebo-si-operator
+      app.kubernetes.io/component: webhook
+---
+# Not required by the RFC's own text — the controller is not in the admission path, and a
+# reconcile delay is a far cheaper outage than a blocked DevWorkspace create. Added anyway as
+# standard HA hygiene now that the controller runs two replicas behind leader election: without
+# it, a drain could legally take both down at once, needlessly costing a leadership handoff.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: weebo-si-operator-controller
+  namespace: weebo-si-hardening
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weebo-si-operator
+      app.kubernetes.io/component: controller

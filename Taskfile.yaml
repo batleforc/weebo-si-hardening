@@ -6,6 +6,9 @@ includes:
   rfc: ./.tasks/rfc.yaml
   shell: ./.tasks/shell.yaml
   ci: ./.tasks/ci.yaml
+  envtest: ./.tasks/envtest.yaml
+  crd: ./.tasks/crd.yaml
+  helm: ./.tasks/helm.yaml
 
 tasks:
   init:
@@ -15,9 +18,10 @@ tasks:
       - cog install-hook -a -o
 
   recu:
-    desc: "Regenerate everything derived from source (RFC index today, CRD/OpenAPI specs later)"
+    desc: "Regenerate everything derived from source: the RFC index, and crd.yaml when its schema is staged"
     cmds:
       - task: rfc:index
+      - task: crd:gen
 
   lint:
     desc: "Format, lint and validate the repo (run by the pre-commit hook)"
@@ -26,6 +30,8 @@ tasks:
       - task: rust:clippy
       - task: shell:lint
       - task: rfc:check
+      - task: crd:check
+      - task: helm:lint
       - task: ci:lint
 
   test:
@@ -39,7 +45,7 @@ tasks:
       - task: rust:build
 
   audit:
-    desc: "Check dependencies and container images for known CVEs"
+    desc: "Check dependencies, container images and Helm charts for known CVEs and misconfiguration"
     cmds:
       - task: rust:audit
       - |
@@ -48,7 +54,12 @@ tasks:
           echo "trivy not installed — run 'mise use trivy' to enable the filesystem scan" >&2
           exit 0
         fi
-        trivy fs --scanners vuln,secret,misconfig --exit-code 1 --severity HIGH,CRITICAL .
+        # --helm-set: charts/preauth-proxy/values.yaml's `credentials.existingSecret` is
+        # required-with-no-default (see values.yaml's own comment) — trivy's Helm renderer needs
+        # a value to render the chart at all, or the whole chart is silently skipped rather than
+        # scanned. weebo-si-operator has no key by this name, so this is a no-op for it.
+        trivy fs --scanners vuln,secret,misconfig --exit-code 1 --severity HIGH,CRITICAL \
+          --helm-set credentials.existingSecret=ci-placeholder .
 
   supply-chain:
     desc: "Dependency supply-chain gate (postmortem) — reputation and vulns, not just advisories"

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: preauth-proxy
+description: A reverse proxy that attaches a renewed upstream credential to forwarded requests that don't already carry one
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - reverse-proxy
+  - authentication
+home: https://github.com/batleforc/weebo-si-hardening
+sources:
+  - https://github.com/batleforc/weebo-si-hardening
+maintainers:
+  - name: batleforc

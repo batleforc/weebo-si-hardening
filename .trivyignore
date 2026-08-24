@@ -1,0 +1,6 @@
+instant. Plain rule-ID form, not path-scoped: this
+# trivy version's structured `misconfigurations: [{id, paths}]` ignore format did not suppress
+# the finding even when the path matched exactly (tested against the same target `trivy fs`
+# actually scans), so this is repo-wide for this one rule. Revisit if a second ConfigMap or
+# Secret ever legitimately needs KSV-0109 to fire — there is only the one false positive today.
+KSV-0109

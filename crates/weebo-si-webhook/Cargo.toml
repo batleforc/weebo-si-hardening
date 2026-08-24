@@ -1,0 +1,40 @@
+[package]
+name = "weebo-si-webhook"
+version = "0.1.0"
+description = "The dwoc-pin mutating admission webhook: AdmissionReview in, JSON Patch out"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
+axum = { workspace = true }
+kube = { workspace = true, features = ["admission", "client"] }
+k8s-openapi = { workspace = true }
+serde_json = { workspace = true }
+json-patch = { workspace = true }
+jsonptr = { workspace = true }
+tokio = { workspace = true }
+prometheus = { workspace = true }
+
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
+envtest = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "runtime", "admission", "rustls-tls", "ring"] }
+k8s-openapi = { workspace = true }
+axum-server = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+serde_yaml_bw = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+spec:
+  # Two replicas race for the lease when leader election is on; only the holder reconciles.
+  # Rolling with no explicit maxUnavailable: a moment with zero replicas ready costs a reconcile
+  # delay, not an admission-path outage, so it does not need the webhook Deployment's stricter
+  # rollout.
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.controller.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: weebo-si-operator
+          image: {{ include "weebo-si-operator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - controller
+            - --health-addr=0.0.0.0:{{ .Values.metrics.service.port }}
+            {{- if .Values.controller.leaderElection }}
+            - --leader-election
+            {{- end }}
+            {{- with .Values.controller.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # `POD_NAMESPACE` names the lease's namespace; `HOSTNAME` (the lease's holder identity)
+          # is set by the kubelet to the pod name automatically and needs no entry here.
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http-health
+              containerPort: {{ .Values.metrics.service.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}

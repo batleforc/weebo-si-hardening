@@ -14,7 +14,10 @@ supply-chain gate.
 | --- | --- | --- |
 | [`build-passwd-append`](../.github/workflows/build-passwd-append.yaml) | `bins/passwd-append/**`, `Cargo.toml`, `Cargo.lock` · daily | a broken musl build, a dynamically linked binary, a HIGH/CRITICAL image CVE |
 | [`build-preauth-proxy`](../.github/workflows/build-preauth-proxy.yaml) | `bins/preauth-proxy/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
+| [`build-weebo-si-operator`](../.github/workflows/build-weebo-si-operator.yaml) | any of the 7 `weebo-si-*` library crates its binary links, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, a release build |
+| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, manifests | every envtest suite, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip |
+| [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for both charts, every certificate-provider variant |
 | [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, configs | a malformed RFC, a stale RFC index, shellcheck, markdownlint, cspell |
 | [`dep-audit`](../.github/workflows/dep-audit.yaml) | manifests, `deny.toml` · daily | `cargo deny check advisories bans licenses sources` |
 | [`postmortem`](../.github/workflows/postmortem.yaml) | manifests · daily | a HIGH supply-chain vulnerability |
@@ -62,9 +65,9 @@ tab. The scan reports; a separate step fails the build.
 ## Running the gates locally
 
 ```bash
-task lint            # fmt, clippy, shellcheck, RFC format, actionlint
+task lint            # fmt, clippy, shellcheck, RFC format, crd freshness, helm lint, actionlint
 task test            # the whole suite
-task audit           # cargo-deny + trivy fs
+task audit           # cargo-deny + trivy fs (covers charts/ too — see task helm:lint's own comment)
 task supply-chain    # postmortem, the same scanner version CI pins
 task ci:lint         # actionlint on the workflow files alone
 task ci:image BRICK=passwd-append   # build + scan one image as CI does

@@ -1,0 +1,14 @@
+version: "3"
+
+tasks:
+  lint:
+    desc: "Lint and render every chart under charts/ (run by task lint via the pre-commit hook)"
+    cmds:
+      - helm lint charts/weebo-si-operator
+      - helm lint charts/preauth-proxy
+      # `helm lint` alone does not catch a template execution error (e.g. a `required` value
+      # with no default) — `helm template` does, so both charts are actually rendered here too.
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening > /dev/null
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=openshift > /dev/null
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=none > /dev/null
+      - helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null

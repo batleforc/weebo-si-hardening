@@ -1,0 +1,16 @@
+preauth-proxy installed into {{ .Release.Namespace }} as "{{ include "preauth-proxy.fullname" . }}".
+
+*** The gateway is the authentication. ***
+This process performs no authentication of its own: it hands every request that reaches it a
+valid, full-privilege upstream credential. That is safe ONLY while a forward-auth gateway sits
+ahead of it on the route. This chart renders no such gateway — point your IngressRoute (or
+equivalent) at "{{ include "preauth-proxy.fullname" . }}" only from behind one, never directly.
+
+Check readiness:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "preauth-proxy.fullname" . }}
+
+Reading the logs — one structured line per acquisition and per renewal is the only signal
+injection is working, since there are no metrics yet:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "preauth-proxy.fullname" . }} -f

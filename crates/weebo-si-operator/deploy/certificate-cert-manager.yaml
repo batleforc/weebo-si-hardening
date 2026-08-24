@@ -1,0 +1,24 @@
+# The cert-manager variant of RFC 0002's "no self-signed fallback" prerequisite. Brings its own
+# self-signed `Issuer` — swap `issuerRef` for a cluster CA if this deployment already has one; the
+# operator itself has no opinion, it only reads whatever lands in `weebo-si-operator-webhook-tls`.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: weebo-si-operator-selfsigned
+  namespace: weebo-si-hardening
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: weebo-si-operator-webhook
+  namespace: weebo-si-hardening
+spec:
+  secretName: weebo-si-operator-webhook-tls
+  dnsNames:
+    - weebo-si-operator-webhook.weebo-si-hardening.svc
+    - weebo-si-operator-webhook.weebo-si-hardening.svc.cluster.local
+  issuerRef:
+    name: weebo-si-operator-selfsigned
+    kind: Issuer

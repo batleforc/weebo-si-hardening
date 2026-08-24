@@ -1,0 +1,36 @@
+weebo-si-operator installed into {{ .Release.Namespace }}.
+
+{{- if eq .Values.certificates.provider "none" }}
+
+certificates.provider is "none": no MutatingWebhookConfiguration and no Certificate were
+rendered. Apply your own, pointed at the "{{ include "weebo-si-operator.webhookServiceName" . }}"
+Service (port {{ .Values.webhook.service.port }}) in this namespace, with the certificate landing
+in a Secret named "{{ include "weebo-si-operator.tlsSecretName" . }}" — that is the Secret name
+the webhook Deployment mounts at /etc/webhook/certs.
+{{- end }}
+
+No WeeboSiConfig object exists yet, so every DevWorkspace round-trips through the webhook
+unmutated — this is the state RFC 0002's Rollout starts from. Create one to begin:
+
+  kubectl apply -f - <<'EOF'
+  apiVersion: hardening.weebo.io/v1alpha1
+  kind: WeeboSiConfig
+  metadata:
+    name: cluster
+  spec:
+    features: {}
+  EOF
+
+Then follow the five-step rollout in docs/bricks/weebo-si-operator.md (mode: DryRun with a
+catalogue and default, then spec.teams, then mode: Enforce scoped to a pilot namespaceSelector,
+then remove the selector).
+
+Check readiness:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "weebo-si-operator.fullname" . }}-webhook
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "weebo-si-operator.fullname" . }}-controller
+
+Break-glass, if the operator itself is the thing that's broken (failurePolicy: Fail means an
+unavailable webhook blocks every DevWorkspace create/start cluster-wide):
+
+  kubectl delete mutatingwebhookconfiguration {{ include "weebo-si-operator.fullname" . }}-devworkspaces

@@ -1,0 +1,41 @@
+name: Helm charts
+# Lints and renders every chart under charts/ — the same two commands task helm:lint runs
+# locally via the pre-commit hook (task lint). A template execution error (e.g. a `required`
+# value with no default) only surfaces from `helm template`, not `helm lint` alone, so both run
+# here for both charts and every certificate-provider variant weebo-si-operator's chart supports.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "charts/**"
+      - ".tasks/helm.yaml"
+      - ".github/workflows/helm.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "charts/**"
+      - ".tasks/helm.yaml"
+      - ".github/workflows/helm.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint:
+    name: lint + template
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: latest
+      - name: weebo-si-operator
+        run: |
+          helm lint charts/weebo-si-operator
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=openshift > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=none > /dev/null
+      - name: preauth-proxy
+        run: |
+          helm lint charts/preauth-proxy
+          helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null

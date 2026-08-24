@@ -1,0 +1,18 @@
+[package]
+name = "weebo-si-dwoc-pin"
+version = "0.1.0"
+description = "The dwoc-pin feature: pins every DevWorkspace to a platform-authored DevWorkspaceOperatorConfig"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

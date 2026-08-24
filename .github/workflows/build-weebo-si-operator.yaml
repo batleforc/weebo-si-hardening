@@ -1,0 +1,53 @@
+name: Build weebo-si-operator
+# Fires only when this brick's own code moves, or when a workspace-level change means every
+# binary links something different — the same rule `build-preauth-proxy.yaml` and
+# `build-passwd-append.yaml` use. Unlike those two, this brick is not one crate: its binary links
+# every `weebo-si-*` library crate RFC 0002 split it into (`weebo-si-envtest-support` excluded —
+# dev-only, never reaches the release binary), so all of them are in this filter, not only
+# `crates/weebo-si-operator/**`.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/weebo-si-crd/**"
+      - "crates/weebo-si-chassis/**"
+      - "crates/weebo-si-dwoc-pin/**"
+      - "crates/weebo-si-runtime/**"
+      - "crates/weebo-si-webhook/**"
+      - "crates/weebo-si-controller/**"
+      - "crates/weebo-si-operator/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/build-weebo-si-operator.yaml"
+      - ".github/workflows/brick.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/weebo-si-crd/**"
+      - "crates/weebo-si-chassis/**"
+      - "crates/weebo-si-dwoc-pin/**"
+      - "crates/weebo-si-runtime/**"
+      - "crates/weebo-si-webhook/**"
+      - "crates/weebo-si-controller/**"
+      - "crates/weebo-si-operator/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/build-weebo-si-operator.yaml"
+      - ".github/workflows/brick.yaml"
+  # Daily, so a CVE disclosed against the base image or a dependency *after* the last commit
+  # still trips CI the next morning. This is the "future CVE" catch, not a build-time snapshot.
+  schedule:
+    - cron: "20 2 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  brick:
+    name: weebo-si-operator
+    uses: ./.github/workflows/brick.yaml
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      crate: weebo-si-operator
+      path: crates/weebo-si-operator

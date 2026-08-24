@@ -1,0 +1,119 @@
+# RBAC, per RFC 0002's *Security considerations*: "The webhook role needs, cluster-wide: get,
+# list, watch on weebosiconfigs / devworkspaceoperatorconfigs / namespaces ... and the controller
+# role adds update and patch on weebosiconfigs/status, plus create on events." Two ServiceAccounts,
+# not one, so the webhook role — the one an untrusted AdmissionReview body reaches — never holds
+# the write permission only the controller needs.
+#
+# One addition beyond that table: the controller's lease for leader election
+# (`weebo-si-controller --leader-election`, added after this RFC's original acceptance). It is
+# scoped to a `Role`/`RoleBinding` in this namespace only, never a `ClusterRole` — a lease is
+# per-namespace by construction and the controller only ever takes one, in its own namespace.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: weebo-si-operator-webhook
+  namespace: weebo-si-hardening
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: weebo-si-operator-controller
+  namespace: weebo-si-hardening
+---
+# Shared by both roles — the three read-only, cluster-wide watches every replica of either role
+# needs to answer at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-si-operator-watch
+rules:
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebosiconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["controller.devfile.io"]
+    resources: ["devworkspaceoperatorconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weebo-si-operator-webhook-watch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weebo-si-operator-watch
+subjects:
+  - kind: ServiceAccount
+    name: weebo-si-operator-webhook
+    namespace: weebo-si-hardening
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weebo-si-operator-controller-watch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weebo-si-operator-watch
+subjects:
+  - kind: ServiceAccount
+    name: weebo-si-operator-controller
+    namespace: weebo-si-hardening
+---
+# What only the controller role adds: writing `WeeboSiConfig.status`, and recording an Event
+# against it — "It has no permission on DevWorkspaces at all — not even read," and it has none
+# here either.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-si-operator-controller-status
+rules:
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebosiconfigs/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weebo-si-operator-controller-status
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weebo-si-operator-controller-status
+subjects:
+  - kind: ServiceAccount
+    name: weebo-si-operator-controller
+    namespace: weebo-si-hardening
+---
+# The leader-election lease — namespaced, not part of the RFC's original three-row table (see the
+# comment at the top of this file).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: weebo-si-operator-controller-lease
+  namespace: weebo-si-hardening
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: weebo-si-operator-controller-lease
+  namespace: weebo-si-hardening
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: weebo-si-operator-controller-lease
+subjects:
+  - kind: ServiceAccount
+    name: weebo-si-operator-controller
+    namespace: weebo-si-hardening

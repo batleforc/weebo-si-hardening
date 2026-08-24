@@ -1,0 +1,12 @@
+# `values.config`, verbatim — safe to check into git and safe as a ConfigMap because it carries
+# only `${ENV}` references, never a resolved credential. See RFC 0003's Security considerations.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "preauth-proxy.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preauth-proxy.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- .Values.config | nindent 4 }}

@@ -5,10 +5,20 @@ Single Cargo workspace, two families of members.
 ```text
 Cargo.toml              # [workspace] — shared deps, shared lints, shared edition
 bins/                   # simple binaries: one job, no ports, no adapters
-└── passwd-append/
-crates/                 # libraries and the non-trivial bricks
-├── weebo-si-common/    # shared building blocks (errors, tracing setup, k8s helpers)
-└── weebo-si-operator/  # hexagonal: domain / application / adapters
+├── passwd-append/
+└── preauth-proxy/
+crates/                        # libraries and the non-trivial bricks
+├── weebo-si-crd/               # the WeeboSiConfig CRD schema — kube-derive, k8s-openapi, schemars
+├── weebo-si-chassis/           # operator-wide runtime abstractions: Feature<S>, Registry<S>, ports
+├── weebo-si-dwoc-pin/          # the dwoc-pin feature — depends on crd + chassis only
+├── weebo-si-runtime/           # watch-backed outbound adapters, shared by webhook and controller
+├── weebo-si-webhook/           # the admission webhook adapter (axum)
+├── weebo-si-controller/        # the WeeboSiConfig reconcile loop
+├── weebo-si-operator/          # the bin — sole composition root, sole binary
+└── weebo-si-envtest-support/   # dev-only: a real ephemeral kube-apiserver for the envtest tier
+charts/                 # one Helm chart per deployable brick, alongside its bins/crates/ deploy/ artifacts
+├── weebo-si-operator/
+└── preauth-proxy/
 scripts/                # repo plumbing, POSIX sh (RFC validation and index generation)
 docs/
 ├── rfc/
@@ -17,6 +27,13 @@ docs/
 
 `scripts/` holds repo tooling, not product code — it never ships in an image. POSIX `sh`, because
 it runs in the pre-commit hook where "works on my shell" is not a guarantee we get.
+
+`charts/<name>/` mirrors the brick's own name, not its `bins/`/`crates/` parent directory — a
+chart is installed by name, and duplicating the parent would only be noise. Unlike
+`crates/weebo-si-operator/deploy/`'s raw manifests (kept for anyone who does not want Helm as a
+dependency), a chart is the templated, parameterized form of the same artifacts; where they
+overlap — the generated CRD is the clearest case — `scripts/crd-regen.sh` regenerates both copies
+from the same source so they cannot drift against each other.
 
 ## `bins/` or `crates/`?
 

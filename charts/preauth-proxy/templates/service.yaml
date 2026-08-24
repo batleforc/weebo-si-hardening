@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "preauth-proxy.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preauth-proxy.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "preauth-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

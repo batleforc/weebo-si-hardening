@@ -39,6 +39,15 @@ Outgrowing the simple form is expected and fine. Promoting a `bins/` member into
 
 ## Layout
 
+The tree below is the general pattern: one crate, three layers as modules. It is what a new
+hexagonal brick should default to. `weebo-si-operator` itself no longer looks like this — RFC
+0002's amendment split it into seven crates (one per layer or role: `weebo-si-crd`,
+`weebo-si-chassis`, `weebo-si-dwoc-pin`, `weebo-si-runtime`, `weebo-si-webhook`,
+`weebo-si-controller`, plus the `weebo-si-operator` bin) once its dependency rule needed to be
+enforced by `cargo`, not by review — see that RFC's *Architecture* section for why and when that
+move is worth making. A brick reaches for the crate-per-layer split when review-level enforcement
+of the dependency rule has actually failed to hold, not by default.
+
 ```text
 crates/weebo-si-operator/
 ├── Cargo.toml

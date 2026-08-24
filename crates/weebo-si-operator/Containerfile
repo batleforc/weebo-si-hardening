@@ -1,0 +1,53 @@
+# Build context is the repository root:
+#   podman build -f crates/weebo-si-operator/Containerfile -t weebo-si-operator .
+#
+# One image, two roles — RFC 0002's "one binary, two Deployments": the entrypoint is the bare
+# binary, and the Deployment manifests under crates/weebo-si-operator/deploy/ supply `webhook` or
+# `controller` as the container args.
+
+# --- build ------------------------------------------------------------------------------------
+FROM docker.io/library/rust:1-alpine AS build
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN cargo build --release --locked --package weebo-si-operator \
+      --target "$(rustc -vV | sed -n 's/^host: //p')" \
+ && install -D -m 0755 \
+      "target/$(rustc -vV | sed -n 's/^host: //p')/release/weebo-si-operator" \
+      /out/weebo-si-operator
+
+# The absence of a PT_INTERP segment, not the output of `ldd`: this is a static-PIE, and musl's
+# `ldd` prints `/lib/ld-musl-x86_64.so.1` for one because the binary self-loads — which reads as
+# "dynamically linked" to any grep for a loader name while the binary has no interpreter at all.
+# `rustls`/`ring` are pure Rust plus a C source `ring` compiles itself, so this stays static —
+# unlike a build linking against a system OpenSSL, there is no libssl to leave behind.
+RUN if readelf -l /out/weebo-si-operator | grep -q INTERP; then \
+      echo 'weebo-si-operator is dynamically linked' >&2; exit 1; \
+    fi
+
+# --- final ------------------------------------------------------------------------------------
+# scratch, not alpine: the process needs no shell, no package manager and no writable filesystem.
+# It reads its serving certificate and the in-cluster service account CA/token from mounted
+# volumes and talks to the apiserver and, for the webhook role, to nothing else — there is
+# nothing in this image to exec into, which is the point (RFC 0002's "no outbound network").
+FROM scratch
+
+COPY --from=build /out/weebo-si-operator /weebo-si-operator
+
+# A fixed non-root UID, matching the pattern `bins/preauth-proxy`'s Containerfile sets. Neither
+# role opens a privileged port (9443/8081 are both unprivileged) and neither needs an identity
+# beyond "not root".
+USER 65532:65532
+
+# 9443: the webhook role's TLS listener. 8081: `/healthz`, `/readyz` and `/metrics`, both roles.
+# Only the role actually running binds the port that applies to it; EXPOSE here is documentation.
+EXPOSE 9443 8081
+
+# No shell form: there is no shell. No init: the process spawns nothing and reaps nothing, so it
+# is its own PID 1 — the tini/catatonit argument in RFC 0001 is about images that run a process
+# tree, and this one does not.
+ENTRYPOINT ["/weebo-si-operator"]

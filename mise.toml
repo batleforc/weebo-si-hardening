@@ -19,5 +19,8 @@ trivy = "latest"
 # `task ci:lint` — validates the workflow files themselves
 actionlint = "latest"
 
+# `task helm:lint` — lints and renders the charts under charts/
+helm = "latest"
+
 # `task lint` — the RFC tooling in scripts/ runs in the pre-commit hook, so it gets linted
 shellcheck = "latest"

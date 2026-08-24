@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+spec:
+  # RFC 0002's Operational considerations, Upgrade: "Two replicas behind a
+  # PodDisruptionBudget, rolling, maxUnavailable: 0 — at Fail a moment with no ready endpoint is
+  # a moment when no workspace starts."
+  replicas: {{ .Values.webhook.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.webhook.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.webhook.rollingUpdate.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "weebo-si-operator.webhookServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.webhook.podAntiAffinity }}
+      # "Two replicas across nodes" — a node failure or drain must not be able to take out both
+      # at once. `preferred`, not `required`: a single-node cluster (dev, a small pilot) should
+      # still schedule two replicas rather than wedge on an unsatisfiable constraint.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: weebo-si-operator
+          image: {{ include "weebo-si-operator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - webhook
+            - --addr=0.0.0.0:{{ .Values.webhook.service.targetPort }}
+            - --health-addr=0.0.0.0:{{ .Values.metrics.service.port }}
+            {{- with .Values.webhook.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.webhook.service.targetPort }}
+            - name: http-health
+              containerPort: {{ .Values.metrics.service.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: webhook-tls
+              mountPath: /etc/webhook/certs
+              readOnly: true
+          # In-process caches only, no cache directory — RFC 0002's Data and state: "Nothing is
+          # persisted to disk."
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.webhook.resources | nindent 12 }}
+      volumes:
+        - name: webhook-tls
+          secret:
+            secretName: {{ include "weebo-si-operator.tlsSecretName" . }}

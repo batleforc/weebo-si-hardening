@@ -1,0 +1,40 @@
+# Platform-neutral as written: no serving-certificate annotation. On OpenShift, annotate this
+# object with `service.beta.openshift.io/serving-cert-secret-name: weebo-si-operator-webhook-tls`
+# (see `mutatingwebhookconfiguration-openshift.yaml`); on cert-manager, apply
+# `certificate-cert-manager.yaml` instead and leave this file as-is — cert-manager needs no
+# Service-level annotation, only the `Certificate` object and the webhook's own
+# `cert-manager.io/inject-ca-from` annotation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: weebo-si-operator-webhook
+  namespace: weebo-si-hardening
+  labels:
+    app.kubernetes.io/name: weebo-si-operator
+    app.kubernetes.io/component: webhook
+spec:
+  selector:
+    app.kubernetes.io/name: weebo-si-operator
+    app.kubernetes.io/component: webhook
+  ports:
+    - name: https
+      port: 443
+      targetPort: 9443
+---
+# `/metrics` for both roles, one Service so a single `ServiceMonitor`/scrape config covers both —
+# `app.kubernetes.io/name: weebo-si-operator` alone, no `component` label, selects both
+# Deployments' pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: weebo-si-operator-metrics
+  namespace: weebo-si-hardening
+  labels:
+    app.kubernetes.io/name: weebo-si-operator
+spec:
+  selector:
+    app.kubernetes.io/name: weebo-si-operator
+  ports:
+    - name: http-metrics
+      port: 8081
+      targetPort: 8081

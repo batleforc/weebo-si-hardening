@@ -1,0 +1,29 @@
+[package]
+name = "weebo-si-controller"
+version = "0.1.0"
+description = "The WeeboSiConfig reconcile loop: validate, and report status"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+kube = { workspace = true, features = ["client", "runtime"] }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+kube-leader-election = { workspace = true }
+
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
+envtest = []
+
+[dev-dependencies]
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

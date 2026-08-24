@@ -464,6 +464,15 @@ a port, and then — and only then — applies or discards. **A reconcile featur
 `DryRun` produces a diff an admin can read line by line before three hundred namespaces change
 at once.
 
+**Stale since RFC 0002's amendment** (2026-08-24): RFC 0002 restructured `weebo-si-operator` from
+one crate into seven (`weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`, `weebo-si-runtime`,
+`weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator`), so the single-crate tree below no
+longer matches where this feature would actually land — most likely a new
+`crates/weebo-si-network-profiles` depending on `weebo-si-crd` + `weebo-si-chassis` (mirroring
+`weebo-si-dwoc-pin`), with its outbound adapters joining `weebo-si-runtime` alongside dwoc-pin's.
+Left as a Draft-stage placeholder rather than redesigned here — that redesign belongs to this
+RFC's own next revision, not to RFC 0002's amendment.
+
 ```text
 crates/weebo-si-operator/src/
 ├── domain/
@@ -750,7 +759,7 @@ understanding:
 - **The break-glass**, when the operator itself is what is broken:
 
   ```console
-  $ kubectl delete networkpolicy -A -l hardening.weebo.io/managed-by=weebo-si-operator
+  kubectl delete networkpolicy -A -l hardening.weebo.io/managed-by=weebo-si-operator
   ```
 
   One command, every namespace, nothing else touched — which is the third reason the ownership

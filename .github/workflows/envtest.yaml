@@ -1,0 +1,53 @@
+name: Envtest
+# Runs every envtest suite against a real, ephemeral kube-apiserver: CRD admission against the
+# actual generated schema, a live MutatingWebhookConfiguration calling back into a locally
+# running weebo-si-webhook, and the controller's status writes actually landing. Separate from
+# test.yaml's fast suite so quick feedback stays quick — REQUIRE_ENVTEST makes a broken setup a
+# failure here instead of a silent skip.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".tasks/envtest.yaml"
+      - ".github/workflows/envtest.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".tasks/envtest.yaml"
+      - ".github/workflows/envtest.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  envtest:
+    name: Envtest suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ENVTEST_K8S_VERSION: "1.32.0"
+      KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
+      REQUIRE_ENVTEST: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Downloading the ~50 MB envtest binaries every run is a few seconds and keeps this
+      # workflow free of an actions/cache entry to invalidate when ENVTEST_K8S_VERSION changes.
+      - name: Fetch the envtest binaries
+        run: |
+          mkdir -p "$KUBEBUILDER_ASSETS"
+          curl -sSL -o /tmp/envtest.tar.gz \
+            "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
+          tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
+      - name: Run the envtest suites
+        # Serialised: each test owns an apiserver, and running several at once only multiplies
+        # the memory footprint for no wall-clock gain.
+        run: cargo test --workspace --features envtest --test envtest --locked -- --test-threads=1
