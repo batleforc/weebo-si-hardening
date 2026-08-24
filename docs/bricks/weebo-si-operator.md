@@ -20,6 +20,8 @@ disagree.
 > *Implementation plan* for the current checklist. Do not enable `networkProfiles`/`policyGuard`
 > in `Enforce` on a production cluster until those land; `DryRun` is safe today.
 
+<!-- -->
+
 > **`failurePolicy: Fail`.** The webhook fails closed: while it is unavailable, no DevWorkspace can
 > be created or started, cluster-wide. That is deliberate — see RFC 0002's *Operational
 > considerations* — but it means the manifests in `crates/weebo-si-operator/deploy/` are not
