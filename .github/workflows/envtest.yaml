@@ -1,14 +1,18 @@
 name: Envtest
 # Runs every envtest suite against a real, ephemeral kube-apiserver: CRD admission against the
 # actual generated schema, a live MutatingWebhookConfiguration calling back into a locally
-# running weebo-si-webhook, and the controller's status writes actually landing. Separate from
-# test.yaml's fast suite so quick feedback stays quick — REQUIRE_ENVTEST makes a broken setup a
-# failure here instead of a silent skip.
+# running weebo-si-webhook, the controller's status writes actually landing, and (since
+# `weebo-si-webhook`'s namespaceSelector suite and `weebo-si-operator`'s RBAC suite render
+# `charts/weebo-si-operator` with a real `helm template`) the chart's own rendered manifests
+# actually behaving as documented — not just `helm lint`/`helm template` syntax-checking them.
+# Separate from test.yaml's fast suite so quick feedback stays quick — REQUIRE_ENVTEST makes a
+# broken setup a failure here instead of a silent skip.
 on:
   push:
     branches: ["main"]
     paths:
       - "crates/**"
+      - "charts/weebo-si-operator/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".tasks/envtest.yaml"
@@ -17,6 +21,7 @@ on:
     branches: ["main"]
     paths:
       - "crates/**"
+      - "charts/weebo-si-operator/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".tasks/envtest.yaml"
@@ -39,6 +44,11 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Same action + pin as helm.yaml — the namespaceSelector and RBAC envtest suites `helm
+      # template` charts/weebo-si-operator for real, so this job needs `helm` on PATH too.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: latest
       # Downloading the ~50 MB envtest binaries every run is a few seconds and keeps this
       # workflow free of an actions/cache entry to invalidate when ENVTEST_K8S_VERSION changes.
       - name: Fetch the envtest binaries

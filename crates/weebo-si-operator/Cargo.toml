@@ -26,5 +26,18 @@ prometheus = { workspace = true }
 serde_yaml_bw = { workspace = true }
 rustls = { workspace = true }
 
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
+envtest = []
+
+[dev-dependencies]
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_bw = { workspace = true }
+
 [lints]
 workspace = true

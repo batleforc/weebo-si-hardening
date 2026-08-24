@@ -1258,3 +1258,170 @@ async fn a_status_only_update_bypasses_the_webhook_live() {
         .delete("status-ws", &DeleteParams::default())
         .await;
 }
+
+/// Renders `charts/weebo-si-operator`'s real `MutatingWebhookConfiguration` template and returns
+/// its `namespaceSelector` — RFC 0002's *Webhook configuration* documents this as the mechanism
+/// protecting a namespace carrying `namespaceExclusionLabel` (the operator's own namespace, most
+/// notably — see *Self-deadlock*), but that selector lives only in the Helm template, never in
+/// Rust, so nothing before this test exercised the rendered value against a real apiserver.
+fn chart_namespace_selector() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+    let chart_dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../charts/weebo-si-operator"
+    );
+    let output = std::process::Command::new("helm")
+        .args([
+            "template",
+            "ci",
+            chart_dir,
+            "--namespace",
+            "weebo-si-hardening",
+            "--show-only",
+            "templates/mutatingwebhookconfiguration.yaml",
+        ])
+        .output()
+        .expect("helm must be on PATH to render charts/weebo-si-operator — see task helm:lint");
+    assert!(
+        output.status.success(),
+        "helm template failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("helm output should be utf8");
+    let config: MutatingWebhookConfiguration =
+        serde_yaml_bw::from_str(&rendered).expect("the rendered manifest should parse");
+    config
+        .webhooks
+        .expect("the rendered manifest should have one webhook")
+        .into_iter()
+        .next()
+        .expect("the rendered manifest should have one webhook")
+        .namespace_selector
+        .expect("the rendered manifest should carry a namespaceSelector")
+}
+
+/// Registers the real, chart-rendered `namespaceSelector` pointed at a dead port — same trick as
+/// `an_unreachable_webhook_fails_closed` above — so a `DevWorkspace`'s fate hinges purely on
+/// whether the apiserver's own selector evaluation calls the webhook at all: a namespace carrying
+/// the exclusion label must be admitted (the webhook is never reached), one without it must be
+/// refused (fail-closed: reached, and nothing answers).
+#[tokio::test]
+async fn the_real_chart_namespace_selector_excludes_labelled_namespaces_live() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+
+    let namespace_selector = chart_namespace_selector();
+    let exclusion_label = namespace_selector
+        .match_expressions
+        .as_ref()
+        .and_then(|exprs| exprs.first())
+        .map(|expr| expr.key.clone())
+        .expect("the rendered selector should name the exclusion label");
+
+    let dead_port = free_port().expect("a free port should be available");
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (_key, cert) =
+        generate_webhook_tls(cert_dir.path()).expect("cert generation should succeed");
+    let ca_bundle =
+        weebo_si_envtest_support::read_ca_bundle(&cert).expect("cert should be readable");
+
+    let webhooks_api: Api<MutatingWebhookConfiguration> = Api::all(client.clone());
+    let webhook_config = MutatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-devworkspaces-selector".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![
+            k8s_openapi::api::admissionregistration::v1::MutatingWebhook {
+                name: "devworkspaces.hardening.weebo.io".to_string(),
+                admission_review_versions: vec!["v1".to_string()],
+                side_effects: "None".to_string(),
+                failure_policy: Some("Fail".to_string()),
+                timeout_seconds: Some(2),
+                namespace_selector: Some(namespace_selector),
+                rules: Some(vec![RuleWithOperations {
+                    operations: Some(vec!["CREATE".to_string()]),
+                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    resources: Some(vec!["devworkspaces".to_string()]),
+                    scope: Some("Namespaced".to_string()),
+                }]),
+                client_config: WebhookClientConfig {
+                    url: Some(format!(
+                        "https://127.0.0.1:{dead_port}/mutate/v1alpha1/devworkspaces"
+                    )),
+                    ca_bundle: Some(k8s_openapi::ByteString(ca_bundle)),
+                    service: None::<ServiceReference>,
+                },
+                ..Default::default()
+            },
+        ]),
+    };
+    webhooks_api
+        .create(&PostParams::default(), &webhook_config)
+        .await
+        .expect("webhook configuration should be accepted");
+
+    let mut excluded_labels = BTreeMap::new();
+    excluded_labels.insert(exclusion_label, "true".to_string());
+    create_namespace(
+        client.clone(),
+        "excluded-ns",
+        excluded_labels,
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        client.clone(),
+        "included-ns",
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+
+    // The excluded namespace's create must succeed even though nothing listens on `dead_port` —
+    // the apiserver's namespaceSelector evaluation must skip the webhook entirely. Retried like
+    // every other webhook-registration-dependent create in this suite: the apiserver may need a
+    // moment to pick up the just-registered `MutatingWebhookConfiguration`.
+    let excluded_devworkspaces: Api<DynamicObject> =
+        Api::namespaced_with(client.clone(), "excluded-ns", &devworkspace_resource());
+    create_with_retry(
+        &excluded_devworkspaces,
+        &devworkspace("excluded-ns", "should-pass"),
+    )
+    .await;
+
+    let included_devworkspaces: Api<DynamicObject> =
+        Api::namespaced_with(client.clone(), "included-ns", &devworkspace_resource());
+    let mut last_err = None;
+    let mut denied = false;
+    for _ in 0..40 {
+        match included_devworkspaces
+            .create(
+                &PostParams::default(),
+                &devworkspace("included-ns", "should-fail"),
+            )
+            .await
+        {
+            Ok(_) => break,
+            Err(err) => {
+                if err.to_string().to_lowercase().contains("webhook")
+                    || err.to_string().to_lowercase().contains("dial")
+                {
+                    denied = true;
+                    break;
+                }
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    assert!(
+        denied,
+        "a namespace without the exclusion label should still reach the (dead) webhook: {last_err:?}"
+    );
+
+    let _ = excluded_devworkspaces
+        .delete("should-pass", &DeleteParams::default())
+        .await;
+}

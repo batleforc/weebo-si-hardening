@@ -2,8 +2,12 @@ version: "3"
 
 # envtest runs a real, ephemeral kube-apiserver backed by etcd. It covers what a mock cannot:
 # CRD admission against the actual generated schema, a live MutatingWebhookConfiguration
-# actually calling back into a locally running weebo-si-webhook, and the controller's status
-# writes actually landing.
+# actually calling back into a locally running weebo-si-webhook, the controller's status writes
+# actually landing, and — for weebo-si-webhook's namespaceSelector suite and
+# weebo-si-operator's RBAC suite, both of which `helm template` charts/weebo-si-operator for
+# real rather than hand-writing a stand-in manifest — that the chart itself, not just the Rust,
+# behaves as RFC 0002 documents. Those two suites need `helm` on PATH (mise already provides it
+# — see `task helm:lint`).
 #
 # Binaries live under ENVTEST_DIR (default ~/.local/share/kubebuilder-envtest) and are
 # downloaded once. Every envtest suite is behind its crate's `envtest` Cargo feature, so a plain

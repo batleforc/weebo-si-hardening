@@ -18,12 +18,11 @@ use std::time::{Duration, Instant};
 /// How long to wait for the apiserver to answer before giving up.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Static bearer token wired into `--token-auth-file`.
+/// Static bearer token wired into `--token-auth-file`, authenticating as `system:masters`.
 ///
-/// The apiserver runs with `AlwaysAllow`, so this only has to authenticate; these tests are
-/// about CRD admission and controller/webhook behaviour, not RBAC — see this crate's
-/// `README`-equivalent note in the RFC 0002 amendment for why a real RBAC-scoped token is
-/// deliberately not built here.
+/// [`start`](EnvTest::start) runs with `--authorization-mode AlwaysAllow`, so this only has to
+/// authenticate. [`start_rbac`](EnvTest::start_rbac) enforces RBAC instead — this token still
+/// authenticates as `system:masters` there too, which is what keeps it a full admin identity.
 const TEST_TOKEN: &str = "envtest-token";
 
 /// A real, ephemeral `etcd` + `kube-apiserver` pair.
@@ -37,7 +36,30 @@ pub struct EnvTest {
 
 impl EnvTest {
     /// Start etcd and kube-apiserver, or explain why the suite cannot run.
+    ///
+    /// Runs with `--authorization-mode AlwaysAllow`: these suites are about CRD admission and
+    /// controller/webhook behaviour, not RBAC. For a suite that needs to check what an identity
+    /// is and is not allowed to do, use [`start_rbac`](Self::start_rbac) instead.
     pub async fn start() -> Result<Self, String> {
+        Self::start_with("AlwaysAllow", &[]).await
+    }
+
+    /// Like [`start`](Self::start), but with `RBAC` authorization actually enforced, and
+    /// `extra_tokens` (`(token, username)` pairs, no groups — e.g.
+    /// `system:serviceaccount:<namespace>:<name>` to authenticate as a given `ServiceAccount`
+    /// identity) authenticated alongside the built-in admin token.
+    ///
+    /// The admin token still authenticates as `system:masters`: kube-apiserver's own
+    /// `rbac/bootstrap-roles` post-start hook binds `cluster-admin` to that group as soon as RBAC
+    /// authorization is enabled, with no `kube-controller-manager` required to reconcile it.
+    pub async fn start_rbac(extra_tokens: &[(&str, &str)]) -> Result<Self, String> {
+        Self::start_with("RBAC", extra_tokens).await
+    }
+
+    async fn start_with(
+        authorization_mode: &str,
+        extra_tokens: &[(&str, &str)],
+    ) -> Result<Self, String> {
         install_crypto_provider();
         let assets = assets_dir()?;
         let etcd_bin = assets.join("etcd");
@@ -55,11 +77,12 @@ impl EnvTest {
             tempfile::tempdir().map_err(|err| format!("could not create a scratch dir: {err}"))?;
         let (sa_key, sa_pub) = generate_service_account_keys(workdir.path())?;
         let token_file = workdir.path().join("tokens.csv");
-        std::fs::write(
-            &token_file,
-            format!("{TEST_TOKEN},envtest-admin,uid-1,\"system:masters\"\n"),
-        )
-        .map_err(|err| format!("could not write the token file: {err}"))?;
+        let mut tokens = format!("{TEST_TOKEN},envtest-admin,uid-1,\"system:masters\"\n");
+        for (index, (token, username)) in extra_tokens.iter().enumerate() {
+            tokens.push_str(&format!("{token},{username},uid-extra-{index},\"\"\n"));
+        }
+        std::fs::write(&token_file, tokens)
+            .map_err(|err| format!("could not write the token file: {err}"))?;
 
         let etcd_client_port = free_port()?;
         let etcd_peer_port = free_port()?;
@@ -92,7 +115,7 @@ impl EnvTest {
                 "--secure-port",
                 &apiserver_port.to_string(),
                 "--authorization-mode",
-                "AlwaysAllow",
+                authorization_mode,
                 // The ServiceAccount admission plugin needs a running controller-manager, which
                 // envtest does not provide.
                 "--disable-admission-plugins",
@@ -130,7 +153,16 @@ impl EnvTest {
     /// Returns `None` after printing why, unless `REQUIRE_ENVTEST` is set — which CI does, so a
     /// broken setup can never silently green the suite.
     pub async fn try_start() -> Option<Self> {
-        match Self::start().await {
+        Self::resolve_or_skip(Self::start().await)
+    }
+
+    /// Like [`try_start`](Self::try_start), for [`start_rbac`](Self::start_rbac).
+    pub async fn try_start_rbac(extra_tokens: &[(&str, &str)]) -> Option<Self> {
+        Self::resolve_or_skip(Self::start_rbac(extra_tokens).await)
+    }
+
+    fn resolve_or_skip(result: Result<Self, String>) -> Option<Self> {
+        match result {
             Ok(env_test) => Some(env_test),
             Err(err) => {
                 assert!(
@@ -180,15 +212,23 @@ impl EnvTest {
         TEST_TOKEN
     }
 
-    /// A client trusting the apiserver's self-signed certificate.
+    /// A client trusting the apiserver's self-signed certificate, authenticating as the built-in
+    /// admin token.
     pub fn client(&self) -> Result<kube::Client, String> {
+        self.client_as(TEST_TOKEN)
+    }
+
+    /// Like [`client`](Self::client), authenticating as `token` instead — one of the pairs
+    /// passed to [`start_rbac`](Self::start_rbac), for a suite that needs to check what that
+    /// identity is and is not allowed to do.
+    pub fn client_as(&self, token: &str) -> Result<kube::Client, String> {
         let mut config = kube::Config::new(
             self.apiserver_url
                 .parse()
                 .map_err(|err| format!("invalid apiserver url: {err}"))?,
         );
         config.accept_invalid_certs = true;
-        config.auth_info.token = Some(secrecy::SecretBox::new(TEST_TOKEN.to_string().into()));
+        config.auth_info.token = Some(secrecy::SecretBox::new(token.to_string().into()));
         kube::Client::try_from(config).map_err(|err| err.to_string())
     }
 }
