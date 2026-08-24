@@ -11,6 +11,7 @@ repository.workspace = true
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
+weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 axum = { workspace = true }
 kube = { workspace = true, features = ["admission", "client"] }
 k8s-openapi = { workspace = true }

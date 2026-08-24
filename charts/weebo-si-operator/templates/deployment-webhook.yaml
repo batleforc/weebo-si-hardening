@@ -62,9 +62,22 @@ spec:
             - webhook
             - --addr=0.0.0.0:{{ .Values.webhook.service.targetPort }}
             - --health-addr=0.0.0.0:{{ .Values.metrics.service.port }}
+            # `policy-guard`'s one exemption — rendered here, not guessed by the binary, per RFC
+            # 0004's *Operational considerations*: "the exemption matches the service account's
+            # full name, which changes only when a manifest changes."
+            - --operator-identity=system:serviceaccount:{{ .Release.Namespace }}:{{ include "weebo-si-operator.controllerServiceAccountName" . }}
             {{- with .Values.webhook.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          # `network-profiles`' structural exclusion needs this role to know which namespace is
+          # "ours" — the webhook has to reach the same verdict the controller does about which
+          # namespaces will never receive a baseline, or its DevWorkspace gate would refuse every
+          # workspace in them forever.
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: https
               containerPort: {{ .Values.webhook.service.targetPort }}

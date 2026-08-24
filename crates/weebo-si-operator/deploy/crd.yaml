@@ -153,6 +153,260 @@ spec:
                     - default
                     - mode
                     type: object
+                  networkProfiles:
+                    description: '`spec.features.networkProfiles`, per RFC 0004.'
+                    nullable: true
+                    properties:
+                      baseline:
+                        description: The profile applied to every namespace in scope, never negotiable.
+                        type: string
+                      catalog:
+                        description: Every profile a workspace may be granted.
+                        items:
+                          description: One entry of `spec.features.networkProfiles.catalog`.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an attribute, or a resolved decision names.
+                              type: string
+                            variants:
+                              description: This profile's variants, at most one per [`Backend`].
+                              items:
+                                description: One backend's rendering of a profile. A profile carries at most one variant per backend.
+                                properties:
+                                  backend:
+                                    description: Which dialect this variant is written in.
+                                    enum:
+                                    - NetworkPolicy
+                                    - Cilium
+                                    type: string
+                                  templateRef:
+                                    description: The template object this variant copies `policyTypes`/`ingress`/`egress` from.
+                                    properties:
+                                      name:
+                                        description: The template object's name.
+                                        type: string
+                                      namespace:
+                                        description: The namespace it lives in.
+                                        type: string
+                                    required:
+                                    - name
+                                    - namespace
+                                    type: object
+                                required:
+                                - backend
+                                - templateRef
+                                type: object
+                              type: array
+                          required:
+                          - key
+                          - variants
+                          type: object
+                        type: array
+                      enforcement:
+                        default:
+                          backend: Auto
+                          canary:
+                            enabled: true
+                            intervalSeconds: 300
+                        description: The enforcement backend and its canary.
+                        properties:
+                          backend:
+                            default: Auto
+                            description: Which policy dialect to write.
+                            enum:
+                            - Auto
+                            - NetworkPolicy
+                            - Cilium
+                            type: string
+                          canary:
+                            default:
+                              enabled: true
+                              intervalSeconds: 300
+                            description: The periodic enforcement probe.
+                            properties:
+                              enabled:
+                                description: Whether the canary probe runs.
+                                type: boolean
+                              intervalSeconds:
+                                description: How often the probe runs.
+                                format: uint32
+                                minimum: 0.0
+                                type: integer
+                            required:
+                            - enabled
+                            - intervalSeconds
+                            type: object
+                        type: object
+                      grants:
+                        additionalProperties:
+                          description: |-
+                            What one team may reach: the set of profile keys it may reach, and the subset of them applied
+                            when a workspace asks for nothing. Either may legitimately be empty — an ungranted team
+                            reaches only the baseline.
+                          properties:
+                            allowed:
+                              default: []
+                              description: The profile keys this team may reach.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue. Never a
+                                  `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
+                                type: string
+                              type: array
+                            default:
+                              default: []
+                              description: The subset of `allowed` applied when a workspace names nothing more specific.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue. Never a
+                                  `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
+                                type: string
+                              type: array
+                          type: object
+                        default: {}
+                        description: What each team may reach, keyed by team name.
+                        type: object
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelection:
+                        default:
+                          annotation: hardening.weebo.io/network-profiles
+                        description: The namespace annotation naming a profile key list.
+                        properties:
+                          annotation:
+                            default: hardening.weebo.io/network-profiles
+                            description: |-
+                              Namespace annotation naming a comma-separated profile key list. The empty string disables
+                              this selection step entirely.
+                            type: string
+                        type: object
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the controller''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            default: []
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            default: {}
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      onNotGranted:
+                        default: Default
+                        description: What to do when a workspace names a profile key its team's grant does not allow.
+                        enum:
+                        - Default
+                        - Deny
+                        type: string
+                      workspaceSelection:
+                        default:
+                          attribute: hardening.weebo.io/network-profiles
+                        description: The devfile attribute naming a profile key list.
+                        properties:
+                          attribute:
+                            default: hardening.weebo.io/network-profiles
+                            description: |-
+                              DevWorkspace attribute naming a comma-separated profile key list. The empty string
+                              disables this selection step entirely.
+                            type: string
+                        type: object
+                    required:
+                    - baseline
+                    - catalog
+                    - mode
+                    type: object
+                  policyGuard:
+                    description: '`spec.features.policyGuard`, per RFC 0004.'
+                    nullable: true
+                    properties:
+                      allowedIdentities:
+                        default: []
+                        description: Identities exempt from the guard's rules, in addition to the operator's own.
+                        items:
+                          type: string
+                        type: array
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the webhook''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            default: []
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            default: {}
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                    required:
+                    - mode
+                    type: object
                 type: object
               teams:
                 default: []

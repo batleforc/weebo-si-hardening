@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::DwocPinConfig;
+use crate::network_profiles::NetworkProfilesConfig;
+use crate::policy_guard::PolicyGuardConfig;
 use crate::team::Team;
 
 /// One optional field per registered feature, typed — a feature the binary does not know about
@@ -17,6 +19,12 @@ pub struct Features {
     /// `spec.features.dwocPin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dwoc_pin: Option<DwocPinConfig>,
+    /// `spec.features.networkProfiles`, per RFC 0004.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_profiles: Option<NetworkProfilesConfig>,
+    /// `spec.features.policyGuard`, per RFC 0004.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_guard: Option<PolicyGuardConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a

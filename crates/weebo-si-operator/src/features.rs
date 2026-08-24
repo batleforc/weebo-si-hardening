@@ -14,8 +14,20 @@ pub struct FeatureDescriptor {
 }
 
 /// Every feature this build knows about.
-pub const REGISTERED: &[FeatureDescriptor] = &[FeatureDescriptor {
-    id: "dwoc-pin",
-    rfc: "RFC 0002",
-    resource: "DevWorkspace",
-}];
+pub const REGISTERED: &[FeatureDescriptor] = &[
+    FeatureDescriptor {
+        id: "dwoc-pin",
+        rfc: "RFC 0002",
+        resource: "DevWorkspace",
+    },
+    FeatureDescriptor {
+        id: "network-profiles",
+        rfc: "RFC 0004",
+        resource: "Namespace, DevWorkspace",
+    },
+    FeatureDescriptor {
+        id: "policy-guard",
+        rfc: "RFC 0004",
+        resource: "NetworkPolicy, CiliumNetworkPolicy",
+    },
+];

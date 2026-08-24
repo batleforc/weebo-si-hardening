@@ -3,6 +3,8 @@ resolver = "3"
 # bins/ — simple binaries, no ports, no adapters. crates/ — hexagonal bricks. See
 # docs/architecture/repo-layout.md for the split.
 members = ["bins/*", "crates/*"]
+# `weebo-si-network-profiles` is picked up by the `crates/*` glob automatically — no explicit
+# entry needed, same as every other crate here.
 
 [workspace.package]
 edition = "2024"
@@ -74,7 +76,17 @@ axum = "0.8"
 # TLS termination for axum with no reverse proxy in front — both in production (serving cert from
 # a mounted Secret) and in the envtest harness (a self-signed cert generated with openssl,
 # mirroring the service-account keypair envtest already generates).
-axum-server = { version = "0.8", features = ["tls-rustls"] }
+#
+# `tls-rustls-no-provider`, not `tls-rustls`: the latter enables `rustls/aws-lc-rs`, which drags in
+# `aws-lc-sys` — a C library built through cc/cmake. That breaks the promise the whole dependency
+# set is otherwise written around (`kube` is pinned to `ring` just below, and both Containerfiles
+# and `.github/workflows/brick.yaml` build for musl on the assumption that no dependency needs a
+# cross C toolchain). The `-no-provider` variant leaves the choice to us, and the binary makes it
+# explicitly: `rustls::crypto::ring::default_provider().install_default()` in
+# `crates/weebo-si-operator/src/main.rs`, mirrored in the envtest harness. With `ring` as the only
+# provider feature left in the graph, rustls would fall back to it anyway — the call keeps the
+# choice visible rather than implied by which features happen to be enabled.
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # RFC 6902 JSON Patch construction, specifically to avoid hand-rolling the JSON Pointer escaping

@@ -6,6 +6,10 @@
 use prometheus::{Histogram, HistogramOpts, HistogramVec};
 
 /// The webhook's own metrics, separate from [`weebo_si_chassis::port::observer::Observer`]'s.
+/// `Clone` is cheap — `HistogramVec` is `Arc`-backed — so one registration is shared by both
+/// admission routes (`dwoc-pin`'s and `policy-guard`'s) rather than each registering its own
+/// copy of the same metric name against the same registry, which `prometheus::Registry` refuses.
+#[derive(Clone)]
 pub struct WebhookMetrics {
     duration_seconds: HistogramVec,
 }
@@ -24,11 +28,11 @@ impl WebhookMetrics {
         Ok(Self { duration_seconds })
     }
 
-    /// The timer for one admission of `resource`. Labelled `feature="dwoc-pin"` — the only
-    /// feature this endpoint serves today; a second feature on the same endpoint would need its
-    /// own timer around its own share of the request, not a rename of this one.
-    pub fn timer(&self, resource: &str) -> Histogram {
+    /// The timer for one admission of `resource`, by `feature` — `"dwoc-pin"` on the mutating
+    /// route, `"policy-guard"` on the validating one, each timing only its own share of the
+    /// request.
+    pub fn timer(&self, feature: &str, resource: &str) -> Histogram {
         self.duration_seconds
-            .with_label_values(&["dwoc-pin", resource])
+            .with_label_values(&[feature, resource])
     }
 }

@@ -1,0 +1,58 @@
+{{- if ne .Values.certificates.provider "none" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-policies
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.certificates.provider "cert-manager" }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "weebo-si-operator.webhookServiceName" . }}
+    {{- else if eq .Values.certificates.provider "openshift" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+    {{- end }}
+webhooks:
+  - name: policies.hardening.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    matchPolicy: Equivalent
+    # RFC 0004's *Design*: "`failurePolicy` is the one value in this RFC set at install time
+    # rather than by this document." `Fail` is what ships by default — see `values.yaml`'s own
+    # comment on `policyGuard.failurePolicy` for the trade-off a cluster that has verified its
+    # users cannot write `networkpolicies` directly may choose to make instead.
+    failurePolicy: {{ .Values.policyGuard.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    rules:
+      # `DELETE` is included on purpose — deleting the baseline is the cheapest bypass, and a
+      # rule that does not cover `DELETE` does not cover it. On a `DELETE` the object arrives in
+      # `oldObject`, which is where `weebo-si-webhook` reads the ownership label from.
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        resources: ["networkpolicies"]
+        scope: Namespaced
+      {{- if .Values.networkProfiles.cilium.enabled }}
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: ["cilium.io"]
+        apiVersions: ["v2"]
+        resources: ["ciliumnetworkpolicies"]
+        scope: Namespaced
+      {{- end }}
+    # Inverted polarity from the mutating webhook's opt-out `namespaceExclusionLabel`, on
+    # purpose — RFC 0004's *Design*: "this webhook denies writes, so a namespace it reaches by
+    # accident is a namespace whose owner cannot manage their own policies... failing toward 'not
+    # protected' is wrong for `dwoc-pin` and right here." Which namespaces are workspace
+    # namespaces is Che's to label; see the install runbook.
+    namespaceSelector:
+      matchExpressions:
+        - key: {{ .Values.namespaceExclusionLabel }}
+          operator: DoesNotExist
+        - key: hardening.weebo.io/workspace-namespace
+          operator: Exists
+    clientConfig:
+      service:
+        name: {{ include "weebo-si-operator.webhookServiceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate/v1/networkpolicies
+        port: {{ .Values.webhook.service.port }}
+{{- end }}

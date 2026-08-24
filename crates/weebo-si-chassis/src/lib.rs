@@ -15,6 +15,8 @@ pub mod port;
 
 pub use admit::{AdmitOutcome, admit};
 pub use error::DomainError;
-pub use feature::{Context, Decision, Feature, FeatureId, FeatureOutcome, Registry, Subject};
+pub use feature::{
+    Context, Decision, Feature, FeatureId, FeatureOutcome, ReconcileFeature, Registry, Subject,
+};
 pub use mutation::Mutation;
 pub use namespace_facts::NamespaceFacts;

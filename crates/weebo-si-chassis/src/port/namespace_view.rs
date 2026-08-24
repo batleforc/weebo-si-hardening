@@ -9,6 +9,16 @@ use crate::namespace_facts::NamespaceFacts;
 pub trait NamespaceView {
     /// The namespace's labels and selection annotation, or `None` if it has not been observed.
     fn facts(&self, ns: &NamespaceName) -> Option<NamespaceFacts>;
+
+    /// An arbitrary annotation, by key, or `None` if the namespace is unobserved, lacks it, or
+    /// `key` is empty (a feature's own "selection disabled" convention).
+    ///
+    /// **Why this exists alongside `facts().selection_annotation`**: that field is a single slot
+    /// shaped for `dwoc-pin`'s one, fixed annotation key — RFC 0004's `network-profiles` reads a
+    /// *different* key from the same namespace, and a second fixed slot would not scale to a
+    /// third feature either. This method is the general form; `facts()` stays as the
+    /// convenience `dwoc-pin` already depends on, unchanged.
+    fn annotation(&self, ns: &NamespaceName, key: &str) -> Option<String>;
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -32,6 +42,10 @@ pub mod testing {
     impl NamespaceView for FakeNamespaceView {
         fn facts(&self, ns: &NamespaceName) -> Option<NamespaceFacts> {
             self.0.get(ns).cloned()
+        }
+
+        fn annotation(&self, _ns: &NamespaceName, _key: &str) -> Option<String> {
+            None
         }
     }
 }

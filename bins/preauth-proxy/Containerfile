@@ -13,6 +13,7 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY bins ./bins
+COPY crates ./crates
 
 RUN cargo build --release --locked --package preauth-proxy \
       --target "$(rustc -vV | sed -n 's/^host: //p')" \

@@ -1,0 +1,28 @@
+# Build context for every Containerfile in this repo is the repository root, and the root holds a
+# `target/` directory that reaches tens of gigabytes on a developer machine. Without this file that
+# whole tree is sent to the builder before the first instruction runs.
+#
+# Allow-list, not a block-list: everything is excluded, then the three paths the Containerfiles
+# actually COPY are added back. A block-list silently starts shipping whatever directory lands at
+# the root next; this way the context can only grow when someone edits this file on purpose.
+#
+# Adding a `COPY <path>` to a Containerfile therefore means adding `!<path>` here, or the build
+# fails with "<path>: not found".
+*
+
+# The workspace manifest and its lockfile. `--locked` in the build makes the lockfile load-bearing:
+# omitting it turns every image build into a dependency re-resolution.
+!Cargo.toml
+!Cargo.lock
+
+# Both workspace member roots. Neither is optional for either image: `members = ["bins/*",
+# "crates/*"]` means cargo loads every member manifest before it can build any single package, so
+# an image that compiles only `preauth-proxy` still needs `crates/` on disk to parse the workspace.
+!bins
+!crates
+
+# Re-excluded after the two lines above, because `!bins`/`!crates` pull in their whole subtree.
+# Nothing here produces a per-member `target/` today (the workspace shares the root one), but a
+# stray `cargo build` run from inside a member directory would create one.
+bins/**/target
+crates/**/target

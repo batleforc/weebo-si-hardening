@@ -20,6 +20,7 @@ WORKDIR /src
 # resolve the workspace. --locked so the image is reproducible from Cargo.lock.
 COPY Cargo.toml Cargo.lock ./
 COPY bins ./bins
+COPY crates ./crates
 
 RUN cargo build --release --locked --package passwd-append \
       --target "$(rustc -vV | sed -n 's/^host: //p')" \

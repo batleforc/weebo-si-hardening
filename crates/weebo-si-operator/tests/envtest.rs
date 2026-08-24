@@ -23,7 +23,8 @@
 )]
 
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::{Event, Namespace, ObjectReference};
+use k8s_openapi::api::core::v1::{Container, Event, Namespace, ObjectReference, Pod, PodSpec};
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{
@@ -40,6 +41,8 @@ const CONTROLLER_TOKEN: &str = "rbac-envtest-controller-token";
 
 const DEVWORKSPACE_OPERATOR_CONFIG_CRD: &str =
     include_str!("../../weebo-si-webhook/tests/fixtures/devworkspaceoperatorconfig-crd.yaml");
+const DEVWORKSPACE_CRD: &str =
+    include_str!("../../weebo-si-webhook/tests/fixtures/devworkspace-crd.yaml");
 
 #[derive(serde::Deserialize)]
 struct KindProbe {
@@ -53,6 +56,11 @@ fn dwoc_resource() -> kube::api::ApiResource {
         "DevWorkspaceOperatorConfig",
     );
     kube::api::ApiResource::from_gvk_with_plural(&gvk, "devworkspaceoperatorconfigs")
+}
+
+fn devworkspace_resource() -> kube::api::ApiResource {
+    let gvk = GroupVersionKind::gvk("controller.devfile.io", "v1alpha1", "DevWorkspace");
+    kube::api::ApiResource::from_gvk_with_plural(&gvk, "devworkspaces")
 }
 
 /// Renders one template of `charts/weebo-si-operator` with the chart's own defaults — the
@@ -206,7 +214,9 @@ async fn install_crds(client: kube::Client) {
     let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
     let dwoc: CustomResourceDefinition = serde_yaml_bw::from_str(DEVWORKSPACE_OPERATOR_CONFIG_CRD)
         .expect("the fixture should parse");
-    for crd in [dwoc, WeeboSiConfig::crd()] {
+    let devworkspace: CustomResourceDefinition =
+        serde_yaml_bw::from_str(DEVWORKSPACE_CRD).expect("the fixture should parse");
+    for crd in [dwoc, devworkspace, WeeboSiConfig::crd()] {
         let name = crd.name_any();
         crds.patch(
             &name,
@@ -284,6 +294,39 @@ fn test_lease(name: &str) -> Lease {
     }
 }
 
+fn test_network_policy(name: &str) -> NetworkPolicy {
+    NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(RELEASE_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(Default::default()),
+            ..Default::default()
+        }),
+    }
+}
+
+fn test_pod(name: &str) -> Pod {
+    Pod {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(RELEASE_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            containers: vec![Container {
+                name: "canary".to_string(),
+                image: Some("registry.k8s.io/pause:3.9".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        status: None,
+    }
+}
+
 /// Asserts `result` failed with a `403 Forbidden` — the RBAC authorizer actually refusing the
 /// request, not the object simply not existing (`404`) or failing validation.
 fn assert_forbidden<T: std::fmt::Debug>(result: Result<T, kube::Error>, message: &str) {
@@ -354,6 +397,33 @@ async fn webhook_role_matches_the_documented_grants() {
             .await
             .is_ok(),
         "the webhook role should be able to list namespaces"
+    );
+    // RFC 0004: the webhook role reads managed policies to answer "does this namespace have its
+    // baseline yet" for the DevWorkspace CREATE gate.
+    assert!(
+        Api::<NetworkPolicy>::all(webhook.clone())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the webhook role should be able to list networkpolicies"
+    );
+
+    // ...and no more than read them. The whole point of splitting the two roles is that the one
+    // an untrusted AdmissionReview body reaches cannot write the objects the other one owns.
+    assert_forbidden(
+        Api::<NetworkPolicy>::namespaced(webhook.clone(), RELEASE_NAMESPACE)
+            .create(
+                &PostParams::default(),
+                &test_network_policy("webhook-should-fail"),
+            )
+            .await,
+        "the webhook role must not be able to create networkpolicies",
+    );
+    assert_forbidden(
+        Api::<Pod>::namespaced(webhook.clone(), RELEASE_NAMESPACE)
+            .create(&PostParams::default(), &test_pod("webhook-should-fail"))
+            .await,
+        "the canary's pod grant belongs to the controller role alone",
     );
 
     assert_forbidden(
@@ -460,6 +530,44 @@ async fn controller_role_matches_the_documented_grants() {
         )
         .await
         .expect("the controller role should be able to create the leader-election lease");
+
+    // RFC 0004's additions to the controller role.
+    assert!(
+        Api::<DynamicObject>::all_with(controller.clone(), &devworkspace_resource())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the controller role should be able to list devworkspaces"
+    );
+    {
+        let np_api = Api::<NetworkPolicy>::namespaced(controller.clone(), RELEASE_NAMESPACE);
+        let created = np_api
+            .create(
+                &PostParams::default(),
+                &test_network_policy("rbac-envtest-np"),
+            )
+            .await
+            .expect("the controller role should be able to create networkpolicies");
+        assert!(
+            np_api.get(&created.name_any()).await.is_ok(),
+            "the controller role should be able to read back a networkpolicy it created"
+        );
+        np_api
+            .delete("rbac-envtest-np", &DeleteParams::default())
+            .await
+            .expect("the controller role should be able to delete networkpolicies");
+    }
+    {
+        let pod_api = Api::<Pod>::namespaced(controller.clone(), RELEASE_NAMESPACE);
+        pod_api
+            .create(&PostParams::default(), &test_pod("rbac-envtest-canary"))
+            .await
+            .expect("the controller role should be able to create a pod in its own namespace");
+        pod_api
+            .delete("rbac-envtest-canary", &DeleteParams::default())
+            .await
+            .expect("the controller role should be able to delete a pod in its own namespace");
+    }
 
     assert_forbidden(
         Api::<WeeboSiConfig>::all(controller.clone())

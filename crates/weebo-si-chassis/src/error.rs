@@ -17,6 +17,15 @@ pub enum DomainError {
     /// namespace. The `/readyz` gate should prevent this in production; if it happens anyway,
     /// admission refuses to treat an unobserved namespace as matching no team.
     NamespaceNotObserved(NamespaceName),
+    /// An outbound port's real-world operation failed for a reason the domain cannot classify
+    /// further — a `PolicyStore::apply` call rejected by the apiserver, for example. Unlike
+    /// [`Self::InvalidConfiguration`] (this feature's own configuration is wrong) or
+    /// [`Self::NamespaceNotObserved`] (a specific, anticipated cache-miss), this variant exists
+    /// for a *reconcile* feature's ports, which — unlike every admission-side port so far — can
+    /// genuinely fail at the point of writing rather than only report "not found." The domain
+    /// still never sees `kube::Error` or any adapter-specific type; the adapter renders its
+    /// failure into a string before it crosses into this crate.
+    PortFailed(String),
 }
 
 impl fmt::Display for DomainError {
@@ -24,6 +33,7 @@ impl fmt::Display for DomainError {
         match self {
             Self::InvalidConfiguration(why) => write!(f, "invalid configuration: {why}"),
             Self::NamespaceNotObserved(ns) => write!(f, "namespace {ns} not observed"),
+            Self::PortFailed(why) => write!(f, "port failed: {why}"),
         }
     }
 }

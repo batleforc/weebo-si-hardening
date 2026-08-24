@@ -1,6 +1,8 @@
 //! The composition root — see RFC 0002's *CLI* contract. Only this file, `webhook_cmd.rs` and
 //! `controller_cmd.rs` may name a concrete adapter.
 
+mod backends_cmd;
+mod canary_cmd;
 mod cli;
 mod controller_cmd;
 mod features;
@@ -23,13 +25,20 @@ mod exit {
 const USAGE: &str = "\
 weebo-si-operator — admission webhook and controller for weebo-si-hardening
 
-usage: weebo-si-operator <features|webhook|controller|crd>
+usage: weebo-si-operator <features|webhook|controller|crd|backends|canary>
 
   webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/certs]
               [--metrics-addr :8080] [--health-addr :8081]
+              --operator-identity <system:serviceaccount:ns:name>
   controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
+              [--canary-image <ref>]
   crd         print the generated CRD YAML
   features    print the registry: id, originating RFC, target resource
+  backends    print which network-profiles backends are compiled in and which
+              this cluster actually offers
+  canary      [--namespace <ns>] [--canary-image <ref>]
+              run the enforcement probe once and report whether this cluster's
+              CNI actually enforces NetworkPolicy; non-zero exit if it does not
 ";
 
 fn main() -> ExitCode {
@@ -50,6 +59,8 @@ fn main() -> ExitCode {
         }
         Some("webhook") => run_async(webhook_cmd::run(&args[2..])),
         Some("controller") => run_async(controller_cmd::run(&args[2..])),
+        Some("backends") => run_async(backends_cmd::run()),
+        Some("canary") => run_async(canary_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::from(exit::OK)

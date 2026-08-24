@@ -1,12 +1,12 @@
 ---
 rfc: 0004
 title: network-profiles
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-08-24
 updated: 2026-08-24
-decided:
-brick: crates/weebo-si-operator
+decided: 2026-08-24
+brick: crates/weebo-si-network-profiles
 supersedes: []
 superseded-by: []
 ---
@@ -26,8 +26,9 @@ whose RBAC does not.
 This is the first feature that **writes objects**, the first to use the controller role, and the
 first with a pluggable enforcement backend: plain `NetworkPolicy` where that is all the cluster
 has, `CiliumNetworkPolicy` where the CNI offers more, with the degradation named rather than
-silent. It stays `Draft` until [RFC 0002](./0002-weebo-si-operator.md) is accepted, because it
-builds on an amendment to that RFC — `spec.teams` — that has not been reviewed yet.
+silent. It builds on an amendment to [RFC 0002](./0002-weebo-si-operator.md) — `spec.teams` —
+which shipped with that RFC, and on a second chassis trait, `ReconcileFeature<S>`, which that
+RFC predicted it would need.
 
 ## Motivation
 
@@ -440,7 +441,7 @@ This is feature two, and it does not. `Feature<S>::evaluate` returns mutations t
 under admission; a reconcile feature returns objects that should exist somewhere else.
 
 ```rust
-// domain/feature/mod.rs — alongside the existing Feature<S>
+// crates/weebo-si-chassis/src/feature/mod.rs — alongside the existing Feature<S>
 pub trait ReconcileFeature<S: Subject> {
     fn id(&self) -> FeatureId;
     fn desired(&self, subject: &S, ctx: &Context<'_>)
@@ -464,45 +465,78 @@ a port, and then — and only then — applies or discards. **A reconcile featur
 `DryRun` produces a diff an admin can read line by line before three hundred namespaces change
 at once.
 
-**Stale since RFC 0002's amendment** (2026-08-24): RFC 0002 restructured `weebo-si-operator` from
-one crate into seven (`weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`, `weebo-si-runtime`,
-`weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator`), so the single-crate tree below no
-longer matches where this feature would actually land — most likely a new
-`crates/weebo-si-network-profiles` depending on `weebo-si-crd` + `weebo-si-chassis` (mirroring
-`weebo-si-dwoc-pin`), with its outbound adapters joining `weebo-si-runtime` alongside dwoc-pin's.
-Left as a Draft-stage placeholder rather than redesigned here — that redesign belongs to this
-RFC's own next revision, not to RFC 0002's amendment.
+**Lands beside `weebo-si-dwoc-pin`, not inside `weebo-si-operator`.** RFC 0002 restructured the
+tree from one crate into seven (`weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`,
+`weebo-si-runtime`, `weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator`), and this
+feature follows the same split it predicted: a new `crates/weebo-si-network-profiles`, depending
+on `weebo-si-crd` + `weebo-si-chassis` only — the same "fewest dependencies, tested exhaustively
+without a cluster" rule `weebo-si-dwoc-pin` states for itself. Its outbound adapters join
+`weebo-si-runtime` alongside dwoc-pin's; `weebo-si-controller` gains the DevWorkspace and
+Namespace reconcile loops that call it; `weebo-si-webhook` gains `policy-guard`'s route;
+`weebo-si-operator` wires both in as the composition root already does for `dwoc-pin`.
 
 ```text
-crates/weebo-si-operator/src/
-├── domain/
-│   ├── model/
-│   │   ├── policy.rs              # ManagedObject, PolicyBody (opaque), ObjectKey, Backend
-│   │   ├── profile.rs             # ProfileKey, Profile, Variant, ProfileSet
-│   │   └── diff.rs                # DesiredState, Diff — create / update / delete / unchanged
-│   ├── feature/
-│   │   ├── network_profiles.rs    # the resolution chain and the desired-state computation
-│   │   └── policy_guard.rs        # the three-row verdict table
-│   └── port/
-│       ├── policy_store.rs        # what exists now, and applying a diff
-│       ├── template_store.rs      # fetch a template body by reference
-│       └── capabilities.rs        # which backends this cluster offers
-└── adapters/outbound/
-    ├── kube_policy_store.rs       # server-side apply, one field manager
-    ├── kube_template_store.rs     # watch-backed template cache
-    └── kube_capabilities.rs       # apiserver discovery
+crates/weebo-si-network-profiles/src/
+├── lib.rs                         # crate root — mirrors weebo-si-dwoc-pin/src/lib.rs
+├── application.rs                 # reconcile (mode at the edge) and run_canary (two legs)
+├── backend.rs                     # Auto → concrete Backend, given what the cluster offers
+├── canary.rs                      # Reachability × Reachability → CanaryVerdict. Pure.
+├── exclusion.rs                   # the two namespaces neither role ever touches
+├── resolve.rs                     # the three-scope chain and the grant intersection
+├── model/
+│   ├── policy.rs                  # ManagedObject, PolicyBody (opaque), ObjectKey, PodSelector
+│   └── diff.rs                    # DesiredState, Diff — create / update / delete / unchanged
+├── feature/
+│   ├── network_profiles.rs        # the desired-state computation, over two Subjects
+│   ├── workspace_gate.rs          # the DevWorkspace CREATE refusals, at admission
+│   └── policy_guard.rs            # the three-row verdict table
+└── port.rs                        # PolicyStore, TemplateStore, Capabilities, BaselineView,
+                                   # CanaryProbe, ReconcileObserver — and in-memory fakes
+
+crates/weebo-si-runtime/src/
+├── kube_policy_store.rs           # server-side apply, one field manager; also BaselineView
+├── kube_template_store.rs         # watch-backed template cache
+├── kube_capabilities.rs           # apiserver discovery
+├── kube_canary.rs                 # the pod pair, the deny policy, the verdict's raw material
+└── network_metrics.rs             # the five reconcile-driven weebo_si_network_* metrics
 ```
 
+Two departures from the sketch this section originally carried, both recorded in the
+*Implementation plan*: `ProfileKey`/`Profile`/`Variant` live in `weebo-si-crd` rather than a
+`model/profile.rs`, because the CRD struct tree *is* the domain model here (the same reason
+`weebo-si-dwoc-pin` reuses `CatalogKey`); and the ports are one `port.rs` rather than a `port/`
+directory, because there are six small traits rather than three large ones.
+
+`ReconcileFeature<S>` is added next to the existing `Feature<S>` in `feature/registry.rs`,
+because both traits share `Subject`, `Context`, `FeatureId` and `FeatureMode` and belong to
+whichever crate already owns those. Neither `weebo-si-dwoc-pin` nor `weebo-si-network-profiles`
+defines its own copy.
+
 ```rust
-// domain/port/policy_store.rs
-pub trait PolicyStore {
-    fn managed_in(&self, ns: &NamespaceName) -> Vec<ObjectKey>;
-    fn apply(&self, diff: &Diff) -> Result<Applied, DomainError>;
+// crates/weebo-si-network-profiles/src/port.rs — abridged; `apply` is boxed-async and every
+// trait here carries `Send + Sync`, because `application::reconcile` holds these across an
+// `.await`.
+pub trait PolicyStore: Send + Sync {
+    fn managed_in(&self, ns: &NamespaceName) -> Vec<ManagedObject>;
+    fn managed_everywhere(&self) -> Vec<ManagedObject>;
+    async fn apply(&self, diffs: &[Diff]) -> Result<Applied, DomainError>;
 }
 
-// domain/port/capabilities.rs
 pub trait Capabilities {
     fn offers(&self, backend: Backend) -> bool;
+}
+
+/// Read-only, and split off `PolicyStore` on purpose: its one consumer is the *webhook* role,
+/// which must not be handed `apply`.
+pub trait BaselineView: Send + Sync {
+    fn has_baseline(&self, ns: &NamespaceName) -> bool;
+}
+
+/// One leg of the enforcement probe. `restricted` is the whole parameter — the pair of answers
+/// is what `canary::verdict` reads.
+pub trait CanaryProbe: Send + Sync {
+    async fn reachability(&self, restricted: bool) -> Result<Reachability, DomainError>;
+    async fn cleanup(&self) -> Result<(), DomainError>;
 }
 ```
 
@@ -557,6 +591,15 @@ no permission on DevWorkspaces at all. **Both halves of that stop being true her
 | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete` | `networking.k8s.io/networkpolicies` | the objects this feature exists to write |
 | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete` | `cilium.io/ciliumnetworkpolicies` | only when the Cilium backend is enabled; omitted from the manifest otherwise |
 | `create`, `delete` | `pods` **in the operator's own namespace only**, via a `Role` | the canary, and nothing else |
+
+The split between the two roles matters more here than the total does. Only the **controller**
+role holds the write verbs above and the canary's `Role`. The **webhook** role gains exactly one
+new grant — `get`/`list`/`watch` on `networkpolicies` — which the `DevWorkspace` gate needs to
+answer "does this namespace have its baseline yet". That keeps
+[RFC 0002](./0002-weebo-si-operator.md)'s property intact in the shape that matters: the role an
+untrusted `AdmissionReview` body reaches still holds nothing but read-only watches. It is
+expressed in the types too, not only in RBAC — the webhook is handed a `BaselineView`, a port with
+no `apply` on it, rather than the `PolicyStore` the controller holds.
 
 The last row is a `Role`, not a `ClusterRole`, and it is worth the extra object: the canary is
 the only thing here that creates a workload, and it must be impossible for it to create one
@@ -642,7 +685,10 @@ something else.
   distinguish them, and no amount of care in the catalogue changes that.
 - **Workspaces started before installation.** Their pods keep running with no profile object
   until the controller reaches them — the baseline arriving *later* tightens rather than
-  loosens, so the direction is safe, but the window exists.
+  loosens, so the direction is safe, but the window exists. For workspaces created *after*
+  installation the window is closed by the admission gate in `feature/workspace_gate.rs`, which
+  refuses a `CREATE` into a namespace whose baseline has not landed yet; nothing closes it for
+  workspaces that were already running when the feature was switched on.
 
 **Blast radius.** Larger than [RFC 0002](./0002-weebo-si-operator.md)'s in kind, not only in
 degree, and for one reason worth stating plainly: **NetworkPolicy applies to pods that are
@@ -893,15 +939,19 @@ RBAC layer and not at all at the network layer. There is no isolation to rely on
 
 ## Unresolved questions
 
-**Blocking acceptance:**
+**Resolved before this revision**, and left here rather than deleted, because the answer is easy
+to miss inside the *Contract* table alone:
 
-- **Whether the workspace-side selector is a devfile attribute or an object annotation.** The
-  table says `spec.template.attributes`, so the request travels with the project — which is what
-  "my second project needs Vault" means, and it survives a workspace being recreated from the
-  devfile. The cost is that a repository now carries a hardening key, and anyone forking it
-  carries it too, bounded by the grant. An annotation on the DevWorkspace object is the
-  alternative: closer to the cluster, invisible to the repo, and lost every time the workspace is
-  recreated. This is the user-facing contract and it is settled before implementation.
+- **Whether the workspace-side selector is a devfile attribute or an object annotation.** Not
+  either/or — the design uses both, layered, mirroring `dwoc-pin`'s own three-scope resolution so
+  an admin learns the pattern once. `workspaceSelection.attribute` (a devfile attribute) wins when
+  set: the request travels with the project, survives the workspace being recreated from the
+  devfile, and is what "my second project needs Vault" means. `namespaceSelection.annotation` (a
+  namespace annotation) is the fallback when the attribute is not set: closer to the cluster,
+  invisible to the repository, and the tool for an admin who wants to grant a namespace's default
+  without editing every devfile in it. Either can be turned off by setting its key to the empty
+  string, which is the escape hatch for a cluster that wants only one of the two channels. No
+  further decision is needed before implementation.
 
 **Not blocking:**
 
@@ -915,8 +965,13 @@ RBAC layer and not at all at the network layer. There is no isolation to rely on
   `SelfSubjectAccessReview`-style check answering "can a workspace user write policy here", and
   reporting it as a condition. It would turn an install-checklist item into a monitored fact,
   which is the difference between "true when we looked" and "true".
-- Whether the canary should default to enabled. It is the only thing here that creates a pod,
-  and it is also the only thing that can tell an admin the feature does nothing.
+- ~~Whether the canary should default to enabled.~~ **Settled at enabled** (`Canary::default()`
+  is `{enabled: true, intervalSeconds: 300}`). It is the only thing here that creates a pod, and
+  it is also the only thing that can tell an admin the feature does nothing — and the second
+  argument wins, because the pod it creates is two containers in the operator's own namespace on
+  a five-minute interval, while the failure it catches makes every other control decorative.
+  Turning it off is one field. What is still open is whether `intervalSeconds`' floor (60s, in
+  the controller rather than the CRD) belongs in the schema instead.
 - Whether the baseline should be per team rather than one for the cluster. A team-specific floor
   is expressible today by granting a narrower profile set, and a genuinely different floor is
   not. Nobody has asked for one yet.
@@ -924,7 +979,9 @@ RBAC layer and not at all at the network layer. There is no isolation to rely on
   catalogue, useful for "who uses Vault", and one more dimension on the busiest counter.
 - Whether a workspace naming an ungranted profile should be denied by default rather than
   silently dropped to the team default. `Deny` teaches faster and breaks workspaces that copied
-  a devfile from a better-privileged team.
+  a devfile from a better-privileged team. Still `Default`; `Deny` is now genuinely available
+  (`feature/workspace_gate.rs` refuses the DevWorkspace at admission, naming the key), which is
+  what makes this a real choice rather than a described one.
 - Whether the guard should also cover `AdminNetworkPolicy` once clusters carry it.
 
 ## Future work
@@ -948,47 +1005,155 @@ RBAC layer and not at all at the network layer. There is no isolation to rely on
 
 ## Implementation plan
 
-- [ ] `domain/model/policy.rs`, `profile.rs`, `diff.rs` — `ManagedObject`, opaque `PolicyBody`,
-      `Backend`, `ProfileSet`, `Diff`. Pure, and a test asserting `PolicyBody` exposes no way to
-      read its contents
-- [ ] `domain/feature/mod.rs` — the `ReconcileFeature<S>` trait beside `Feature<S>`, sharing the
-      registry, plus the test asserting `desired` cannot observe its mode
-- [ ] `domain/port` — `PolicyStore`, `TemplateStore`, `Capabilities`, with in-memory fakes
-- [ ] `domain/feature/network_profiles.rs` — the resolution chain, the intersection with
+- [x] `crates/weebo-si-network-profiles` scaffolded (`Cargo.toml` depending on `weebo-si-crd` +
+      `weebo-si-chassis` only, added to the workspace `members`), mirroring
+      `crates/weebo-si-dwoc-pin`
+- [x] `model/policy.rs`, `diff.rs` — `ManagedObject`, opaque `PolicyBody`, `ObjectKey`,
+      `PodSelector`, `DesiredState`, `Diff`. Pure. `ProfileKey`/`Profile`/`Variant` ended up in
+      `weebo-si-crd` rather than a separate `model/profile.rs`, per this crate's own "the CRD
+      struct tree *is* the domain model" rule — the same reason `weebo-si-dwoc-pin` reuses
+      `CatalogKey`/`DwocRef` rather than wrapping them. `PolicyBody`'s opacity is enforced by
+      ordinary field privacy (no accessor to grep for), not a textual test.
+- [x] `crates/weebo-si-chassis/src/feature/reconcile.rs` — the `ReconcileFeature<S>` trait beside
+      `Feature<S>`, with `Desired` as an associated type rather than a fixed chassis type (kept
+      the chassis free of `ManagedObject`). Mode-blindness is structural (the signature carries
+      no mode parameter, same as `Feature::evaluate`) **and** now has the executable proof
+      mirroring `admit.rs`'s `DryRun`/`Enforce` test, in `application::reconcile`'s own suite:
+      the two modes compute the identical diff against the same starting state and differ only
+      in `applied`.
+- [x] `port.rs` — `TemplateStore`, `Capabilities`, **and now `PolicyStore`** (`managed_in`,
+      `apply`), with in-memory fakes for all three (`FakeTemplateStore`, `FakeCapabilities`,
+      `FakePolicyStore`).
+- [x] `feature/network_profiles.rs` — the resolution chain (`resolve.rs`), the intersection with
       `allowed`, `onNotGranted`, unsupported-variant handling, and the baseline refusal, table
-      tested exhaustively
-- [ ] The desired-state computation and the diff, tested against a fake store: create, update,
-      no-op, delete, and the two cases that must never produce a delete — an unlabelled object,
-      and a namespace out of scope
-- [ ] `application/reconcile_network.rs` — mode at the edge, diff rendering for `DryRun`
-- [ ] CRD types for both features, and `task recu` regenerating the schema
-- [ ] `adapters/outbound/kube_policy_store.rs` — server-side apply with one field manager,
-      label-filtered watch
-- [ ] `adapters/outbound/kube_template_store.rs` and `kube_capabilities.rs`, plus the `Auto`
-      backend resolution and its `status` reporting
-- [ ] `adapters/inbound/controller.rs` — the DevWorkspace and Namespace reconcile loops, with
-      the structural exclusion of our own and Che's namespaces as a compiled-in refusal and a
-      test proving it cannot be configured away
-- [ ] `domain/feature/policy_guard.rs` and its admission adapter — the three-row verdict table,
-      including reading the ownership label from `oldObject` on `DELETE`
-- [ ] The DevWorkspace `CREATE` rejection when a namespace has no baseline yet
-- [ ] The canary: pod pair, probe, verdict, metric, and the `canary` subcommand
-- [ ] `backends` subcommand
-- [ ] Manifests: the `ClusterRole` above, the namespaced `Role` for the canary, the
-      `ValidatingWebhookConfiguration` in both a `Fail` and an `Ignore` variant with the
-      checklist question that picks one, and the Cilium rules in a separate overlay so a cluster
-      without Cilium never grants them
-- [ ] The end-to-end test that the controller can write through its own guard — the one that
-      catches a service account rename before it becomes a permanent self-lockout
-- [ ] End-to-end suite against a real apiserver with a policy-enforcing CNI: baseline created,
-      profile per workspace, an ungranted request under both `onNotGranted` values, drift
-      restored, `mode: Off` deleting everything, the guard denying a delete and a create, and a
-      real connectivity assertion rather than an object assertion
-- [ ] Docs: the runbook — the install checklist opening with "can a workspace user write
-      `networkpolicies` in their own namespace", since it picks the guard's `failurePolicy`;
-      then the canary; the rollout order between the two features; and both break-glasses, the
-      labelled delete and the `ValidatingWebhookConfiguration` one
-- [ ] RFC flipped to `Implemented`
+      tested exhaustively (33 tests). Operates against an already-resolved, concrete `Backend`
+      held behind its own `Arc<RwLock<_>>` — `Auto` resolution stays with `kube_capabilities.rs`
+      below, per this RFC's own implementation plan grouping.
+- [x] The desired-state computation and the diff (`compute_diff`), tested directly as a pure
+      function (create, update, unchanged, delete) rather than against a fake `PolicyStore` — the
+      unlabelled-object case is a `PolicyStore` filtering contract for its own adapter to prove
+      once one exists.
+- [x] `weebo-si-network-profiles::application::reconcile` — mode at the edge (`DryRun` computes
+      and never calls `PolicyStore::apply`; `Enforce` computes and applies; `Off` is a caller
+      bug, reported as a `DomainError` rather than silently treated as `DryRun`), diff rendering
+      via `ReconcileOutcome.diffs`. Lives in `weebo-si-network-profiles`, not
+      `crates/weebo-si-controller/src/reconcile_network.rs` as first sketched — same reasoning as
+      `weebo_si_chassis::admit` living in the chassis rather than in `weebo-si-webhook`: testable
+      without the I/O (a `kube::Client`) that would otherwise be the only way to exercise it. The
+      future controller watch loop becomes a thin adapter calling this function.
+- [x] CRD types for both features in `weebo-si-crd`, and `task recu` regenerating the schema
+- [x] `crates/weebo-si-runtime/src/kube_policy_store.rs` — server-side apply with one field
+      manager (`weebo-si-operator`), label-filtered watch of both backends, implementing
+      `PolicyStore`. `Diff::Delete` grew a `backend` field along the way — it had none, and an
+      adapter cannot know which API to call to delete an object it never saw
+- [x] `crates/weebo-si-runtime/src/kube_template_store.rs` and `kube_capabilities.rs`,
+      implementing `TemplateStore`/`Capabilities`. `KubeCapabilities::discover` is a one-shot
+      snapshot at boot (documented limitation: a CNI installed later needs a restart to be
+      noticed) — `weebo-si-network-profiles::resolve_backend` does the actual `Auto`→concrete
+      `Backend` decision, unchanged from the last revision
+- [x] `crates/weebo-si-controller/src/network_profiles.rs` — the `Namespace` and `DevWorkspace`
+      reconcile loops, thin adapters over `application::reconcile`. The structural exclusion is a
+      compiled-in `is_excluded()` check (operator's own namespace + `eclipse-che`), not yet
+      backed by a dedicated test proving it cannot be configured away — the four real-apiserver
+      tests below exercise namespaces outside the exclusion only
+- [x] `feature/policy_guard.rs` in `weebo-si-network-profiles` — the three-row verdict table,
+      table-tested. Fits the existing `Feature<S>` trait (a `NetworkPolicyWrite` subject) rather
+      than needing a new one — no mutation is ever produced, only allow/deny.
+- [x] Its admission adapter in `weebo-si-webhook` (`src/policy_guard.rs`), reading the ownership
+      label from `oldObject` on `UPDATE`/`DELETE` and treating `CREATE` as never-yet-managed.
+      `--operator-identity` is a required CLI flag, rendered by the Helm chart from the
+      controller `ServiceAccount`'s own name rather than guessed by the binary
+- [x] The DevWorkspace `CREATE` rejection when a namespace has no baseline yet —
+      `feature/workspace_gate.rs`, a `Feature<WorkspaceAdmission>` reporting the *same*
+      `network-profiles` `FeatureId` rather than a flag of its own, so `mode` gates both halves of
+      the feature and `DryRun` records a refusal without making it. It also closes the
+      `onNotGranted: Deny` divergence the first slice's changelog entry flagged: `Deny` now
+      genuinely "refuses the DevWorkspace at admission with a message naming the ungranted key,"
+      which is what this RFC's *Design* always claimed. Its port is `BaselineView`
+      (`has_baseline`) rather than `PolicyStore` — the webhook role must not hold `apply`. The
+      structural exclusion moved to `exclusion.rs` in the domain crate so both roles reach the
+      identical verdict about which namespaces will never get a baseline; two copies that
+      disagree is a wedged namespace
+- [x] The canary: pod pair, probe, verdict, metric, and the `canary` subcommand. The verdict
+      logic is pure (`canary.rs`: two `Reachability` observations in, one `CanaryVerdict` out),
+      the sequencing is `application::run_canary`, and the pods are
+      `weebo-si-runtime/src/kube_canary.rs`. **Two legs, not one**, and that is the design
+      decision worth keeping: a single "is it blocked" probe cannot tell *the CNI enforced the
+      policy* from *the probe itself is broken*, so the unrestricted leg runs first and a target
+      that was already unreachable reports `unknown` rather than `enforcing`. The verdict is read
+      off the client pod's terminal phase — no `exec`, no log scraping, no permission beyond the
+      `get` the operator already has. The image is `registry.k8s.io/e2e-test-images/agnhost`,
+      pinned, overridable via `--canary-image`/`values.yaml` for an air-gapped mirror.
+      **Tested at both tiers.** 11 unit tests over the pod and policy specs (pure functions, so
+      the RFC's own requirements — no service account token, non-root, `restartPolicy: Never`,
+      a deny policy selecting only the server, and *not* carrying the ownership label — are
+      executable rather than described), and 8 real-apiserver tests over the sequence. envtest
+      has no kubelet, but the probe never talks to one: it reads pod *status*, which a test
+      writes itself through the `/status` subresource. The fixture that makes this work decides
+      the client pod's exit status by reading whether the deny policy exists, so a
+      `cni_enforces: true` fixture is a cluster that evaluates NetworkPolicy and a
+      `cni_enforces: false` one is a cluster that ignores it — exactly the two the probe exists
+      to tell apart, and `run_canary` is asserted to return `Enforcing` against the first and
+      `NotEnforcing` against the second. What no test can reach is whether a real CNI drops a
+      real packet; that stays in *Known limitations*, and is the reason `weebo-si-operator
+      canary` is step 1 of the rollout rather than a thing CI can answer
+- [x] `backends` subcommand — prints compiled-in backends and which the cluster offers, via
+      `KubeCapabilities::discover`
+- [x] Manifests: the `ClusterRole` additions (`devworkspaces` read, `networkpolicies` full verbs,
+      `ciliumnetworkpolicies` gated behind `values.yaml`'s `networkProfiles.cilium.enabled`), the
+      namespaced `Role` for the canary (RBAC only — the canary itself is not implemented), and
+      the `ValidatingWebhookConfiguration` with `failurePolicy` driven by
+      `values.yaml`'s `policyGuard.failurePolicy` (`Fail` by default) rather than two separate
+      manifests
+- [x] The end-to-end test that the controller can write through its own guard —
+      `the_controller_writes_through_its_own_live_policy_guard` in
+      `crates/weebo-si-webhook/tests/envtest.rs`: a real `ValidatingWebhookConfiguration` (with
+      `DELETE`) on a real apiserver, calling back into a real running webhook over TLS, against
+      requests made by **two distinct authenticated identities**. It asserts all four sides of the
+      contract in one pass — the controller's write lands, a workspace owner's own `CREATE` is
+      refused, their `DELETE` of a managed object is refused and the object survives, and the
+      controller can still delete its own. The identity match is the thing under test, so it
+      needed a new envtest mode (`EnvTest::start_with_identities`): several identities with
+      `AlwaysAllow` authorization, because `start_rbac` would refuse the non-admin write *before*
+      admission ran and green the test for the wrong reason. The `DevWorkspace` gate has its
+      live counterpart beside it
+      (`a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live`), which also proves the
+      gate *reopens* once the baseline lands — a gate that never reopens is an outage, not a
+      control
+- [x] The `Observability contract` in full — all seven `weebo_si_network_*` metrics.
+      `weebo_si_network_backend` and `weebo_si_network_profile_unsupported` are set from the
+      config sync (`config_store.rs`), because both are properties of the *configuration* and a
+      gauge driven from a reconcile pass would report whichever namespace ran last. The other
+      five are `weebo-si-runtime/src/network_metrics.rs`, behind a `ReconcileObserver` port so
+      `weebo-si-controller` never names a concrete adapter. Two shapes worth recording:
+      `weebo_si_network_managed_objects` is set from a full snapshot rather than incremented
+      (a gauge that misses one decrement over-reports for the process's lifetime), and
+      `drift_total{action="restored"}` counts `Update`s only — a `Create` is indistinguishable
+      from the first reconcile of a new namespace, and a drift counter that ticks on every
+      install teaches nothing. `DesiredState` grew `team`/`not_granted`/`unsupported` to carry
+      the label values out of `resolve()`, rather than having the controller run the resolution
+      chain a second time just to label a counter
+- [x] End-to-end suite against a real apiserver (`crates/weebo-si-runtime/tests/envtest.rs`, 4
+      tests, `AlwaysAllow` tier): baseline created in `Enforce`, `DryRun` writes nothing, a
+      workspace with two granted profiles gets two objects with the correct
+      `devworkspace_id`-keyed selector, `policy-guard` denies a non-operator `DELETE` of a real
+      managed object. **Not covered**: `onNotGranted: Deny`, drift restored, `mode: Off` deleting
+      everything, the guard denying a `CREATE`, and any real connectivity assertion (needs a
+      policy-enforcing CNI, which envtest does not provide) — the RBAC suite
+      (`crates/weebo-si-operator/tests/envtest.rs`) separately proves the new grants for real
+      against an RBAC-enforcing apiserver
+- [x] Docs: `docs/bricks/weebo-si-operator.md` gained an RFC 0004 section — install checklist,
+      rollout, rollback, logs, observability, and *Known limitations* naming everything above
+      that is not implemented. No dedicated runbook page; folded into the existing one
+- [x] RFC flipped to `Implemented`. The three gaps the previous revision refused to flip over —
+      the canary, the `DevWorkspace` `CREATE` rejection, the guard-writes-through-its-own-guard
+      test — are closed, and so is the *Observability contract* the runbook had recorded as a
+      *Known limitation*. What remains open is listed as a limitation rather than a gap, in the
+      runbook's own *Known limitations*: `Auto` backend resolution is still a boot-time snapshot,
+      exit code `3` is still reserved rather than reachable, the canary proves the CNI enforces
+      *something* rather than that the catalogue is right, and a namespace that leaves the
+      feature's `namespaceSelector` still keeps its objects until `mode: Off` or the break-glass.
+      None of those is this RFC claiming something it does not do
 
 ## References
 
@@ -1014,3 +1179,9 @@ RBAC layer and not at all at the network layer. There is no isolation to rely on
 
 | Date | Change |
 | --- | --- |
+| 2026-08-24 | Flipped to `Proposed`. Updated *Architecture* to the actual post-RFC-0002 crate split (`crates/weebo-si-network-profiles` beside `weebo-si-dwoc-pin`, `ReconcileFeature<S>` in `weebo-si-chassis`), which the previous revision had left as a stale placeholder. Resolved the "devfile attribute vs annotation" question that *Unresolved questions* had marked blocking: the *Contract* table already specifies both, layered, so the entry moved to *Resolved*. |
+| 2026-08-24 | First implementation slice landed: the pure domain layer (CRD types, `ReconcileFeature<S>`, both features' decision logic — see *Implementation plan*, now partially checked). Two things surfaced worth recording rather than silently deciding: (1) `weebo_si_chassis::NamespaceFacts::selection_annotation` is a single slot shaped for `dwoc-pin`'s one annotation key — it has no room for `network-profiles`' own, differently-keyed namespace annotation. Worked around in this phase by having `resolve()` take the namespace labels and this feature's own annotation value as separate parameters rather than reading `Context::namespace()` for both; the chassis type itself is unchanged. Whoever builds the namespace-cache adapter in the next phase needs to either extend `NamespaceFacts` to carry annotations per feature or find another way for two features to read two keys off one namespace — this RFC does not resolve that, it only avoids being wrong about it. (2) `onNotGranted: Deny` is described in *Design* as refusing the DevWorkspace "at admission," but `network-profiles` is a `ReconcileFeature`, not an admission feature, and no admission check for it is designed anywhere in this RFC. This phase's `desired()` treats a `Deny` outcome as "write nothing beyond the baseline for this workspace" (fail-safe, not fail-loud) until an admission-side design exists to make the RFC's own words true. |
+| 2026-08-24 | Second implementation slice: `weebo-si-network-profiles::application::reconcile` (mode-gated orchestration tying `desired()`, `compute_diff` and `PolicyStore::apply` together — the item the *Implementation plan* had sketched as `crates/weebo-si-controller/src/reconcile_network.rs`, relocated for the same testability reason `weebo_si_chassis::admit` lives in the chassis rather than in `weebo-si-webhook`), the `PolicyStore` port and its in-memory fake, and `resolve_backend` — the pure half of `Auto`→concrete `Backend` resolution (capability-ordered, Cilium preferred, and an explicit backend is never silently substituted for another). Still zero `kube` dependency. What remains before any of this touches a real cluster: the three kube adapters (`KubePolicyStore`, `KubeTemplateStore`, `KubeCapabilities`), the controller's DevWorkspace/Namespace watch loops that call `reconcile`, the `policy-guard` admission adapter, the canary, CLI subcommands, RBAC/Helm manifests, and an envtest suite — all still open in the checklist below. |
+| 2026-08-24 | Third implementation slice, the first to touch `kube`: the three adapters (`KubePolicyStore`, `KubeTemplateStore`, `KubeCapabilities`), the controller's `Namespace`/`DevWorkspace` reconcile loops, `policy-guard`'s admission adapter, RBAC and `ValidatingWebhookConfiguration` manifests, the `backends` subcommand, and a real-apiserver test suite (4 tests in `weebo-si-runtime`, plus RBAC assertions extended in `weebo-si-operator`) — all passing against real `etcd`+`kube-apiserver` processes, not just `helm template`. Building the adapters surfaced three gaps the pure-domain phases could not have: `PolicyBody` needed a narrow `as_bytes()` accessor (the *domain* never inspects it; the adapter serializing it to the apiserver has to), `TemplateStore::body` needed a `Backend` parameter (the two dialects can name the same `{name, namespace}` and be different objects), and `PolicyStore::apply` had to become genuinely async (a real write is I/O, `Off`-mode's synchronous port trait couldn't stay synchronous once one implementor actually talks to a cluster) — which in turn required `DwocCatalog`, `ReconcileFeature<S>` and `PolicyStore` to gain `Send + Sync` supertraits so `Context` and an `async fn` holding these trait objects could be `Send` across an `.await`. Also resolved the `NamespaceFacts` single-annotation gap flagged in the first slice's changelog entry: `NamespaceView` gained a general `annotation(ns, key)` method alongside the existing fixed-key `facts()`, and `KubeNsStore` implements it by reading any key off its already-cached `Namespace` objects — no chassis type needed to grow a second slot. **Not implemented**: the canary, the `DevWorkspace` `CREATE` rejection for a namespace with no baseline, and the end-to-end test that the controller writes through its own `policy-guard`. RFC stays `Proposed`, not `Implemented`, until those close — see the *Implementation plan* for specifics. |
+| 2026-08-24 | Fourth and final implementation slice; flipped to `Implemented`. Closes the three gaps the third slice refused to flip over, plus the *Observability contract* the runbook had recorded as not wired up. **The canary**: a pure two-observation verdict (`canary.rs`), a two-leg sequencer (`application::run_canary`) and a pod-pair adapter (`kube_canary.rs`), driving `weebo_si_network_canary` from the controller and answerable by hand with `weebo-si-operator canary`, which exits non-zero on anything but `enforcing`. **The `DevWorkspace` `CREATE` rejection**: `feature/workspace_gate.rs`, a `Feature<WorkspaceAdmission>` reporting the `network-profiles` `FeatureId` so one `mode` gates both halves of the feature — which also makes `onNotGranted: Deny` refuse a DevWorkspace at admission, as this RFC's *Design* had claimed since the first revision and the first slice's changelog entry had flagged as untrue. **The end-to-end guard test**: two authenticated identities against a live `ValidatingWebhookConfiguration`, asserting the controller writes through its own guard and a workspace owner does not. Three things surfaced that the earlier slices could not have: `DesiredState` had to grow `team`/`not_granted`/`unsupported` (a metric label whose value comes from `resolve()` must travel out of the one place the resolution chain runs, not be recomputed by a controller free to drift from it); the structural namespace exclusion had to move from `weebo-si-controller` into the domain crate (the webhook now needs the identical verdict, and two copies that disagree wedge a namespace); and the webhook role gained a read-only `networkpolicies` watch for `BaselineView`, which is a real widening of the role RFC 0002 describes as holding nothing but watches — still watches, one more of them, and deliberately *not* the write verbs, which stay on the controller-only role. |
+| 2026-08-24 | Canary test coverage, after review pushed back on "the adapter is untestable without a kubelet" — which was wrong. The probe reads pod *status*, and a test can write pod status through the `/status` subresource, so the whole sequence is reachable in envtest after all: 8 real-apiserver tests over `server_ip`/`set_deny`/`dial`/`cleanup` and `run_canary` end to end, driven by a fixture that decides the client pod's exit status from whether the deny policy exists (making it a cluster that enforces policy, or one that does not, on a boolean). Plus 11 unit tests over the now-extracted pure spec builders, which turn the RFC's own requirements for this pod — no service account token, non-root, `restartPolicy: Never`, a deny policy selecting only the server and not carrying the ownership label — into assertions. Fixed a latent bug found while writing them: `KubeCanary::pod` ended in `serde_json::from_value(..).unwrap_or_default()`, so a malformed spec became an empty `Pod` and surfaced as an apiserver rejection describing the symptom rather than the cause; it now returns a `DomainError` naming the pod. Both new suites were mutation-checked — breaking the pod spec's types fails four unit tests, and making `set_deny` silently skip its write fails the two envtests that matter. |

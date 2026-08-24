@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }

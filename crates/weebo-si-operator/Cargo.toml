@@ -11,6 +11,7 @@ repository.workspace = true
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
+weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
 weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
 weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }

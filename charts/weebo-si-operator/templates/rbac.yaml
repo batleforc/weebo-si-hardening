@@ -21,6 +21,19 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+  # RFC 0004. Read-only, and shared by both roles for different reasons: the controller diffs
+  # against it, and the webhook needs it to answer "does this namespace have its baseline yet"
+  # for the DevWorkspace CREATE gate. Deliberately *not* the write verbs — those stay on the
+  # controller-only role below, so the webhook role (the one an untrusted AdmissionReview body
+  # reaches) still holds nothing but watches.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  {{- if .Values.networkProfiles.cilium.enabled }}
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -52,8 +65,12 @@ subjects:
     name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# What only the controller role adds — "It has no permission on DevWorkspaces at all — not even
-# read," and it has none here either.
+# What only the controller role adds — RFC 0002's original "no permission on DevWorkspaces at
+# all — not even read" stops being true here, per RFC 0004's *Security considerations*: "a
+# controller has no admission request to read the object from." The last two rules are this
+# RFC's own, and the largest single grant in this repo — writing `networkpolicies` cluster-wide
+# is the ability to cut the network of anything in the cluster. Bounded by code, not RBAC: the
+# ownership label, the namespace exclusions, and the diff — see the RFC for the argument.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -67,6 +84,17 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
+  - apiGroups: ["controller.devfile.io"]
+    resources: ["devworkspaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "update", "patch", "delete"]
+  {{- if .Values.networkProfiles.cilium.enabled }}
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["create", "update", "patch", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -116,4 +144,35 @@ subjects:
     name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+---
+# The canary's whole grant: create and delete pods, in the operator's own namespace only. A
+# `Role`, not a `ClusterRole` — RFC 0004's *Security considerations*: "it must be impossible for
+# it to create one anywhere but at home."
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-canary
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-canary
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-canary
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
 {{- end }}

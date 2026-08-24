@@ -2,8 +2,10 @@
 //! See RFC 0002's *Contract* section, "Terminology," and *Architecture*, "The feature trait, and
 //! the invariant."
 
+mod reconcile;
 mod registry;
 mod value;
 
+pub use reconcile::ReconcileFeature;
 pub use registry::{Context, Feature, Registry, Subject};
 pub use value::{Decision, FeatureId, FeatureOutcome};

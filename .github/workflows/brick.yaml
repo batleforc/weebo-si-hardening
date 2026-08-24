@@ -44,16 +44,30 @@ jobs:
         with:
           key: ${{ inputs.crate }}-musl
 
-      # No `musl-tools` install: every dependency here is pure Rust, so the
-      # target's self-contained linking produces a static binary on its own —
-      # verified, not assumed. The moment a crate arrives with a `cc` build
-      # script the link will fail, and the fix is to add
-      # `sudo apt-get install -y --no-install-recommends musl-tools` here.
+      # That moment arrived: `weebo-si-operator` links rustls, whose only two
+      # crypto providers (`ring` and `aws-lc-rs`) both compile C and assembly
+      # from a `cc` build script. `preauth-proxy` and `passwd-append` are still
+      # pure Rust and do not need this, but the step is cheap and unconditional
+      # beats a per-crate `if:` that goes stale the next time a brick grows a
+      # dependency.
+      #
+      # `CC_x86_64_unknown_linux_musl` is not optional: cc-rs guesses the cross
+      # compiler is named `x86_64-linux-musl-gcc`, and Ubuntu's `musl-tools`
+      # installs the wrapper as `musl-gcc`. Without the override the build fails
+      # with `ToolNotFound` even though the compiler is right there on $PATH.
+      #
+      # This does not weaken the static-linking guarantee the next step asserts:
+      # musl-gcc only produces the object files for those C sources, and rustc
+      # still links them with its own self-contained musl crt.
+      - name: Install the musl C toolchain
+        run: sudo apt-get install -y --no-install-recommends musl-tools
 
       # --locked: the build has to fail on a Cargo.lock that does not match the
       # manifests, rather than quietly resolving something else than what was
       # audited by `dep-audit.yaml` and `postmortem.yaml`.
       - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
         run: >-
           cargo build --release --locked
           --package ${{ inputs.crate }}

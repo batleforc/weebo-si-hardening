@@ -9,7 +9,10 @@
 pub mod dwoc;
 pub mod dwoc_pin;
 pub mod feature_mode;
+pub mod labels;
 pub mod namespace;
+pub mod network_profiles;
+pub mod policy_guard;
 pub mod selector;
 pub mod spec;
 pub mod team;
@@ -20,7 +23,17 @@ pub use dwoc_pin::{
     OnMissingTarget, OnUnknownKey,
 };
 pub use feature_mode::FeatureMode;
+pub use labels::{
+    BACKEND_LABEL, CANARY_LABEL, DEVWORKSPACE_ID_LABEL, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
+    PROFILE_LABEL,
+};
 pub use namespace::NamespaceName;
+pub use network_profiles::{
+    Backend, Canary, Enforcement, EnforcementBackend, NetworkProfilesConfig,
+    NetworkProfilesConfigViolation, OnNotGranted, Profile, ProfileCatalog, ProfileGrant,
+    ProfileKey, ProfileNamespaceSelection, TemplateRef, Variant, WorkspaceSelection,
+};
+pub use policy_guard::PolicyGuardConfig;
 pub use selector::{Expression, Operator, Selector};
 pub use spec::{
     FeatureState, FeatureStatus, Features, SINGLETON_NAME, WeeboSiConfig, WeeboSiConfigSpec,

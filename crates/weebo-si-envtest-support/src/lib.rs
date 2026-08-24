@@ -44,6 +44,18 @@ impl EnvTest {
         Self::start_with("AlwaysAllow", &[]).await
     }
 
+    /// Like [`start`](Self::start), but authenticating `extra_tokens` (`(token, username)` pairs)
+    /// alongside the admin token, **without** turning RBAC on.
+    ///
+    /// The combination exists for exactly one kind of suite: one that needs several *distinct
+    /// identities* so an admission webhook can tell them apart, but must not have RBAC
+    /// second-guessing the verdict. `start_rbac` would refuse a non-admin identity's write before
+    /// admission ever ran, which would green the test for the wrong reason — the request has to
+    /// reach the webhook for the webhook's answer to be what is under test.
+    pub async fn start_with_identities(extra_tokens: &[(&str, &str)]) -> Result<Self, String> {
+        Self::start_with("AlwaysAllow", extra_tokens).await
+    }
+
     /// Like [`start`](Self::start), but with `RBAC` authorization actually enforced, and
     /// `extra_tokens` (`(token, username)` pairs, no groups — e.g.
     /// `system:serviceaccount:<namespace>:<name>` to authenticate as a given `ServiceAccount`
@@ -159,6 +171,12 @@ impl EnvTest {
     /// Like [`try_start`](Self::try_start), for [`start_rbac`](Self::start_rbac).
     pub async fn try_start_rbac(extra_tokens: &[(&str, &str)]) -> Option<Self> {
         Self::resolve_or_skip(Self::start_rbac(extra_tokens).await)
+    }
+
+    /// Like [`try_start`](Self::try_start), for
+    /// [`start_with_identities`](Self::start_with_identities).
+    pub async fn try_start_with_identities(extra_tokens: &[(&str, &str)]) -> Option<Self> {
+        Self::resolve_or_skip(Self::start_with_identities(extra_tokens).await)
     }
 
     fn resolve_or_skip(result: Result<Self, String>) -> Option<Self> {

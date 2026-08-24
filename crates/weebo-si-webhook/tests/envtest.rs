@@ -35,7 +35,9 @@ use weebo_si_chassis::Registry;
 use weebo_si_crd::WeeboSiConfig;
 use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_envtest_support::{EnvTest, free_port, generate_webhook_tls};
-use weebo_si_runtime::{KubeConfigStore, KubeDwocStore, KubeNsStore, PrometheusObserver};
+use weebo_si_runtime::{
+    KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore, PrometheusObserver,
+};
 use weebo_si_webhook::AppState;
 
 macro_rules! envtest_or_skip {
@@ -121,6 +123,11 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
             .expect("dwoc store should start"),
     );
 
+    let capabilities = Arc::new(
+        KubeCapabilities::discover(client.clone())
+            .await
+            .expect("capabilities discovery should succeed"),
+    );
     let prometheus_registry = prometheus::Registry::new();
     let config_store = KubeConfigStore::spawn(
         client.clone(),
@@ -128,6 +135,7 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
         Arc::clone(&ns_store),
         annotation_key,
         Arc::clone(&dwoc_store),
+        capabilities,
     )
     .await
     .expect("config store should start");
@@ -140,6 +148,9 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
 
     let state = Arc::new(AppState {
         registry,
+        // `dwoc-pin`'s own scenarios below run without `network-profiles`' gate in the way —
+        // RFC 0004's admission half has its own suite at the bottom of this file.
+        network_profiles: None,
         gate: Arc::new(config_store),
         namespace_view: ns_store,
         dwoc_catalog: dwoc_store,
@@ -1424,4 +1435,623 @@ async fn the_real_chart_namespace_selector_excludes_labelled_namespaces_live() {
     let _ = excluded_devworkspaces
         .delete("should-pass", &DeleteParams::default())
         .await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// RFC 0004 — the two admission surfaces `network-profiles` and `policy-guard` add, end to end.
+//
+// What makes this suite different from `weebo-si-runtime`'s (which exercises `PolicyGuard`'s
+// decision logic directly against real objects) is that here the verdict travels the whole way:
+// a real `ValidatingWebhookConfiguration` on the apiserver, calling back into a real running
+// webhook over TLS, against a request made by a *distinct identity*. That is the only shape in
+// which the question RFC 0004's *Operational considerations* calls a permanent self-lockout —
+// "can the controller write through its own guard?" — has a real answer.
+// ---------------------------------------------------------------------------------------------
+
+use k8s_openapi::api::admissionregistration::v1::{
+    RuleWithOperations as ValidatingRule, ValidatingWebhook, ValidatingWebhookConfiguration,
+};
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicySpec};
+use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
+use weebo_si_chassis::{Context, NamespaceFacts};
+use weebo_si_crd::{
+    Backend, Enforcement, FeatureMode, NamespaceName, NetworkProfilesConfig, OnNotGranted, Profile,
+    ProfileCatalog, ProfileKey, ProfileNamespaceSelection, TemplateRef, Variant,
+    WorkspaceSelection,
+};
+use weebo_si_network_profiles::{
+    NamespaceSubject, NetworkProfiles, WorkspaceAdmission, WorkspaceGate,
+};
+use weebo_si_runtime::{KubePolicyStore, KubeTemplateStore};
+use weebo_si_webhook::{NetworkProfilesAdmission, PolicyGuardState, policy_guard_router};
+
+/// The identity the guard must never lock out. Deliberately the exact
+/// `system:serviceaccount:<ns>:<name>` shape the Helm chart renders — RFC 0004: "the exemption
+/// matches the service account's full name, which changes only when a manifest changes."
+const CONTROLLER_IDENTITY: &str =
+    "system:serviceaccount:weebo-si-hardening:weebo-si-operator-controller";
+const CONTROLLER_TOKEN: &str = "controller-token";
+/// A workspace owner. Authenticated, deliberately *not* exempt.
+const USER_IDENTITY: &str = "system:serviceaccount:user-alice:default";
+const USER_TOKEN: &str = "alice-token";
+
+const OPERATOR_NAMESPACE: &str = "weebo-si-hardening";
+const RFC4_WORKSPACE_NAMESPACE: &str = "user-alice";
+/// The positive label RFC 0004's `ValidatingWebhookConfiguration` requires. Inverted polarity
+/// from `dwoc-pin`'s opt-out, on purpose — see the RFC's *Design*.
+const WORKSPACE_NAMESPACE_LABEL: &str = "hardening.weebo.io/workspace-namespace";
+
+fn rfc4_config(mode: FeatureMode) -> NetworkProfilesConfig {
+    NetworkProfilesConfig {
+        mode,
+        namespace_selector: None,
+        catalog: ProfileCatalog::new(vec![Profile {
+            key: ProfileKey::new("base"),
+            variants: vec![Variant {
+                backend: Backend::NetworkPolicy,
+                template_ref: TemplateRef {
+                    name: "weebo-base".to_string(),
+                    namespace: NamespaceName::new(OPERATOR_NAMESPACE),
+                },
+            }],
+        }]),
+        baseline: ProfileKey::new("base"),
+        grants: BTreeMap::new(),
+        namespace_selection: ProfileNamespaceSelection::default(),
+        workspace_selection: WorkspaceSelection::default(),
+        on_not_granted: OnNotGranted::default(),
+        enforcement: Enforcement::default(),
+    }
+}
+
+/// The `spec` half of the same thing, for the `WeeboSiConfig` the live webhook reads its mode
+/// from. Written as JSON rather than serialized from `rfc4_config` so a schema mismatch between
+/// the Rust type and the CRD shows up here as a rejected create.
+fn rfc4_config_spec(network_profiles_mode: &str, policy_guard_mode: &str) -> serde_json::Value {
+    serde_json::json!({
+        "features": {
+            "networkProfiles": {
+                "mode": network_profiles_mode,
+                "catalog": [{
+                    "key": "base",
+                    "variants": [{
+                        "backend": "NetworkPolicy",
+                        "templateRef": {"name": "weebo-base", "namespace": OPERATOR_NAMESPACE},
+                    }],
+                }],
+                "baseline": "base",
+            },
+            "policyGuard": {"mode": policy_guard_mode},
+        }
+    })
+}
+
+async fn create_policy_template(client: kube::Client) {
+    let api: Api<NetworkPolicy> = Api::namespaced(client, OPERATOR_NAMESPACE);
+    let template = NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some("weebo-base".to_string()),
+            namespace: Some(OPERATOR_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(Default::default()),
+            policy_types: Some(vec!["Egress".to_string()]),
+            egress: Some(vec![NetworkPolicyEgressRule::default()]),
+            ..Default::default()
+        }),
+    };
+    api.create(&PostParams::default(), &template)
+        .await
+        .expect("the template should be created");
+}
+
+/// An ordinary, *unmanaged* policy — what a workspace owner would write to undo the baseline.
+fn user_authored_policy(name: &str) -> NetworkPolicy {
+    NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(RFC4_WORKSPACE_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(Default::default()),
+            policy_types: Some(vec!["Egress".to_string()]),
+            egress: Some(vec![NetworkPolicyEgressRule::default()]),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Serve `router` on a fresh port over TLS and return `(port, ca_bundle)`.
+async fn serve_router(cert_dir: &std::path::Path, app: axum::Router) -> (u16, Vec<u8>) {
+    let (key_path, cert_path) =
+        generate_webhook_tls(cert_dir).expect("cert generation should succeed");
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+        .await
+        .expect("tls config should load");
+    let port = free_port().expect("a free port should be available");
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("addr should parse");
+    tokio::spawn(async move {
+        let _ = axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service())
+            .await;
+    });
+    let ca_bundle =
+        weebo_si_envtest_support::read_ca_bundle(&cert_path).expect("cert should be readable");
+    (port, ca_bundle)
+}
+
+/// Register RFC 0004's own `ValidatingWebhookConfiguration`, pointed at a local port.
+async fn register_policy_guard_webhook(client: kube::Client, port: u16, ca_bundle: Vec<u8>) {
+    let api: Api<ValidatingWebhookConfiguration> = Api::all(client);
+    let config = ValidatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-policies-envtest".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![ValidatingWebhook {
+            name: "policies.hardening.weebo.io".to_string(),
+            admission_review_versions: vec!["v1".to_string()],
+            side_effects: "None".to_string(),
+            match_policy: Some("Equivalent".to_string()),
+            failure_policy: Some("Fail".to_string()),
+            timeout_seconds: Some(5),
+            rules: Some(vec![ValidatingRule {
+                // DELETE included, which is the entire point — see the RFC's *Design*.
+                operations: Some(vec![
+                    "CREATE".to_string(),
+                    "UPDATE".to_string(),
+                    "DELETE".to_string(),
+                ]),
+                api_groups: Some(vec!["networking.k8s.io".to_string()]),
+                api_versions: Some(vec!["v1".to_string()]),
+                resources: Some(vec!["networkpolicies".to_string()]),
+                scope: Some("Namespaced".to_string()),
+            }]),
+            namespace_selector: Some(
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                    match_expressions: Some(vec![
+                        k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                            key: WORKSPACE_NAMESPACE_LABEL.to_string(),
+                            operator: "Exists".to_string(),
+                            values: None,
+                        },
+                    ]),
+                    match_labels: None,
+                },
+            ),
+            client_config: WebhookClientConfig {
+                url: Some(format!(
+                    "https://127.0.0.1:{port}/validate/v1/networkpolicies"
+                )),
+                ca_bundle: Some(k8s_openapi::ByteString(ca_bundle)),
+                service: None::<ServiceReference>,
+            },
+            ..Default::default()
+        }]),
+    };
+    api.create(&PostParams::default(), &config)
+        .await
+        .expect("the validating webhook configuration should be accepted");
+}
+
+/// Poll until an operation stops failing with "no endpoints available"/"connection refused" —
+/// the apiserver needs a moment to pick up a freshly registered webhook, exactly as
+/// `create_with_retry` does for the mutating one.
+async fn retry_until_webhook_routes<T, F, Fut>(mut attempt: F) -> Result<T, kube::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, kube::Error>>,
+{
+    let mut last = None;
+    for _ in 0..40 {
+        match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let message = err.to_string();
+                // A *verdict* is a real answer and must not be retried away; only the
+                // "webhook not reachable yet" shapes are.
+                if !message.contains("failed to call webhook")
+                    && !message.contains("connection refused")
+                    && !message.contains("no endpoints")
+                {
+                    return Err(err);
+                }
+                last = Some(err);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(
+            "webhook never became reachable".to_string(),
+        ))
+    }))
+}
+
+/// Everything the RFC 0004 suites share: caches, config store, observer, metrics.
+struct Rfc4Stack {
+    config_store: Arc<KubeConfigStore>,
+    ns_store: Arc<KubeNsStore>,
+    dwoc_store: Arc<KubeDwocStore>,
+    policy_store: Arc<KubePolicyStore>,
+    observer: Arc<PrometheusObserver>,
+    metrics: weebo_si_webhook::WebhookMetrics,
+}
+
+async fn rfc4_stack(client: kube::Client) -> Rfc4Stack {
+    let annotation_key = Arc::new(std::sync::RwLock::new(
+        "hardening.weebo.io/dwoc".to_string(),
+    ));
+    let ns_store = Arc::new(
+        KubeNsStore::spawn(client.clone(), Arc::clone(&annotation_key))
+            .await
+            .expect("namespace store should start"),
+    );
+    let dwoc_store = Arc::new(
+        KubeDwocStore::spawn(client.clone())
+            .await
+            .expect("dwoc store should start"),
+    );
+    let capabilities = Arc::new(
+        KubeCapabilities::discover(client.clone())
+            .await
+            .expect("capabilities discovery should succeed"),
+    );
+    let prometheus_registry = prometheus::Registry::new();
+    let config_store = Arc::new(
+        KubeConfigStore::spawn(
+            client.clone(),
+            &prometheus_registry,
+            Arc::clone(&ns_store),
+            annotation_key,
+            Arc::clone(&dwoc_store),
+            capabilities,
+        )
+        .await
+        .expect("config store should start"),
+    );
+    let policy_store = Arc::new(
+        KubePolicyStore::spawn(client, false)
+            .await
+            .expect("policy store should start"),
+    );
+    let observer =
+        Arc::new(PrometheusObserver::new(&prometheus_registry).expect("observer should register"));
+    let metrics = weebo_si_webhook::WebhookMetrics::register(&prometheus_registry)
+        .expect("metrics should register");
+    Rfc4Stack {
+        config_store,
+        ns_store,
+        dwoc_store,
+        policy_store,
+        observer,
+        metrics,
+    }
+}
+
+/// **The test RFC 0004's *Implementation plan* names as a gap and its *Operational
+/// considerations* argues is the one that matters**: the controller writes its own objects
+/// *through* a live `policy-guard`, and a workspace owner cannot.
+///
+/// The identity-matching bug this guards against is the one the RFC calls "a permanent
+/// self-lockout": a renamed service account, a namespace moved, and the guard denies the
+/// controller's own writes with a verdict rather than a timeout — deterministically, so no retry
+/// helps. Only an end-to-end test with two distinct authenticated identities can catch it,
+/// because the bug lives in the comparison against `userInfo`, which a direct call to
+/// `PolicyGuard::evaluate` supplies by hand and therefore always gets right.
+#[tokio::test]
+async fn the_controller_writes_through_its_own_live_policy_guard() {
+    let Some(env_test) = EnvTest::try_start_with_identities(&[
+        (CONTROLLER_TOKEN, CONTROLLER_IDENTITY),
+        (USER_TOKEN, USER_IDENTITY),
+    ])
+    .await
+    else {
+        return;
+    };
+    let admin = env_test.client().expect("client should build");
+    install_crds(admin.clone()).await;
+
+    create_namespace(
+        admin.clone(),
+        OPERATOR_NAMESPACE,
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        [(WORKSPACE_NAMESPACE_LABEL.to_string(), "true".to_string())].into(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_policy_template(admin.clone()).await;
+    create_config(admin.clone(), rfc4_config_spec("Enforce", "Enforce")).await;
+
+    let stack = rfc4_stack(admin.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let guard_state = Arc::new(PolicyGuardState {
+        operator_identity: CONTROLLER_IDENTITY.to_string(),
+        policy_guard_config: stack.config_store.policy_guard_config(),
+        gate: Arc::clone(&stack.config_store) as _,
+        namespace_view: Arc::clone(&stack.ns_store) as _,
+        dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
+        observer: Arc::clone(&stack.observer) as _,
+        metrics: stack.metrics.clone(),
+    });
+    let (port, ca_bundle) = serve_router(cert_dir.path(), policy_guard_router(guard_state)).await;
+    register_policy_guard_webhook(admin.clone(), port, ca_bundle).await;
+    // The config store's first sync has to have landed before the guard can report a mode.
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    // --- 1. The controller writes, as itself, through the guard. ---
+    let controller_client = env_test
+        .client_as(CONTROLLER_TOKEN)
+        .expect("controller client should build");
+    let templates = Arc::new(
+        KubeTemplateStore::spawn(controller_client.clone(), OPERATOR_NAMESPACE, false)
+            .await
+            .expect("template store should start"),
+    );
+    let controller_policy_store = KubePolicyStore::spawn(controller_client.clone(), false)
+        .await
+        .expect("controller policy store should start");
+    let feature = NetworkProfiles::new(
+        Arc::new(std::sync::RwLock::new(Some(rfc4_config(
+            FeatureMode::Enforce,
+        )))),
+        Arc::new(std::sync::RwLock::new(Backend::NetworkPolicy)),
+        templates,
+    );
+    let namespace_facts = NamespaceFacts::default();
+    let dwoc_catalog = FakeDwocCatalog::new(std::iter::empty());
+    let ctx = Context::new(&[], &namespace_facts, &dwoc_catalog);
+    let subject = NamespaceSubject {
+        namespace: NamespaceName::new(RFC4_WORKSPACE_NAMESPACE),
+    };
+
+    let outcome = retry_until_webhook_routes(|| async {
+        weebo_si_network_profiles::reconcile(
+            &feature,
+            &subject,
+            &ctx,
+            FeatureMode::Enforce,
+            &controller_policy_store,
+        )
+        .await
+        .map_err(|err| {
+            kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(
+                err.to_string(),
+            ))
+        })
+    })
+    .await
+    .expect("the controller must be able to write through its own guard");
+    assert_eq!(
+        outcome.applied.expect("Enforce applies").created,
+        1,
+        "the baseline write was denied by our own guard — this is the self-lockout RFC 0004's \
+         Operational considerations warns about"
+    );
+
+    let admin_policies: Api<NetworkPolicy> =
+        Api::namespaced(admin.clone(), RFC4_WORKSPACE_NAMESPACE);
+    admin_policies
+        .get("weebo-base")
+        .await
+        .expect("the baseline should really exist");
+
+    // --- 2. A workspace owner cannot author their own policy. ---
+    let user_client = env_test
+        .client_as(USER_TOKEN)
+        .expect("user client should build");
+    let user_policies: Api<NetworkPolicy> =
+        Api::namespaced(user_client.clone(), RFC4_WORKSPACE_NAMESPACE);
+    let create_error = user_policies
+        .create(
+            &PostParams::default(),
+            &user_authored_policy("my-own-allow-everything"),
+        )
+        .await
+        .expect_err("an unmanaged CREATE by a workspace owner must be denied");
+    assert!(
+        create_error.to_string().contains("belongs to the platform"),
+        "the denial should be the guard's, not an unrelated failure: {create_error}"
+    );
+
+    // --- 3. And cannot delete ours, which is the cheapest bypass. ---
+    let delete_error = user_policies
+        .delete("weebo-base", &DeleteParams::default())
+        .await
+        .expect_err("deleting a managed object must be denied");
+    assert!(
+        delete_error
+            .to_string()
+            .contains("managed by weebo-si-operator"),
+        "the DELETE rule must be the one that fired: {delete_error}"
+    );
+    admin_policies
+        .get("weebo-base")
+        .await
+        .expect("the baseline the guard protected should still be there");
+
+    // --- 4. And the controller can still delete its own, after all of the above. ---
+    // The asymmetry is the whole contract: same object, same verb, different identity.
+    let controller_policies: Api<NetworkPolicy> =
+        Api::namespaced(controller_client, RFC4_WORKSPACE_NAMESPACE);
+    controller_policies
+        .delete("weebo-base", &DeleteParams::default())
+        .await
+        .expect("the operator's own DELETE of its own object must be allowed");
+}
+
+/// The other half of RFC 0004's admission surface: a `DevWorkspace` `CREATE` is refused while its
+/// namespace carries no baseline, and admitted once it does.
+#[tokio::test]
+async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
+    let env_test = envtest_or_skip!();
+    let admin = env_test.client().expect("client should build");
+    install_crds(admin.clone()).await;
+
+    create_namespace(
+        admin.clone(),
+        OPERATOR_NAMESPACE,
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_policy_template(admin.clone()).await;
+    create_config(admin.clone(), rfc4_config_spec("Enforce", "Off")).await;
+
+    let stack = rfc4_stack(admin.clone()).await;
+    let mut dwoc_pin_registry: Registry<Workspace> = Registry::new();
+    dwoc_pin_registry.register(DwocPin::new(stack.config_store.dwoc_pin_config()));
+    let mut gate_registry: Registry<WorkspaceAdmission> = Registry::new();
+    gate_registry.register(WorkspaceGate::new(
+        stack.config_store.network_profiles_config(),
+        Arc::clone(&stack.policy_store) as _,
+        NamespaceName::new(OPERATOR_NAMESPACE),
+    ));
+    let state = Arc::new(AppState {
+        registry: dwoc_pin_registry,
+        network_profiles: Some(NetworkProfilesAdmission {
+            registry: gate_registry,
+            config: stack.config_store.network_profiles_config(),
+        }),
+        gate: Arc::clone(&stack.config_store) as _,
+        namespace_view: Arc::clone(&stack.ns_store) as _,
+        dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
+        observer: Arc::clone(&stack.observer) as _,
+        metrics: stack.metrics.clone(),
+    });
+
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (port, ca_bundle) = serve_router(cert_dir.path(), weebo_si_webhook::router(state)).await;
+    let webhooks_api: Api<MutatingWebhookConfiguration> = Api::all(admin.clone());
+    let webhook_config = MutatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-devworkspaces-rfc4".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![
+            k8s_openapi::api::admissionregistration::v1::MutatingWebhook {
+                name: "devworkspaces.hardening.weebo.io".to_string(),
+                admission_review_versions: vec!["v1".to_string()],
+                side_effects: "None".to_string(),
+                match_policy: Some("Equivalent".to_string()),
+                failure_policy: Some("Fail".to_string()),
+                timeout_seconds: Some(5),
+                rules: Some(vec![RuleWithOperations {
+                    operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
+                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    resources: Some(vec!["devworkspaces".to_string()]),
+                    scope: Some("Namespaced".to_string()),
+                }]),
+                client_config: WebhookClientConfig {
+                    url: Some(format!(
+                        "https://127.0.0.1:{port}/mutate/v1alpha1/devworkspaces"
+                    )),
+                    ca_bundle: Some(k8s_openapi::ByteString(ca_bundle)),
+                    service: None::<ServiceReference>,
+                },
+                ..Default::default()
+            },
+        ]),
+    };
+    webhooks_api
+        .create(&PostParams::default(), &webhook_config)
+        .await
+        .expect("webhook configuration should be accepted");
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    let workspaces: Api<DynamicObject> = Api::namespaced_with(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        &devworkspace_resource(),
+    );
+
+    // --- Before the baseline: refused, and the message says why. ---
+    let refusal = retry_until_webhook_routes(|| async {
+        match workspaces
+            .create(
+                &PostParams::default(),
+                &devworkspace(RFC4_WORKSPACE_NAMESPACE, "too-early"),
+            )
+            .await
+        {
+            Ok(_) => panic!("a workspace must not be admitted before its namespace has a baseline"),
+            Err(err) if err.to_string().contains("baseline") => Ok(err),
+            Err(err) => Err(err),
+        }
+    })
+    .await
+    .expect("the gate should have refused with its own message");
+    assert!(
+        refusal.to_string().contains("would start unprotected"),
+        "the denial should name the risk, not just fail: {refusal}"
+    );
+
+    // --- Write the baseline, exactly as the controller would. ---
+    let templates = Arc::new(
+        KubeTemplateStore::spawn(admin.clone(), OPERATOR_NAMESPACE, false)
+            .await
+            .expect("template store should start"),
+    );
+    let feature = NetworkProfiles::new(
+        Arc::new(std::sync::RwLock::new(Some(rfc4_config(
+            FeatureMode::Enforce,
+        )))),
+        Arc::new(std::sync::RwLock::new(Backend::NetworkPolicy)),
+        templates,
+    );
+    let namespace_facts = NamespaceFacts::default();
+    let dwoc_catalog = FakeDwocCatalog::new(std::iter::empty());
+    let ctx = Context::new(&[], &namespace_facts, &dwoc_catalog);
+    weebo_si_network_profiles::reconcile(
+        &feature,
+        &NamespaceSubject {
+            namespace: NamespaceName::new(RFC4_WORKSPACE_NAMESPACE),
+        },
+        &ctx,
+        FeatureMode::Enforce,
+        stack.policy_store.as_ref(),
+    )
+    .await
+    .expect("the baseline should be written");
+
+    // --- After it lands in the gate's watch cache: admitted. ---
+    let mut admitted = false;
+    for _ in 0..40 {
+        match workspaces
+            .create(
+                &PostParams::default(),
+                &devworkspace(RFC4_WORKSPACE_NAMESPACE, "in-time"),
+            )
+            .await
+        {
+            Ok(_) => {
+                admitted = true;
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+    assert!(
+        admitted,
+        "once the baseline exists the same workspace must be admitted — a gate that never \
+         reopens is an outage, not a control"
+    );
 }

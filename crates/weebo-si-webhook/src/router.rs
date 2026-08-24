@@ -2,7 +2,7 @@
 //! composition root (and the envtest suite) both serve, so what the envtest tier proves is the
 //! same wiring production runs.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::extract::State;
 use axum::routing::post;
@@ -14,10 +14,11 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
 use weebo_si_chassis::{AdmitOutcome, Mutation, Registry};
-use weebo_si_crd::{DwocRef, NamespaceName};
+use weebo_si_crd::{DwocRef, NamespaceName, NetworkProfilesConfig};
 use weebo_si_dwoc_pin::Workspace;
+use weebo_si_network_profiles::WorkspaceAdmission;
 
-use crate::extract::workspace_from_object;
+use crate::extract::{workspace_admission_from_object, workspace_from_object};
 use crate::metrics::WebhookMetrics;
 use crate::render::render_patch;
 
@@ -69,6 +70,15 @@ pub const MUTATE_DEVWORKSPACES_PATH: &str = "/mutate/v1alpha1/devworkspaces";
 pub struct AppState {
     /// Every registered feature, in declaration order.
     pub registry: Registry<Workspace>,
+    /// `network-profiles`' own admission surface, run over the same request before `registry`.
+    ///
+    /// A second registry rather than a second entry in the first, because the two features take
+    /// *different subjects*: `dwoc-pin`'s `Workspace` and `network-profiles`'
+    /// `WorkspaceAdmission`, and `Registry<S>` is generic in exactly that. Merging them would
+    /// mean one subject type carrying both features' fields, which is the coupling
+    /// `weebo-si-network-profiles` depending on `weebo-si-dwoc-pin` — or the reverse — would
+    /// introduce. `None` when `network-profiles` is not compiled into this deployment's wiring.
+    pub network_profiles: Option<NetworkProfilesAdmission>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace.
@@ -79,6 +89,17 @@ pub struct AppState {
     pub observer: Arc<dyn Observer + Send + Sync>,
     /// `weebo_si_admission_duration_seconds`.
     pub metrics: WebhookMetrics,
+}
+
+/// `network-profiles`' half of the DevWorkspace admission path — the registry holding
+/// [`weebo_si_network_profiles::WorkspaceGate`], plus the live configuration the two selection
+/// keys are read from.
+pub struct NetworkProfilesAdmission {
+    /// The gate, registered.
+    pub registry: Registry<WorkspaceAdmission>,
+    /// `spec.features.networkProfiles`, hot-reloaded — read fresh per request for
+    /// `workspaceSelection.attribute` and `namespaceSelection.annotation`.
+    pub config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
 }
 
 /// The webhook's router. Also built by the envtest suite, pointed at real
@@ -111,9 +132,73 @@ async fn mutate_devworkspaces(
     let namespace = NamespaceName::new(request.namespace.clone().unwrap_or_default());
     let workspace = workspace_from_object(&namespace, object);
 
+    // `network-profiles` first, and a denial here short-circuits before `dwoc-pin` runs at all.
+    // Order is deliberate: this gate refuses a workspace that must not start; computing a pin for
+    // a workspace we are about to refuse would be work whose result is thrown away, and — worse —
+    // a `dwoc-pin` denial for an unrelated reason would mask the message that actually explains
+    // what the author has to change.
+    if let Some(np) = &state.network_profiles {
+        let (attribute_key, annotation_key) = {
+            let guard = np
+                .config
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match guard.as_ref() {
+                Some(config) => (
+                    config.workspace_selection.attribute.clone(),
+                    config.namespace_selection.annotation.clone(),
+                ),
+                // No `networkProfiles` block at all. `FeatureGate::mode` already reports `Off`
+                // for it, so `admit` would skip the gate anyway — returning early just avoids
+                // reading the object for keys nobody configured.
+                None => (String::new(), String::new()),
+            }
+        };
+        let namespace_annotation = (!annotation_key.is_empty())
+            .then(|| state.namespace_view.annotation(&namespace, &annotation_key))
+            .flatten();
+        let subject = workspace_admission_from_object(
+            &namespace,
+            object,
+            request.operation.clone(),
+            &attribute_key,
+            namespace_annotation,
+        );
+
+        let gate_timer = state
+            .metrics
+            .timer("network-profiles", RESOURCE)
+            .start_timer();
+        let outcome = weebo_si_chassis::admit(
+            &np.registry,
+            &subject,
+            state.gate.as_ref(),
+            state.namespace_view.as_ref(),
+            state.dwoc_catalog.as_ref(),
+            state.observer.as_ref(),
+        );
+        gate_timer.observe_duration();
+
+        let denial = match outcome {
+            Ok(AdmitOutcome::Deny(reason)) => Some(reason),
+            Ok(AdmitOutcome::Allow(_)) => None,
+            Err(err) => Some(err.to_string()),
+        };
+        if let Some(reason) = denial {
+            log_admission(
+                &namespace,
+                &workspace.name,
+                workspace.config_ref.as_ref(),
+                &[],
+                Some(&reason),
+            );
+            return Json(response.deny(reason).into_review());
+        }
+    }
+
     // Named (not `let _ = ...`, which would drop immediately): the histogram observation
     // happens on drop, at the end of this function's scope.
-    let _timer = state.metrics.timer(RESOURCE).start_timer();
+    let _timer = state.metrics.timer("dwoc-pin", RESOURCE).start_timer();
     let outcome = weebo_si_chassis::admit(
         &state.registry,
         &workspace,

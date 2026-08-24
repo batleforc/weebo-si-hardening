@@ -91,4 +91,23 @@ impl NamespaceView for KubeNsStore {
                 }
             })
     }
+
+    fn annotation(&self, ns: &NamespaceName, key: &str) -> Option<String> {
+        if key.is_empty() {
+            return None;
+        }
+        self.store
+            .state()
+            .into_iter()
+            .find(|namespace| namespace.metadata.name.as_deref() == Some(ns.as_str()))
+            .and_then(|namespace| {
+                namespace
+                    .metadata
+                    .annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.get(key))
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+            })
+    }
 }

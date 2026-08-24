@@ -103,6 +103,34 @@ namespaceExclusionLabel: hardening.weebo.io/exclude
 rbac:
   create: true
 
+# RFC 0004: whether this cluster's CNI is Cilium. Gates the `ciliumnetworkpolicies` RBAC grant
+# and the `KubeTemplateStore`/`KubePolicyStore` watch for it — a cluster without Cilium's CRDs
+# installed must never be handed (or attempt to use) this permission, per the RFC's "the Cilium
+# rules in a separate overlay so a cluster without Cilium never grants them."
+networkProfiles:
+  cilium:
+    enabled: false
+  # The enforcement canary's probe image — RFC 0004's "the only pod we create, in our own
+  # namespace, from a pinned image, with no service account token mounted." Whether the probe
+  # runs at all is `enforcement.canary.enabled` on the WeeboSiConfig, not a chart value; this is
+  # only *which* image it uses when it does.
+  #
+  # agnhost is Kubernetes' own end-to-end network test image and carries both halves of the probe
+  # (`netexec` listens, `connect` dials). It is on registry.k8s.io rather than a rate-limited
+  # public registry, and pinned to a tag rather than `latest` — a canary that silently changed
+  # what it measures is worse than no canary. Point this at your own mirror on an air-gapped
+  # cluster.
+  canary:
+    image: registry.k8s.io/e2e-test-images/agnhost:2.53
+
+# RFC 0004's `policy-guard`. `failurePolicy: Fail` is the safe default — "a control whose bypass
+# is 'make the webhook unavailable' is not a control." A cluster that has *verified* its users
+# cannot write `networkpolicies` directly may run at `Ignore` instead — see the RFC's
+# *Operational considerations* for the trade-off. This is an install-time decision the chart
+# will not make for you by guessing.
+policyGuard:
+  failurePolicy: Fail
+
 serviceAccount:
   webhook:
     create: true
