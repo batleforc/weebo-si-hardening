@@ -9,6 +9,7 @@
 use weebo_si_chassis::Subject;
 use weebo_si_crd::NamespaceName;
 
+use crate::port::Resource;
 use crate::variable::VariableValues;
 
 /// One container's image, as the adapter read it.
@@ -65,6 +66,10 @@ impl Subject for WorkspaceImages {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
     }
+
+    fn resource(&self) -> &'static str {
+        Resource::DevWorkspace.kind()
+    }
 }
 
 /// A `Pod` under admission — the team-boundary floor.
@@ -93,6 +98,14 @@ pub struct PodImages {
 impl Subject for PodImages {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
+    }
+
+    /// The reason RFC 0005 has two enforcement points, as a metric label: this is the layer
+    /// that sees plugin-resolved and DWO-injected images, and
+    /// `weebo_si_admission_requests_total{feature="image-policy",resource="Pod"}` is where
+    /// that shows up separately from the DevWorkspace half.
+    fn resource(&self) -> &'static str {
+        Resource::Pod.kind()
     }
 }
 

@@ -36,6 +36,13 @@ impl Subject for NamespaceSubject {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
     }
+
+    /// A reconcile subject, not an admission one: nothing reaches `weebo_si_chassis::admit`
+    /// through it, so this is the kind it reconciles *over* rather than a label any admission
+    /// metric will carry.
+    fn resource(&self) -> &'static str {
+        "Namespace"
+    }
 }
 
 /// The `registry-config` feature. Holds its configuration behind a lock, same live-reload shape

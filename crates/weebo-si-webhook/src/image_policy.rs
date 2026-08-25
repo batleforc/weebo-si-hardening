@@ -20,7 +20,7 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
-use weebo_si_chassis::{AdmitOutcome, Registry};
+use weebo_si_chassis::{AdmitOutcome, Registry, Subject};
 use weebo_si_crd::{ImagePolicyConfig, NamespaceName};
 use weebo_si_image_policy::port::Resource;
 use weebo_si_image_policy::variable::resolve_declared;
@@ -267,7 +267,9 @@ async fn validate_devworkspaces(
 
     let _timer = state
         .metrics
-        .timer("image-policy", Resource::DevWorkspace.kind())
+        // The same value `weebo_si_admission_requests_total` will carry, read from the same
+        // subject — so the two admission metrics cannot disagree about what was admitted.
+        .timer("image-policy", subject.resource())
         .start_timer();
     let outcome = weebo_si_chassis::admit(
         &state.workspace_registry,
@@ -338,7 +340,7 @@ async fn validate_pods(
 
     let _timer = state
         .metrics
-        .timer("image-policy", Resource::Pod.kind())
+        .timer("image-policy", subject.resource())
         .start_timer();
     let outcome = weebo_si_chassis::admit(
         &state.pod_registry,

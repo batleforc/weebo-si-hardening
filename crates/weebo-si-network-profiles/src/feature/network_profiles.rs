@@ -38,6 +38,13 @@ impl Subject for NamespaceSubject {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
     }
+
+    /// A reconcile subject, not an admission one: nothing reaches `weebo_si_chassis::admit`
+    /// through it, so this is the kind it reconciles *over* rather than a label any admission
+    /// metric will carry.
+    fn resource(&self) -> &'static str {
+        "Namespace"
+    }
 }
 
 /// The DevWorkspace under reconciliation, in domain vocabulary.
@@ -62,6 +69,11 @@ pub struct Workspace {
 impl Subject for Workspace {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
+    }
+
+    /// A reconcile subject — see [`NamespaceSubject::resource`].
+    fn resource(&self) -> &'static str {
+        "DevWorkspace"
     }
 }
 

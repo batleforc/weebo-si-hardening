@@ -58,6 +58,10 @@ impl Subject for WorkspaceAdmission {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
     }
+
+    fn resource(&self) -> &'static str {
+        "DevWorkspace"
+    }
 }
 
 /// `network-profiles`' admission surface. Holds the same live configuration `Arc` as

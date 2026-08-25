@@ -53,6 +53,10 @@ impl fmt::Display for FeatureId {
 pub struct FeatureOutcome {
     /// The namespace the decision was made for.
     pub namespace: weebo_si_crd::NamespaceName,
+    /// The Kubernetes kind the decision was about — the `resource` label on
+    /// `weebo_si_admission_requests_total`. Read from the subject, never chosen by the observer:
+    /// the adapter that hard-coded it is the bug this field exists to make unrepeatable.
+    pub resource: &'static str,
     /// The team the resolution attributed the decision to, if any.
     pub team: Option<TeamName>,
     /// The feature-chosen outcome label.
@@ -65,12 +69,13 @@ pub struct FeatureOutcome {
 
 impl FeatureOutcome {
     /// Summarize a [`Decision`] for [`crate::port::observer::Observer`].
-    pub fn from_decision<S>(
-        decision: &Decision<S>,
-        namespace: weebo_si_crd::NamespaceName,
-    ) -> Self {
+    ///
+    /// Takes the *subject*, not a namespace — both record fields come off it, and passing them
+    /// separately is an invitation to pair one subject's namespace with another's resource.
+    pub fn from_decision<S: crate::feature::Subject>(decision: &Decision<S>, subject: &S) -> Self {
         Self {
-            namespace,
+            namespace: subject.namespace().clone(),
+            resource: subject.resource(),
             team: decision.team.clone(),
             result: decision.result,
             mutated: !decision.mutations.is_empty(),

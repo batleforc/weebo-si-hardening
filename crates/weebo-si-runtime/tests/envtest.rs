@@ -31,10 +31,8 @@ use weebo_si_crd::{
     TemplateRef, Variant, WorkspaceSelection,
 };
 use weebo_si_envtest_support::EnvTest;
-use weebo_si_network_profiles::{
-    NamespaceSubject, NetworkPolicyOperation, NetworkPolicyWrite, NetworkProfiles, PolicyGuard,
-    Workspace,
-};
+use weebo_si_network_profiles::{NamespaceSubject, NetworkProfiles, Workspace};
+use weebo_si_policy_guard::{GuardedResource, GuardedWrite, PolicyGuard, WriteOperation};
 use weebo_si_runtime::{KubeCapabilities, KubePolicyStore, KubeTemplateStore};
 
 const TEMPLATES_NAMESPACE: &str = "weebo-si-hardening";
@@ -367,21 +365,22 @@ async fn policy_guard_denies_a_non_operator_delete_of_a_real_managed_object() {
     // The object is real; `PolicyGuard`'s own decision logic is what this test actually
     // exercises — `target_is_managed: true` is what a real admission adapter would compute by
     // reading the label off the object this reconcile pass just wrote, per
-    // `weebo-si-webhook::policy_guard`'s `network_policy_write_from_request`.
+    // `weebo-si-webhook::policy_guard`'s `guarded_write_from_request`.
     let guard = PolicyGuard::new(
         "system:serviceaccount:weebo-si-hardening:weebo-si-operator-controller".to_string(),
         Vec::new(),
     );
-    let mut registry: Registry<NetworkPolicyWrite> = Registry::new();
+    let mut registry: Registry<GuardedWrite> = Registry::new();
     registry.register(guard);
-    let write = NetworkPolicyWrite {
+    let write = GuardedWrite {
         namespace: NamespaceName::new(WORKSPACE_NAMESPACE),
         actor: "system:serviceaccount:user-alice:default".to_string(),
-        operation: NetworkPolicyOperation::Delete,
+        operation: WriteOperation::Delete,
         target_is_managed: true,
+        resource: GuardedResource::NetworkPolicy,
     };
 
-    let decision: Decision<NetworkPolicyWrite> = registry
+    let decision: Decision<GuardedWrite> = registry
         .iter()
         .next()
         .expect("one feature registered")

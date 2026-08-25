@@ -57,7 +57,7 @@ pub fn admit<S: Subject>(
         observer.decided(
             feature.id(),
             mode,
-            &FeatureOutcome::from_decision(&decision, subject.namespace().clone()),
+            &FeatureOutcome::from_decision(&decision, subject),
         );
 
         if let Some(reason) = decision.denial {
@@ -99,6 +99,10 @@ mod tests {
     impl Subject for Workspace {
         fn namespace(&self) -> &NamespaceName {
             &self.0
+        }
+
+        fn resource(&self) -> &'static str {
+            "DevWorkspace"
         }
     }
 
@@ -219,6 +223,77 @@ mod tests {
                 panic!("expected mutations to be applied, got denial: {reason}")
             }
         }
+    }
+
+    /// A second subject type, reporting a different kind — the whole point of `Subject::resource`
+    /// being per-type rather than a constant somewhere in the observability adapter.
+    #[derive(Debug)]
+    struct PolicyWrite(NamespaceName);
+    impl Subject for PolicyWrite {
+        fn namespace(&self) -> &NamespaceName {
+            &self.0
+        }
+
+        fn resource(&self) -> &'static str {
+            "KubeArmorPolicy"
+        }
+    }
+
+    impl Feature<PolicyWrite> for AlwaysDenies {
+        fn id(&self) -> FeatureId {
+            FeatureId::new("always-denies")
+        }
+        fn evaluate(
+            &self,
+            _subject: &PolicyWrite,
+            _ctx: &Context<'_>,
+        ) -> Result<Decision<PolicyWrite>, DomainError> {
+            Ok(Decision::deny("no".to_string(), None, None, "denied"))
+        }
+    }
+
+    /// **The chassis half of RFC 0008's `resource`-label fix.** The observability record's
+    /// `resource` is the *subject's* kind, carried by `admit` — not a value the observer picks.
+    ///
+    /// Two subject types through the same `admit`, asserting the recorded kinds differ: a
+    /// literal anywhere downstream (which is exactly what `PrometheusObserver` used to hold)
+    /// makes these two equal, and that is the failure this test names.
+    #[test]
+    fn the_recorded_resource_is_the_subjects_kind_not_a_fixed_one() {
+        let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+
+        let workspace_observer = RecordingObserver::default();
+        admit(
+            &registry(AlwaysDenies),
+            &subject(),
+            &gate,
+            &namespace_view(),
+            &dwoc_catalog(),
+            &workspace_observer,
+        )
+        .unwrap();
+
+        let mut policy_registry: Registry<PolicyWrite> = Registry::new();
+        policy_registry.register(AlwaysDenies);
+        let policy_observer = RecordingObserver::default();
+        admit(
+            &policy_registry,
+            &PolicyWrite(NamespaceName::new("user-alice")),
+            &gate,
+            &namespace_view(),
+            &dwoc_catalog(),
+            &policy_observer,
+        )
+        .unwrap();
+
+        assert_eq!(workspace_observer.events()[0].2.resource, "DevWorkspace");
+        assert_eq!(policy_observer.events()[0].2.resource, "KubeArmorPolicy");
+        assert_ne!(
+            workspace_observer.events()[0].2.resource,
+            policy_observer.events()[0].2.resource,
+            "two subject types must not report the same resource — a literal downstream of \
+             `admit` is what made every route report DevWorkspace"
+        );
     }
 
     #[test]

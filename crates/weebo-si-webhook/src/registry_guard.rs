@@ -8,7 +8,8 @@
 //! chart template that renders them.
 //!
 //! The verdict logic is [`weebo_si_registry_config::RegistryGuard`]'s, which is the same
-//! three-row table `network-profiles`' `PolicyGuard` applies minus its unmanaged-`CREATE` row.
+//! three-row table [`weebo_si_policy_guard::PolicyGuard`] applies minus its unmanaged-`CREATE`
+//! row.
 //! See that type's own module doc for why the absence is load-bearing rather than an omission.
 
 use std::sync::{Arc, RwLock};
@@ -22,7 +23,7 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
-use weebo_si_chassis::{AdmitOutcome, Registry};
+use weebo_si_chassis::{AdmitOutcome, Registry, Subject};
 use weebo_si_crd::{
     MANAGED_BY_LABEL, MANAGED_BY_VALUE, NamespaceName, PolicyGuardConfig, SourceKind,
 };
@@ -136,6 +137,23 @@ fn write_from_request(
 /// never a value, and never a content diff." The signature is the enforcement: there is no
 /// parameter here a caller could pass the admitted object through, which matters more on this
 /// route than any other in this crate, because half the objects it sees are `Secret`s.
+/// The counterpart of [`crate::policy_guard`]'s own `log_unguarded`, and it obeys this route's
+/// stricter rule about what may be logged: the resource *name* and group, never the object.
+/// `kind_of` returned `None`, so there is no `RegistryObjectWrite` and nothing here could reach
+/// a `ConfigMap`'s or a `Secret`'s payload even by accident.
+fn log_unguarded(request: &AdmissionRequest<DynamicObject>) {
+    println!(
+        "WARN weebo-si-webhook: policy-guard allow-unguarded path={VALIDATE_REGISTRY_CONFIGS_PATH} \
+         group={} resource={} namespace={} operation={:?} reason=resource_not_guarded — a webhook \
+         rule routes this resource here but this handler only knows configmaps and secrets; the \
+         write was NOT checked",
+        request.resource.group,
+        request.resource.resource,
+        request.namespace.clone().unwrap_or_default(),
+        request.operation,
+    );
+}
+
 fn log_decision(write: &RegistryObjectWrite, denial: Option<&str>) {
     match denial {
         Some(reason) => println!(
@@ -164,7 +182,14 @@ async fn validate_registry_configs(
     };
 
     let response = AdmissionResponse::from(&request);
+    // Same branch, same argument and the same instrumentation as
+    // [`crate::policy_guard`]'s: allowing is right, allowing *silently* was not. This one
+    // matters at least as much — a drifted rule here means an unchecked write to a `Secret`.
     let Some(kind) = kind_of(&request) else {
+        state
+            .metrics
+            .unguarded("policy-guard", VALIDATE_REGISTRY_CONFIGS_PATH);
+        log_unguarded(&request);
         return Json(response.into_review());
     };
     let write = write_from_request(&request, kind);
@@ -184,7 +209,7 @@ async fn validate_registry_configs(
 
     let _timer = state
         .metrics
-        .timer("policy-guard", kind.as_str())
+        .timer("policy-guard", write.resource())
         .start_timer();
     let outcome = weebo_si_chassis::admit(
         &registry,

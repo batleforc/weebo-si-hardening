@@ -1684,6 +1684,7 @@ where
 
 /// Everything the RFC 0004 suites share: caches, config store, observer, metrics.
 struct Rfc4Stack {
+    prometheus_registry: prometheus::Registry,
     config_store: Arc<KubeConfigStore>,
     ns_store: Arc<KubeNsStore>,
     dwoc_store: Arc<KubeDwocStore>,
@@ -1743,6 +1744,7 @@ async fn rfc4_stack(client: kube::Client) -> Rfc4Stack {
     let metrics = weebo_si_webhook::WebhookMetrics::register(&prometheus_registry)
         .expect("metrics should register");
     Rfc4Stack {
+        prometheus_registry,
         config_store,
         ns_store,
         dwoc_store,
@@ -2717,4 +2719,428 @@ async fn an_unparseable_reference_is_refused_rather_than_passed_through() {
         err.to_string().contains("not a parseable image reference"),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// RFC 0008 — `policy-guard` over `kubearmorpolicies`.
+//
+// The same three-row table, the same handler and the same `mode`, reached through a *second*
+// `ValidatingWebhookConfiguration` on a second path. What this suite proves that the unit tests
+// cannot is that the extension is real end to end: a distinct authenticated identity is refused
+// by a live apiserver calling back into a live webhook, and the operator's own identity is not —
+// the self-lockout question RFC 0004 asks, asked again for the resource RFC 0008 adds.
+//
+// It also closes the gap RFC 0006's *Unresolved questions* named: before this rule existed, a
+// workspace owner could rewrite or delete the runtime policy constraining their own workspace,
+// and the only thing standing between them and it was the reconcile interval.
+// ---------------------------------------------------------------------------------------------
+
+/// KubeArmor's own CRD is not ours and envtest does not install KubeArmor, so this reuses
+/// `weebo-si-runtime`'s minimal stand-in — see that fixture's own comment for what it
+/// deliberately does not reproduce.
+const KUBEARMOR_POLICY_CRD: &str =
+    include_str!("../../weebo-si-runtime/tests/fixtures/kubearmorpolicy-crd.yaml");
+
+fn kubearmor_resource() -> kube::api::ApiResource {
+    let gvk = GroupVersionKind::gvk("security.kubearmor.com", "v1", "KubeArmorPolicy");
+    kube::api::ApiResource::from_gvk_with_plural(&gvk, "kubearmorpolicies")
+}
+
+async fn install_kubearmor_crd(client: kube::Client) {
+    let crds: Api<CustomResourceDefinition> = Api::all(client);
+    let crd: CustomResourceDefinition =
+        serde_yaml_bw::from_str(KUBEARMOR_POLICY_CRD).expect("the fixture should parse");
+    let name = crd.name_any();
+    crds.patch(
+        &name,
+        &PatchParams::apply("envtest").force(),
+        &Patch::Apply(&crd),
+    )
+    .await
+    .unwrap_or_else(|err| panic!("installing {name} should succeed: {err}"));
+    wait_established(&crds, &name).await;
+}
+
+/// A `KubeArmorPolicy` in the workspace namespace. `managed` decides whether it carries the
+/// ownership label — the single bit the guard's second row reads.
+fn kubearmor_policy(name: &str, managed: bool) -> DynamicObject {
+    let mut object = DynamicObject::new(name, &kubearmor_resource());
+    object.metadata.namespace = Some(RFC4_WORKSPACE_NAMESPACE.to_string());
+    if managed {
+        object.metadata.labels = Some(
+            [(
+                weebo_si_crd::MANAGED_BY_LABEL.to_string(),
+                weebo_si_crd::MANAGED_BY_VALUE.to_string(),
+            )]
+            .into(),
+        );
+    }
+    object.data = serde_json::json!({
+        "spec": {
+            "selector": {"matchLabels": {}},
+            "process": {"matchPaths": [{"path": "/usr/bin/git"}]},
+        }
+    });
+    object
+}
+
+/// RFC 0008's own `ValidatingWebhookConfiguration` — a second object rather than a third rule on
+/// the network one, pointed at the second path, and deliberately carrying **no `objectSelector`**
+/// so the unmanaged-`CREATE` row stays reachable.
+async fn register_kubearmor_guard_webhook(client: kube::Client, port: u16, ca_bundle: Vec<u8>) {
+    let api: Api<ValidatingWebhookConfiguration> = Api::all(client);
+    let config = ValidatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-kubearmor-policies-envtest".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![ValidatingWebhook {
+            name: "kubearmorpolicies.hardening.weebo.io".to_string(),
+            admission_review_versions: vec!["v1".to_string()],
+            side_effects: "None".to_string(),
+            match_policy: Some("Equivalent".to_string()),
+            failure_policy: Some("Fail".to_string()),
+            timeout_seconds: Some(5),
+            rules: Some(vec![ValidatingRule {
+                operations: Some(vec![
+                    "CREATE".to_string(),
+                    "UPDATE".to_string(),
+                    "DELETE".to_string(),
+                ]),
+                api_groups: Some(vec!["security.kubearmor.com".to_string()]),
+                api_versions: Some(vec!["v1".to_string()]),
+                resources: Some(vec!["kubearmorpolicies".to_string()]),
+                scope: Some("Namespaced".to_string()),
+            }]),
+            namespace_selector: Some(
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                    match_expressions: Some(vec![
+                        k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                            key: WORKSPACE_NAMESPACE_LABEL.to_string(),
+                            operator: "Exists".to_string(),
+                            values: None,
+                        },
+                    ]),
+                    match_labels: None,
+                },
+            ),
+            client_config: WebhookClientConfig {
+                url: Some(format!(
+                    "https://127.0.0.1:{port}/validate/v1/kubearmorpolicies"
+                )),
+                ca_bundle: Some(k8s_openapi::ByteString(ca_bundle)),
+                service: None::<ServiceReference>,
+            },
+            ..Default::default()
+        }]),
+    };
+    api.create(&PostParams::default(), &config)
+        .await
+        .expect("the validating webhook configuration should be accepted");
+}
+
+/// **The test RFC 0008's *Implementation plan* asks for**: a non-operator identity is refused
+/// `UPDATE` and `DELETE` on a managed `KubeArmorPolicy` and refused `CREATE` of an unmanaged one;
+/// the operator identity is not.
+///
+/// The write it proves possible in step 1 is the one that matters most: RFC 0006's store
+/// force-applies precisely because this guard did not exist, and a guard that locked the
+/// controller out of its own objects would turn that workaround into a wedge nothing recovers
+/// from.
+#[tokio::test]
+async fn a_kubearmor_policy_is_guarded_exactly_as_a_network_policy_is() {
+    let Some(env_test) = EnvTest::try_start_with_identities(&[
+        (CONTROLLER_TOKEN, CONTROLLER_IDENTITY),
+        (USER_TOKEN, USER_IDENTITY),
+    ])
+    .await
+    else {
+        return;
+    };
+    let admin = env_test.client().expect("client should build");
+    install_crds(admin.clone()).await;
+    install_kubearmor_crd(admin.clone()).await;
+
+    create_namespace(
+        admin.clone(),
+        OPERATOR_NAMESPACE,
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        [(WORKSPACE_NAMESPACE_LABEL.to_string(), "true".to_string())].into(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_policy_template(admin.clone()).await;
+    // One `policyGuard` block, one mode — the same one the network rule reads. RFC 0008's
+    // *Contract*: "no per-resource mode, and that is a decision rather than a shortcut."
+    create_config(admin.clone(), rfc4_config_spec("Off", "Enforce")).await;
+
+    let stack = rfc4_stack(admin.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let guard_state = Arc::new(PolicyGuardState {
+        operator_identity: CONTROLLER_IDENTITY.to_string(),
+        policy_guard_config: stack.config_store.policy_guard_config(),
+        gate: Arc::clone(&stack.config_store) as _,
+        namespace_view: Arc::clone(&stack.ns_store) as _,
+        dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
+        observer: Arc::clone(&stack.observer) as _,
+        metrics: stack.metrics.clone(),
+    });
+    // The *same* router as the network rule's — one handler, two paths, per RFC 0008.
+    let (port, ca_bundle) = serve_router(cert_dir.path(), policy_guard_router(guard_state)).await;
+    register_kubearmor_guard_webhook(admin.clone(), port, ca_bundle).await;
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    let controller_client = env_test
+        .client_as(CONTROLLER_TOKEN)
+        .expect("controller client should build");
+    let controller_policies: Api<DynamicObject> = Api::namespaced_with(
+        controller_client.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        &kubearmor_resource(),
+    );
+
+    // --- 1. The controller writes its own baseline through its own guard. ---
+    let created = retry_until_webhook_routes(|| async {
+        controller_policies
+            .create(
+                &PostParams::default(),
+                &kubearmor_policy("weebo-base", true),
+            )
+            .await
+    })
+    .await
+    .expect("the controller must be able to write through its own guard");
+    assert_eq!(created.name_any(), "weebo-base");
+
+    let user_client = env_test
+        .client_as(USER_TOKEN)
+        .expect("user client should build");
+    let user_policies: Api<DynamicObject> =
+        Api::namespaced_with(user_client, RFC4_WORKSPACE_NAMESPACE, &kubearmor_resource());
+
+    // --- 2. A workspace owner cannot rewrite it. This is the window RFC 0006 left open. ---
+    let update_error = user_policies
+        .patch(
+            "weebo-base",
+            &PatchParams::apply("alice").force(),
+            &Patch::Apply(kubearmor_policy("weebo-base", true)),
+        )
+        .await
+        .expect_err("an UPDATE of a managed KubeArmorPolicy by a workspace owner must be denied");
+    assert!(
+        update_error
+            .to_string()
+            .contains("managed by weebo-si-operator"),
+        "the denial should be the guard's, not an unrelated failure: {update_error}"
+    );
+
+    // --- 3. Nor delete it, which is the cheapest bypass of all. ---
+    let delete_error = user_policies
+        .delete("weebo-base", &DeleteParams::default())
+        .await
+        .expect_err("deleting a managed KubeArmorPolicy must be denied");
+    assert!(
+        delete_error
+            .to_string()
+            .contains("managed by weebo-si-operator"),
+        "the DELETE rule must be the one that fired: {delete_error}"
+    );
+
+    // --- 4. Nor author their own. The third row matters more here than for networkpolicies:
+    // KubeArmor evaluates a pod against every policy selecting it, so a user-authored policy is
+    // not merely additive — it can change how the operator's own baseline is evaluated.
+    let create_error = user_policies
+        .create(
+            &PostParams::default(),
+            &kubearmor_policy("my-own-allow-everything", false),
+        )
+        .await
+        .expect_err("an unmanaged CREATE by a workspace owner must be denied");
+    assert!(
+        create_error.to_string().contains("belongs to the platform"),
+        "the unmanaged-CREATE row must be the one that fired, which an objectSelector on this \
+         rule would have made unreachable: {create_error}"
+    );
+    assert!(
+        create_error.to_string().contains("KubeArmorPolicy"),
+        "the denial should name the resource it refused: {create_error}"
+    );
+
+    // --- 5. And the object the guard protected is still there, unmodified. ---
+    let admin_policies: Api<DynamicObject> = Api::namespaced_with(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        &kubearmor_resource(),
+    );
+    admin_policies
+        .get("weebo-base")
+        .await
+        .expect("the baseline the guard protected should still exist");
+
+    // --- 6. The asymmetry is the whole contract: same object, same verb, different identity. ---
+    controller_policies
+        .delete("weebo-base", &DeleteParams::default())
+        .await
+        .expect("the operator's own DELETE of its own object must be allowed");
+}
+
+/// **The drift this counter exists for, executed.** A `ValidatingWebhookConfiguration` rule
+/// routes a resource to the `policy-guard` path that `GuardedResource` has no variant for — the
+/// exact shape a future fourth guarded resource takes when someone adds the chart rule and
+/// forgets the enum.
+///
+/// Two things must both hold, and before this change only the first did:
+///
+/// 1. **The write is allowed.** Fail-open is deliberate here — the guard protects objects this
+///    operator wrote, and it did not write that one. Denying every unknown resource would turn a
+///    chart typo into a cluster-wide outage on whatever it typo'd.
+/// 2. **It is visible.** `weebo_si_admission_unguarded_total` increments, and a `WARN` names the
+///    resource. Without it, an unguarded resource and a resource nobody is writing produce
+///    byte-identical telemetry, which is what made this branch worth flagging in review.
+///
+/// `configmaps` is the stand-in: routing it at the network path needs no new CRD and reaches the
+/// same `from_plural(..) -> None` branch a real fourth policy kind would.
+#[tokio::test]
+async fn a_resource_no_guard_variant_covers_is_allowed_but_counted_and_warned() {
+    let Some(env_test) = EnvTest::try_start_with_identities(&[(USER_TOKEN, USER_IDENTITY)]).await
+    else {
+        return;
+    };
+    let admin = env_test.client().expect("client should build");
+    install_crds(admin.clone()).await;
+    create_namespace(
+        admin.clone(),
+        OPERATOR_NAMESPACE,
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        admin.clone(),
+        RFC4_WORKSPACE_NAMESPACE,
+        [(WORKSPACE_NAMESPACE_LABEL.to_string(), "true".to_string())].into(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_policy_template(admin.clone()).await;
+    create_config(admin.clone(), rfc4_config_spec("Off", "Enforce")).await;
+
+    let stack = rfc4_stack(admin.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let guard_state = Arc::new(PolicyGuardState {
+        operator_identity: CONTROLLER_IDENTITY.to_string(),
+        policy_guard_config: stack.config_store.policy_guard_config(),
+        gate: Arc::clone(&stack.config_store) as _,
+        namespace_view: Arc::clone(&stack.ns_store) as _,
+        dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
+        observer: Arc::clone(&stack.observer) as _,
+        metrics: stack.metrics.clone(),
+    });
+    let (port, ca_bundle) = serve_router(cert_dir.path(), policy_guard_router(guard_state)).await;
+
+    // The drifted rule: `configmaps`, pointed at the *network policy* path.
+    let webhooks: Api<ValidatingWebhookConfiguration> = Api::all(admin.clone());
+    let config = ValidatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-drifted-rule-envtest".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![ValidatingWebhook {
+            name: "policies.hardening.weebo.io".to_string(),
+            admission_review_versions: vec!["v1".to_string()],
+            side_effects: "None".to_string(),
+            match_policy: Some("Equivalent".to_string()),
+            failure_policy: Some("Fail".to_string()),
+            timeout_seconds: Some(5),
+            rules: Some(vec![ValidatingRule {
+                operations: Some(vec!["CREATE".to_string()]),
+                api_groups: Some(vec!["".to_string()]),
+                api_versions: Some(vec!["v1".to_string()]),
+                resources: Some(vec!["configmaps".to_string()]),
+                scope: Some("Namespaced".to_string()),
+            }]),
+            namespace_selector: Some(
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                    match_expressions: Some(vec![
+                        k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                            key: WORKSPACE_NAMESPACE_LABEL.to_string(),
+                            operator: "Exists".to_string(),
+                            values: None,
+                        },
+                    ]),
+                    match_labels: None,
+                },
+            ),
+            client_config: WebhookClientConfig {
+                url: Some(format!(
+                    "https://127.0.0.1:{port}/validate/v1/networkpolicies"
+                )),
+                ca_bundle: Some(k8s_openapi::ByteString(ca_bundle)),
+                service: None::<ServiceReference>,
+            },
+            ..Default::default()
+        }]),
+    };
+    webhooks
+        .create(&PostParams::default(), &config)
+        .await
+        .expect("the drifted webhook configuration should be accepted");
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    assert_eq!(
+        unguarded_count(&stack.prometheus_registry),
+        0,
+        "nothing has been skipped yet — the counter must not exist before the branch is taken"
+    );
+
+    // A *workspace owner*, not the operator: had this reached the verdict table at all, the
+    // unmanaged-CREATE row would have refused it. It is allowed because the handler never got
+    // that far, which is precisely the state the counter has to make visible.
+    let user_client = env_test
+        .client_as(USER_TOKEN)
+        .expect("user client should build");
+    let user_configmaps: Api<k8s_openapi::api::core::v1::ConfigMap> =
+        Api::namespaced(user_client, RFC4_WORKSPACE_NAMESPACE);
+    let created = retry_until_webhook_routes(|| async {
+        user_configmaps
+            .create(
+                &PostParams::default(),
+                &k8s_openapi::api::core::v1::ConfigMap {
+                    metadata: ObjectMeta {
+                        name: Some("not-a-policy".to_string()),
+                        namespace: Some(RFC4_WORKSPACE_NAMESPACE.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+    })
+    .await
+    .expect("a resource the guard does not cover must still be admitted");
+    assert_eq!(created.name_any(), "not-a-policy");
+
+    assert_eq!(
+        unguarded_count(&stack.prometheus_registry),
+        1,
+        "the unguarded write must be counted — a rule the code does not know about is otherwise \
+         indistinguishable from a resource nobody writes"
+    );
+}
+
+/// `weebo_si_admission_unguarded_total` summed over every label combination.
+fn unguarded_count(registry: &prometheus::Registry) -> u64 {
+    registry
+        .gather()
+        .iter()
+        .filter(|family| family.name() == "weebo_si_admission_unguarded_total")
+        .flat_map(|family| family.get_metric())
+        .map(|metric| metric.get_counter().value() as u64)
+        .sum()
 }

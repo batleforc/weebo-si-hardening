@@ -146,6 +146,10 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         observer: Arc::clone(&observer) as _,
         metrics: metrics.clone(),
     });
+    // One state, one router, two paths: `/validate/v1/networkpolicies` and
+    // `/validate/v1/kubearmorpolicies` (RFC 0008). Which of them a rule actually points at is the
+    // chart's decision — `kubearmorPolicy.rbac.enabled` gates the second — and this role serves
+    // both regardless, so the wiring does not vary with a value it cannot see.
     let policy_guard_state = Arc::new(PolicyGuardState {
         operator_identity: operator_identity.clone(),
         policy_guard_config: config_store.policy_guard_config(),

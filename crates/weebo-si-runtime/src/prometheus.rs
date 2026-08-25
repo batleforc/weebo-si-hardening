@@ -64,10 +64,15 @@ impl Observer for PrometheusObserver {
             "unchanged"
         };
 
+        // `outcome.resource`, not a literal. It *was* a literal `"DevWorkspace"` here — so
+        // `policy-guard`'s NetworkPolicy denials, `image-policy`'s Pod refusals and the registry
+        // guard's ConfigMap verdicts all reported the one kind `dwoc-pin` admits, and an alert
+        // broken down by `resource` said nothing. The value now travels from the subject through
+        // `FeatureOutcome`, which is the only place that can know it. See RFC 0008's *Changelog*.
         self.admission_requests_total
             .with_label_values(&[
                 feature.kebab(),
-                "DevWorkspace",
+                outcome.resource,
                 mode_label(mode),
                 admission_outcome,
             ])
@@ -79,5 +84,126 @@ impl Observer for PrometheusObserver {
                 .with_label_values(&[outcome.result, team])
                 .inc();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use weebo_si_crd::NamespaceName;
+
+    use super::*;
+
+    fn outcome(resource: &'static str, denied: bool) -> FeatureOutcome {
+        FeatureOutcome {
+            namespace: NamespaceName::new("user-alice"),
+            resource,
+            team: None,
+            result: "denied_managed_object",
+            mutated: false,
+            denied,
+        }
+    }
+
+    /// Every `(feature, resource)` pair the counter carries, with its value.
+    fn series(registry: &Registry) -> Vec<(String, String, u64)> {
+        let mut out = Vec::new();
+        for family in registry.gather() {
+            if family.name() != "weebo_si_admission_requests_total" {
+                continue;
+            }
+            for metric in family.get_metric() {
+                let label = |name: &str| {
+                    metric
+                        .get_label()
+                        .iter()
+                        .find(|l| l.name() == name)
+                        .map(|l| l.value().to_string())
+                        .unwrap_or_default()
+                };
+                out.push((
+                    label("feature"),
+                    label("resource"),
+                    metric.get_counter().value() as u64,
+                ));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// **The regression test for the bug RFC 0008's implementation found.** This adapter wrote a
+    /// literal `"DevWorkspace"` into the `resource` label for every feature on every route, so
+    /// `policy-guard`'s NetworkPolicy denials, `image-policy`'s Pod refusals and the registry
+    /// guard's Secret verdicts were indistinguishable from a `dwoc-pin` patch. The label now
+    /// comes off the subject, through `FeatureOutcome`.
+    ///
+    /// Asserting the *whole* label set rather than one series is deliberate: the failure mode was
+    /// never "the label is missing", it was "every series collapsed onto one wrong value", and a
+    /// test that checks one expected series in isolation passes in exactly that state.
+    #[test]
+    fn the_resource_label_is_the_subjects_kind_and_not_a_literal() {
+        let registry = Registry::new();
+        let observer = PrometheusObserver::new(&registry).expect("metrics should register");
+
+        observer.decided(
+            FeatureId::new("policy-guard"),
+            FeatureMode::Enforce,
+            &outcome("KubeArmorPolicy", true),
+        );
+        observer.decided(
+            FeatureId::new("policy-guard"),
+            FeatureMode::Enforce,
+            &outcome("NetworkPolicy", true),
+        );
+        observer.decided(
+            FeatureId::new("image-policy"),
+            FeatureMode::Enforce,
+            &outcome("Pod", true),
+        );
+        observer.decided(
+            FeatureId::new("dwoc-pin"),
+            FeatureMode::Enforce,
+            &outcome("DevWorkspace", false),
+        );
+
+        assert_eq!(
+            series(&registry),
+            vec![
+                ("dwoc-pin".to_string(), "DevWorkspace".to_string(), 1),
+                ("image-policy".to_string(), "Pod".to_string(), 1),
+                ("policy-guard".to_string(), "KubeArmorPolicy".to_string(), 1),
+                ("policy-guard".to_string(), "NetworkPolicy".to_string(), 1),
+            ],
+            "four decisions over four kinds must produce four series; collapsing them onto \
+             DevWorkspace is the bug this test exists for"
+        );
+    }
+
+    /// `dwoc_pin_total` is keyed on the feature id, not on the resource — so widening the
+    /// `resource` label must not have started counting other features' decisions into it.
+    #[test]
+    fn only_dwoc_pin_decisions_reach_the_dwoc_pin_counter() {
+        let registry = Registry::new();
+        let observer = PrometheusObserver::new(&registry).expect("metrics should register");
+        observer.decided(
+            FeatureId::new("policy-guard"),
+            FeatureMode::Enforce,
+            &outcome("NetworkPolicy", true),
+        );
+
+        let total: u64 = registry
+            .gather()
+            .iter()
+            .filter(|family| family.name() == "weebo_si_dwoc_pin_total")
+            .flat_map(|family| family.get_metric())
+            .map(|metric| metric.get_counter().value() as u64)
+            .sum();
+        assert_eq!(total, 0);
     }
 }

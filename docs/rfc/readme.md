@@ -90,7 +90,7 @@ fails if it is stale.
 | [0005](./0005-image-policy.md) | image-policy | `Implemented` | `crates/weebo-si-image-policy` |
 | [0006](./0006-kubearmor-policy.md) | kubearmor-policy | `Implemented` | `crates/weebo-si-kubearmor-policy` |
 | [0007](./0007-registry-config.md) | registry-config | `Implemented` | `crates/weebo-si-registry-config` |
-| [0008](./0008-policy-guard-coverage.md) | policy-guard-coverage | `Draft` | `crates/weebo-si-policy-guard` |
+| [0008](./0008-policy-guard-coverage.md) | policy-guard-coverage | `Implemented` | `crates/weebo-si-policy-guard` |
 
 <!-- rfc-index:end -->
 

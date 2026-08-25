@@ -2723,6 +2723,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-policy-guard"
+version = "0.1.0"
+dependencies = [
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-registry-config"
 version = "0.1.0"
 dependencies = [
@@ -2750,6 +2758,7 @@ dependencies = [
  "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
+ "weebo-si-policy-guard",
  "weebo-si-registry-config",
 ]
 
@@ -2775,6 +2784,7 @@ dependencies = [
  "weebo-si-envtest-support",
  "weebo-si-image-policy",
  "weebo-si-network-profiles",
+ "weebo-si-policy-guard",
  "weebo-si-registry-config",
  "weebo-si-runtime",
 ]

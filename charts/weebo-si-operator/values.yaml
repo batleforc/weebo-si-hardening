@@ -107,11 +107,17 @@ rbac:
 # and the `KubeTemplateStore`/`KubePolicyStore` watch for it — a cluster without Cilium's CRDs
 # installed must never be handed (or attempt to use) this permission, per the RFC's "the Cilium
 # rules in a separate overlay so a cluster without Cilium never grants them."
-# RFC 0006's kubearmor-policy. Off by default, and the flag governs *RBAC*, not the feature:
-# whether the feature runs at all is `spec.features.kubearmorPolicy.mode` on the WeeboSiConfig,
-# and the controller discovers the CRD at boot regardless. Granting write on a CRD a cluster does
-# not have would be a permission nobody can use and everybody has to review, so the grant is
-# opt-in — turn this on when KubeArmor is installed.
+# RFC 0006's kubearmor-policy. Off by default, and the flag governs *RBAC and `policy-guard`'s
+# rule over these objects* (RFC 0008), not the feature: whether the feature runs at all is
+# `spec.features.kubearmorPolicy.mode` on the WeeboSiConfig, and the controller discovers the CRD
+# at boot regardless. Granting write on a CRD a cluster does not have would be a permission
+# nobody can use and everybody has to review, and registering a webhook for a resource the
+# apiserver does not serve is the same mistake in the other direction — so both are opt-in. Turn
+# this on when KubeArmor is installed.
+#
+# The guard rule this renders has **no `failurePolicy` of its own**: it takes
+# `policyGuard.failurePolicy` below, because one `mode` and one failure policy govern every
+# guarded resource. See RFC 0008's *Contract*, "one feature, one mode, three resources".
 kubearmorPolicy:
   rbac:
     enabled: false
@@ -160,6 +166,17 @@ networkProfiles:
 # cannot write `networkpolicies` directly may run at `Ignore` instead — see the RFC's
 # *Operational considerations* for the trade-off. This is an install-time decision the chart
 # will not make for you by guessing.
+#
+# **One value, three resources** since RFC 0008: it governs the `networkpolicies` rule, the
+# `ciliumnetworkpolicies` rule (when `networkProfiles.cilium.enabled`) and the
+# `kubearmorpolicies` rule (when `kubearmorPolicy.rbac.enabled`). That is deliberate — the
+# guard's claim is "objects this operator owns are not yours to edit", and a cluster where that
+# is true of a NetworkPolicy and false of a KubeArmorPolicy is a cluster where the claim is not
+# true. Narrowing by *namespace* is `spec.features.policyGuard.namespaceSelector`'s job.
+#
+# `registryConfig.failurePolicy` is the one guard rule with a value of its own, because its
+# blast radius is every `ConfigMap` and `Secret` write rather than a policy object — argued in
+# RFC 0007 and in that rule's own template.
 policyGuard:
   failurePolicy: Fail
 

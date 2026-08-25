@@ -1,0 +1,77 @@
+{{- if and (ne .Values.certificates.provider "none") .Values.kubearmorPolicy.rbac.enabled }}
+{{/*
+  RFC 0008's *A second webhook path, not a second rule on the first*: `kubearmorpolicies` get an
+  object of their own rather than a third rule on `-policies`. Two reasons, both from the RFC —
+  "a path named `networkpolicies` that also decides KubeArmor writes is a lie a future reader has
+  to discover", and, more concretely, a separate rule can be gated on
+  `kubearmorPolicy.rbac.enabled` and carry its own `failurePolicy` without touching the rule that
+  protects the network baseline.
+
+  The gate is the same flag that governs the controller's write permission on these objects: a
+  cluster without KubeArmor should not register a webhook for a resource its apiserver does not
+  serve.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-kubearmor-policies
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.certificates.provider "cert-manager" }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "weebo-si-operator.webhookServiceName" . }}
+    {{- else if eq .Values.certificates.provider "openshift" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+    {{- end }}
+webhooks:
+  - name: kubearmorpolicies.hardening.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    matchPolicy: Equivalent
+    # The *same* value as the network rule, deliberately — RFC 0008's *Contract*: "one feature,
+    # one mode", and `policyGuard.failurePolicy` is the single install-time switch that governs
+    # every guarded resource at once. The honest cost is written down in that RFC's *Security
+    # considerations*: at `Fail`, a webhook outage means nobody writes `kubearmorpolicies`
+    # cluster-wide, including KubeArmor's own operator if a future version writes them. The trade
+    # is the same one RFC 0004 already made for `networkpolicies`, and an admin who wants the
+    # other side of it sets `policyGuard.failurePolicy: Ignore` once, for all three resources.
+    failurePolicy: {{ .Values.policyGuard.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    rules:
+      # `DELETE` is included on purpose — deleting the baseline is the cheapest bypass, and a
+      # rule that does not cover `DELETE` does not cover it. On a `DELETE` the object arrives in
+      # `oldObject`, which is where `weebo-si-webhook` reads the ownership label from.
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: ["security.kubearmor.com"]
+        apiVersions: ["v1"]
+        resources: ["kubearmorpolicies"]
+        scope: Namespaced
+    # **No `objectSelector`, and that is a mechanism rather than a preference.** RFC 0008: "a
+    # guard rule that must refuse unmanaged creates cannot use an ownership `objectSelector`; one
+    # that only protects existing objects should, if the resource is high-volume." This rule is
+    # the first kind — the handler's third row denies a `CREATE` of an object carrying *no*
+    # management label, which a selector matching that label would make unreachable — and
+    # `kubearmorpolicies` are low-volume enough that sitting in front of all of them costs
+    # nothing a cluster notices. `-registry-configs` next to this file is the second kind.
+    #
+    # The third row matters more here than it does for `networkpolicies`: KubeArmor evaluates a
+    # pod against *every* policy selecting it, and an `Allow` rule in a domain changes how
+    # unmatched operations in that domain are treated — so a user-authored policy is not merely
+    # additive, it can change how the operator's own baseline is evaluated.
+    #
+    # Same polarity as the network rule and for the same reason: opt-in, because this webhook
+    # denies writes and a namespace it reaches by accident is a namespace whose owner cannot
+    # manage their own objects.
+    namespaceSelector:
+      matchExpressions:
+        - key: {{ .Values.namespaceExclusionLabel }}
+          operator: DoesNotExist
+        - key: hardening.weebo.io/workspace-namespace
+          operator: Exists
+    clientConfig:
+      service:
+        name: {{ include "weebo-si-operator.webhookServiceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate/v1/kubearmorpolicies
+        port: {{ .Values.webhook.service.port }}
+{{- end }}

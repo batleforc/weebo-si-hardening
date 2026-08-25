@@ -411,22 +411,21 @@ Genuinely still open:
   annotation itself (see *Guide-level explanation*), a cluster running the opt-in mode gets
   enforcement this brick cannot fully account for. Leaning toward documenting it as a
   precondition rather than building around it, but not decided.
-- **Whether `policy-guard` should cover `kubearmorpolicies`.** *(Raised by implementation;
-  answered yes — the design is [RFC 0008](./0008-policy-guard-coverage.md), and this entry closes
-  when that RFC ships.)* RFC
-  0004's guard denies non-operator writes to objects carrying the managed-by label, and it covers
-  `networkpolicies` and `ciliumnetworkpolicies` only. Nothing stops a user with `edit` on
-  `kubearmorpolicies` in their own namespace from rewriting the policy that constrains their own
-  workspace — the controller puts it back on the next pass, but there is a window, and unlike the
-  network case there is no admission-time refusal. Extending the guard is a new target for an
-  existing brick and therefore its own RFC amendment, per [the process](./readme.md).
+- ~~**Whether `policy-guard` should cover `kubearmorpolicies`.**~~ **Closed** by
+  [RFC 0008](./0008-policy-guard-coverage.md), shipped 2026-08-25. The guard now covers them:
+  same three-row table, same `mode`, a rule of its own gated on `kubearmorPolicy.rbac.enabled`.
+  Two consequences worth carrying forward rather than filing away:
 
-  This has a concrete consequence already in the code: the `KubeArmorPolicy` store **force-applies**
-  where `network-profiles`' store does not. Server-side apply refuses to overwrite a field another
-  manager owns, so a single `kubectl edit` would otherwise make this operator's every subsequent
-  apply fail with a 409 — the drift this brick exists to correct becoming exactly the drift it can
-  no longer correct. `network-profiles` can afford not to force because the guard stops the edit
-  before a field manager exists; this brick cannot, until the guard covers it.
+  - **The store keeps force-applying.** RFC 0008 considered stopping and decided not to. The
+    guard prevents *new* conflicting field managers; it does nothing about an object edited
+    before the rule was installed, which without force stays wedged on a 409 forever. The
+    asymmetry with `network-profiles`' store is therefore permanent and documented rather than
+    temporary.
+  - **The namespace posture annotations remain unguarded.** They carry no ownership label and
+    the guard is object-scoped, so a user who can annotate their own namespace can still move
+    their posture from `Block` back to `Audit`. RFC 0008 put this out of scope deliberately —
+    guarding it means a webhook in front of every namespace write in the cluster — and it is
+    listed under *Known limitations* in the brick doc rather than left implicit here.
 
 ## Future work
 
@@ -508,3 +507,4 @@ Genuinely still open:
 | 2026-08-25 | `weebo_si_kubearmor_enforced` is labelled `{state}` and counts workspaces, not `{namespace,workspace}`. Writing it as first specified would have made this the brick that breaks RFC 0004's project-wide "no metric carries a namespace or a workspace id" rule. Taught us that a per-brick observability contract can contradict a project-wide one without either author noticing. |
 | 2026-08-25 | The `KubeArmorPolicy` store force-applies, where `network-profiles`' store does not. Found by envtest, not by review: one `kubectl edit` makes the editor a field manager, and every later server-side apply fails 409 — the drift this brick exists to correct becoming the drift it can no longer correct. `network-profiles` is safe only because `policy-guard` refuses that edit first, which is why the guard's coverage gap is now an open question rather than an omission. |
 | 2026-08-25 | The baseline's `selector.matchLabels: {}` is recorded in the *Contract* as meaning every pod in the namespace. It was an inference from the CRD schema until confirmed; the alternative reading is silent, and would have left every baseline inert while both gauges read healthy. |
+| 2026-08-25 | RFC 0008 shipped, closing the `policy-guard` coverage question above: `kubearmorpolicies` are now guarded at admission, and the force-apply asymmetry with `network-profiles`' store is a permanent, documented decision rather than a workaround waiting on the guard. |

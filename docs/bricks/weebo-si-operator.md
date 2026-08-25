@@ -230,12 +230,42 @@ render call, never a log line.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `weebo_si_admission_requests_total` | counter | `feature`, `resource`, `mode`, `outcome` |
-| `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` |
+| `weebo_si_admission_requests_total` | counter | `feature`, `resource`, `mode`, `outcome` — `resource` is the subject's Kubernetes kind |
+| `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` — the same pair the counter carries |
+| `weebo_si_admission_unguarded_total` | counter | `feature`, `path` — requests a guard allowed **without checking**, because it does not know the resource |
 | `weebo_si_feature_mode` | gauge | `feature` |
 | `weebo_si_dwoc_pin_total` | counter | `result`, `team` |
 | `weebo_si_dwoc_pin_catalog_entries` | gauge | `state` ∈ `resolvable`/`missing` |
 | `weebo_si_config_observed_generation` | gauge | — |
+
+Both admission metrics take `resource` from the subject the decision was made about
+(`Subject::resource()`), so they always agree: every `weebo_si_admission_duration_seconds`
+series has a `weebo_si_admission_requests_total` series with the same `feature` and `resource`.
+The values are Kubernetes kinds as they appear in a manifest — `DevWorkspace`, `Pod`,
+`NetworkPolicy`, `CiliumNetworkPolicy`, `KubeArmorPolicy`, `ConfigMap`, `Secret`.
+
+> **If you are reading a dashboard built before 2026-08-25**, it may assume otherwise:
+> `weebo_si_admission_requests_total`'s `resource` label was written as the literal
+> `DevWorkspace` on every route, for every feature, so a `policy-guard` denial and a `dwoc-pin`
+> patch landed on the same series. Anything summing that metric is unaffected; anything
+> filtering or grouping by `resource` was silently wrong and is now right. Found while
+> implementing RFC 0008.
+
+**`weebo_si_admission_unguarded_total > 0` should alert, and it means one specific thing:** a
+`ValidatingWebhookConfiguration` rule routes a resource to a guard handler that has no case for
+it, so writes to that resource are being **allowed unchecked** while the chart says they are
+guarded. It is a chart-versus-code drift, not an attack, and it is normally zero forever — the
+guard's own rules and its enum are changed together. The `WARN` line beside each increment names
+the group and resource:
+
+```text
+WARN weebo-si-webhook: policy-guard allow-unguarded path=/validate/v1/networkpolicies group=cilium.io resource=ciliumclusterwidenetworkpolicies namespace=user-alice operation=Create reason=resource_not_guarded — a webhook rule routes this resource here but GuardedResource has no variant for it; the write was NOT checked
+```
+
+Allowing rather than denying is deliberate: a guard protects objects this operator wrote, and it
+did not write that one — denying every unrecognised resource would turn a typo in a chart rule
+into a cluster-wide outage on whatever it typo'd. The fix is to add the enum variant (and the
+metric label value it brings), or to remove the rule.
 
 `weebo_si_admission_requests_total{outcome="error"}` is the first alert to wire: at `Fail`, a
 nonzero rate is user-visible failures. `result="target_missing"` is the second — the feature is
@@ -268,6 +298,28 @@ Before writing `spec.features.networkProfiles` or `spec.features.policyGuard`, a
   `hardening.weebo.io/workspace-namespace`. Labelling that is Che's job, or yours if Che does not
   do it automatically in this installation.
 
+**`policy-guard` is one feature over several resources.** One `mode`, one `allowedIdentities`,
+one `namespaceSelector`, and `policyGuard.failurePolicy` — but four `ValidatingWebhookConfiguration`
+rules, each rendered only when the thing it protects is switched on:
+
+| Rule | Path | Rendered when | `failurePolicy` | `objectSelector` |
+| --- | --- | --- | --- | --- |
+| `networkpolicies` | `/validate/v1/networkpolicies` | always | `policyGuard.failurePolicy` | none |
+| `ciliumnetworkpolicies` | same path | `networkProfiles.cilium.enabled` | `policyGuard.failurePolicy` | none |
+| `kubearmorpolicies` | `/validate/v1/kubearmorpolicies` | `kubearmorPolicy.rbac.enabled` | `policyGuard.failurePolicy` | none |
+| `configmaps`/`secrets` | `/validate/v1/registryconfigs` | `registryConfig.rbac.enabled` | `registryConfig.failurePolicy` | ownership label |
+
+There is **no per-resource mode**, and that is a decision rather than an omission (RFC 0008): the
+guard's claim is "objects this operator owns are not yours to edit", and a cluster where that is
+true of a `NetworkPolicy` and false of a `KubeArmorPolicy` is a cluster where the claim is not
+true. Narrow by namespace with `spec.features.policyGuard.namespaceSelector`, not by resource.
+
+The last row is the odd one out on both of its own columns, for a mechanical reason worth knowing
+before you copy a rule: **a guard rule that must refuse unmanaged `CREATE`s cannot carry an
+ownership `objectSelector`** — the selector makes that row unreachable — **and one that only
+protects existing objects should, if the resource is high-volume.** `configmaps` are high-volume
+and their rule has no unmanaged-`CREATE` row; policy objects are not, and theirs does.
+
 ### Rollout
 
 Six steps, and the order between the two features is not interchangeable — see RFC 0004's own
@@ -282,7 +334,10 @@ Six steps, and the order between the two features is not interchangeable — see
 4. `mode: Enforce` with a `namespaceSelector` naming a pilot label — one namespace — **then start
    a workspace in it**. The objects existing is not the test; the workspace working is.
 5. Remove the selector. Do this during working hours: it is the step that touches running pods.
-6. **Only then** `policyGuard: {mode: Enforce}`.
+6. **Only then** `policyGuard: {mode: Enforce}`. Order matters for every resource it covers, not
+   just this one: a guard that starts refusing writes while a controller is still converging
+   turns a converging namespace into a stuck one. If `kubearmor-policy` is on, let it reach a
+   steady state before enabling the guard rule over its objects.
 
 Step 4 is also where `network-profiles`' own **admission gate** starts refusing things, so it is
 worth knowing about before it surprises you. Under `mode: Enforce`, a `DevWorkspace` `CREATE` is
@@ -304,7 +359,8 @@ correctly never arrive.
 ### Rollback
 
 - **`policyGuard: mode: Off`** — restores everyone's ability to write policy in their own
-  namespace. Do this first, always — it is what makes manual repair possible.
+  namespace, for **every** resource the guard covers at once. Do this first, always — it is what
+  makes manual repair possible.
 - **`networkProfiles: mode: Off`** — deletes every managed object the controller reconciles away.
   Unlike `dwoc-pin`'s rollback, this changes cluster state: a namespace left with a `Enforce`-era
   baseline and nothing reconciling it is a namespace nobody can fix.
@@ -314,6 +370,10 @@ correctly never arrive.
   kubectl delete networkpolicy -A -l hardening.weebo.io/managed-by=weebo-si-operator
   kubectl delete ciliumnetworkpolicy -A -l hardening.weebo.io/managed-by=weebo-si-operator
   kubectl delete validatingwebhookconfiguration weebo-si-hardening-policies
+  # ...and the guard's other rules, if they were rendered — deleting only the one above leaves
+  # kubearmorpolicies and the registry objects still refused by a webhook nobody is answering.
+  kubectl delete validatingwebhookconfiguration weebo-si-hardening-kubearmor-policies
+  kubectl delete validatingwebhookconfiguration weebo-si-hardening-registry-configs
   ```
 
 ### Reading the logs
@@ -321,7 +381,8 @@ correctly never arrive.
 ```text
 weebo-si-controller: network-profiles namespace=user-alice mode=Enforce diffs=1 applied=Some(Applied { created: 1, updated: 0, deleted: 0, unchanged: 0 })
 weebo-si-controller: network-profiles workspace=user-alice/data-pipeline mode=Enforce diffs=2 applied=Some(Applied { created: 2, updated: 0, deleted: 0, unchanged: 0 })
-weebo-si-webhook: policy-guard deny namespace=user-alice actor=system:serviceaccount:user-alice:default operation=Delete reason=user-alice/Delete is managed by weebo-si-operator and may not be touched by system:serviceaccount:user-alice:default
+weebo-si-webhook: policy-guard deny namespace=user-alice actor=system:serviceaccount:user-alice:default resource=NetworkPolicy operation=Delete reason=user-alice/Delete is managed by weebo-si-operator and may not be touched by system:serviceaccount:user-alice:default
+weebo-si-webhook: policy-guard deny namespace=user-alice actor=system:serviceaccount:user-alice:default resource=KubeArmorPolicy operation=Update reason=user-alice/Update is managed by weebo-si-operator and may not be touched by system:serviceaccount:user-alice:default
 weebo-si-controller: network-profiles canary result=enforcing
 ```
 
@@ -371,7 +432,7 @@ Every metric in RFC 0004's *Observability contract* is wired.
 | Metric | Type | Labels | Where it comes from |
 | --- | --- | --- | --- |
 | `weebo_si_feature_mode` | gauge | `feature` ∈ `dwoc-pin`/`network-profiles`/`policy-guard` | config sync |
-| `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` — `dwoc-pin`, `network-profiles` and `policy-guard` each label their own share | webhook |
+| `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` — `dwoc-pin`, `network-profiles` and `policy-guard` each label their own share; `policy-guard`'s splits three ways since RFC 0008 (`NetworkPolicy`/`CiliumNetworkPolicy`/`KubeArmorPolicy`), matching `weebo_si_admission_requests_total`'s | webhook |
 | `weebo_si_network_reconcile_total` | counter | `result` ∈ `created`/`updated`/`unchanged`/`deleted`/`dry_run`/`error`, `team` | reconcile |
 | `weebo_si_network_managed_objects` | gauge | `kind`, `scope` ∈ `baseline`/`profile` | policy watch, every 30s |
 | `weebo_si_network_drift_total` | counter | `action` ∈ `restored`/`removed` | reconcile |
@@ -858,11 +919,18 @@ project already accepts for `NamespaceFacts`.
 
 - **A policy object is not enforcement.** Covered above; it is the whole reason for the
   `enforced` gauge. On a cluster whose nodes have no LSM, this feature is an audit trail.
-- **Nothing guards these objects.** `policy-guard` (RFC 0004) covers `networkpolicies` and
-  `ciliumnetworkpolicies` only. A user with `edit` on `kubearmorpolicies` in their own namespace
-  can change one; the controller puts it back on the next pass (`drift_total{action="restored"}`)
-  and force-applies over the edit, but there is a window, and the guard extension is RFC 0006's
-  own open question.
+- **The objects are guarded; the posture annotations are not.** `policy-guard` covers
+  `kubearmorpolicies` since RFC 0008 — turn on `kubearmorPolicy.rbac.enabled` and the rule is
+  rendered with the RBAC grant. What it does *not* cover is the three `kubearmor-*-posture`
+  annotations this feature writes onto workspace namespaces: a namespace carries no ownership
+  label, and the guard is object-scoped. A user who can annotate their own namespace can move
+  their posture from `Block` back to `Audit`. That is visible in the reconcile log and corrected
+  on the next pass; guarding it would mean a webhook in front of every namespace write in the
+  cluster, which RFC 0008 decided against.
+- **The store still force-applies, and that is deliberate.** With the guard on, no conflicting
+  field manager should ever be created — but an object edited *before* the guard was installed
+  already has one, and without force that object is wedged forever on a 409. The guard prevents
+  new conflicts; force is what recovers from old ones.
 - **`enableEnforcerPerPod` clusters are only partly accounted for.** Where KubeArmor is installed
   in that mode, a per-pod `kubearmor-policy: disabled` annotation opts a pod out, and this
   operator neither sets nor reads it — such a pod reads back as `not_enforced`, indistinguishable
@@ -1058,7 +1126,7 @@ being discovered during an incident.
 `policy-guard`'s registry rule is not the network rule with two more resources on it, and the
 differences are decisions on the record rather than inconsistencies:
 
-| | Network rule | Registry rule |
+| | Policy rules (network, KubeArmor) | Registry rule |
 | --- | --- | --- |
 | `objectSelector` | none | `hardening.weebo.io/managed-by: weebo-si-operator` |
 | `failurePolicy` | `Fail` | `Ignore` |

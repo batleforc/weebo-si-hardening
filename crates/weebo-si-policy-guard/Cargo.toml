@@ -1,0 +1,18 @@
+[package]
+name = "weebo-si-policy-guard"
+version = "0.1.0"
+description = "The policy-guard feature: admission-time refusal of non-operator writes to the objects this operator owns"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

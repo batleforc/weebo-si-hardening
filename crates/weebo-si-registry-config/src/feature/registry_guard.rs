@@ -9,7 +9,7 @@
 //!
 //! ## Two rows, not three — and this is the interesting part
 //!
-//! `network-profiles`' [`PolicyGuard`](weebo_si_network_profiles::PolicyGuard) has three rows:
+//! `weebo-si-policy-guard`'s `PolicyGuard` has three rows:
 //! the operator is always allowed, a managed object may not be touched by anyone else, and a
 //! `CREATE` of an *unmanaged* object is refused unless the actor is in `allowedIdentities`.
 //! **This guard has the first two and deliberately not the third.**
@@ -29,12 +29,18 @@
 //!
 //! ## Relationship to RFC 0008
 //!
-//! [RFC 0008](../../../../docs/rfc/0008-policy-guard-coverage.md) promotes `PolicyGuard` into a
-//! crate of its own with a resource-agnostic `GuardedWrite`, and names this rule as the second
-//! kind it will absorb. Until that lands, this guard is ~40 lines local to the brick that writes
-//! the objects rather than a dependency from `weebo-si-registry-config` on
-//! `weebo-si-network-profiles` — which would be this crate's only dependency outside
-//! `weebo-si-crd` + `weebo-si-chassis`, for two shared rows.
+//! [RFC 0008](../../../../docs/rfc/0008-policy-guard-coverage.md) has landed: `PolicyGuard` now
+//! lives in `weebo-si-policy-guard` with a resource-agnostic `GuardedWrite` and a closed
+//! `GuardedResource`, and covers `networkpolicies`, `ciliumnetworkpolicies` and
+//! `kubearmorpolicies`. It names this rule as the second *kind* of guard rule and leaves
+//! absorbing it to future work rather than doing it in the same pass — and the two rows above
+//! are why that is not a formality: folding this guard into `GuardedWrite` means either a
+//! `GuardedResource` whose third row is conditional, which is the branch RFC 0008 forbids, or a
+//! second feature type in that crate. Neither is obviously right, and neither is worth deciding
+//! while this guard is ~40 lines local to the brick that writes the objects.
+//!
+//! What this crate does *not* do is depend on `weebo-si-policy-guard` for two shared rows —
+//! that would be its only dependency outside `weebo-si-crd` + `weebo-si-chassis`.
 //!
 //! It reports [`FeatureId`] `policy-guard`, not `registry-config`: one `mode` and one
 //! `allowedIdentities` govern every guard rule in this operator, which is what makes "turn the
@@ -79,6 +85,14 @@ pub struct RegistryObjectWrite {
 impl Subject for RegistryObjectWrite {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
+    }
+
+    /// `ConfigMap` or `Secret`, from the same `kind` the log line and the duration histogram
+    /// use — so `weebo_si_admission_requests_total` splits the two, which matters here more
+    /// than anywhere else in this operator: half the objects this guard sees are `Secret`s, and
+    /// "how often is the guard refusing writes to secrets" is a question an operator will ask.
+    fn resource(&self) -> &'static str {
+        self.kind.as_str()
     }
 }
 

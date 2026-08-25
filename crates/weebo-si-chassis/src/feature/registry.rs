@@ -6,10 +6,29 @@ use crate::namespace_facts::NamespaceFacts;
 use crate::port::dwoc_catalog::DwocCatalog;
 
 /// Anything a `Feature<S>` can be evaluated for. Minimal on purpose: only what the chassis
-/// needs to look up a mode and a namespace's facts.
+/// needs to look up a mode and a namespace's facts, and to say — in the observability record —
+/// *what* the decision was about.
 pub trait Subject {
     /// The namespace the mode and the team routing are looked up for.
     fn namespace(&self) -> &NamespaceName;
+
+    /// The Kubernetes kind this subject is, as it appears in a manifest: `"DevWorkspace"`,
+    /// `"Pod"`, `"NetworkPolicy"`, `"Namespace"`, … It becomes the `resource` label on
+    /// `weebo_si_admission_requests_total` (RFC 0002's *Observability contract*) and, on the
+    /// admission routes, on `weebo_si_admission_duration_seconds`.
+    ///
+    /// **Required, with no default**, and that is the whole point of putting it here. It was a
+    /// literal `"DevWorkspace"` inside the Prometheus adapter until RFC 0008's implementation
+    /// found it — every feature, on every route, reporting the one kind `dwoc-pin` happens to
+    /// admit. A default here would reproduce exactly that bug for the next subject type someone
+    /// adds, silently; a required method makes a new subject unable to compile without
+    /// answering.
+    ///
+    /// `&self`, not an associated const, because two subjects answer at runtime:
+    /// `policy-guard`'s `GuardedWrite` is one of three policy kinds and `registry-config`'s
+    /// `RegistryObjectWrite` is a `ConfigMap` or a `Secret`. Both return their own enum's
+    /// `as_str()`, so the value set stays closed even though the choice is dynamic.
+    fn resource(&self) -> &'static str;
 }
 
 /// Everything one `evaluate()` call is allowed to see.
@@ -127,6 +146,10 @@ mod tests {
     impl Subject for Workspace {
         fn namespace(&self) -> &NamespaceName {
             &self.0
+        }
+
+        fn resource(&self) -> &'static str {
+            "DevWorkspace"
         }
     }
 

@@ -1,4 +1,5 @@
-//! The `network-profiles` and `policy-guard` features — see RFC 0004.
+//! The `network-profiles` feature — see RFC 0004. Its sibling `policy-guard`, which RFC 0004
+//! introduced alongside it, moved to `weebo-si-policy-guard` in RFC 0008.
 //!
 //! Fewest dependencies in the workspace on purpose, same as `weebo-si-dwoc-pin`:
 //! `weebo-si-crd` + `weebo-si-chassis` only, matching "tested exhaustively without a cluster."
@@ -17,7 +18,6 @@ pub use backend::resolve_backend;
 pub use canary::{CanaryVerdict, Reachability, verdict};
 pub use exclusion::{CHE_NAMESPACE, is_excluded_namespace};
 pub use feature::network_profiles::{NamespaceSubject, NetworkProfiles, Workspace};
-pub use feature::policy_guard::{NetworkPolicyOperation, NetworkPolicyWrite, PolicyGuard};
 pub use feature::workspace_gate::{WorkspaceAdmission, WorkspaceGate, WorkspaceOperation};
 pub use model::diff::{Applied, DesiredState, Diff, compute_diff, tally};
 pub use model::policy::{ManagedObject, ObjectKey, PodSelector, PolicyBody};

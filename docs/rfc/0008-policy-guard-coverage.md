@@ -1,11 +1,11 @@
 ---
 rfc: 0008
 title: policy-guard-coverage
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-08-25
 updated: 2026-08-25
-decided:
+decided: 2026-08-25
 brick: crates/weebo-si-policy-guard
 supersedes: []
 superseded-by: []
@@ -35,8 +35,10 @@ edits. That claim is not resource-specific, but the implementation is — the we
 `NetworkPolicyWrite`.
 
 Since then RFC 0006 shipped `kubearmor-policy`, which writes `KubeArmorPolicy` objects into the
-same namespaces, and RFC 0007 proposes writing `ConfigMap`s and `Secret`s there too. Neither is
-guarded. So today:
+same namespaces, and RFC 0007 shipped `registry-config`, which writes `ConfigMap`s and `Secret`s
+there too. RFC 0007 brought its own two-row guard for its own objects — the second *kind* of
+guard rule this RFC describes under *Contract* — so the gap is now `kubearmorpolicies` alone. So
+today:
 
 - **A user with `edit` on `kubearmorpolicies` in their own namespace can rewrite the policy that
   constrains their own workspace's process, file and capability access.** The controller puts it
@@ -52,7 +54,7 @@ guarded. So today:
   twin not, for reasons neither brick's code can state locally, is the kind of asymmetry that
   gets "cleaned up" by someone six months from now who does not know why.
 - **The gap widens on its own.** Every brick that writes an object into a workspace namespace
-  inherits it. RFC 0007 adds two kinds; the pattern this project is built on guarantees more.
+  inherits it. RFC 0007 added two kinds; the pattern this project is built on guarantees more.
 
 ### What exists today
 
@@ -103,7 +105,7 @@ What a developer sees when they try:
 ```console
 $ kubectl edit kubearmorpolicy weebo-base -n user-alice
 error: kubearmorpolicies "weebo-base" could not be patched: admission webhook
-  "policies.hardening.weebo.io" denied the request: user-alice/Update is managed by
+  "kubearmorpolicies.hardening.weebo.io" denied the request: user-alice/Update is managed by
   weebo-si-operator and may not be touched by system:serviceaccount:user-alice:default
 ```
 
@@ -202,9 +204,30 @@ and a rule that does not cover `DELETE` does not cover it. On a `DELETE` the obj
 
 #### Observability
 
-No new metric. `weebo_si_admission_requests_total{feature="policy-guard"}` gains
-`resource="KubeArmorPolicy"` alongside the two it already carries — which is the whole reason
-`GuardedWrite::resource` exists.
+`weebo_si_admission_requests_total{feature="policy-guard"}` gains `resource="KubeArmorPolicy"`
+alongside the two it already carries — which is the whole reason `GuardedWrite::resource` exists.
+*(This RFC originally said "no new metric" and that the counter already carried the other two.
+Neither was true by the end of implementation — see the* Changelog *for both corrections.)*
+
+**One new metric**, added in review: `weebo_si_admission_unguarded_total{feature, path}`.
+
+Making the guard resource-agnostic creates a branch that did not exist when one handler served
+one enum: a request whose resource has no `GuardedResource` variant, which is **allowed**. That
+is the right verdict — a guard protects objects this operator wrote, and it did not write that
+one, and denying every unrecognised resource would turn a typo in a chart rule into a
+cluster-wide outage on whatever it typo'd. What was wrong is that the branch returns before the
+timer, before `admit()` and before the log line, so the one configuration that makes it dangerous
+— a rule routing a fourth resource to a handler whose enum has three, which is exactly the shape
+of *forgetting step one of this RFC's own "adding the next resource is a rule in a chart plus a
+row in a table"* — produced telemetry byte-identical to a resource nobody was writing.
+
+Labels are `feature` and `path`, both compile-time constants; **the unrecognised plural is logged
+and never labelled.** Nothing authenticates the caller of an admission endpoint, so any pod that
+can dial the webhook Service can put an arbitrary string in `resource` — as a label that mints
+unbounded series on demand, and this project's rule that a metric label's value set stays closed
+(`Ecosystem`, `SourceKind`, `GuardedResource`, `Subject::resource() -> &'static str`) exists for
+exactly that reason. The route is what an operator needs to find the drifted rule; the plural is
+in the `WARN` beside it.
 
 ### Architecture
 
@@ -335,23 +358,42 @@ Non-blocking:
   `NetworkPolicy` but should never author a `KubeArmorPolicy` cannot express that. No such
   cluster exists here yet.
 
-Blocking, in the sense that acceptance should settle it:
+- ~~**Whether `weebo_si_admission_requests_total`'s `resource` label should be real.**~~
+  **Closed, fixed.** *(Raised by implementation, then fixed in the same change — see the*
+  Changelog.*)* The counter never carried a real `resource`: `Observer::decided` took no
+  resource, so `PrometheusObserver` wrote the literal `"DevWorkspace"` on every route, for every
+  feature. `weebo-si-chassis`'s `Subject` gained a required `resource()`, `FeatureOutcome` gained
+  the field, and `admit` carries it from subject to observer. The webhook's duration histogram
+  now reads the same `subject.resource()`, so the two admission metrics agree by construction
+  rather than by two literals matching.
 
-- **Whether the namespace posture annotations are in scope.** They are the one output of
-  `kubearmor-policy` this RFC leaves unguarded, and guarding them is a genuinely different
-  mechanism: a rule on `namespaces/UPDATE` comparing old and new annotation values, with no
-  ownership label to match on and every namespace write in the cluster passing through it. That
-  is a much larger blast radius than anything above, for a gap whose exploitation (moving your
-  own posture from `Block` to `Audit`) is visible in the reconcile log and corrected on the next
-  pass. This RFC proposes **out of scope**, and asks reviewers to say so explicitly rather than
-  inherit it by silence.
+Blocking, in the sense that acceptance should settle it — **settled: out of scope**:
+
+- **Whether the namespace posture annotations are in scope.** ~~Proposed out of scope.~~
+  **Decided out of scope**, 2026-08-25, on the argument below rather than by silence.
+
+  They are the one output of `kubearmor-policy` this RFC leaves unguarded, and guarding them is a
+  genuinely different mechanism: a rule on `namespaces/UPDATE` comparing old and new annotation
+  values, with no ownership label to match on and every namespace write in the cluster passing
+  through it. That is a much larger blast radius than anything above, for a gap whose
+  exploitation (moving your own posture from `Block` to `Audit`) is visible in the reconcile log
+  and corrected on the next pass.
+
+  The obligation that comes with deciding this rather than deferring it: the gap is now written
+  down in three places that an operator actually reads — RFC 0006's *Unresolved questions*, this
+  RFC's *Security considerations*, and `docs/bricks/weebo-si-operator.md`'s *Known limitations*
+  for the feature — because *Drawbacks and risks* is right that "a guard covering three resources
+  invites the assumption that it covers everything this operator writes."
 
 ## Future work
 
-- **RFC 0007's `ConfigMap`/`Secret` rule**, which is the second kind of guard rule described
-  under *Contract* — ownership-selected, high-volume, `failurePolicy: Ignore`. That RFC already
-  specifies it; this one supplies the vocabulary (`GuardedResource`, the resource-agnostic
-  handler) it will extend.
+- **Folding RFC 0007's `ConfigMap`/`Secret` guard into this crate.** It is the second kind of
+  guard rule described under *Contract* — ownership-selected, high-volume, `failurePolicy:
+  Ignore` — and it ships today as a two-row `RegistryGuard` local to `weebo-si-registry-config`.
+  Absorbing it means either a `GuardedResource` whose third row is conditional, which is the
+  branch *Contract* forbids, or a second feature type here. Neither is obviously right for forty
+  lines, so the argument lives in that guard's own module doc until a third rule of the same kind
+  makes the duplication real.
 - **Guarding the posture annotations**, if reviewers decide the gap above matters more than the
   blast radius of a `namespaces` webhook.
 - **A drift-to-alert path**: `weebo_si_*_drift_total` climbing while the guard is on means an
@@ -359,20 +401,21 @@ Blocking, in the sense that acceptance should settle it:
 
 ## Implementation plan
 
-- [ ] `crates/weebo-si-policy-guard`: move `PolicyGuard` and its tests out of
+- [x] `crates/weebo-si-policy-guard`: move `PolicyGuard` and its tests out of
       `weebo-si-network-profiles`, renaming `NetworkPolicyWrite`→`GuardedWrite`,
       `NetworkPolicyOperation`→`WriteOperation`, adding `GuardedResource`
-- [ ] `weebo-si-webhook`: the handler becomes resource-agnostic over `GuardedResource`; add
+- [x] `weebo-si-webhook`: the handler becomes resource-agnostic over `GuardedResource`; add
       `/validate/v1/kubearmorpolicies`; `resource` reaches the metric label and the log line
-- [ ] `charts/weebo-si-operator`: the new `ValidatingWebhookConfiguration` rule, gated on
+      — *with a caveat on which metric; see the* Changelog
+- [x] `charts/weebo-si-operator`: the new `ValidatingWebhookConfiguration` rule, gated on
       `kubearmorPolicy.rbac.enabled`, no `objectSelector`, `DELETE` included
-- [ ] Unit tests: the three-row table over each `GuardedResource`, proving the verdict does not
+- [x] Unit tests: the three-row table over each `GuardedResource`, proving the verdict does not
       vary by resource
-- [ ] Envtest: a non-operator identity is refused `UPDATE` and `DELETE` on a managed
+- [x] Envtest: a non-operator identity is refused `UPDATE` and `DELETE` on a managed
       `KubeArmorPolicy` and refused `CREATE` of an unmanaged one; the operator identity is not
-- [ ] Docs updated (`docs/bricks/weebo-si-operator.md`'s RFC 0004 and RFC 0006 sections)
-- [ ] RFC 0006's *Unresolved questions* entry closed, pointing here
-- [ ] RFC flipped to `Implemented`
+- [x] Docs updated (`docs/bricks/weebo-si-operator.md`'s RFC 0004 and RFC 0006 sections)
+- [x] RFC 0006's *Unresolved questions* entry closed, pointing here
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -391,3 +434,10 @@ Blocking, in the sense that acceptance should settle it:
 
 | Date | Change |
 | --- | --- |
+| 2026-08-25 | Shipped. The crate move landed as specified; the parts worth recording are below. |
+| 2026-08-25 | **The `resource` label this RFC promised on `weebo_si_admission_requests_total` did not exist, and never had.** `Observer::decided` took no resource, so its one implementation wrote the literal `"DevWorkspace"` for every feature on every route — `policy-guard`'s NetworkPolicy denials, `image-policy`'s Pod refusals and the registry guard's Secret verdicts all collapsed onto one series, and any alert grouped by `resource` was silently meaningless. Taught us that an RFC can assert a metric's shape from the metric's *name in a table* without anyone checking the one line that writes it, and that a label nobody alerts on is a label nobody notices is wrong. |
+| 2026-08-25 | **Fixed it properly rather than documenting it.** `weebo_si_chassis::Subject` gained a required `resource() -> &'static str`, `FeatureOutcome` gained the field, and `admit` carries it from the subject to the observer. Required with no default on purpose: a default would reproduce the same bug, silently, for the next subject type someone adds — where a required method makes a new subject fail to compile until it answers. Two subjects answer at runtime (`GuardedWrite`, `RegistryObjectWrite`), which is why it is a method rather than an associated const. The webhook's `weebo_si_admission_duration_seconds` now reads the same `subject.resource()`, so the two admission metrics can no longer disagree about what was admitted. Regression-tested at both levels, and both tests were mutation-checked against the old behaviour. |
+| 2026-08-25 | The unmanaged-`CREATE` denial **names the resource it refused** ("KubeArmorPolicy authorship in workspace namespaces belongs to the platform"), where the RFC's *Guide-level explanation* implied the message was byte-identical across resources. Formatting `resource` into a string is not the branch *Contract* forbids — `evaluate` still cannot reach a different verdict — and a developer told "network policy authorship" after writing a `KubeArmorPolicy` would reasonably conclude the guard was misconfigured. The unit test asserting the table is resource-invariant compares `(denied?, result)`, not the sentence, for exactly this reason. |
+| 2026-08-25 | `GuardedResource` owns the plural→variant mapping (`from_plural`) rather than the webhook adapter, so the handler reads which resource a request is against from the request itself instead of from which path it arrived on. Adding a variant cannot then produce a resource the guard knows by kind but not by wire name, and the two routes stay genuinely one handler. |
+| 2026-08-25 | RFC 0007's registry rule was **not** absorbed, and *Future work* now understates why. Folding it into `GuardedWrite` means either a `GuardedResource` whose third row is conditional — the branch *Contract* forbids — or a second feature type in this crate. Neither is obviously right, and the two-row guard is forty lines local to the brick that writes the objects, so it stays there with the argument written in its own module doc. |
+| 2026-08-25 | **Added `weebo_si_admission_unguarded_total`, which this RFC had said it needed no metric for.** Raised by security review of the implementation: making the handler resource-agnostic created a new allow-branch — a resource with no `GuardedResource` variant — that returned before the timer, before `admit()` and before the log line. Not exploitable (the apiserver populates `resource` from the rule it matched, every plural in every rendered rule has a variant, and a malformed body fails deserialization into `failurePolicy: Fail`), but *silent*: the one configuration that makes it dangerous is a chart rule for a fourth resource without the enum variant, which is precisely the shape of forgetting half of this RFC's own "a rule in a chart plus a row in a table" — and it looked identical to a resource nobody was writing. The same branch existed in RFC 0007's registry guard (`kind_of` → `None`), where an unchecked write is a write to a `Secret`; both are instrumented. Taught us that "fail-open is correct here" and "fail-open is safe to do quietly" are separate claims, and this RFC only argued the first. |

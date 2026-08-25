@@ -21,4 +21,8 @@ impl Subject for Workspace {
     fn namespace(&self) -> &NamespaceName {
         &self.namespace
     }
+
+    fn resource(&self) -> &'static str {
+        "DevWorkspace"
+    }
 }

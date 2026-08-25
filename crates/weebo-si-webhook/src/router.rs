@@ -13,7 +13,7 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
-use weebo_si_chassis::{AdmitOutcome, Mutation, Registry};
+use weebo_si_chassis::{AdmitOutcome, Mutation, Registry, Subject};
 use weebo_si_crd::{DwocRef, NamespaceName, NetworkProfilesConfig};
 use weebo_si_dwoc_pin::Workspace;
 use weebo_si_network_profiles::WorkspaceAdmission;
@@ -56,10 +56,6 @@ fn log_admission(
         ),
     }
 }
-
-/// The Kubernetes resource this endpoint serves — a label on
-/// `weebo_si_admission_duration_seconds` and `weebo_si_admission_requests_total`.
-const RESOURCE: &str = "DevWorkspace";
 
 /// Path `MutatingWebhookConfiguration.webhooks[].clientConfig` points `dwoc-pin`'s rule at, per
 /// RFC 0002's *Webhook configuration*.
@@ -167,7 +163,10 @@ async fn mutate_devworkspaces(
 
         let gate_timer = state
             .metrics
-            .timer("network-profiles", RESOURCE)
+            // Both admission metrics read the label off the subject, so `resource` on the
+            // histogram and on `weebo_si_admission_requests_total` are the same value by
+            // construction rather than by two matching literals.
+            .timer("network-profiles", subject.resource())
             .start_timer();
         let outcome = weebo_si_chassis::admit(
             &np.registry,
@@ -198,7 +197,10 @@ async fn mutate_devworkspaces(
 
     // Named (not `let _ = ...`, which would drop immediately): the histogram observation
     // happens on drop, at the end of this function's scope.
-    let _timer = state.metrics.timer("dwoc-pin", RESOURCE).start_timer();
+    let _timer = state
+        .metrics
+        .timer("dwoc-pin", workspace.resource())
+        .start_timer();
     let outcome = weebo_si_chassis::admit(
         &state.registry,
         &workspace,
