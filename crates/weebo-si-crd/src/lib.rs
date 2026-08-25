@@ -9,6 +9,7 @@
 pub mod dwoc;
 pub mod dwoc_pin;
 pub mod feature_mode;
+pub mod image_policy;
 pub mod labels;
 pub mod namespace;
 pub mod network_profiles;
@@ -23,6 +24,11 @@ pub use dwoc_pin::{
     OnMissingTarget, OnUnknownKey,
 };
 pub use feature_mode::FeatureMode;
+pub use image_policy::{
+    Entry, EntryKey, ImageCatalog, ImageGrant, ImageNamespaceSelection, ImagePolicyConfig,
+    ImagePolicyConfigViolation, ImageWorkspaceSelection, PlatformConfig, RESERVED_VARIABLES,
+    VariableBinding, is_legal_variable_name,
+};
 pub use labels::{
     BACKEND_LABEL, CANARY_LABEL, DEVWORKSPACE_ID_LABEL, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
     PROFILE_LABEL,

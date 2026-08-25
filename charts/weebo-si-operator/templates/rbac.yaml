@@ -34,6 +34,14 @@ rules:
     resources: ["ciliumnetworkpolicies"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  # RFC 0005's `image-policy` adds **nothing here, and nothing to the controller role either** —
+  # no verb, no resource, no Role. Both of its subjects arrive in the admission body, and the
+  # only lookup either route makes is the `namespaces` watch three rules up, which already
+  # existed. `images audit`'s `list pods` is the *admin's* own permission, exercised from their
+  # kubeconfig, never this ServiceAccount's. Recorded as a rule rather than left as an absence:
+  # the role an untrusted AdmissionReview body reaches is unchanged by that RFC, and a future
+  # edit that adds a grant "for image-policy" is a change RFC 0005 argues against by name (see
+  # its *Future work* on resolving the per-workspace selection at the Pod layer).
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

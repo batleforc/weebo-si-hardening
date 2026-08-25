@@ -10,10 +10,10 @@ use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_network_profiles::{WorkspaceAdmission, WorkspaceGate};
 use weebo_si_runtime::config_store::DEFAULT_ANNOTATION;
 use weebo_si_runtime::{
-    KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore, KubePolicyStore,
+    ImageMetrics, KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore, KubePolicyStore,
     PrometheusObserver,
 };
-use weebo_si_webhook::{AppState, NetworkProfilesAdmission, PolicyGuardState};
+use weebo_si_webhook::{AppState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState};
 
 use crate::cli::flag;
 use crate::observability::{self, Ready};
@@ -139,9 +139,37 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         operator_identity,
         policy_guard_config: config_store.policy_guard_config(),
         gate: config_store.clone(),
+        namespace_view: Arc::clone(&ns_store) as _,
+        dwoc_catalog: Arc::clone(&dwoc_store) as _,
+        observer: Arc::clone(&observer) as _,
+        metrics: metrics.clone(),
+    });
+
+    // `image-policy`'s two routes, per RFC 0005. Registered unconditionally, same as `dwoc-pin`
+    // above and for the same reason: both features hold the *same* live `Arc` the config-cache
+    // keeps current, so an `imagePolicy` block added after boot is picked up without a restart,
+    // and `FeatureGate::mode` reports `Off` for it until then.
+    //
+    // **One `ImageMetrics`, one config handle, two registries.** The two enforcement points must
+    // never disagree about the catalogue, and sharing the handle rather than reading the config
+    // twice is what makes that structural.
+    let image_metrics =
+        ImageMetrics::register(&prometheus_registry).map_err(|err| err.to_string())?;
+    let image_observer: Arc<dyn weebo_si_image_policy::ImagePolicyObserver> =
+        Arc::new(image_metrics);
+    let (workspace_registry, pod_registry) = weebo_si_webhook::registries(
+        config_store.image_policy_config(),
+        Arc::clone(&image_observer),
+    );
+    let image_policy_state = Arc::new(ImagePolicyState {
+        config: config_store.image_policy_config(),
+        workspace_registry,
+        pod_registry,
+        gate: config_store.clone(),
         namespace_view: ns_store as _,
         dwoc_catalog: dwoc_store as _,
         observer,
+        image_observer,
         metrics,
     });
 
@@ -154,7 +182,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     ));
 
     let app = weebo_si_webhook::router(dwoc_pin_state)
-        .merge(weebo_si_webhook::policy_guard_router(policy_guard_state));
+        .merge(weebo_si_webhook::policy_guard_router(policy_guard_state))
+        .merge(weebo_si_webhook::image_policy_router(image_policy_state));
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         format!("{cert_dir}/tls.crt"),
         format!("{cert_dir}/tls.key"),

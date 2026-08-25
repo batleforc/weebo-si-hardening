@@ -3,6 +3,7 @@
 
 pub mod config_store;
 pub mod dwoc_store;
+pub mod image_metrics;
 pub mod kube_canary;
 pub mod kube_capabilities;
 pub mod kube_policy_store;
@@ -13,6 +14,7 @@ pub mod prometheus;
 
 pub use config_store::KubeConfigStore;
 pub use dwoc_store::KubeDwocStore;
+pub use image_metrics::ImageMetrics;
 pub use kube_canary::{CLIENT_POD, DEFAULT_CANARY_IMAGE, DENY_POLICY, KubeCanary, SERVER_POD};
 pub use kube_capabilities::KubeCapabilities;
 pub use kube_policy_store::KubePolicyStore;

@@ -1,0 +1,23 @@
+[package]
+name = "weebo-si-image-policy"
+version = "0.1.0"
+description = "The image-policy feature: which container images a workspace is permitted to run, per team"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[features]
+# In-memory fakes for this crate's own port, otherwise only built under `cfg(test)` — same
+# pattern as weebo-si-chassis's and weebo-si-network-profiles' own `testing` features.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

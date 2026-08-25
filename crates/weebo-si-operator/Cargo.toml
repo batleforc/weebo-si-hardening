@@ -12,6 +12,7 @@ weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
 weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
 weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
@@ -20,6 +21,11 @@ weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
 # crate opts in explicitly) — without `rustls-tls` + `ring`, `Client::try_default()` fails at
 # runtime with an opaque "TLS required but no TLS stack selected".
 kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
+# `images audit` lists real Pods and Namespaces with the *invoking* kubeconfig, so the
+# composition root needs the generated API types — the one place this binary reads cluster
+# objects itself rather than through an adapter, and deliberately so: listing pods cluster-wide
+# is the admin's own permission, never the operator's (RFC 0005's *Security considerations*).
+k8s-openapi = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }

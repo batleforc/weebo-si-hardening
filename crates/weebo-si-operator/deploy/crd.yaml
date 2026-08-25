@@ -153,6 +153,205 @@ spec:
                     - default
                     - mode
                     type: object
+                  imagePolicy:
+                    description: '`spec.features.imagePolicy`, per RFC 0005.'
+                    nullable: true
+                    properties:
+                      catalog:
+                        description: Every entry a workspace may be granted. Required, non-empty.
+                        items:
+                          description: |-
+                            One entry of `spec.features.imagePolicy.catalog`: a key, and the image patterns it permits.
+
+                            **Carries no scope, no exception and no negation**, per RFC 0005's *A pattern set is a
+                            union*: selecting more entries can only ever permit more, so an `except` field would be a
+                            rule whose meaning depends on which other entries happen to be selected.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an attribute, or the top-level `default` names.
+                              type: string
+                            patterns:
+                              description: |-
+                                The image patterns this entry permits. Non-empty; parsed by `weebo-si-image-policy`, and
+                                held here as the text an admin wrote so the CRD stays readable by `kubectl` and GitOps.
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - patterns
+                          type: object
+                        type: array
+                      default:
+                        description: |-
+                          Applied to a namespace belonging to no team, and to a team with no grant. Required; may
+                          be empty, which means the platform set and nothing else.
+                        items:
+                          description: |-
+                            A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
+                            `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
+                            `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
+                          type: string
+                        type: array
+                      grants:
+                        additionalProperties:
+                          description: |-
+                            What one team may reach: the set of entry keys it may reach, and the subset applied when a
+                            workspace asks for nothing. Either may legitimately be empty — an ungranted team reaches
+                            only the platform set.
+                          properties:
+                            allowed:
+                              default: []
+                              description: The entry keys this team may reach.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
+                                  `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
+                                  `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
+                                type: string
+                              type: array
+                            default:
+                              default: []
+                              description: The subset of `allowed` applied when a workspace names nothing more specific.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
+                                  `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
+                                  `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
+                                type: string
+                              type: array
+                          type: object
+                        default: {}
+                        description: What each team may reach, keyed by team name.
+                        type: object
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelection:
+                        default:
+                          annotation: hardening.weebo.io/image-policy
+                        description: The namespace annotation naming an entry key list.
+                        properties:
+                          annotation:
+                            default: hardening.weebo.io/image-policy
+                            description: |-
+                              Namespace annotation naming a comma-separated entry key list. The empty string disables
+                              this selection step entirely.
+                            type: string
+                        type: object
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the webhooks'' own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            default: []
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            default: {}
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      onNotGranted:
+                        default: Default
+                        description: |-
+                          What to do when a workspace names an entry key its team's grant does not allow.
+
+                          Reuses `dwoc-pin`'s [`OnUnknownKey`] rather than `network-profiles`' `OnNotGranted`: the
+                          two enums are the same `Default`/`Deny` pair, and a third copy of it would be a third
+                          place to keep in step. The field name is this RFC's own (`onNotGranted`), because that
+                          is the vocabulary its *Contract* table uses.
+                        enum:
+                        - Default
+                        - Deny
+                        type: string
+                      platform:
+                        default:
+                          builtin: true
+                          extra: []
+                        description: The always-allowed platform pattern set.
+                        properties:
+                          builtin:
+                            default: true
+                            description: |-
+                              Whether the compiled-in platform patterns apply. The compiled-in list is explicitly
+                              **not** contract (RFC 0005's *Stability*) — it tracks Che and DevWorkspace Operator.
+                            type: boolean
+                          extra:
+                            default: []
+                            description: |-
+                              Additional always-allowed patterns, for an admin who mirrors the platform images into
+                              their own registry.
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      variables:
+                        additionalProperties:
+                          description: |-
+                            One declared pattern variable's binding. Exactly one binding form ships —
+                            `fromNamespaceAnnotation` — per RFC 0005's *Future work*: "so the surface stays one thing
+                            rather than a small language."
+                          properties:
+                            fromNamespaceAnnotation:
+                              description: The namespace annotation key this variable's value is read from.
+                              type: string
+                          required:
+                          - fromNamespaceAnnotation
+                          type: object
+                        default: {}
+                        description: |-
+                          Additional pattern variables beyond the two built in, name → binding. Declaring one is
+                          the opt-in to an annotation-sourced value, and to the RBAC dependency RFC 0005's
+                          *Security considerations* spends a section on.
+                        type: object
+                      workspaceSelection:
+                        default:
+                          attribute: hardening.weebo.io/image-policy
+                        description: The devfile attribute naming an entry key list.
+                        properties:
+                          attribute:
+                            default: hardening.weebo.io/image-policy
+                            description: |-
+                              DevWorkspace attribute naming a comma-separated entry key list. The empty string disables
+                              this selection step entirely.
+                            type: string
+                        type: object
+                    required:
+                    - catalog
+                    - default
+                    - mode
+                    type: object
                   networkProfiles:
                     description: '`spec.features.networkProfiles`, per RFC 0004.'
                     nullable: true

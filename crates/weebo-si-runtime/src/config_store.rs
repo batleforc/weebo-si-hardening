@@ -16,8 +16,8 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, DwocPinConfig, FeatureMode, NamespaceName, NetworkProfilesConfig, PolicyGuardConfig,
-    SINGLETON_NAME, Team, WeeboSiConfig,
+    Backend, DwocPinConfig, FeatureMode, ImagePolicyConfig, NamespaceName, NetworkProfilesConfig,
+    PolicyGuardConfig, SINGLETON_NAME, Team, WeeboSiConfig,
 };
 
 use weebo_si_chassis::FeatureId;
@@ -51,6 +51,7 @@ pub struct KubeConfigStore {
     dwoc_pin: Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: Arc<RwLock<Option<PolicyGuardConfig>>>,
+    image_policy: Arc<RwLock<Option<ImagePolicyConfig>>>,
     resolved_backend: Arc<RwLock<Backend>>,
     namespace_view: Arc<KubeNsStore>,
 }
@@ -86,6 +87,7 @@ impl KubeConfigStore {
         let dwoc_pin = Arc::new(RwLock::new(None));
         let network_profiles = Arc::new(RwLock::new(None));
         let policy_guard = Arc::new(RwLock::new(None));
+        let image_policy = Arc::new(RwLock::new(None));
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let metrics = Metrics::register(registry).map_err(|err| {
             kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(
@@ -101,6 +103,7 @@ impl KubeConfigStore {
         let dwoc_pin_for_task = Arc::clone(&dwoc_pin);
         let network_profiles_for_task = Arc::clone(&network_profiles);
         let policy_guard_for_task = Arc::clone(&policy_guard);
+        let image_policy_for_task = Arc::clone(&image_policy);
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let annotation_key_for_task = Arc::clone(&annotation_key);
         let dwoc_catalog_for_task = Arc::clone(&dwoc_catalog);
@@ -116,6 +119,7 @@ impl KubeConfigStore {
                         &dwoc_pin_for_task,
                         &network_profiles_for_task,
                         &policy_guard_for_task,
+                        &image_policy_for_task,
                         &resolved_backend_for_task,
                         &annotation_key_for_task,
                         dwoc_catalog_for_task.as_ref(),
@@ -143,6 +147,7 @@ impl KubeConfigStore {
             &dwoc_pin,
             &network_profiles,
             &policy_guard,
+            &image_policy,
             &resolved_backend,
             &annotation_key,
             capabilities.as_ref(),
@@ -153,6 +158,7 @@ impl KubeConfigStore {
             dwoc_pin,
             network_profiles,
             policy_guard,
+            image_policy,
             resolved_backend,
             namespace_view,
         })
@@ -181,6 +187,14 @@ impl KubeConfigStore {
     pub fn resolved_backend(&self) -> Arc<RwLock<Backend>> {
         Arc::clone(&self.resolved_backend)
     }
+
+    /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
+    /// **One handle, both halves**, so the `DevWorkspace` and `Pod` enforcement points can never
+    /// disagree about the catalogue, the grants or the platform set — the same reason
+    /// `network-profiles` hands one handle to its reconcile and admission halves.
+    pub fn image_policy_config(&self) -> Arc<RwLock<Option<ImagePolicyConfig>>> {
+        Arc::clone(&self.image_policy)
+    }
 }
 
 struct Metrics {
@@ -189,6 +203,7 @@ struct Metrics {
     observed_generation: IntGauge,
     network_backend: IntGaugeVec,
     network_profile_unsupported: IntGaugeVec,
+    image_catalog_entries: IntGaugeVec,
 }
 
 impl Metrics {
@@ -230,17 +245,32 @@ impl Metrics {
             ),
             &["profile", "backend"],
         )?;
+        // RFC 0005's one configuration-shaped metric, here for the same reason the two above
+        // are: how many catalogue entries parse is a property of the config, and a gauge driven
+        // from an admission pass would report whichever request arrived last. It is the
+        // configuration-side view of a broken pattern — it fires on an entry that stopped
+        // parsing after an edit, even in a team whose workspaces nobody has restarted.
+        let image_catalog_entries = IntGaugeVec::new(
+            Opts::new(
+                "weebo_si_image_policy_catalog_entries",
+                "Catalogue entries whose every pattern parses (valid) and entries carrying at \
+                 least one that does not (invalid)",
+            ),
+            &["state"],
+        )?;
         registry.register(Box::new(feature_mode.clone()))?;
         registry.register(Box::new(catalog_entries.clone()))?;
         registry.register(Box::new(observed_generation.clone()))?;
         registry.register(Box::new(network_backend.clone()))?;
         registry.register(Box::new(network_profile_unsupported.clone()))?;
+        registry.register(Box::new(image_catalog_entries.clone()))?;
         Ok(Self {
             feature_mode,
             catalog_entries,
             observed_generation,
             network_backend,
             network_profile_unsupported,
+            image_catalog_entries,
         })
     }
 }
@@ -255,6 +285,7 @@ fn sync_from_store_initial(
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
+    image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     annotation_key: &Arc<RwLock<String>>,
     capabilities: &dyn Capabilities,
@@ -272,6 +303,7 @@ fn sync_from_store_initial(
         dwoc_pin,
         network_profiles,
         policy_guard,
+        image_policy,
         resolved_backend,
         annotation_key,
         capabilities,
@@ -288,6 +320,7 @@ fn sync_from_store(
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
+    image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     annotation_key: &Arc<RwLock<String>>,
     dwoc_catalog: &KubeDwocStore,
@@ -307,6 +340,7 @@ fn sync_from_store(
         dwoc_pin,
         network_profiles,
         policy_guard,
+        image_policy,
         resolved_backend,
         annotation_key,
         capabilities,
@@ -375,6 +409,47 @@ fn sync_from_store(
             .set(i64::from(candidate == backend));
     }
 
+    metrics
+        .feature_mode
+        .with_label_values(&["image-policy"])
+        .set(
+            config
+                .spec
+                .features
+                .image_policy
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
+    // Set from a full recount rather than incremented, same as the gauge below: an entry whose
+    // pattern was fixed must drop out of `invalid`, not keep reporting a fault that is gone.
+    let (mut valid, mut invalid) = (0i64, 0i64);
+    if let Some(cfg) = config.spec.features.image_policy.as_ref() {
+        for entry in cfg.catalog.entries() {
+            // An entry is valid only if *every* pattern parses — a half-applied entry is an
+            // allow-list whose contents differ from what an admin reads, so the domain refuses
+            // to use one, and this gauge reports it the same way.
+            if entry
+                .patterns
+                .iter()
+                .all(|raw| weebo_si_image_policy::Pattern::parse(raw).is_ok())
+            {
+                valid += 1;
+            } else {
+                invalid += 1;
+            }
+        }
+    }
+    metrics
+        .image_catalog_entries
+        .with_label_values(&["valid"])
+        .set(valid);
+    metrics
+        .image_catalog_entries
+        .with_label_values(&["invalid"])
+        .set(invalid);
+
     // Recomputed from scratch, never incremented: a profile that gained a variant (or left the
     // catalogue) must drop back to 0 rather than keep reporting a degradation that was fixed.
     metrics.network_profile_unsupported.reset();
@@ -398,6 +473,7 @@ fn apply_config(
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
+    image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     annotation_key: &Arc<RwLock<String>>,
     capabilities: &dyn Capabilities,
@@ -413,6 +489,9 @@ fn apply_config(
     }
     if let Ok(mut guard) = policy_guard.write() {
         *guard = config.spec.features.policy_guard.clone();
+    }
+    if let Ok(mut guard) = image_policy.write() {
+        *guard = config.spec.features.image_policy.clone();
     }
     if let Ok(mut guard) = resolved_backend.write() {
         let preference = config
@@ -467,6 +546,18 @@ impl FeatureGate for KubeConfigStore {
             "policy-guard" => {
                 let guard = self
                     .policy_guard
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
+            // One arm, both halves: RFC 0005's `DevWorkspace` and `Pod` features report the same
+            // `FeatureId`, so this `mode` and this `namespaceSelector` govern both.
+            "image-policy" => {
+                let guard = self
+                    .image_policy
                     .read()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match guard.as_ref() {

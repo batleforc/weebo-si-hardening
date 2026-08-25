@@ -1,11 +1,11 @@
 ---
 rfc: 0005
 title: image-policy
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-08-24
 updated: 2026-08-24
-decided:
+decided: 2026-08-24
 brick: crates/weebo-si-image-policy
 supersedes: []
 superseded-by: []
@@ -1128,16 +1128,26 @@ did write, so a Pod-layer denial is a signal that an admin needs to look, not a 
 
 ## Unresolved questions
 
-**Blocking:**
+**Resolved before implementation**, and left here rather than deleted, because both answers are
+now load-bearing in the chart and neither is obvious from reading it:
 
-- **Is `failurePolicy: Fail` on the `pods` webhook acceptable to whoever operates this cluster?**
-  The consequence is that an unavailable operator means workspace pods cannot be rescheduled, and
-  that is a call for the person carrying the pager, not for this document. `Ignore` is available
-  and its cost is stated above; picking it should be a decision, not a default.
-- **Which label marks a workspace namespace**, and does Che apply it, or does something else have
-  to. [RFC 0004](./0004-network-profiles.md)'s `policy-guard` has the same dependency and the same
-  checklist line, so the answer is shared — but this RFC cannot be `Accepted` while it is unknown,
-  because the Pod half's entire scoping rests on it.
+- ~~**Is `failurePolicy: Fail` on the `pods` webhook acceptable to whoever operates this
+  cluster?**~~ **Settled the way [RFC 0004](./0004-network-profiles.md) settles `policyGuard`'s:
+  one manifest, one `values.yaml` switch (`imagePolicy.podWebhook.failurePolicy`), `Fail` by
+  default.** The argument in *Operational considerations* lands on `Fail` — the Pod half exists
+  specifically to catch what the `DevWorkspace` half cannot see, and a floor removable by causing
+  an error is not a floor — and the switch is what keeps `Ignore` a deliberate install decision
+  rather than a fork of the chart. The `DevWorkspace` webhook has no such switch and is hard-coded
+  to `Fail`: RFC 0002 already settled that argument, and there is no cluster for which the answer
+  differs. The cost of `Fail` on `pods` is the first line of the install checklist rather than a
+  paragraph someone has to find.
+- ~~**Which label marks a workspace namespace**~~ — **`hardening.weebo.io/workspace-namespace`,
+  the same label [RFC 0004](./0004-network-profiles.md)'s `policy-guard` already requires.** This
+  RFC always said the answer was shared with that one; making it the *same string* rather than a
+  parallel decision means one checklist line covers both webhooks, and a cluster that labelled its
+  namespaces for `policy-guard` has already labelled them for this. Whether Che applies it
+  automatically is still that installation's question, and it is on the checklist with the
+  consequence spelled out: a namespace missing it is a namespace the floor never sees.
 
 **Non-blocking:**
 
@@ -1189,62 +1199,139 @@ did write, so a Pod-layer denial is a signal that an admin needs to look, not a 
 
 ## Implementation plan
 
-- [ ] `crates/weebo-si-image-policy` scaffolded (`Cargo.toml` depending on `weebo-si-crd` +
-      `weebo-si-chassis` only, added to the workspace `members`), mirroring
+- [x] `crates/weebo-si-image-policy` scaffolded (`Cargo.toml` depending on `weebo-si-crd` +
+      `weebo-si-chassis` only, picked up by the workspace's `crates/*` glob), mirroring
       `crates/weebo-si-network-profiles`
-- [ ] `reference.rs`: parse and normalize, with the *Contract* table as its test table. Length
-      cap, non-backtracking, denies on failure. **This PR is reviewed on its own.**
-- [ ] `pattern.rs`: parse and per-field match, including the `*.suffix` host form and the
-      rejection of a bare `*` host. Property test: a pattern never matches a reference whose
-      normalized host differs.
-- [ ] `variable.rs`: the built-ins, the declared-variable binding, the reserved names, the
-      `PathComponent` newtype whose only constructor validates, and `Segment::Var`. Test asserting
-      the crate exposes no pattern-times-`&str` substitution function — the compile-time half of
-      *Architecture*'s claim.
-- [ ] `pattern.rs`: substitution into a parsed `Segment`, `{TEAM_NAME}` permitted in the host and
-      nothing else, and an undefined variable matching nothing. Table test with a team named
-      `a/**`, a team named `Team One`, a namespace with no team, a missing annotation, and an
-      annotation valued `../other-project`.
-- [ ] The declared-variable adapter in `weebo-si-runtime`: read only the declared keys through
-      `NamespaceView::annotation`, validate, and populate both subjects' `variables` map from one
-      code path. Test that an illegal value yields an absent entry and raises no CRD condition.
-- [ ] `weebo-si-crd/src/image_policy.rs`: `ImagePolicyConfig`, `Entry`, `PlatformConfig`, and
-      `validate()` — duplicate keys, empty catalogue, unparseable pattern, undeclared variable
-      name, a declared variable rebinding `TEAM_NAME` or `NAMESPACE`, a variable name outside
-      `[A-Z][A-Z0-9_]*`, a declared variable no pattern uses,
-      a `spec.teams[].name` that is not a legal path component while a pattern uses `{TEAM_NAME}`,
-      a top-level `default` entry carrying `{TEAM_NAME}`, `default` naming an unknown key, a grant
-      whose `allowed` names an unknown key, a grant `default` outside its own `allowed`. CRD
-      regenerated by `task recu`.
-- [ ] `platform.rs`: the compiled-in set, plus `platform.builtin`/`platform.extra` handling
-- [ ] `resolve.rs`: the three-scope chain, the grant intersection, `onNotGranted`, the union with
-      the platform set. Exhaustive table test, no cluster.
-- [ ] `subject.rs` + `feature/workspace_images.rs`: `Feature<WorkspaceImages>`, the
+- [x] `reference.rs`: parse and normalize, with the *Contract* table as its test table
+      (`the_rfcs_normalization_table_is_executable`). Length cap, single forward pass, denies on
+      failure. Three decisions the RFC left implicit and the code had to make explicit: a
+      reference carrying a digest reports `tag() == None` **whatever tag it was written with**
+      (so `dev:v1@sha256:…` and `dev@sha256:…` behave identically, which is the fail-closed
+      reading of "the tag is decoration"); an uppercase repository path is a *parse failure*
+      rather than something to case-fold (folding would make two distinct references compare
+      equal to one pattern); and the fields are private with accessors rather than `pub`, so the
+      only way to obtain an `ImageReference` is through the normalizer. A `parsing_is_idempotent_
+      over_its_own_output` test pins the fixed point, since a normalization that is not one is
+      exactly the gap a bypass lives in
+- [x] `pattern.rs`: parse and per-field match, including the `*.suffix` host form and the
+      rejection of a bare `*` host. The property test the plan asked for is
+      `a_pattern_never_matches_a_reference_whose_normalized_host_differs`, run over the cross
+      product of the catalogue-shaped patterns and references the suite already uses.
+      **Writing the tests found two real bugs before any of this ran anywhere**, both of the
+      "looks like a working control" class this RFC is shaped against: `*/**` parsed, because a
+      bare `*` in the first position has no dot and no port and so fell through the host/path
+      split into `docker.io/*/**` — an admin writing "any registry" got a very large Docker Hub
+      allow-list instead of the refusal *Contract* promises; and `registry.internal/-dev` parsed
+      while being unable to match anything, because a wholly-literal segment was only checked at
+      *match* time, so a pattern that could never work was invisible rather than `Degraded`.
+      Both are now parse-time refusals with their own tests
+- [x] `variable.rs`: the built-ins, the declared-variable binding, the reserved names, the
+      `PathComponent` newtype whose only constructor validates, and `Segment::Var`. The
+      compile-time half of *Architecture*'s claim is structural rather than a textual test —
+      there is no function in the crate taking a pattern and a `&str`, because substitution
+      resolves `Var` to a `PathComponent` inside the matcher and `PathComponent` has no
+      `From<String>`, no `Deref<Target = str>` and no public field
+- [x] `pattern.rs`: substitution into a parsed `Segment`, `{TEAM_NAME}` permitted in the host and
+      nothing else, and an undefined variable matching nothing —
+      `an_undefined_variable_matches_nothing_rather_than_collapsing_the_segment` is the test for
+      the single most damaging way this could have been implemented. Table tested with a team
+      named `a/**`, a team named `Team One`, a namespace with no team, a missing annotation, and
+      an annotation valued `../other-project`
+- [x] The declared-variable adapter — **in `weebo-si-image-policy`, not `weebo-si-runtime` as the
+      plan sketched.** It needs only `NamespaceView` (a chassis port) and this crate's own
+      observer port, both of which the domain already knows, and putting it in an adapter would
+      have meant the `DevWorkspace` route and the `Pod` route each calling their own copy — two
+      implementations that can drift, of the one thing this RFC calls a property rather than a
+      promise ("variables resolve identically at both layers"). `variable::resolve_declared`
+      reads only the declared keys, validates each value, and yields an absent entry for an
+      illegal one while raising no CRD condition, tested by
+      `an_illegal_value_yields_an_absent_entry_and_raises_no_condition`
+- [x] `weebo-si-crd/src/image_policy.rs`: `ImagePolicyConfig`, `Entry`, `PlatformConfig`, and
+      `validate()`. **Split across two crates, because the dependency direction forces it**:
+      `weebo-si-crd` cannot call `Pattern::parse` (it is `weebo-si-image-policy`'s dependency,
+      not the reverse), so `ImagePolicyConfig::validate` proves everything *structural* and
+      `weebo_si_image_policy::validate` calls it and appends the parse-dependent half. Both
+      produce the same `ImagePolicyConfigViolation`, which lives in the CRD crate so neither half
+      owns a private vocabulary, and callers want the second function. Every violation the plan
+      listed is covered, plus `EmptyVariableBinding`. `onNotGranted` reuses `dwoc-pin`'s
+      `OnUnknownKey` rather than a third copy of the same `Default`/`Deny` pair; the *field* name
+      is this RFC's own. CRD regenerated by `task recu`
+- [x] `platform.rs`: the compiled-in set, plus `platform.builtin`/`platform.extra` handling. An
+      unparseable `platform.extra` entry is an error rather than a silent skip — the same
+      fail-toward-denying rule the catalogue gets, applied to the one set no grant can withhold
+- [x] `resolve.rs`: the three-scope chain, the grant intersection, `onNotGranted`, the union with
+      the platform set. Exhaustive table test, no cluster. Two shapes worth recording: a
+      no-team namespace (and a team with no grant) falls back to the **top-level `default`**
+      rather than to an empty grant, which is where this deliberately diverges from
+      `network-profiles` — that feature's floor is the baseline, applied unconditionally, while
+      here the floor is the platform set, and a namespace reaching *nothing* is one where no
+      workspace can start; and `effective_patterns` drops an entry entirely if **any** of its
+      patterns fails to parse, because a half-applied entry is an allow-list whose contents
+      differ from what an admin reads
+- [x] `subject.rs` + `feature/workspace_images.rs`: `Feature<WorkspaceImages>`, the
       selection-precise half
-- [ ] `feature/pod_images.rs`: `Feature<PodImages>`, the team-boundary floor. Test asserting the
-      subject exposes no path to a workspace selection.
-- [ ] `weebo-si-webhook/src/image_policy.rs`: both routes, extraction from `AdmissionReview` for
+- [x] `feature/pod_images.rs`: `Feature<PodImages>`, the team-boundary floor.
+      `the_pod_subject_exposes_no_path_to_a_workspace_selection` is the test the plan asked for —
+      textual, because "this struct has no field of that shape" is not something the type system
+      can be asked, and it fires on exactly the change this RFC argues costs new RBAC, a
+      fleet-scaled cache and a startup race. The judging core both halves share is
+      `feature/core.rs`: the two differ only in which `resolve` function the caller invoked, so
+      "variables resolve identically at both layers" is a consequence of there being one
+      implementation
+- [x] `weebo-si-webhook/src/image_policy.rs`: both routes, extraction from `AdmissionReview` for
       `DevWorkspace` and for `Pod` including all three container lists and the
-      `pods/ephemeralcontainers` subresource shape
-- [ ] `weebo-si-runtime/src/image_metrics.rs`: the three metrics; test asserting no image
-      reference reaches a label
-- [ ] `weebo-si-operator`: registry lines in the composition root, `images_cmd.rs` for `platform`,
-      `check` and `audit` — including the interpolated-pattern line in `check` and per-namespace
-      grouping in `audit` when verdicts differ — and `features` output updated
-- [ ] Helm chart: both `ValidatingWebhookConfiguration`s, the `Ignore` variant of the pods one as
-      a documented `values.yaml` switch, `imagePolicy` values
-- [ ] envtest: denial at both layers, `DryRun` producing identical verdicts to `Enforce`,
-      `pods/ephemeralcontainers` denied, `UPDATE` on a running pod denied, and one namespace per
-      team proving `{TEAM_NAME}` resolves per namespace at both layers and denies across teams
-- [ ] `docs/bricks/weebo-si-operator.md` updated with the feature, the three CLI commands and the
-      Che-upgrade runbook entry
-- [ ] Install checklist gains: which label marks a workspace namespace, whether the registry is a
+      `pods/ephemeralcontainers` subresource shape. A container with no `image` is skipped rather
+      than denied — the apiserver rejects that on its own, and denying would be this webhook
+      answering for a validation that is not ours
+- [x] `weebo-si-runtime/src/image_metrics.rs`: the metrics, with the no-reference-in-a-label test.
+      **One departure worth naming: this feature has an outbound port of its own**
+      (`ImagePolicyObserver`), which `dwoc-pin` and `policy-guard` do not. The chassis' `Observer`
+      records one `FeatureOutcome` per `evaluate()`, and this contract needs `resource` (the two
+      halves are the same `FeatureId`), a per-*image* platform counter and a per-*variable*
+      counter — several observations per decision, which `Decision` does not model and should not
+      grow to, per its own doc comment. Same place `network-profiles` puts `ReconcileObserver`,
+      same reason. The mode invariant is untouched: the port has no method answering "what mode
+      am I in". `variable_value_seen` passes the raw annotation value across the port and it
+      **stops there** — compared against the last one seen, counted as a change, never labelled
+- [x] `weebo-si-operator`: registry lines in the composition root (one `ImageMetrics`, one config
+      handle, two registries — sharing the handle is what makes "the two enforcement points
+      cannot disagree" structural), `images_cmd.rs` for `platform`, `check` and `audit` —
+      including the interpolated-pattern line in `check` and per-namespace `VARIES` reporting in
+      `audit` when verdicts differ — and `features` output updated. Both cluster-reading
+      subcommands use the invoking kubeconfig and a plain list rather than a reflector
+- [x] Helm chart: both `ValidatingWebhookConfiguration`s with their opposite selector polarities,
+      the pods one's `failurePolicy` driven by `values.yaml`'s
+      `imagePolicy.podWebhook.failurePolicy` (`Fail` by default) rather than two separate
+      manifests — the same shape RFC 0004 uses for `policyGuard`. Verified rendering at both
+      values, and that the switch moves *only* the pods webhook. The RBAC template gained a
+      comment recording that this feature adds nothing to it, so a future edit that adds a grant
+      "for image-policy" has to argue with a note rather than an absence
+- [x] envtest: 10 tests in `crates/weebo-si-webhook/tests/envtest.rs`, against a real apiserver
+      calling back into a real running webhook over TLS through both real
+      `ValidatingWebhookConfiguration`s. Denial at both layers, `DryRun` admitting what `Enforce`
+      denies (at both layers), `pods/ephemeralcontainers` denied through its own subresource,
+      `UPDATE` on a running pod denied, an unparseable reference denied, a platform image
+      admitted for a team granted nothing, a namespace without the positive label out of the Pod
+      rule's scope, and **one namespace per team proving `{TEAM_NAME}` resolves per namespace at
+      both layers and denies across teams** — the one thing no single-namespace test can show.
+      envtest has no kubelet, which is irrelevant: admission runs before scheduling, and
+      admission is the whole of what this feature does
+- [x] `docs/bricks/weebo-si-operator.md` updated with the feature, the three CLI commands, the
+      Che-upgrade runbook entry, and *Known limitations* naming everything above that this does
+      not do
+- [x] Install checklist gains: which label marks a workspace namespace, whether the registry is a
       pull-through cache, the `failurePolicy` choice for the pods webhook, and — only where
       `variables` is declared — whether a workspace user can annotate their own namespace, with
       the command that answers it:
       `kubectl auth can-i patch namespace/<user-ns> --as=<workspace-user>`
-- [ ] Docs updated
-- [ ] RFC flipped to `Implemented`
+- [x] Docs updated
+- [x] RFC flipped to `Implemented`. Both *blocking* unresolved questions are answered above and
+      moved to *Resolved*; what remains open is listed as a limitation rather than a gap, in the
+      runbook's own *Known limitations*: this control is over names rather than content, workspaces
+      predating installation are untouched, plugin components are read at the pod rather than at
+      the `DevWorkspace`, an interpolating pattern is not reviewable by reading the CRD, and
+      catalogue validation is reconcile-time rather than write-time. None of those is this RFC
+      claiming something it does not do
 
 ## References
 
@@ -1266,7 +1353,6 @@ did write, so a Pod-layer denial is a signal that an admin needs to look, not a 
 
 ## Changelog
 
-> Only once the RFC is `Accepted` and reality pushes back.
-
 | Date | Change |
 | --- | --- |
+| 2026-08-24 | Implemented in one pass, and flipped from `Draft` to `Implemented`. Both *blocking* unresolved questions were answered before any code was written, and both took RFC 0004's shape rather than inventing one: the `pods` webhook's `failurePolicy` is a `values.yaml` switch defaulting to `Fail` (the `DevWorkspace` one is hard-coded, since RFC 0002 already settled that argument), and the workspace-namespace label is `hardening.weebo.io/workspace-namespace` — the same string `policy-guard` already requires, so one checklist line covers both. **Four things surfaced that the design could not have known, and each is recorded in the *Implementation plan* rather than silently absorbed.** (1) `validate()` had to split across two crates: `weebo-si-crd` cannot call `Pattern::parse`, because it is the *domain crate's dependency* and not the reverse, so the CRD proves everything structural and `weebo_si_image_policy::validate` appends the parse-dependent half, both producing the one violation enum. (2) The declared-variable resolver moved from `weebo-si-runtime` (where the plan sketched it) into the domain crate: it needs only ports the domain already knows, and an adapter-side copy per route would have made "variables resolve identically at both layers" a promise about two implementations rather than a property of one. (3) This feature needed an outbound port of its own, which neither `dwoc-pin` nor `policy-guard` does — the chassis' `Observer` records one outcome per `evaluate()`, and this contract needs `resource`, a per-image counter and a per-variable counter; `ImagePolicyObserver` sits where `network-profiles` puts `ReconcileObserver`, and carries no method that could tell a feature its own mode. (4) **Writing `pattern.rs`'s tests found two real bugs before any of this ran anywhere**, both of the "looks like a working control" class this RFC is shaped against: `*/**` parsed into `docker.io/*/**` rather than being refused, so an admin writing "any registry" got a very large Docker Hub allow-list instead of the error *Contract* promises; and `registry.internal/-dev` parsed while being structurally unable to match anything, so a pattern that could never work was invisible rather than `Degraded` — and "never matches" is indistinguishable from "correctly restrictive" from the outside, which is the same argument this RFC already makes for undeclared variables. Both are now parse-time refusals. Verified with 141 pure tests in the domain crate, the full workspace suite green, and 10 new envtests against a real apiserver calling back into a real running webhook through both real `ValidatingWebhookConfiguration`s — including the per-team `{TEAM_NAME}` case at both layers, which is the one thing no single-namespace test can show. |

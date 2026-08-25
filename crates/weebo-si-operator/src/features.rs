@@ -30,4 +30,11 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0004",
         resource: "NetworkPolicy, CiliumNetworkPolicy",
     },
+    // One entry, two enforcement points: RFC 0005's `DevWorkspace` and `Pod` halves report the
+    // same `FeatureId`, so one `mode` gates both and `features` lists one feature.
+    FeatureDescriptor {
+        id: "image-policy",
+        rfc: "RFC 0005",
+        resource: "DevWorkspace, Pod",
+    },
 ];

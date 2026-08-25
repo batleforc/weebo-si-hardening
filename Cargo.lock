@@ -2668,6 +2668,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-image-policy"
+version = "0.1.0"
+dependencies = [
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-network-profiles"
 version = "0.1.0"
 dependencies = [
@@ -2695,6 +2703,7 @@ dependencies = [
  "weebo-si-crd",
  "weebo-si-dwoc-pin",
  "weebo-si-envtest-support",
+ "weebo-si-image-policy",
  "weebo-si-network-profiles",
  "weebo-si-runtime",
  "weebo-si-webhook",
@@ -2715,6 +2724,7 @@ dependencies = [
  "weebo-si-chassis",
  "weebo-si-crd",
  "weebo-si-envtest-support",
+ "weebo-si-image-policy",
  "weebo-si-network-profiles",
 ]
 
@@ -2738,6 +2748,7 @@ dependencies = [
  "weebo-si-crd",
  "weebo-si-dwoc-pin",
  "weebo-si-envtest-support",
+ "weebo-si-image-policy",
  "weebo-si-network-profiles",
  "weebo-si-runtime",
 ]

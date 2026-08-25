@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::DwocPinConfig;
+use crate::image_policy::ImagePolicyConfig;
 use crate::network_profiles::NetworkProfilesConfig;
 use crate::policy_guard::PolicyGuardConfig;
 use crate::team::Team;
@@ -25,6 +26,9 @@ pub struct Features {
     /// `spec.features.policyGuard`, per RFC 0004.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_guard: Option<PolicyGuardConfig>,
+    /// `spec.features.imagePolicy`, per RFC 0005.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_policy: Option<ImagePolicyConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a

@@ -11,6 +11,7 @@ repository.workspace = true
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }
@@ -25,6 +26,7 @@ envtest = []
 [dev-dependencies]
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles", features = ["testing"] }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy", features = ["testing"] }
 weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
 kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
 rustls = { workspace = true }

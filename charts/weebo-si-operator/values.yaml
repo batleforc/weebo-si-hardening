@@ -131,6 +131,37 @@ networkProfiles:
 policyGuard:
   failurePolicy: Fail
 
+# RFC 0005's `image-policy`. Two webhooks, and only the Pod one has a switch here.
+#
+# The DevWorkspace webhook is hard-coded to `failurePolicy: Fail`: its blast radius is workspace
+# creation and start, RFC 0002 already settled that argument for `dwoc-pin`, and there is no
+# cluster for which the answer differs.
+#
+# The Pod webhook is the harder argument and the one value RFC 0005 leaves to install time:
+#
+#   Fail   (default) — the floor is real. The Pod half exists specifically to catch what the
+#                      DevWorkspace half cannot see (plugin-resolved and DWO-injected images),
+#                      and a floor that can be removed by causing an error is not a floor.
+#                      Cost: while the operator is unavailable, **no pod is created in any
+#                      workspace namespace** — including rescheduling. A node drains and its
+#                      workspace pods do not come back until the operator does. That fires on
+#                      cluster events nobody initiated, which makes it strictly worse than the
+#                      DevWorkspace half's outage.
+#   Ignore           — no such outage, and a two-step bypass: make the webhook unavailable,
+#                      create the pod. Choose this only knowing that, and knowing the Pod half is
+#                      the only layer that sees injected images at all.
+#
+# This is a decision for whoever carries the pager, not one the chart should make by guessing.
+# It is on the install checklist in docs/bricks/weebo-si-operator.md.
+#
+# `spec.features.imagePolicy` — the catalogue, the grants, the variables, the platform set — is
+# configured on the `WeeboSiConfig` object, not here. This chart installs the webhooks in a state
+# where every DevWorkspace and every workspace pod round-trips through them and is allowed, until
+# an `imagePolicy` block exists and names a mode.
+imagePolicy:
+  podWebhook:
+    failurePolicy: Fail
+
 serviceAccount:
   webhook:
     create: true
