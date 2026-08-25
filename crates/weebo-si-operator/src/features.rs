@@ -25,10 +25,14 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0004",
         resource: "Namespace, DevWorkspace",
     },
+    // One entry, two webhook paths: RFC 0007's registry rule reports the same `FeatureId`, so one
+    // `mode` and one `allowedIdentities` govern both and `features` lists one feature. The
+    // resources are listed together for the same reason — an operator asking "what does the guard
+    // cover" wants one answer, not two rows to reconcile.
     FeatureDescriptor {
         id: "policy-guard",
         rfc: "RFC 0004",
-        resource: "NetworkPolicy, CiliumNetworkPolicy",
+        resource: "NetworkPolicy, CiliumNetworkPolicy, ConfigMap, Secret",
     },
     // One entry, two enforcement points: RFC 0005's `DevWorkspace` and `Pod` halves report the
     // same `FeatureId`, so one `mode` gates both and `features` lists one feature.
@@ -41,5 +45,10 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         id: "kubearmor-policy",
         rfc: "RFC 0006",
         resource: "Namespace, DevWorkspace",
+    },
+    FeatureDescriptor {
+        id: "registry-config",
+        rfc: "RFC 0007",
+        resource: "Namespace",
     },
 ];

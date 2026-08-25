@@ -54,3 +54,6 @@ tasks:
       # `envtest`: it installs a KubeArmorPolicy CRD fixture into the apiserver, and a suite
       # that installs a CRD should not share one with a suite that assumes a bare cluster.
       - cargo test --workspace --features envtest --test kubearmor_envtest -- --test-threads=1
+      # RFC 0007's suite is likewise its own target: it is specifically about a store that
+      # watches every ConfigMap and Secret in the cluster, and `envtest` above assumes a bare one.
+      - cargo test --workspace --features envtest --test registry_envtest -- --test-threads=1

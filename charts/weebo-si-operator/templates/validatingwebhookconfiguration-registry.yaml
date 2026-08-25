@@ -1,0 +1,85 @@
+{{- if and (ne .Values.certificates.provider "none") .Values.registryConfig.rbac.enabled }}
+{{/*
+  RFC 0007's *`policy-guard` covers these objects too*: an object of its own, not a third rule on
+  `-policies`, "so the two can be enabled independently."
+
+  Two things make this rule structurally different from the network one next to it, and both are
+  argued below rather than in prose somewhere else: the `objectSelector`, and the
+  `failurePolicy`.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-registry-configs
+  labels:
+    {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.certificates.provider "cert-manager" }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "weebo-si-operator.webhookServiceName" . }}
+    {{- else if eq .Values.certificates.provider "openshift" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+    {{- end }}
+webhooks:
+  - name: registryconfigs.hardening.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    matchPolicy: Equivalent
+    # `Ignore`, against `policy-guard`'s own `Fail` on the network rule — and the asymmetry is a
+    # decision on the record rather than an inconsistency someone finds later. RFC 0007's
+    # *Operational considerations*:
+    #
+    #   "the object being guarded is a `ConfigMap`, the consequence of an unguarded write is a
+    #    developer pointing their own workspace at their own registry inside an egress baseline
+    #    that still holds, and the consequence of a fail-closed rule is that a webhook outage
+    #    blocks `ConfigMap` and `Secret` writes in every namespace the rule matches."
+    #
+    # Weighing "a bad `.npmrc` for one namespace, visible in `weebo_si_registry_drift_total` and
+    # corrected on the next reconcile" against "an apiserver that cannot write configuration
+    # during an operator outage", the first is plainly the smaller failure.
+    failurePolicy: {{ .Values.registryConfig.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    rules:
+      # `DELETE` is included for the reason RFC 0004 gives for the network rule: deleting the
+      # object is the cheapest bypass, and a rule that does not cover `DELETE` does not cover it.
+      # On a `DELETE` the object arrives in `oldObject`, which is where the handler reads the
+      # ownership label from.
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["configmaps", "secrets"]
+        scope: Namespaced
+    # **The objectSelector is not an optimisation — it is what makes guarding `configmaps` viable
+    # at all.** RFC 0007: "without it, the webhook sits in the path of *every* `ConfigMap` and
+    # `Secret` write in the cluster, including the ones the apiserver itself depends on."
+    #
+    # For an `UPDATE`, Kubernetes evaluates `objectSelector` against both the old and the new
+    # object and calls the webhook if *either* matches, so stripping the label is itself a guarded
+    # write rather than an escape hatch.
+    #
+    # RFC 0008 states the general rule this rule is the second half of: "a guard rule that must
+    # refuse unmanaged creates cannot use an ownership `objectSelector`; one that only protects
+    # existing objects should, if the resource is high-volume." This one only protects existing
+    # objects — the handler has no unmanaged-CREATE row at all, deliberately, so that dropping
+    # this selector by accident could not turn the guard into one that denies every ConfigMap a
+    # developer creates.
+    objectSelector:
+      matchLabels:
+        hardening.weebo.io/managed-by: weebo-si-operator
+    # Opt-IN, the same polarity as `policy-guard`'s network rule and for the same reason: a
+    # `ConfigMap` is not a workspace object by definition, and a mis-scoped rule over them is a
+    # cluster problem rather than an over-hardened namespace. Which namespaces carry
+    # `hardening.weebo.io/workspace-namespace` is Che's to say — the same install-checklist line
+    # `policy-guard` already depends on.
+    namespaceSelector:
+      matchExpressions:
+        - key: {{ .Values.namespaceExclusionLabel }}
+          operator: DoesNotExist
+        - key: hardening.weebo.io/workspace-namespace
+          operator: Exists
+    clientConfig:
+      service:
+        name: {{ include "weebo-si-operator.webhookServiceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate/v1/registryconfigs
+        port: {{ .Values.webhook.service.port }}
+{{- end }}

@@ -1,0 +1,24 @@
+[package]
+name = "weebo-si-registry-config"
+version = "0.1.0"
+description = "The registry-config feature: per-team package-manager configuration copied into workspace namespaces"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)` — same
+# pattern as weebo-si-network-profiles' and weebo-si-kubearmor-policy's own `testing` features.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

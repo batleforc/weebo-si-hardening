@@ -2633,6 +2633,7 @@ dependencies = [
  "weebo-si-envtest-support",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
+ "weebo-si-registry-config",
 ]
 
 [[package]]
@@ -2716,8 +2717,18 @@ dependencies = [
  "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
+ "weebo-si-registry-config",
  "weebo-si-runtime",
  "weebo-si-webhook",
+]
+
+[[package]]
+name = "weebo-si-registry-config"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "weebo-si-chassis",
+ "weebo-si-crd",
 ]
 
 [[package]]
@@ -2729,6 +2740,7 @@ dependencies = [
  "kube",
  "prometheus",
  "rustls",
+ "serde",
  "serde_json",
  "serde_yaml_bw",
  "tokio",
@@ -2738,6 +2750,7 @@ dependencies = [
  "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
+ "weebo-si-registry-config",
 ]
 
 [[package]]
@@ -2762,6 +2775,7 @@ dependencies = [
  "weebo-si-envtest-support",
  "weebo-si-image-policy",
  "weebo-si-network-profiles",
+ "weebo-si-registry-config",
  "weebo-si-runtime",
 ]
 

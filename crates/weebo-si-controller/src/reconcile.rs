@@ -101,6 +101,44 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0007's *Implementation plan*, "the `Degraded` conditions." Its `validate()` is the one
+    // in this project that can catch a mistake with a supply-chain blast radius — a catalogue
+    // whose two entries collide on one copy name means one template's contents silently
+    // overwrite another's in every granted namespace — so a bad configuration is reported on the
+    // object rather than discovered from a metric.
+    if let Some(registry_config) = &config.spec.features.registry_config {
+        let violations = registry_config.validate(&config.spec.teams);
+        let state = if violations.is_empty() {
+            match registry_config.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} catalogue entries, {} grants",
+                registry_config.catalog.entries().len(),
+                registry_config.grants.len()
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "registry-config".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     let ready = violation_messages.is_empty();
     let now =
         k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now());

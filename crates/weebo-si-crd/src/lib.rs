@@ -15,6 +15,7 @@ pub mod labels;
 pub mod namespace;
 pub mod network_profiles;
 pub mod policy_guard;
+pub mod registry_config;
 pub mod selector;
 pub mod spec;
 pub mod team;
@@ -48,6 +49,10 @@ pub use network_profiles::{
     ProfileKey, ProfileNamespaceSelection, TemplateRef, Variant, WorkspaceSelection,
 };
 pub use policy_guard::PolicyGuardConfig;
+pub use registry_config::{
+    Ecosystem, RegistryCatalog, RegistryConfig, RegistryConfigViolation, RegistryEntry,
+    RegistryGrant, RegistryKey, RegistryNamespaceSelection, RegistrySource, SourceKind, copy_name,
+};
 pub use selector::{Expression, Operator, Selector};
 pub use spec::{
     FeatureState, FeatureStatus, Features, SINGLETON_NAME, WeeboSiConfig, WeeboSiConfigSpec,

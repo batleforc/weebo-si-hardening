@@ -3,14 +3,18 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
-use weebo_si_controller::{KubeArmorPolicyDeps, LeaderElection, NetworkProfilesDeps};
+use weebo_si_controller::{
+    KubeArmorPolicyDeps, LeaderElection, NetworkProfilesDeps, RegistryConfigDeps,
+};
 use weebo_si_crd::NamespaceName;
 use weebo_si_kubearmor_policy::KubeArmorPolicy;
 use weebo_si_network_profiles::NetworkProfiles;
+use weebo_si_registry_config::RegistryConfigFeature;
 use weebo_si_runtime::{
     DEFAULT_CANARY_IMAGE, KubeArmorCapabilities, KubeArmorMetrics, KubeArmorPolicyStore,
     KubeArmorTemplateStore, KubeCanary, KubeCapabilities, KubeConfigStore, KubeDwocStore,
-    KubeNodeEnforcerView, KubeNsStore, KubePolicyStore, KubeTemplateStore, NetworkMetrics,
+    KubeNodeEnforcerView, KubeNsStore, KubePolicyStore, KubeRegistryObjectStore,
+    KubeRegistryTemplateStore, KubeTemplateStore, NetworkMetrics, RegistryMetrics,
 };
 
 use crate::cli::{flag, has_flag};
@@ -186,6 +190,37 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         None
     };
 
+    // RFC 0007's `registry-config`. Unlike `kubearmor-policy` above there is no capability to
+    // discover: `ConfigMap` and `Secret` are core resources every apiserver serves, so the loop
+    // is always wired and `spec.features.registryConfig.mode` is the only thing that decides
+    // whether it does anything.
+    let registry_config_handle = config_store.registry_config();
+    let registry_templates = Arc::new(
+        KubeRegistryTemplateStore::spawn(client.clone(), &operator_namespace)
+            .await
+            .map_err(|err| format!("could not start the registry template watch: {err}"))?,
+    );
+    let registry_store = Arc::new(
+        KubeRegistryObjectStore::spawn(client.clone())
+            .await
+            .map_err(|err| format!("could not start the managed-registry-object watch: {err}"))?,
+    );
+    let registry_metrics =
+        Arc::new(RegistryMetrics::register(&prometheus_registry).map_err(|err| err.to_string())?);
+    let registry_config = RegistryConfigDeps {
+        feature: Arc::new(RegistryConfigFeature::new(
+            Arc::clone(&registry_config_handle),
+            registry_templates,
+        )),
+        config: registry_config_handle,
+        gate: config_store.clone(),
+        namespace_view: Arc::clone(&ns_store) as _,
+        dwoc_catalog: Arc::clone(&dwoc_store) as _,
+        object_store: registry_store as _,
+        observer: registry_metrics as _,
+        operator_namespace: NamespaceName::new(operator_namespace.clone()),
+    };
+
     let ready = Ready::default();
     ready.mark_ready();
     tokio::spawn(observability::serve(
@@ -208,6 +243,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         leader_election,
         Some(network_profiles),
         kubearmor_policy,
+        Some(registry_config),
     )
     .await;
     Ok(())

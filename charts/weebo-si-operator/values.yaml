@@ -116,6 +116,29 @@ kubearmorPolicy:
   rbac:
     enabled: false
 
+# RFC 0007's `registry-config`. Off by default, and this flag governs *RBAC and the guard rule*,
+# not the feature: whether the feature runs at all is `spec.features.registryConfig.mode` on the
+# WeeboSiConfig.
+#
+# **Read RFC 0007's *Security considerations* before turning this on.** It is the only switch in
+# this chart that grants `create`/`update`/`delete` on `secrets` cluster-wide, which is the
+# strongest permission this project asks for and cannot be narrowed by RBAC — Kubernetes has no
+# name-level grant for create. The narrowing is in code (the ownership label, the
+# `namespaceSelector`, the diff) and reviewed as such. It is also the only brick here whose
+# compromise makes the cluster *less* safe rather than merely unprotected: an operator that
+# distributes registry configuration is an operator that can redirect every build in the fleet.
+#
+# `failurePolicy` is `Ignore` and, unlike `policyGuard.failurePolicy` above, that is the
+# considered default rather than the cautious one — the guarded object is a `ConfigMap`, and a
+# fail-closed rule over `configmaps` and `secrets` means a webhook outage blocks configuration
+# writes in every workspace namespace. See the rendered rule's own comment for the full argument.
+# `Fail` is available for a cluster that would rather take that outage than let a drifted
+# `.npmrc` stand for one reconcile interval.
+registryConfig:
+  rbac:
+    enabled: false
+  failurePolicy: Ignore
+
 networkProfiles:
   cilium:
     enabled: false

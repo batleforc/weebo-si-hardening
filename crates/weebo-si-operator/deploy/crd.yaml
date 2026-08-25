@@ -804,6 +804,175 @@ spec:
                     required:
                     - mode
                     type: object
+                  registryConfig:
+                    description: '`spec.features.registryConfig`, per RFC 0007.'
+                    nullable: true
+                    properties:
+                      catalog:
+                        description: Every entry a namespace may be granted.
+                        items:
+                          description: One entry of `spec.features.registryConfig.catalog`.
+                          properties:
+                            ecosystem:
+                              default: Other
+                              description: Metric label and CLI grouping only — never a branch.
+                              enum:
+                              - Npm
+                              - Pypi
+                              - Cargo
+                              - Go
+                              - Maven
+                              - RubyGems
+                              - Composer
+                              - Conda
+                              - Terraform
+                              - OpenVsx
+                              - Other
+                              type: string
+                            key:
+                              description: The short identifier a grant or a namespace annotation names.
+                              type: string
+                            sources:
+                              description: |-
+                                The objects this entry expands into: at least one, at most one per
+                                `{kind, name, namespace}` triple.
+                              items:
+                                description: |-
+                                  One object a catalogue entry expands into.
+
+                                  A catalogue entry holds a *list* of these rather than a single reference because one ecosystem
+                                  routinely needs two objects with different confidentiality: the `ConfigMap` holding the
+                                  registry URL, and the `Secret` holding the token it authenticates with.
+                                properties:
+                                  kind:
+                                    description: Which kind of object `template_ref` names.
+                                    enum:
+                                    - ConfigMap
+                                    - Secret
+                                    type: string
+                                  templateRef:
+                                    description: The object an admin authored, copied verbatim into each granted namespace.
+                                    properties:
+                                      name:
+                                        description: The template object's name.
+                                        type: string
+                                      namespace:
+                                        description: The namespace it lives in.
+                                        type: string
+                                    required:
+                                    - name
+                                    - namespace
+                                    type: object
+                                required:
+                                - kind
+                                - templateRef
+                                type: object
+                              type: array
+                          required:
+                          - key
+                          - sources
+                          type: object
+                        type: array
+                      grants:
+                        additionalProperties:
+                          description: |-
+                            What one team may reach: the keys it may be granted, and the subset applied when a namespace
+                            asks for nothing. Either may legitimately be empty — an ungranted team gets no registry
+                            configuration at all, which is this brick's whole "no baseline" position.
+                          properties:
+                            allowed:
+                              default: []
+                              description: The registry keys this team may reach.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
+                                  namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
+                                  registry key must never typecheck where a network profile key is expected.
+                                type: string
+                              type: array
+                            default:
+                              default: []
+                              description: The subset of `allowed` applied when a namespace names nothing more specific.
+                              items:
+                                description: |-
+                                  A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
+                                  namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
+                                  registry key must never typecheck where a network profile key is expected.
+                                type: string
+                              type: array
+                          type: object
+                        default: {}
+                        description: What each team may reach, keyed by team name.
+                        type: object
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelection:
+                        default:
+                          annotation: hardening.weebo.io/registry-config
+                        description: The namespace annotation naming a registry key list.
+                        properties:
+                          annotation:
+                            default: hardening.weebo.io/registry-config
+                            description: |-
+                              Namespace annotation naming a comma-separated registry key list. The empty string
+                              disables this selection step entirely, leaving the grant's `default` as the only source.
+                            type: string
+                        type: object
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the controller''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            default: []
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            default: {}
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      onNotGranted:
+                        default: Default
+                        description: What to do when a namespace names a key its team's grant does not allow.
+                        enum:
+                        - Default
+                        - Deny
+                        type: string
+                    required:
+                    - catalog
+                    - mode
+                    type: object
                 type: object
               teams:
                 default: []

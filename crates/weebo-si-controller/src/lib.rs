@@ -4,6 +4,7 @@
 pub mod kubearmor_policy;
 pub mod network_profiles;
 pub mod reconcile;
+pub mod registry_config;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +20,7 @@ use weebo_si_crd::WeeboSiConfig;
 pub use kubearmor_policy::KubeArmorPolicyDeps;
 pub use network_profiles::NetworkProfilesDeps;
 pub use reconcile::{Ctx, Error, error_policy, reconcile as reconcile_fn};
+pub use registry_config::RegistryConfigDeps;
 
 /// Leader election parameters. Not optional fields on [`run`] itself — constructing this at all
 /// is the caller's decision to enable leader election, matching the CLI's `--leader-election`
@@ -36,13 +38,15 @@ pub struct LeaderElection {
 /// Without `leader_election`, every replica reconciles — safe for exactly one replica, per RFC
 /// 0002's original single-replica assumption. With it, every replica watches (kube-runtime gives
 /// every replica the same stream), but only the lease holder's [`reconcile::reconcile`] actually
-/// writes; the rest requeue without acting. `network_profiles` and `kubearmor_policy`, when
-/// `Some`, share the same `is_leader` flag — one lease covers every loop this role runs.
+/// writes; the rest requeue without acting. `network_profiles`, `kubearmor_policy` and
+/// `registry_config`, when `Some`, share the same `is_leader` flag — one lease covers every loop
+/// this role runs.
 pub async fn run(
     client: Client,
     leader_election: Option<LeaderElection>,
     network_profiles: Option<NetworkProfilesDeps>,
     kubearmor_policy: Option<KubeArmorPolicyDeps>,
+    registry_config: Option<RegistryConfigDeps>,
 ) {
     let is_leader = Arc::new(AtomicBool::new(leader_election.is_none()));
     let ctx = Arc::new(Ctx {
@@ -56,6 +60,10 @@ pub async fn run(
 
     if let Some(deps) = kubearmor_policy {
         kubearmor_policy::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
+    }
+
+    if let Some(deps) = registry_config {
+        registry_config::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
     }
 
     let api: Api<WeeboSiConfig> = Api::all(client.clone());

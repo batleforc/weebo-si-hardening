@@ -333,6 +333,26 @@ ours and reinstates whatever the baseline removed. **In a workspace namespace, n
 authorship belongs to the platform.** `allowedIdentities` is the escape hatch for the cluster
 operator who needs to debug one namespace at three in the morning.
 
+> **Amended by [RFC 0007](./0007-registry-config.md), which extends this guard to a second pair of
+> resources.** `registry-config` writes `ConfigMap` and `Secret` objects into the same workspace
+> namespaces, and they need the same protection — but its rule is deliberately *not* this one with
+> two more resources on it. It gets its own webhook path (`/validate/v1/registryconfigs`), an
+> `objectSelector` on `hardening.weebo.io/managed-by`, `failurePolicy: Ignore`, and **only the
+> first and third rows of the table above**.
+>
+> All three differences follow from one fact: `ConfigMap` writes are among the highest-volume
+> writes in a cluster, so a webhook in front of all of them is a cluster-wide risk. The selector
+> is what makes guarding them viable; having it means the rule never sees an unmanaged object, so
+> the second row could not fire and is therefore absent from that guard's code as well as from its
+> rule. [RFC 0008](./0008-policy-guard-coverage.md) states the resulting general rule — *a guard
+> rule that must refuse unmanaged creates cannot use an ownership `objectSelector`; one that only
+> protects existing objects should, if the resource is high-volume* — and is the design for
+> unifying the two shapes behind one resource-agnostic `GuardedWrite`.
+>
+> Practical consequences for this section: `allowedIdentities` is shared by both rules (one edit
+> turns the guard off everywhere), and on the registry rule an `allowedIdentity` *may* touch a
+> managed object, because there is no unmanaged-authorship row for it to be exempt from instead.
+
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

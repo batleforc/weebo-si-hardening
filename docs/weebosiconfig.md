@@ -309,9 +309,29 @@ Getting it wrong locks the controller out of the objects it is responsible for.
 
 `allowedIdentities` exempts an identity from the "authorship belongs to the platform" rule only.
 **Nobody but the operator may touch an object carrying the management label**, including these
-identities. The guard covers `networkpolicies` and `ciliumnetworkpolicies`;
-[RFC 0008](./rfc/0008-policy-guard-coverage.md) is the design for extending it to
-`kubearmorpolicies`.
+identities — with one exception on the registry rule below, where an `allowedIdentity` *may*
+touch a managed object, because there is no unmanaged-authorship row for it to be exempt from
+instead.
+
+The guard covers `networkpolicies` and `ciliumnetworkpolicies`, and — when
+`registryConfig.rbac.enabled` is set in the chart — the `configmaps` and `secrets`
+`registryConfig` writes, on its own webhook path. The registry rule differs from the network one
+in three ways, all argued in [RFC 0007](./rfc/0007-registry-config.md):
+
+| | Network rule | Registry rule |
+| --- | --- | --- |
+| Path | `/validate/v1/networkpolicies` | `/validate/v1/registryconfigs` |
+| `objectSelector` | none | `hardening.weebo.io/managed-by: weebo-si-operator` |
+| `failurePolicy` | `Fail` | `Ignore` |
+| Refuses unmanaged `CREATE`? | yes | **no** |
+
+The last two rows are the same decision seen twice: `ConfigMap` writes are among the highest
+volume in a cluster, so the rule is scoped to objects this operator wrote and does not take the
+apiserver down with it when the webhook is unavailable. A guard rule that must refuse unmanaged
+creates cannot use an ownership `objectSelector`; one that only protects existing objects should.
+
+[RFC 0008](./rfc/0008-policy-guard-coverage.md) is the design for extending the guard to
+`kubearmorpolicies` and unifying the two shapes.
 
 ### `features.imagePolicy`
 
@@ -416,6 +436,105 @@ the rollout in [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) be
 
 Check the cluster first: `weebo-si-operator backends kubearmor --verbose` answers both whether
 the CRD is served and which nodes can actually enforce a policy.
+
+### `features.registryConfig`
+
+Puts the package-manager configuration a workspace needs — the `.npmrc`, the `pip.conf`, the
+Cargo `config.toml`, the Maven `settings.xml` — inside every workspace container of a namespace,
+per team. See [RFC 0007](./rfc/0007-registry-config.md).
+
+```yaml
+registryConfig:
+  mode: DryRun
+  catalog:
+    - key: internal-npm
+      ecosystem: Npm
+      sources:
+        - kind: ConfigMap
+          templateRef: { name: weebo-npmrc, namespace: weebo-si-hardening }
+        - kind: Secret
+          templateRef: { name: weebo-npm-token, namespace: weebo-si-hardening }
+    - key: internal-pypi
+      ecosystem: Pypi
+      sources:
+        - kind: ConfigMap
+          templateRef: { name: weebo-pip-conf, namespace: weebo-si-hardening }
+  grants:
+    team-1: { allowed: [internal-npm, internal-pypi], default: [internal-npm] }
+  namespaceSelection: { annotation: hardening.weebo.io/registry-config }
+  onNotGranted: Default
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | |
+| `namespaceSelector` | Selector | no | matches all | |
+| `catalog[].key` | string | yes | — | |
+| `catalog[].ecosystem` | closed enum | no | `Other` | `Npm`/`Pypi`/`Cargo`/`Go`/`Maven`/`RubyGems`/`Composer`/`Conda`/`Terraform`/`OpenVsx`/`Other`. **A metric label and a CLI grouping — nothing branches on it.** |
+| `catalog[].sources[].kind` | `ConfigMap`/`Secret` | yes | — | |
+| `catalog[].sources[].templateRef` | `{name, namespace}` | yes | — | The object copied verbatim. At least one source per entry; at most one per `{kind, name, namespace}`. |
+| `grants` | map team → `{allowed, default}` | no | `{}` | Both lists, both may be empty. |
+| `namespaceSelection.annotation` | string | no | `hardening.weebo.io/registry-config` | |
+| `onNotGranted` | `Default`/`Deny` | no | `Default` | |
+
+**Two fields every other catalogue feature has and this one does not**, and both absences are
+deliberate:
+
+- **No `baseline`.** There is no universally correct `.npmrc` — a mandatory entry would write a
+  file into a container whose image may not even have the tool it configures. "Everyone gets the
+  mirror" is a grant every team has, not a mandatory entry.
+- **No `workspaceSelection`.** DevWorkspace Operator's automount is a property of the
+  *namespace*: an object labelled `controller.devfile.io/mount-to-devworkspace: "true"` is
+  mounted into every container of every workspace in the namespace hosting it, with no selector.
+  There is no per-workspace mechanism to route to. A team wanting two different npm mirrors needs
+  two namespaces.
+
+The templates are **ordinary `ConfigMap`/`Secret` objects an admin applies** to the operator's
+namespace, carrying DevWorkspace Operator's own automount labels and annotations. This feature
+never reads their `data`; it copies them into each granted namespace, preserving their metadata
+and rewriting only the namespace and this operator's own ownership labels.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weebo-npmrc
+  namespace: weebo-si-hardening
+  labels:
+    controller.devfile.io/mount-to-devworkspace: "true"
+  annotations:
+    controller.devfile.io/mount-as: subpath      # ← see below
+    controller.devfile.io/mount-path: /home/user
+data:
+  .npmrc: |
+    registry=https://batlehub.internal/npm/
+    always-auth=true
+```
+
+**`mount-as: subpath`, not `file`, is the difference between a working home directory and an
+empty one.** `file` — DevWorkspace Operator's default *when the annotation is absent* — mounts
+the object as a **directory** at `mount-path`, so a `ConfigMap` mounted at `/home/user` replaces
+the home directory with one containing only `.npmrc`. A template whose mount path is a home or
+dot-directory *and* whose `mount-as` is `file` or absent is **refused and never copied**, reported
+as `weebo_si_registry_template_invalid_total{reason="mount_shadows_path"}` and a `WARN` line.
+That is the only content this feature inspects.
+
+Two things to know before enabling it:
+
+- **A copied credential is a disclosed credential.** A `Secret` copied into a workspace namespace
+  is readable by anyone with `get secrets` there — the workspace's owner — and by every process
+  in every container in that namespace, including an `npm` lifecycle script from a dependency
+  nobody audited. Use read-only, per-team, rotatable tokens; a publish token in this catalogue is
+  a publish token in every workspace of every namespace that team owns.
+- **This is not a control.** A project-local `.npmrc` beats the user-level one npm reads; `pip
+  install -i` beats `pip.conf`. What stops the alternative registry from answering is
+  `networkProfiles`' egress policy. The two are designed to be deployed together:
+  `registryConfig` without `networkProfiles` is a convenience, and `networkProfiles` without
+  `registryConfig` is a support ticket.
+
+Explain a namespace's answer with `weebo-si-operator registry resolve --namespace <ns>`, and
+validate the catalogue against its templates with `weebo-si-operator registry check` before
+switching the mode.
 
 ## `status`
 

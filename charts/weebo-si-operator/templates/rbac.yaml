@@ -41,6 +41,27 @@ rules:
     resources: ["kubearmorpolicies"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if .Values.registryConfig.rbac.enabled }}
+  # RFC 0007's `registry-config`, and this is a grant to read carefully rather than skim.
+  #
+  # **`secrets` cluster-wide read is the largest single permission this chart asks for.** The
+  # controller needs it for two reasons: the *templates* live in the operator's own namespace,
+  # and the *copies* live in every workspace namespace it reconciles and have to be diffed
+  # against. Kubernetes RBAC has no way to say "only objects carrying this label", so the
+  # narrowing is in code — every watch this operator opens over `secrets` is filtered by
+  # `hardening.weebo.io/managed-by` server-side (the copies) or scoped to one namespace (the
+  # templates), and neither adapter can be pointed elsewhere without changing a signature.
+  #
+  # It sits on the **shared** role because the webhook's registry guard route needs to read a
+  # `ConfigMap`'s labels to answer "is this one ours" — but note the asymmetry with every other
+  # rule here: the guard reads the object out of the AdmissionReview body, not from the
+  # apiserver, so if you are narrowing this deployment's permissions, the webhook role can lose
+  # this rule entirely. It is shared for consistency with the rules above, not because the
+  # webhook needs it. See RFC 0007's *Security considerations → Privileges*.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
   # RFC 0005's `image-policy` adds **nothing here, and nothing to the controller role either** —
   # no verb, no resource, no Role. Both of its subjects arrive in the admission body, and the
   # only lookup either route makes is the `namespaces` watch three rules up, which already
@@ -135,6 +156,28 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.registryConfig.rbac.enabled }}
+  # RFC 0007's write half, and the strongest permission this project has asked for. Read its
+  # *Security considerations → Privileges* before granting it:
+  #
+  #   "an operator that can write a `Secret` into a workspace namespace can write any `Secret`
+  #    into any workspace namespace, and one that can read them in its own namespace can read
+  #    every template. The minimum is real but not small — the write half cannot be narrowed by
+  #    RBAC below 'secrets in namespaces this controller reconciles', because Kubernetes RBAC has
+  #    no name-level grant for create."
+  #
+  # What narrows it in practice is the same thing that narrows `networkpolicies` above: the
+  # controller only ever touches objects carrying its own managed-by label, enforced in the
+  # adapter and reviewed as code, plus the `namespaceSelector` bounding which namespaces it
+  # reconciles at all. Off by default — this is a decision for whoever carries the pager.
+  #
+  # This is also the one brick whose compromise makes the cluster *less* safe rather than merely
+  # unprotected: an operator that distributes registry configuration is an operator that can
+  # redirect every build in the fleet. RFC 0007's *Drawbacks and risks* says so in those words.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "update", "patch", "delete"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

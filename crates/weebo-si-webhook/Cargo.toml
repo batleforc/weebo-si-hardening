@@ -13,6 +13,7 @@ weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
+weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
 axum = { workspace = true }
 kube = { workspace = true, features = ["admission", "client"] }
 k8s-openapi = { workspace = true }

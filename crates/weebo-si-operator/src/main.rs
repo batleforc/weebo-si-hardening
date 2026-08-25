@@ -9,6 +9,7 @@ mod features;
 mod images_cmd;
 mod kubearmor_cmd;
 mod observability;
+mod registry_cmd;
 mod webhook_cmd;
 
 use std::process::ExitCode;
@@ -27,7 +28,7 @@ mod exit {
 const USAGE: &str = "\
 weebo-si-operator — admission webhook and controller for weebo-si-hardening
 
-usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images>
+usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images|registry>
 
   webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/certs]
               [--metrics-addr :8080] [--health-addr :8081]
@@ -52,6 +53,13 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
               audit [--namespace <ns> | --all-namespaces]
                 every image running now and the verdict this configuration
                 would give it — run this BEFORE switching image-policy on
+  registry    resolve --namespace <ns>
+                the registry keys that namespace resolves to, the objects each
+                expands into, and where each would mount
+              check
+                validate every catalogue entry against its template: exists,
+                automountable, does not shadow a home path; non-zero on any
+                violation, so it works as a pipeline pre-flight
 ";
 
 fn main() -> ExitCode {
@@ -89,6 +97,7 @@ fn main() -> ExitCode {
         },
         Some("canary") => run_async(canary_cmd::run(&args[2..])),
         Some("images") => run_async(images_cmd::run(&args[2..])),
+        Some("registry") => run_async(registry_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::from(exit::OK)

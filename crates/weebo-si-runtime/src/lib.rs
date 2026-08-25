@@ -16,6 +16,9 @@ pub mod network_metrics;
 pub mod node_enforcer;
 pub mod ns_store;
 pub mod prometheus;
+pub mod registry_metrics;
+pub mod registry_object_store;
+pub mod registry_template_store;
 
 pub use config_store::KubeConfigStore;
 pub use dwoc_store::KubeDwocStore;
@@ -34,3 +37,6 @@ pub use network_metrics::NetworkMetrics;
 pub use node_enforcer::KubeNodeEnforcerView;
 pub use ns_store::KubeNsStore;
 pub use prometheus::PrometheusObserver;
+pub use registry_metrics::RegistryMetrics;
+pub use registry_object_store::KubeRegistryObjectStore;
+pub use registry_template_store::{KubeRegistryTemplateStore, OWNED_PREFIX};

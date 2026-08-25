@@ -1,11 +1,11 @@
 ---
 rfc: 0007
 title: registry-config
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-08-25
 updated: 2026-08-25
-decided:
+decided: 2026-08-25
 brick: crates/weebo-si-registry-config
 supersedes: []
 superseded-by: []
@@ -604,31 +604,35 @@ Blocking, in the sense that acceptance should settle it:
 
 ## Implementation plan
 
-- [ ] `weebo-si-crd`: `RegistryKey`, `Ecosystem`, `RegistrySource`, `RegistryCatalog`,
+- [x] `weebo-si-crd`: `RegistryKey`, `Ecosystem`, `RegistrySource`, `RegistryCatalog`,
       `RegistryGrant`, `RegistryNamespaceSelection`, `RegistryConfig` (`mode`,
       `namespaceSelector`, `catalog`, `grants`, `namespaceSelection`, `onNotGranted`), reusing
       `OnNotGranted` and `TemplateRef` from `network_profiles.rs` rather than redeclaring them,
       plus `validate()` and its `RegistryConfigViolation` set
-- [ ] Promote the managed-object diff machinery from `weebo-si-network-profiles` to
+- [x] Promote the managed-object diff machinery from `weebo-si-network-profiles` to
       `weebo-si-chassis`, so this crate does not write it a third time
-- [ ] `crates/weebo-si-registry-config`: `port.rs` (`TemplateStore`, `ObjectStore`),
+- [x] `crates/weebo-si-registry-config`: `port.rs` (`TemplateStore`, `ObjectStore`),
       `model/object.rs`, `model/mount.rs` (automount vocabulary, `TemplateMountShadowsPath`),
       `resolve.rs` (grant resolution per namespace), `feature/` (`NamespaceSubject`,
       `ReconcileFeature<S>` impl)
-- [ ] `weebo-si-runtime`: `TemplateStore`/`ObjectStore` adapters, with the opaque-body typing
+- [x] `weebo-si-runtime`: `TemplateStore`/`ObjectStore` adapters, with the opaque-body typing
       that keeps decoded `Secret` bytes out of the domain
-- [ ] `weebo-si-controller`: the `Namespace` reconcile loop, mirroring `network_profiles.rs`'s
-- [ ] `weebo-si-webhook`: `/validate/v1/registryconfigs`, reusing `policy-guard`'s decision logic
+- [x] `weebo-si-controller`: the `Namespace` reconcile loop, mirroring `network_profiles.rs`'s
+- [x] `weebo-si-webhook`: `/validate/v1/registryconfigs`, reusing `policy-guard`'s decision logic
       over a resource-agnostic write
-- [ ] `charts/weebo-si-operator`: the new `ValidatingWebhookConfiguration` rule with its
+- [x] `charts/weebo-si-operator`: the new `ValidatingWebhookConfiguration` rule with its
       `objectSelector` and `failurePolicy: Ignore`, and the RBAC above
-- [ ] `weebo-si-operator`: `registry resolve` and `registry check` subcommands
-- [ ] Metrics per the *Observability contract*, and the `Degraded` conditions
-- [ ] envtest coverage: a granted namespace converges, drift is corrected, an ungranted key is
+- [x] `weebo-si-operator`: `registry resolve` and `registry check` subcommands
+- [x] Metrics per the *Observability contract*, and the `Degraded` conditions
+- [x] envtest coverage: a granted namespace converges, drift is corrected, an ungranted key is
       dropped or denied, a shadowing template is refused, `Off` deletes what it managed
-- [ ] Docs updated (`docs/bricks/weebo-si-registry-config.md`, and the RFC 0004 guard section
-      pointing here)
-- [ ] RFC flipped to `Implemented`
+- [x] Docs updated — as a `## RFC 0007: registry-config` section of
+      [`docs/bricks/weebo-si-operator.md`](../bricks/weebo-si-operator.md) rather than the
+      separate `docs/bricks/weebo-si-registry-config.md` this plan named, matching what RFCs 0004,
+      0005 and 0006 each did: `docs/bricks/` is indexed by *deployable*, and this brick ships
+      inside the `weebo-si-operator` binary. Plus the RFC 0004 guard section pointing here, and
+      `docs/weebosiconfig.md`'s `features.registryConfig` and `features.policyGuard` entries.
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -660,3 +664,13 @@ Blocking, in the sense that acceptance should settle it:
 
 | Date | Change |
 | --- | --- |
+| 2026-08-25 | Implemented in full, in one slice, with the `Secret` sources this RFC proposed rather than the narrower `ConfigMap`-only v1 its blocking question offers. The two credential-free designs under *Future work* remain the intended destination; nothing here forecloses them, and every entry that reaches one degenerates to a single `ConfigMap` holding a URL. |
+| 2026-08-25 | Metrics are labelled `{result,team}` / `{kind,ecosystem}` / `{state}` / `{action}`, not by namespace as the *Observability contract* wrote them — the same amendment RFC 0006 made, for the same reason: RFC 0004's project-wide "no metric carries a namespace or a workspace id" rule. `weebo_si_registry_ready` therefore publishes counts of namespaces per state, which alerts identically (`state="degraded" > 0`). Which namespace is degraded is a log line and `weebo-si-operator registry resolve`. **Two RFCs in a row have now specified metrics that violate a project-wide rule neither author reread**; the rule belongs somewhere an RFC template surfaces it. |
+| 2026-08-25 | `ReconcileObserver` gained `forget(namespace)`, which no prior brick's observer has. Publishing readiness as a *count* means the observer holds a per-namespace map, and a namespace that goes `Off` or leaves `namespaceSelector` has to be dropped from it — otherwise the one alertable signal in this brick reports a degradation for a namespace nobody is configuring, forever. The domain is the only thing that knows a namespace has left scope, so it is a port method rather than adapter bookkeeping. |
+| 2026-08-25 | The guard's third row (refuse `CREATE` of an unmanaged object) is absent from the *code*, not only from the webhook rule. The RFC argued the `objectSelector` makes that row unreachable; implementing it that way would mean a selector accidentally dropped from the chart turns the guard into one that **denies every `ConfigMap` a developer creates in their own namespace** — much worse than the gap it protects. Defence in depth, with the failure mode inverted. |
+| 2026-08-25 | `content_eq` compares labels and annotations, which neither sibling brick's does. For a `NetworkPolicy` the metadata is decoration and the `spec` is the meaning; for an automounted object the annotations *are* the meaning — a template whose `mount-path` moved from `/home/user` to `/etc` has changed what it does without changing one byte of `data`. A diff that ignored them would report `Unchanged` forever. |
+| 2026-08-25 | `Secret` templates are projected without `stringData`. It is a write-only field the apiserver merges into `data` and never serves back, so a template authored the way a human writes one reads back as `data` — projecting both would make a template and its own copy disagree about which field holds the payload, and the diff would rewrite every copy on every pass. Found while writing the envtest fixture, which authors its `Secret` as `stringData` for exactly that reason. |
+| 2026-08-25 | `kubectl.kubernetes.io/last-applied-configuration` is stripped from both sides of the diff. For any object it guarantees a rewrite whenever an admin re-applies an unchanged template; for a `Secret` it is a second, stale copy of the credential that would otherwise be copied into the workspace namespace in an annotation. |
+| 2026-08-25 | `ObjectBody` has no `Debug` derive, no borrowing accessor, and a consuming `into_bytes` — stricter than `PolicyBody` and `RuleBody`, which are opaque only because nothing needs their contents. Here the requirement is that nothing *can* reach them: a `{:?}` of a diff line is a realistic call site, and "the domain never sees credential material in a form it could log" had to be a property of the type rather than a review convention. Two tests assert the redaction directly, one on the body and one on a `ManagedObject` containing it. |
+| 2026-08-25 | `validate()` gained `DuplicateCopyName`, which the *Contract* did not list. `weebo-si-<key>-<source-name>` is not injective: `a` + `b-c` and `a-b` + `c` both render `weebo-si-a-b-c`, and the second entry would silently overwrite the first in every granted namespace — a supply-chain failure with this operator as the delivery mechanism, and the exact blast radius *Drawbacks and risks* describes. The *Unresolved questions* entry on copy naming should be read as answered: the scheme stays, and the collision is now a `Degraded` condition rather than a surprise. |
+| 2026-08-25 | `Ecosystem` earns its place, per the non-blocking question: it is the `weebo_si_registry_managed_objects` label and the `registry check` grouping, and the closed enum is what keeps that label bounded. `#[serde(default)]` to `Other`, so an entry that omits it is under-labelled rather than rejected — refusing a whole catalogue over a dashboard dimension would be the wrong trade. |

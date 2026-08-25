@@ -13,7 +13,9 @@ use weebo_si_runtime::{
     ImageMetrics, KubeArmorCapabilities, KubeCapabilities, KubeConfigStore, KubeDwocStore,
     KubeNsStore, KubePolicyStore, PrometheusObserver,
 };
-use weebo_si_webhook::{AppState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState};
+use weebo_si_webhook::{
+    AppState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState, RegistryGuardState,
+};
 
 use crate::cli::flag;
 use crate::observability::{self, Ready};
@@ -145,6 +147,19 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         metrics: metrics.clone(),
     });
     let policy_guard_state = Arc::new(PolicyGuardState {
+        operator_identity: operator_identity.clone(),
+        policy_guard_config: config_store.policy_guard_config(),
+        gate: config_store.clone(),
+        namespace_view: Arc::clone(&ns_store) as _,
+        dwoc_catalog: Arc::clone(&dwoc_store) as _,
+        observer: Arc::clone(&observer) as _,
+        metrics: metrics.clone(),
+    });
+    // The registry half of the same guard, per RFC 0007. Its own path and its own
+    // `ValidatingWebhookConfiguration` rule (ownership `objectSelector`, `failurePolicy: Ignore`)
+    // so the two can be enabled independently — but the *same* `policyGuard` configuration
+    // handle, so one `mode` and one `allowedIdentities` govern both.
+    let registry_guard_state = Arc::new(RegistryGuardState {
         operator_identity,
         policy_guard_config: config_store.policy_guard_config(),
         gate: config_store.clone(),
@@ -192,6 +207,9 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 
     let app = weebo_si_webhook::router(dwoc_pin_state)
         .merge(weebo_si_webhook::policy_guard_router(policy_guard_state))
+        .merge(weebo_si_webhook::registry_guard_router(
+            registry_guard_state,
+        ))
         .merge(weebo_si_webhook::image_policy_router(image_policy_state));
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         format!("{cert_dir}/tls.crt"),

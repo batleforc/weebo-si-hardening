@@ -11,6 +11,7 @@ use crate::image_policy::ImagePolicyConfig;
 use crate::kubearmor_policy::KubeArmorPolicyConfig;
 use crate::network_profiles::NetworkProfilesConfig;
 use crate::policy_guard::PolicyGuardConfig;
+use crate::registry_config::RegistryConfig;
 use crate::team::Team;
 
 /// One optional field per registered feature, typed — a feature the binary does not know about
@@ -33,6 +34,9 @@ pub struct Features {
     /// `spec.features.kubearmorPolicy`, per RFC 0006.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kubearmor_policy: Option<KubeArmorPolicyConfig>,
+    /// `spec.features.registryConfig`, per RFC 0007.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_config: Option<RegistryConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
