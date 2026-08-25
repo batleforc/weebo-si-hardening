@@ -1,6 +1,7 @@
 //! The `WeeboSiConfig` reconcile loop — see RFC 0002, the controller role — and, per RFC 0004,
 //! the `network-profiles` `Namespace`/`DevWorkspace` reconcile loops.
 
+pub mod kubearmor_policy;
 pub mod network_profiles;
 pub mod reconcile;
 
@@ -15,6 +16,7 @@ use kube::{Api, Client};
 use kube_leader_election::{LeaseLock, LeaseLockParams, LeaseLockResult};
 use weebo_si_crd::WeeboSiConfig;
 
+pub use kubearmor_policy::KubeArmorPolicyDeps;
 pub use network_profiles::NetworkProfilesDeps;
 pub use reconcile::{Ctx, Error, error_policy, reconcile as reconcile_fn};
 
@@ -34,12 +36,13 @@ pub struct LeaderElection {
 /// Without `leader_election`, every replica reconciles — safe for exactly one replica, per RFC
 /// 0002's original single-replica assumption. With it, every replica watches (kube-runtime gives
 /// every replica the same stream), but only the lease holder's [`reconcile::reconcile`] actually
-/// writes; the rest requeue without acting. `network_profiles`, when `Some`, shares the same
-/// `is_leader` flag — one lease covers every loop this role runs.
+/// writes; the rest requeue without acting. `network_profiles` and `kubearmor_policy`, when
+/// `Some`, share the same `is_leader` flag — one lease covers every loop this role runs.
 pub async fn run(
     client: Client,
     leader_election: Option<LeaderElection>,
     network_profiles: Option<NetworkProfilesDeps>,
+    kubearmor_policy: Option<KubeArmorPolicyDeps>,
 ) {
     let is_leader = Arc::new(AtomicBool::new(leader_election.is_none()));
     let ctx = Arc::new(Ctx {
@@ -49,6 +52,10 @@ pub async fn run(
 
     if let Some(deps) = network_profiles {
         network_profiles::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
+    }
+
+    if let Some(deps) = kubearmor_policy {
+        kubearmor_policy::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
     }
 
     let api: Api<WeeboSiConfig> = Api::all(client.clone());

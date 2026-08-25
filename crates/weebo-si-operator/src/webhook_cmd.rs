@@ -10,8 +10,8 @@ use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_network_profiles::{WorkspaceAdmission, WorkspaceGate};
 use weebo_si_runtime::config_store::DEFAULT_ANNOTATION;
 use weebo_si_runtime::{
-    ImageMetrics, KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore, KubePolicyStore,
-    PrometheusObserver,
+    ImageMetrics, KubeArmorCapabilities, KubeCapabilities, KubeConfigStore, KubeDwocStore,
+    KubeNsStore, KubePolicyStore, PrometheusObserver,
 };
 use weebo_si_webhook::{AppState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState};
 
@@ -74,6 +74,14 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         capabilities.as_ref(),
         weebo_si_crd::Backend::Cilium,
     );
+    // The webhook role never writes a `KubeArmorPolicy`, but `KubeConfigStore` resolves every
+    // feature's backend on the one code path both roles share — so this role discovers it too
+    // rather than the store growing a "sometimes absent" capability source.
+    let runtime_capabilities = Arc::new(
+        KubeArmorCapabilities::discover(client.clone())
+            .await
+            .map_err(|err| format!("could not discover KubeArmor capabilities: {err}"))?,
+    );
     // This role's own namespace, for `network-profiles`' structural exclusion — the webhook has
     // to reach the same verdict the controller does about which namespaces will never get a
     // baseline, or it would refuse every workspace in them forever.
@@ -90,6 +98,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
             Arc::clone(&annotation_key),
             Arc::clone(&dwoc_store),
             capabilities,
+            runtime_capabilities,
         )
         .await
         .map_err(|err| format!("could not start the WeeboSiConfig watch: {err}"))?,

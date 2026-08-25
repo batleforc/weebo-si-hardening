@@ -36,7 +36,8 @@ use weebo_si_crd::WeeboSiConfig;
 use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_envtest_support::{EnvTest, free_port, generate_webhook_tls};
 use weebo_si_runtime::{
-    KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore, PrometheusObserver,
+    KubeArmorCapabilities, KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore,
+    PrometheusObserver,
 };
 use weebo_si_webhook::AppState;
 
@@ -128,6 +129,14 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
             .await
             .expect("capabilities discovery should succeed"),
     );
+    // RFC 0006: the config store resolves every feature's backend on one shared path, so the
+    // webhook role discovers KubeArmor's capability too even though it never writes a policy.
+    // On a bare envtest apiserver this correctly reports the engine absent.
+    let runtime_capabilities = Arc::new(
+        KubeArmorCapabilities::discover(client.clone())
+            .await
+            .expect("KubeArmor capabilities discovery should succeed"),
+    );
     let prometheus_registry = prometheus::Registry::new();
     let config_store = KubeConfigStore::spawn(
         client.clone(),
@@ -136,6 +145,7 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
         annotation_key,
         Arc::clone(&dwoc_store),
         capabilities,
+        runtime_capabilities,
     )
     .await
     .expect("config store should start");
@@ -1701,6 +1711,14 @@ async fn rfc4_stack(client: kube::Client) -> Rfc4Stack {
             .await
             .expect("capabilities discovery should succeed"),
     );
+    // RFC 0006: the config store resolves every feature's backend on one shared path, so the
+    // webhook role discovers KubeArmor's capability too even though it never writes a policy.
+    // On a bare envtest apiserver this correctly reports the engine absent.
+    let runtime_capabilities = Arc::new(
+        KubeArmorCapabilities::discover(client.clone())
+            .await
+            .expect("KubeArmor capabilities discovery should succeed"),
+    );
     let prometheus_registry = prometheus::Registry::new();
     let config_store = Arc::new(
         KubeConfigStore::spawn(
@@ -1710,6 +1728,7 @@ async fn rfc4_stack(client: kube::Client) -> Rfc4Stack {
             annotation_key,
             Arc::clone(&dwoc_store),
             capabilities,
+            runtime_capabilities,
         )
         .await
         .expect("config store should start"),
@@ -2139,6 +2158,14 @@ async fn start_image_policy_webhook(env_test: &EnvTest, cert_dir: &std::path::Pa
             .await
             .expect("capabilities discovery should succeed"),
     );
+    // RFC 0006: the config store resolves every feature's backend on one shared path, so the
+    // webhook role discovers KubeArmor's capability too even though it never writes a policy.
+    // On a bare envtest apiserver this correctly reports the engine absent.
+    let runtime_capabilities = Arc::new(
+        KubeArmorCapabilities::discover(client.clone())
+            .await
+            .expect("KubeArmor capabilities discovery should succeed"),
+    );
     let prometheus_registry = prometheus::Registry::new();
     let config_store = Arc::new(
         KubeConfigStore::spawn(
@@ -2148,6 +2175,7 @@ async fn start_image_policy_webhook(env_test: &EnvTest, cert_dir: &std::path::Pa
             annotation_key,
             Arc::clone(&dwoc_store),
             capabilities,
+            runtime_capabilities,
         )
         .await
         .expect("config store should start"),

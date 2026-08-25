@@ -88,7 +88,9 @@ fails if it is stale.
 | [0003](./0003-preauth-proxy.md) | preauth-proxy | `Implemented` | `bins/preauth-proxy` |
 | [0004](./0004-network-profiles.md) | network-profiles | `Implemented` | `crates/weebo-si-network-profiles` |
 | [0005](./0005-image-policy.md) | image-policy | `Implemented` | `crates/weebo-si-image-policy` |
-| [0006](./0006-kubearmor-policy.md) | kubearmor-policy | `Draft` | `crates/weebo-si-kubearmor-policy` |
+| [0006](./0006-kubearmor-policy.md) | kubearmor-policy | `Implemented` | `crates/weebo-si-kubearmor-policy` |
+| [0007](./0007-registry-config.md) | registry-config | `Draft` | `crates/weebo-si-registry-config` |
+| [0008](./0008-policy-guard-coverage.md) | policy-guard-coverage | `Draft` | `crates/weebo-si-policy-guard` |
 
 <!-- rfc-index:end -->
 

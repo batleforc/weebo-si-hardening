@@ -16,14 +16,17 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, DwocPinConfig, FeatureMode, ImagePolicyConfig, NamespaceName, NetworkProfilesConfig,
-    PolicyGuardConfig, SINGLETON_NAME, Team, WeeboSiConfig,
+    Backend, DwocPinConfig, FeatureMode, ImagePolicyConfig, KubeArmorPolicyConfig, NamespaceName,
+    NetworkProfilesConfig, PolicyGuardConfig, RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig,
 };
 
 use weebo_si_chassis::FeatureId;
 use weebo_si_chassis::port::dwoc_catalog::DwocCatalog as _;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView as _;
+use weebo_si_kubearmor_policy::{
+    Capabilities as RuntimeCapabilities, resolve_backend as resolve_runtime_backend,
+};
 use weebo_si_network_profiles::Capabilities;
 use weebo_si_network_profiles::resolve_backend;
 
@@ -52,7 +55,13 @@ pub struct KubeConfigStore {
     network_profiles: Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: Arc<RwLock<Option<PolicyGuardConfig>>>,
     image_policy: Arc<RwLock<Option<ImagePolicyConfig>>>,
+    kubearmor_policy: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     resolved_backend: Arc<RwLock<Backend>>,
+    /// The engine `kubearmor-policy` resolved. A second handle rather than a variant of
+    /// `resolved_backend`: the two features resolve different enums against different
+    /// capabilities, and one field holding "whichever backend was resolved last" is how a
+    /// `KubeArmorPolicy` ends up written for a CNI.
+    resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
     namespace_view: Arc<KubeNsStore>,
 }
 
@@ -80,6 +89,7 @@ impl KubeConfigStore {
         annotation_key: Arc<RwLock<String>>,
         dwoc_catalog: Arc<KubeDwocStore>,
         capabilities: Arc<dyn Capabilities + Send + Sync>,
+        runtime_capabilities: Arc<dyn RuntimeCapabilities + Send + Sync>,
     ) -> Result<Self, kube::Error> {
         let api: Api<WeeboSiConfig> = Api::all(client);
         let (reader, writer) = reflector::store();
@@ -88,7 +98,9 @@ impl KubeConfigStore {
         let network_profiles = Arc::new(RwLock::new(None));
         let policy_guard = Arc::new(RwLock::new(None));
         let image_policy = Arc::new(RwLock::new(None));
+        let kubearmor_policy = Arc::new(RwLock::new(None));
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
+        let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
         let metrics = Metrics::register(registry).map_err(|err| {
             kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(
                 err.to_string(),
@@ -104,10 +116,13 @@ impl KubeConfigStore {
         let network_profiles_for_task = Arc::clone(&network_profiles);
         let policy_guard_for_task = Arc::clone(&policy_guard);
         let image_policy_for_task = Arc::clone(&image_policy);
+        let kubearmor_policy_for_task = Arc::clone(&kubearmor_policy);
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
+        let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
         let annotation_key_for_task = Arc::clone(&annotation_key);
         let dwoc_catalog_for_task = Arc::clone(&dwoc_catalog);
         let capabilities_for_task = Arc::clone(&capabilities);
+        let runtime_capabilities_for_task = Arc::clone(&runtime_capabilities);
         tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
             loop {
@@ -120,10 +135,13 @@ impl KubeConfigStore {
                         &network_profiles_for_task,
                         &policy_guard_for_task,
                         &image_policy_for_task,
+                        &kubearmor_policy_for_task,
                         &resolved_backend_for_task,
+                        &resolved_runtime_backend_for_task,
                         &annotation_key_for_task,
                         dwoc_catalog_for_task.as_ref(),
                         capabilities_for_task.as_ref(),
+                        runtime_capabilities_for_task.as_ref(),
                         &metrics,
                     ),
                     Some(Err(_)) => {}
@@ -148,9 +166,12 @@ impl KubeConfigStore {
             &network_profiles,
             &policy_guard,
             &image_policy,
+            &kubearmor_policy,
             &resolved_backend,
+            &resolved_runtime_backend,
             &annotation_key,
             capabilities.as_ref(),
+            runtime_capabilities.as_ref(),
         );
 
         Ok(Self {
@@ -159,7 +180,9 @@ impl KubeConfigStore {
             network_profiles,
             policy_guard,
             image_policy,
+            kubearmor_policy,
             resolved_backend,
+            resolved_runtime_backend,
             namespace_view,
         })
     }
@@ -186,6 +209,18 @@ impl KubeConfigStore {
     /// for its resolved `Backend`.
     pub fn resolved_backend(&self) -> Arc<RwLock<Backend>> {
         Arc::clone(&self.resolved_backend)
+    }
+
+    /// The `Arc` `weebo-si-kubearmor-policy`'s `KubeArmorPolicy::new` should be constructed
+    /// with, per RFC 0006. `None` until (and unless) `spec.features.kubearmorPolicy` is present.
+    pub fn kubearmor_policy_config(&self) -> Arc<RwLock<Option<KubeArmorPolicyConfig>>> {
+        Arc::clone(&self.kubearmor_policy)
+    }
+
+    /// The `Arc` `weebo-si-kubearmor-policy`'s `KubeArmorPolicy::new` should be constructed
+    /// with for its resolved [`RuntimeBackend`].
+    pub fn resolved_runtime_backend(&self) -> Arc<RwLock<RuntimeBackend>> {
+        Arc::clone(&self.resolved_runtime_backend)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -286,9 +321,12 @@ fn sync_from_store_initial(
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
+    kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
+    resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
     capabilities: &dyn Capabilities,
+    runtime_capabilities: &dyn RuntimeCapabilities,
 ) {
     let Some(config) = store
         .state()
@@ -304,9 +342,12 @@ fn sync_from_store_initial(
         network_profiles,
         policy_guard,
         image_policy,
+        kubearmor_policy,
         resolved_backend,
+        resolved_runtime_backend,
         annotation_key,
         capabilities,
+        runtime_capabilities,
     );
 }
 
@@ -321,10 +362,13 @@ fn sync_from_store(
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
+    kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
+    resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
     dwoc_catalog: &KubeDwocStore,
     capabilities: &dyn Capabilities,
+    runtime_capabilities: &dyn RuntimeCapabilities,
     metrics: &Metrics,
 ) {
     let Some(config) = store
@@ -341,9 +385,12 @@ fn sync_from_store(
         network_profiles,
         policy_guard,
         image_policy,
+        kubearmor_policy,
         resolved_backend,
+        resolved_runtime_backend,
         annotation_key,
         capabilities,
+        runtime_capabilities,
     );
 
     metrics
@@ -422,6 +469,19 @@ fn sync_from_store(
                 .unwrap_or(0),
         );
 
+    metrics
+        .feature_mode
+        .with_label_values(&["kubearmor-policy"])
+        .set(
+            config
+                .spec
+                .features
+                .kubearmor_policy
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
     // Set from a full recount rather than incremented, same as the gauge below: an entry whose
     // pattern was fixed must drop out of `invalid`, not keep reporting a fault that is gone.
     let (mut valid, mut invalid) = (0i64, 0i64);
@@ -474,9 +534,12 @@ fn apply_config(
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
     policy_guard: &Arc<RwLock<Option<PolicyGuardConfig>>>,
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
+    kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
+    resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
     capabilities: &dyn Capabilities,
+    runtime_capabilities: &dyn RuntimeCapabilities,
 ) {
     if let Ok(mut guard) = teams.write() {
         *guard = config.spec.teams.clone();
@@ -492,6 +555,26 @@ fn apply_config(
     }
     if let Ok(mut guard) = image_policy.write() {
         *guard = config.spec.features.image_policy.clone();
+    }
+    if let Ok(mut guard) = kubearmor_policy.write() {
+        *guard = config.spec.features.kubearmor_policy.clone();
+    }
+    if let Ok(mut guard) = resolved_runtime_backend.write() {
+        let preference = config
+            .spec
+            .features
+            .kubearmor_policy
+            .as_ref()
+            .map(|c| c.enforcement.backend)
+            .unwrap_or_default();
+        // Same reasoning as `resolved_backend` below: a cluster offering no runtime-enforcement
+        // engine keeps the last resolved value rather than an `Option`, and the write sites
+        // treat "nothing to write for this engine" as their own already-handled case. The
+        // difference that matters is that this resolution asks a *different* capability source,
+        // so a cluster with Cilium and no KubeArmor cannot resolve one from the other.
+        if let Some(backend) = resolve_runtime_backend(preference, runtime_capabilities) {
+            *guard = backend;
+        }
     }
     if let Ok(mut guard) = resolved_backend.write() {
         let preference = config
@@ -558,6 +641,16 @@ impl FeatureGate for KubeConfigStore {
             "image-policy" => {
                 let guard = self
                     .image_policy
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
+            "kubearmor-policy" => {
+                let guard = self
+                    .kubearmor_policy
                     .read()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match guard.as_ref() {

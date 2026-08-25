@@ -1,29 +1,13 @@
 //! `ManagedObject` — one policy object this feature owns, and the opaque body it copies from a
 //! template. See RFC 0004's *Design → Architecture*, "`PolicyBody` is opaque."
+//!
+//! [`ObjectKey`] and [`PodSelector`] are no longer defined here: RFC 0006's *Implementation
+//! plan* promoted both to `weebo-si-chassis`, since `kubearmor-policy` writes objects with the
+//! same identity and the same two selector shapes. They are re-exported under their original
+//! paths so every call site in this crate and its adapters keeps naming them where it always did.
 
-use weebo_si_crd::{Backend, NamespaceName, ProfileKey};
-
-/// A namespace-scoped object's `{namespace, name}` identity — the diff key.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ObjectKey {
-    /// The namespace the object lives in.
-    pub namespace: NamespaceName,
-    /// The object's name.
-    pub name: String,
-}
-
-/// The pod (or endpoint) selector a `ManagedObject` carries. An enum rather than a raw label
-/// map so a baseline object can never accidentally be constructed with a workspace selector, or
-/// a profile object with the baseline's "every pod" selector — the two have very different
-/// blast radii and the type keeps them from being confused at a call site.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PodSelector {
-    /// `{}` — every pod in the namespace. Only ever the baseline's.
-    Empty,
-    /// `controller.devfile.io/devworkspace_id: <id>` — one workspace's pods. Only ever a
-    /// profile object's.
-    DevWorkspaceId(String),
-}
+pub use weebo_si_chassis::managed::{ObjectKey, PodSelector};
+use weebo_si_crd::{Backend, ProfileKey};
 
 /// A template's `policyTypes`/`ingress`/`egress` (or the Cilium equivalent), copied verbatim and
 /// never *interpreted* — see the RFC's "the operator never parses a rule." The domain's own

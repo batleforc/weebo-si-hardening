@@ -10,6 +10,7 @@ No static site generator: a RFC has to be readable in a diff and in the forge UI
 | [`rfc/`](./rfc/readme.md) | The RFC process, the template, and every RFC. **Start here.** |
 | [`architecture/`](./architecture/readme.md) | Cross-cutting conventions every brick follows (hexagonal layering, repo layout). |
 | [`bricks/`](./bricks/readme.md) | Operator-facing docs for what has shipped: flags, config, exit codes, failure modes. |
+| [`weebosiconfig.md`](./weebosiconfig.md) | Every field of the `WeeboSiConfig` CRD: type, default, meaning, and what a wrong value does. |
 | [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
 
 ## Reading order for a newcomer
@@ -17,3 +18,5 @@ No static site generator: a RFC has to be readable in a diff and in the forge UI
 1. [`rfc/readme.md`](./rfc/readme.md) — how a feature gets from idea to merged code.
 2. [`architecture/hexagonal.md`](./architecture/hexagonal.md) — how a non-trivial brick is laid out, and when that layout is *not* warranted.
 3. The RFC index in [`rfc/readme.md`](./rfc/readme.md#index) — what exists and what is being built.
+4. [`weebosiconfig.md`](./weebosiconfig.md) — the one object every feature is configured by, once
+   you need to actually turn something on.

@@ -67,20 +67,31 @@ fn devworkspace_resource() -> kube::api::ApiResource {
 /// values `rbac.create`/`controller.leaderElection` govern are both `true` out of the box, which
 /// is exactly the shape a real install ships.
 fn helm_show(show_only: &str) -> String {
+    helm_show_with(show_only, &[])
+}
+
+/// Like [`helm_show`], with `--set` overrides — for a feature whose RBAC is opt-in, where the
+/// chart's own defaults render nothing to assert against.
+fn helm_show_with(show_only: &str, sets: &[&str]) -> String {
     let chart_dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../charts/weebo-si-operator"
     );
+    let mut args = vec![
+        "template",
+        "ci",
+        chart_dir,
+        "--namespace",
+        RELEASE_NAMESPACE,
+        "--show-only",
+        show_only,
+    ];
+    for set in sets {
+        args.push("--set");
+        args.push(set);
+    }
     let output = std::process::Command::new("helm")
-        .args([
-            "template",
-            "ci",
-            chart_dir,
-            "--namespace",
-            RELEASE_NAMESPACE,
-            "--show-only",
-            show_only,
-        ])
+        .args(args)
         .output()
         .expect("helm must be on PATH to render charts/weebo-si-operator — see task helm:lint");
     assert!(
@@ -584,5 +595,198 @@ async fn controller_role_matches_the_documented_grants() {
             .delete(weebo_si_crd::SINGLETON_NAME, &DeleteParams::default())
             .await,
         "the controller role must not be able to delete weebosiconfigs",
+    );
+}
+
+// --- RFC 0006: kubearmor-policy's own grants ---------------------------------------------------
+//
+// Rendered with `--set kubearmorPolicy.rbac.enabled=true`, because this feature's RBAC is opt-in:
+// granting write on a CRD a cluster does not have is a permission nobody can use and everybody
+// has to review. The chart's defaults render none of these rules, so a suite reading the defaults
+// would assert nothing and pass.
+
+const KUBEARMOR_POLICY_CRD: &str =
+    include_str!("../../weebo-si-runtime/tests/fixtures/kubearmorpolicy-crd.yaml");
+
+fn kubearmor_resource() -> kube::api::ApiResource {
+    let gvk = GroupVersionKind::gvk("security.kubearmor.com", "v1", "KubeArmorPolicy");
+    kube::api::ApiResource::from_gvk_with_plural(&gvk, "kubearmorpolicies")
+}
+
+fn test_kubearmor_policy(name: &str) -> DynamicObject {
+    let mut object = DynamicObject::new(name, &kubearmor_resource());
+    object.metadata.namespace = Some(RELEASE_NAMESPACE.to_string());
+    object.data = serde_json::json!({
+        "spec": {
+            "selector": {"matchLabels": {}},
+            "process": {"matchPaths": [{"path": "/usr/bin/git"}]},
+        }
+    });
+    object
+}
+
+/// Like [`rbac_fixture`], with `kubearmorPolicy.rbac.enabled=true` and KubeArmor's CRD installed.
+async fn kubearmor_rbac_fixture() -> Option<(EnvTest, kube::Client, kube::Client, kube::Client)> {
+    let rendered = helm_show_with(
+        "templates/rbac.yaml",
+        &["kubearmorPolicy.rbac.enabled=true"],
+    );
+    let documents = split_documents(&rendered);
+    let webhook_identity = service_account_identity(&documents, "-webhook-watch");
+    let controller_identity = service_account_identity(&documents, "-controller-watch");
+
+    let env_test = EnvTest::try_start_rbac(&[
+        (WEBHOOK_TOKEN, webhook_identity.as_str()),
+        (CONTROLLER_TOKEN, controller_identity.as_str()),
+    ])
+    .await?;
+    let admin = env_test.client().expect("client should build");
+
+    install_crds(admin.clone()).await;
+    {
+        let crds: Api<CustomResourceDefinition> = Api::all(admin.clone());
+        let crd: CustomResourceDefinition =
+            serde_yaml_bw::from_str(KUBEARMOR_POLICY_CRD).expect("the fixture should parse");
+        let name = crd.name_any();
+        crds.patch(
+            &name,
+            &PatchParams::apply("envtest").force(),
+            &Patch::Apply(&crd),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("installing {name} should succeed: {err}"));
+        wait_established(&crds, &name).await;
+    }
+    create_release_namespace(admin.clone()).await;
+    for doc in &documents {
+        apply_document(admin.clone(), doc).await;
+    }
+
+    let webhook = env_test
+        .client_as(WEBHOOK_TOKEN)
+        .expect("client should build");
+    let controller = env_test
+        .client_as(CONTROLLER_TOKEN)
+        .expect("client should build");
+    Some((env_test, admin, webhook, controller))
+}
+
+/// The controller role's three RFC 0006 grants, each a real request the authorizer evaluates:
+/// write on `kubearmorpolicies`, `patch` on `namespaces` for KubeArmor's posture annotations, and
+/// read on `nodes`/`pods` for the enforcement join.
+#[tokio::test]
+async fn the_controller_role_can_write_kubearmor_policies_patch_namespaces_and_read_the_join() {
+    let Some((_env_test, _admin, _webhook, controller)) = kubearmor_rbac_fixture().await else {
+        return;
+    };
+
+    let api: Api<DynamicObject> =
+        Api::namespaced_with(controller.clone(), RELEASE_NAMESPACE, &kubearmor_resource());
+    api.create(
+        &PostParams::default(),
+        &test_kubearmor_policy("rbac-envtest-ka"),
+    )
+    .await
+    .expect("the controller role should be able to create kubearmorpolicies");
+    api.patch(
+        "rbac-envtest-ka",
+        &PatchParams::apply("rbac-envtest").force(),
+        &Patch::Apply(test_kubearmor_policy("rbac-envtest-ka")),
+    )
+    .await
+    .expect("the controller role should be able to apply over its own kubearmorpolicies");
+    api.delete("rbac-envtest-ka", &DeleteParams::default())
+        .await
+        .expect("the controller role should be able to delete kubearmorpolicies");
+
+    // The posture write: `patch` on namespaces, and only patch — see the rule's own comment.
+    Api::<Namespace>::all(controller.clone())
+        .patch(
+            RELEASE_NAMESPACE,
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({
+                "metadata": {"annotations": {"kubearmor-file-posture": "audit"}}
+            })),
+        )
+        .await
+        .expect("the controller role should be able to patch a namespace's annotations");
+
+    // The enforcement join's two reads. `nodes` is this project's first cluster-scoped read
+    // outside its own CRD.
+    assert!(
+        Api::<k8s_openapi::api::core::v1::Node>::all(controller.clone())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the controller role should be able to list nodes"
+    );
+    assert!(
+        Api::<Pod>::all(controller.clone())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the controller role should be able to list pods cluster-wide for the join"
+    );
+
+    // Read-only means read-only: the join never writes a node, and nothing in this project ever
+    // should.
+    assert_forbidden(
+        Api::<k8s_openapi::api::core::v1::Node>::all(controller)
+            .patch(
+                "any-node",
+                &PatchParams::default(),
+                &Patch::Merge(serde_json::json!({"metadata": {"labels": {"x": "y"}}})),
+            )
+            .await,
+        "the controller role must not be able to write nodes",
+    );
+}
+
+/// The webhook role reads `kubearmorpolicies` and nothing more — the same split RFC 0004 makes
+/// for `networkpolicies`, and for the same reason: the role an untrusted `AdmissionReview` body
+/// reaches holds nothing but watches.
+#[tokio::test]
+async fn the_webhook_role_can_read_kubearmor_policies_and_write_nothing() {
+    let Some((_env_test, _admin, webhook, _controller)) = kubearmor_rbac_fixture().await else {
+        return;
+    };
+
+    assert!(
+        Api::<DynamicObject>::all_with(webhook.clone(), &kubearmor_resource())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the webhook role should be able to list kubearmorpolicies"
+    );
+    assert_forbidden(
+        Api::<DynamicObject>::namespaced_with(
+            webhook.clone(),
+            RELEASE_NAMESPACE,
+            &kubearmor_resource(),
+        )
+        .create(
+            &PostParams::default(),
+            &test_kubearmor_policy("webhook-should-fail"),
+        )
+        .await,
+        "the webhook role must not be able to create kubearmorpolicies",
+    );
+    assert_forbidden(
+        Api::<Namespace>::all(webhook.clone())
+            .patch(
+                RELEASE_NAMESPACE,
+                &PatchParams::default(),
+                &Patch::Merge(serde_json::json!({
+                    "metadata": {"annotations": {"kubearmor-file-posture": "block"}}
+                })),
+            )
+            .await,
+        "the posture write belongs to the controller role alone",
+    );
+    assert_forbidden(
+        Api::<k8s_openapi::api::core::v1::Node>::all(webhook)
+            .list(&ListParams::default())
+            .await,
+        "the enforcement join's node read belongs to the controller role alone",
     );
 }

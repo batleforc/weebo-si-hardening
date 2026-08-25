@@ -7,6 +7,7 @@ mod cli;
 mod controller_cmd;
 mod features;
 mod images_cmd;
+mod kubearmor_cmd;
 mod observability;
 mod webhook_cmd;
 
@@ -37,6 +38,10 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
   features    print the registry: id, originating RFC, target resource
   backends    print which network-profiles backends are compiled in and which
               this cluster actually offers
+              kubearmor [--verbose]
+                the same two questions for kubearmor-policy: whether this
+                cluster serves the KubeArmorPolicy CRD, and (--verbose) which
+                nodes can actually enforce one
   canary      [--namespace <ns>] [--canary-image <ref>]
               run the enforcement probe once and report whether this cluster's
               CNI actually enforces NetworkPolicy; non-zero exit if it does not
@@ -67,7 +72,21 @@ fn main() -> ExitCode {
         }
         Some("webhook") => run_async(webhook_cmd::run(&args[2..])),
         Some("controller") => run_async(controller_cmd::run(&args[2..])),
-        Some("backends") => run_async(backends_cmd::run()),
+        // `backends` with no argument keeps its RFC 0004 meaning — the network backends —
+        // rather than growing a summary of both. `backends kubearmor` is its own answer
+        // because the questions it asks (a CRD, then every node's label) have no counterpart
+        // on the network side.
+        Some("backends") => match args.get(2).map(String::as_str) {
+            None => run_async(backends_cmd::run()),
+            Some("kubearmor") => {
+                run_async(kubearmor_cmd::run(cli::has_flag(&args[3..], "--verbose")))
+            }
+            Some(other) => {
+                eprintln!("weebo-si-operator: unrecognized backends target '{other}'");
+                eprint!("{USAGE}");
+                ExitCode::from(exit::USAGE)
+            }
+        },
         Some("canary") => run_async(canary_cmd::run(&args[2..])),
         Some("images") => run_async(images_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {

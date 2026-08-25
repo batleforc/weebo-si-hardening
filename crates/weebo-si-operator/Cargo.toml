@@ -12,6 +12,7 @@ weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
+weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
 weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }

@@ -50,3 +50,7 @@ tasks:
       # Serialised: each test owns an apiserver, and running several at once only multiplies
       # the memory footprint for no wall-clock gain.
       - cargo test --workspace --features envtest --test envtest -- --test-threads=1
+      # RFC 0006's suite is its own target rather than more cases in weebo-si-runtime's
+      # `envtest`: it installs a KubeArmorPolicy CRD fixture into the apiserver, and a suite
+      # that installs a CRD should not share one with a suite that assumes a bare cluster.
+      - cargo test --workspace --features envtest --test kubearmor_envtest -- --test-threads=1

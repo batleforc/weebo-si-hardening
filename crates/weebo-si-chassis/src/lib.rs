@@ -9,6 +9,7 @@
 pub mod admit;
 pub mod error;
 pub mod feature;
+pub mod managed;
 pub mod mutation;
 pub mod namespace_facts;
 pub mod port;
@@ -18,5 +19,6 @@ pub use error::DomainError;
 pub use feature::{
     Context, Decision, Feature, FeatureId, FeatureOutcome, ReconcileFeature, Registry, Subject,
 };
+pub use managed::{ObjectKey, PodSelector};
 pub use mutation::Mutation;
 pub use namespace_facts::NamespaceFacts;

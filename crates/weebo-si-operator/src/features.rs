@@ -37,4 +37,9 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0005",
         resource: "DevWorkspace, Pod",
     },
+    FeatureDescriptor {
+        id: "kubearmor-policy",
+        rfc: "RFC 0006",
+        resource: "Namespace, DevWorkspace",
+    },
 ];

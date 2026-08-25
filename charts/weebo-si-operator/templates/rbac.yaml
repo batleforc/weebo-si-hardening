@@ -34,6 +34,13 @@ rules:
     resources: ["ciliumnetworkpolicies"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if .Values.kubearmorPolicy.rbac.enabled }}
+  # RFC 0006. Read-only on the shared role for the same reason the networkpolicies rule above is
+  # shared: the controller diffs against it, and the webhook role holds nothing but watches.
+  - apiGroups: ["security.kubearmor.com"]
+    resources: ["kubearmorpolicies"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
   # RFC 0005's `image-policy` adds **nothing here, and nothing to the controller role either** —
   # no verb, no resource, no Role. Both of its subjects arrive in the admission body, and the
   # only lookup either route makes is the `namespaces` watch three rules up, which already
@@ -102,6 +109,32 @@ rules:
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies"]
     verbs: ["create", "update", "patch", "delete"]
+  {{- end }}
+  {{- if .Values.kubearmorPolicy.rbac.enabled }}
+  # RFC 0006's own grants, and the three of them are of very different sizes.
+  #
+  # Writing `kubearmorpolicies` cluster-wide is the same shape as writing `networkpolicies`
+  # above — the ability to constrain, or to *un*constrain, what any workspace process may do.
+  # Bounded by code rather than RBAC: the ownership label, the namespace exclusions, the diff.
+  - apiGroups: ["security.kubearmor.com"]
+    resources: ["kubearmorpolicies"]
+    verbs: ["create", "update", "patch", "delete"]
+  # `patch` on namespaces, for KubeArmor's three `kubearmor-*-posture` annotations and nothing
+  # else. Kubernetes RBAC cannot say "these three annotation keys", so the narrowing is in the
+  # adapter (a merge patch of exactly those keys) and reviewed as code — the same trade this
+  # project already accepts for the Node projection below. `get/list/watch` on namespaces is
+  # already granted by the shared role above; only the write is added here.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["patch"]
+  # Read-only, and this is the first cluster-scoped read in this project that is not its own CRD:
+  # `nodes` for the `kubearmor.io/enforcer` label, `pods` for `spec.nodeName`, joined behind
+  # NodeEnforcerView to answer "is a policy written here actually enforced". RBAC has no
+  # field-level grant for either, so the projection is enforced in the watch stream before
+  # anything reaches a cache — see crates/weebo-si-runtime/src/node_enforcer.rs.
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

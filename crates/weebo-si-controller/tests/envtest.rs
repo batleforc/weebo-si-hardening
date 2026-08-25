@@ -360,3 +360,199 @@ async fn mode_transitions_are_reflected_in_status_across_reconciles() {
 
     let _ = api.delete("cluster", &DeleteParams::default()).await;
 }
+
+// --- RFC 0006: the posture write ---------------------------------------------------------------
+//
+// The one output of a `kubearmor-policy` reconcile pass that is not a `KubeArmorPolicy` object,
+// and the one this project had no coverage for at all: three annotations patched onto a namespace
+// this operator does not own. `posture_patch`'s shape is unit-tested next to it; what these two
+// prove is that the patch actually lands, and that `DryRun` never sends it.
+
+use k8s_openapi::api::core::v1::Namespace;
+use std::collections::BTreeMap;
+use std::sync::RwLock;
+use weebo_si_chassis::Context;
+use weebo_si_chassis::NamespaceFacts;
+use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
+use weebo_si_controller::kubearmor_policy::write_posture;
+use weebo_si_crd::{
+    DefaultPosture, FeatureMode, KubeArmorPolicyConfig, NamespaceName, OnNotGranted, Posture,
+    RuntimeBackend, RuntimeEnforcement, RuntimeEnforcementBackend, RuntimeNamespaceSelection,
+    RuntimeProfile, RuntimeProfileCatalog, RuntimeProfileKey, RuntimeWorkspaceSelection,
+    TemplateRef,
+};
+use weebo_si_kubearmor_policy::port::testing::{FakePolicyStore, FakeTemplateStore};
+use weebo_si_kubearmor_policy::{KubeArmorPolicy, NamespaceSubject};
+
+const POSTURE_NAMESPACE: &str = "user-posture";
+
+fn kubearmor_config(mode: FeatureMode, posture: DefaultPosture) -> KubeArmorPolicyConfig {
+    KubeArmorPolicyConfig {
+        mode,
+        namespace_selector: None,
+        catalog: RuntimeProfileCatalog::new(vec![RuntimeProfile {
+            key: RuntimeProfileKey::new("base"),
+            template_ref: TemplateRef {
+                name: "weebo-base-runtime".to_string(),
+                namespace: NamespaceName::new("weebo-si-hardening"),
+            },
+        }]),
+        baseline: RuntimeProfileKey::new("base"),
+        grants: BTreeMap::new(),
+        namespace_selection: RuntimeNamespaceSelection::default(),
+        workspace_selection: RuntimeWorkspaceSelection::default(),
+        on_not_granted: OnNotGranted::default(),
+        enforcement: RuntimeEnforcement {
+            backend: RuntimeEnforcementBackend::KubeArmor,
+            default_posture: posture,
+        },
+    }
+}
+
+fn kubearmor_feature(config: KubeArmorPolicyConfig) -> KubeArmorPolicy {
+    KubeArmorPolicy::new(
+        Arc::new(RwLock::new(Some(config))),
+        Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
+        Arc::new(FakeTemplateStore::new([(
+            TemplateRef {
+                name: "weebo-base-runtime".to_string(),
+                namespace: NamespaceName::new("weebo-si-hardening"),
+            },
+            b"base-rules".to_vec(),
+        )])),
+    )
+}
+
+async fn create_posture_namespace(client: kube::Client) {
+    let api: Api<Namespace> = Api::all(client);
+    let namespace = Namespace {
+        metadata: kube::api::ObjectMeta {
+            name: Some(POSTURE_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let _ = api.create(&PostParams::default(), &namespace).await;
+}
+
+async fn annotations_of(client: kube::Client, namespace: &str) -> BTreeMap<String, String> {
+    Api::<Namespace>::all(client)
+        .get(namespace)
+        .await
+        .expect("the namespace should exist")
+        .metadata
+        .annotations
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// The whole path the namespace loop takes in `Enforce`: reconcile, ask
+/// `posture_to_write()`, patch. Asserts the three annotations are on the real object afterwards.
+#[tokio::test]
+async fn enforce_writes_kubearmors_three_posture_annotations_onto_the_namespace() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    create_posture_namespace(client.clone()).await;
+
+    let feature = kubearmor_feature(kubearmor_config(
+        FeatureMode::Enforce,
+        DefaultPosture {
+            file: Posture::Block,
+            network: Posture::Audit,
+            capabilities: Posture::Block,
+        },
+    ));
+    let store = FakePolicyStore::default();
+    let namespace_facts = NamespaceFacts::default();
+    let dwoc_catalog = FakeDwocCatalog::new(std::iter::empty());
+    let ctx = Context::new(&[], &namespace_facts, &dwoc_catalog);
+    let subject = NamespaceSubject {
+        namespace: NamespaceName::new(POSTURE_NAMESPACE),
+    };
+
+    let outcome = weebo_si_kubearmor_policy::reconcile(
+        &feature,
+        &subject,
+        &ctx,
+        FeatureMode::Enforce,
+        &store,
+    )
+    .await
+    .expect("reconcile should succeed");
+
+    let posture = outcome
+        .posture_to_write()
+        .expect("Enforce should have a posture to write");
+    write_posture(&client, &subject.namespace, posture)
+        .await
+        .expect("the posture patch should be accepted");
+
+    let annotations = annotations_of(client, POSTURE_NAMESPACE).await;
+    assert_eq!(
+        annotations
+            .get("kubearmor-file-posture")
+            .map(String::as_str),
+        Some("block")
+    );
+    assert_eq!(
+        annotations
+            .get("kubearmor-network-posture")
+            .map(String::as_str),
+        Some("audit")
+    );
+    assert_eq!(
+        annotations
+            .get("kubearmor-capabilities-posture")
+            .map(String::as_str),
+        Some("block")
+    );
+}
+
+/// The same path in `DryRun`, which must stop at `posture_to_write()` returning `None` — a dry
+/// run that changes what KubeArmor does with an unmatched operation is not a dry run.
+#[tokio::test]
+async fn dry_run_leaves_the_namespaces_posture_alone() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    create_posture_namespace(client.clone()).await;
+
+    let feature = kubearmor_feature(kubearmor_config(
+        FeatureMode::DryRun,
+        DefaultPosture {
+            file: Posture::Block,
+            ..DefaultPosture::default()
+        },
+    ));
+    let store = FakePolicyStore::default();
+    let namespace_facts = NamespaceFacts::default();
+    let dwoc_catalog = FakeDwocCatalog::new(std::iter::empty());
+    let ctx = Context::new(&[], &namespace_facts, &dwoc_catalog);
+    let subject = NamespaceSubject {
+        namespace: NamespaceName::new(POSTURE_NAMESPACE),
+    };
+
+    let outcome =
+        weebo_si_kubearmor_policy::reconcile(&feature, &subject, &ctx, FeatureMode::DryRun, &store)
+            .await
+            .expect("reconcile should succeed");
+
+    assert!(
+        outcome.posture.is_some(),
+        "the pass still computes what it would write"
+    );
+    // The loop's own line, verbatim: nothing to write means nothing is sent.
+    if let Some(posture) = outcome.posture_to_write() {
+        write_posture(&client, &subject.namespace, posture)
+            .await
+            .expect("patch");
+    }
+
+    let annotations = annotations_of(client, POSTURE_NAMESPACE).await;
+    assert!(
+        !annotations
+            .keys()
+            .any(|key| key.starts_with("kubearmor-") && key.ends_with("-posture")),
+        "DryRun must not have touched the namespace: {annotations:?}"
+    );
+}

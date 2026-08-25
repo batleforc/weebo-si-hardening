@@ -107,6 +107,15 @@ rbac:
 # and the `KubeTemplateStore`/`KubePolicyStore` watch for it — a cluster without Cilium's CRDs
 # installed must never be handed (or attempt to use) this permission, per the RFC's "the Cilium
 # rules in a separate overlay so a cluster without Cilium never grants them."
+# RFC 0006's kubearmor-policy. Off by default, and the flag governs *RBAC*, not the feature:
+# whether the feature runs at all is `spec.features.kubearmorPolicy.mode` on the WeeboSiConfig,
+# and the controller discovers the CRD at boot regardless. Granting write on a CRD a cluster does
+# not have would be a permission nobody can use and everybody has to review, so the grant is
+# opt-in — turn this on when KubeArmor is installed.
+kubearmorPolicy:
+  rbac:
+    enabled: false
+
 networkProfiles:
   cilium:
     enabled: false

@@ -20,3 +20,10 @@ pub const DEVWORKSPACE_ID_LABEL: &str = "controller.devfile.io/devworkspace_id";
 /// live in the operator's own namespace, and nothing in the reconcile diff should ever consider
 /// them. Its value is `server` or `client` on a pod, and `deny` on the policy.
 pub const CANARY_LABEL: &str = "hardening.weebo.io/canary";
+/// The label KubeArmor's own operator sets on each node, naming the LSM it managed to program
+/// there (`bpf` / `apparmor` / `selinux`), and absent when nothing usable was found. Read-only
+/// for this project: `kubearmor-policy` joins it against a workspace pod's `spec.nodeName` to
+/// answer "is the policy this operator wrote actually enforced *here*", per RFC 0006's
+/// *Security considerations → Bypass*. Never written — a node's enforcement capability is
+/// KubeArmor's observation to report, not ours to claim.
+pub const KUBEARMOR_ENFORCER_LABEL: &str = "kubearmor.io/enforcer";

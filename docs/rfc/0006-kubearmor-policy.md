@@ -1,11 +1,11 @@
 ---
 rfc: 0006
 title: kubearmor-policy
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-08-24
-updated: 2026-08-24
-decided:
+updated: 2026-08-25
+decided: 2026-08-25
 brick: crates/weebo-si-kubearmor-policy
 supersedes: []
 superseded-by: []
@@ -124,7 +124,10 @@ a pod this brick does not create, which is `dwoc-pin`'s and DevWorkspace Operato
 this one's (see *Unresolved questions*). This RFC's design assumes the more common install shape
 — enforcement on by default, no per-pod opt-in required — and treats the opt-in case as something
 this brick observes and reports on, never drives. What an operator sees when it works: `kubectl get kubearmorpolicy -n
-<workspace-ns>` lists `weebo-base` and, if the workspace asked for it, `weebo-git-write`;
+<workspace-ns>` lists `weebo-base` — one per namespace — and, if the workspace asked for it,
+`weebo-git-write-<devworkspace-id>`, one per workspace per granted key: the id is part of the
+*name* and not only of the selector, since two workspaces in one namespace granted the same key
+would otherwise write the same object twice and each pass would fight the other;
 `kubearmor-relay`'s logs carry an `Audit` or `Block` event per matched rule, tagged with the
 policy name. What they see when the *node* a workspace pod landed on cannot enforce at all: that
 node's `kubearmor.io/enforcer` label is absent or reports nothing usable — a label KubeArmor's
@@ -175,13 +178,34 @@ this ("not applied, not approximated"), just off a node label instead of a pod a
   one baseline per namespace — same population shape `network-profiles` reports through
   `weebo_si_network_managed_objects`, this brick's equivalent named
   `weebo_si_kubearmor_managed_objects`.
-- **New metric**: `weebo_si_kubearmor_enforced{namespace,workspace}` — a gauge, `1` when the
-  node the workspace's pod is scheduled on carries a `kubearmor.io/enforcer` label naming a real
-  enforcer, `0` when the label is absent or empty, absent entirely when no policy is expected for
-  that workspace. This is the canary `network-profiles` gets from a synthetic probe; here it is
-  derived by joining two read-only watches (`Node` labels, `Pod.spec.nodeName`) instead, because
-  there is no cluster-wide "does the CNI support this" question to ask — the answer is per node
-  (see *Security considerations → Bypass*).
+
+  The baseline's selector is `matchLabels: {}`, which KubeArmor reads as **every pod in the
+  policy's own namespace** — the baseline's meaning exactly, and the reason it needs no label of
+  its own to select on. Stated in the contract rather than left to the JSON's shape because the
+  alternative reading is silent: if an empty map selected nothing, every baseline this brick
+  writes would be inert while `weebo_si_kubearmor_managed_objects` and
+  `weebo_si_kubearmor_enforced` both read healthy.
+- **New metric**: `weebo_si_kubearmor_enforced{state}` — a gauge counting workspaces per state:
+  `enforced` (the node hosting the workspace's pods carries a `kubearmor.io/enforcer` label
+  naming a real enforcer), `not_enforced` (the label is absent or empty), `unknown` (no pod is
+  scheduled, or its node is not in the cache). All three are always published, including the
+  zeroes, so `state="not_enforced" > 0` reads `0` rather than *absent* on a healthy cluster and
+  is therefore alertable. This is the canary `network-profiles` gets from a synthetic probe; here
+  it is derived by joining two read-only watches (`Node` labels, `Pod.spec.nodeName`) instead,
+  because there is no cluster-wide "does the CNI support this" question to ask — the answer is
+  per node (see *Security considerations → Bypass*).
+
+  > **Amended during implementation.** This was first specified as
+  > `weebo_si_kubearmor_enforced{namespace,workspace}` — a gauge per workspace. That contradicts
+  > [RFC 0004](./0004-network-profiles.md)'s *Observability contract*, which rules project-wide
+  > that "no metric carries a namespace or a workspace id as a label... a per-workspace time
+  > series is how a metrics backend is taken down by a hardening component." Building it as
+  > written would have made this brick the one that does it. Counting workspaces per state alerts
+  > identically and costs three series instead of two per workspace; **which** workspace is
+  > unenforced is a `WARN` log line and a `kubectl get pod -o wide`, the same answer RFC 0004
+  > gives for its own per-namespace questions. The `unknown` state is new here and is not folded
+  > into `not_enforced` on purpose: "we have not looked" and "we looked and there is nothing
+  > there" are different claims, and only the second should page anyone.
 - **CLI**: `weebo-si-operator backends kubearmor` — prints whether the `KubeArmorPolicy` CRD is
   installed (cluster-wide capability) and, if `--verbose`, every node's `kubearmor.io/enforcer`
   label (node-level capability) — the two are different questions and the command answers both
@@ -387,6 +411,22 @@ Genuinely still open:
   annotation itself (see *Guide-level explanation*), a cluster running the opt-in mode gets
   enforcement this brick cannot fully account for. Leaning toward documenting it as a
   precondition rather than building around it, but not decided.
+- **Whether `policy-guard` should cover `kubearmorpolicies`.** *(Raised by implementation;
+  answered yes — the design is [RFC 0008](./0008-policy-guard-coverage.md), and this entry closes
+  when that RFC ships.)* RFC
+  0004's guard denies non-operator writes to objects carrying the managed-by label, and it covers
+  `networkpolicies` and `ciliumnetworkpolicies` only. Nothing stops a user with `edit` on
+  `kubearmorpolicies` in their own namespace from rewriting the policy that constrains their own
+  workspace — the controller puts it back on the next pass, but there is a window, and unlike the
+  network case there is no admission-time refusal. Extending the guard is a new target for an
+  existing brick and therefore its own RFC amendment, per [the process](./readme.md).
+
+  This has a concrete consequence already in the code: the `KubeArmorPolicy` store **force-applies**
+  where `network-profiles`' store does not. Server-side apply refuses to overwrite a field another
+  manager owns, so a single `kubectl edit` would otherwise make this operator's every subsequent
+  apply fail with a 409 — the drift this brick exists to correct becoming exactly the drift it can
+  no longer correct. `network-profiles` can afford not to force because the guard stops the edit
+  before a field manager exists; this brick cannot, until the guard covers it.
 
 ## Future work
 
@@ -406,29 +446,37 @@ Genuinely still open:
 
 ## Implementation plan
 
-- [ ] `weebo-si-crd`: `RuntimeProfileKey`, `RuntimeProfileCatalog`, `RuntimeProfileGrant`,
+- [x] `weebo-si-crd`: `RuntimeProfileKey`, `RuntimeProfileCatalog`, `RuntimeProfileGrant`,
       `KubeArmorPolicyConfig` (`mode`, `namespaceSelector`, `catalog`, `baseline`, `grants`,
       `onNotGranted`, `namespaceSelection`, `workspaceSelection`, `enforcement`), reusing
       `OnNotGranted` and `TemplateRef` from `network_profiles.rs` rather than redeclaring them
-- [ ] Promote `PodSelector` (and any other genuinely backend-agnostic type `network_profiles.rs`
-      currently owns) to `weebo-si-chassis`, so this crate does not duplicate it
-- [ ] `crates/weebo-si-kubearmor-policy`: `port.rs` (`Capabilities`, `TemplateStore`,
+- [x] Promote `PodSelector` (and any other genuinely backend-agnostic type `network_profiles.rs`
+      currently owns) to `weebo-si-chassis`, so this crate does not duplicate it — `ObjectKey`
+      came with it, and so did the diff machinery this RFC's *Architecture* calls reused
+      (`Diff`, `compute_diff`, `Applied`, `tally`, now generic over a `Managed` trait each
+      feature implements for its own object type). That last part was RFC 0007's checklist item
+      until this brick made it due a release earlier
+- [x] `crates/weebo-si-kubearmor-policy`: `port.rs` (`Capabilities`, `TemplateStore`,
       `PolicyStore`, `BaselineView`, `NodeEnforcerView`), `model/` (`ManagedObject`, diff),
       `feature/` (namespace and workspace `Subject`s, `ReconcileFeature<S>` impl), `resolve.rs`
       (grant resolution, ported from `network-profiles`' `resolve.rs` with the vocabulary renamed)
-- [ ] `backend.rs`: `resolve_backend` over `EnforcementBackend::{Auto, KubeArmor}` — trivial today
+- [x] `backend.rs`: `resolve_backend` over `EnforcementBackend::{Auto, KubeArmor}` — trivial today
       (one member), written so a second variant is additive
-- [ ] Outbound adapter: `KubeArmorPolicy` CRD client, `managed_in`/`managed_everywhere`/`apply`
+- [x] Outbound adapter: `KubeArmorPolicy` CRD client, `managed_in`/`managed_everywhere`/`apply`
       against the real apiserver
-- [ ] `Pod` watch adapter projecting `spec.nodeName` only, and a cluster-scoped `Node` watch
+- [x] `Pod` watch adapter projecting `spec.nodeName` only, and a cluster-scoped `Node` watch
       adapter projecting `metadata.labels["kubearmor.io/enforcer"]` only, joined behind
       `NodeEnforcerView`; `weebo_si_kubearmor_enforced` gauge built from the join
-- [ ] `weebo-si-operator backends kubearmor` CLI subcommand, `--verbose` listing every node's
+- [x] `weebo-si-operator backends kubearmor` CLI subcommand, `--verbose` listing every node's
       `kubearmor.io/enforcer` label
-- [ ] Envtest suite: catalogue/grant validation table, diff/apply round-trip, `DryRun` writes
+- [x] Envtest suite: catalogue/grant validation table, diff/apply round-trip, `DryRun` writes
       nothing, `Enforce` writes and reconciles drift
-- [ ] Docs updated
-- [ ] RFC flipped to `Implemented`
+- [x] Helm RBAC behind `kubearmorPolicy.rbac.enabled` (off by default): write on
+      `kubearmorpolicies`, `patch` on `namespaces` for the posture annotations, read on
+      `nodes`/`pods` for the join — not a box this plan anticipated, and the largest grant
+      in the repo after `network-profiles`'
+- [x] Docs updated
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -454,8 +502,9 @@ Genuinely still open:
 
 ## Changelog
 
-> Only once the RFC is `Accepted` and reality pushes back. One line per amendment: what
-> changed and what taught us.
-
 | Date | Change |
 | --- | --- |
+| 2026-08-25 | A profile object's name carries the devworkspace id (`weebo-<key>-<id>`), not only its selector. Two workspaces in one namespace granted the same key would otherwise write one object twice and fight over it every pass — and RFC 0004 had already settled this naming, which this RFC's *Guide-level explanation* had quietly diverged from. |
+| 2026-08-25 | `weebo_si_kubearmor_enforced` is labelled `{state}` and counts workspaces, not `{namespace,workspace}`. Writing it as first specified would have made this the brick that breaks RFC 0004's project-wide "no metric carries a namespace or a workspace id" rule. Taught us that a per-brick observability contract can contradict a project-wide one without either author noticing. |
+| 2026-08-25 | The `KubeArmorPolicy` store force-applies, where `network-profiles`' store does not. Found by envtest, not by review: one `kubectl edit` makes the editor a field manager, and every later server-side apply fails 409 — the drift this brick exists to correct becoming the drift it can no longer correct. `network-profiles` is safe only because `policy-guard` refuses that edit first, which is why the guard's coverage gap is now an open question rather than an omission. |
+| 2026-08-25 | The baseline's `selector.matchLabels: {}` is recorded in the *Contract* as meaning every pod in the namespace. It was an inference from the CRD schema until confirmed; the alternative reading is silent, and would have left every baseline inert while both gauges read healthy. |

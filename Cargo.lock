@@ -2631,6 +2631,7 @@ dependencies = [
  "weebo-si-chassis",
  "weebo-si-crd",
  "weebo-si-envtest-support",
+ "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
 ]
 
@@ -2676,6 +2677,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-kubearmor-policy"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-network-profiles"
 version = "0.1.0"
 dependencies = [
@@ -2704,6 +2714,7 @@ dependencies = [
  "weebo-si-dwoc-pin",
  "weebo-si-envtest-support",
  "weebo-si-image-policy",
+ "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
  "weebo-si-runtime",
  "weebo-si-webhook",
@@ -2725,6 +2736,7 @@ dependencies = [
  "weebo-si-crd",
  "weebo-si-envtest-support",
  "weebo-si-image-policy",
+ "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
 ]
 

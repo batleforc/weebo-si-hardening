@@ -1,0 +1,25 @@
+[package]
+name = "weebo-si-kubearmor-policy"
+version = "0.1.0"
+description = "The kubearmor-policy feature: per-namespace and per-workspace KubeArmorPolicy baselines and grants"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)` — same
+# pattern as weebo-si-network-profiles' own `testing` feature, for the day an adapter crate's
+# tests want them as a dev-dependency.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
