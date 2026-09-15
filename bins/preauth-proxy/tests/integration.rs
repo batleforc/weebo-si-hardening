@@ -12,7 +12,7 @@
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -136,12 +136,27 @@ async fn spawn_upstream(reject_first: bool, counters: Arc<Counters>) -> SocketAd
     addr
 }
 
-/// Grab a port the proxy can bind. Racy in principle, fine in a test.
-async fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
+/// Grab a port the proxy can bind, from below the ephemeral range.
+///
+/// Asking the kernel for port 0 and releasing it is the obvious implementation and the wrong one
+/// here: every fake origin and upstream in this suite binds port 0 too, and tests run
+/// concurrently in one process, so a port released by this function can be handed straight back
+/// to one of them. A `connect` probe against the proxy's address then succeeds without the proxy
+/// ever having started — and an address chosen precisely because nothing listens on it acquires
+/// a listener. Counting up from a fixed base keeps these ports out of that pool entirely.
+fn free_port() -> u16 {
+    /// Below `/proc/sys/net/ipv4/ip_local_port_range`, so `bind(0)` never returns one of these.
+    static NEXT: AtomicU16 = AtomicU16::new(21_000);
+
+    loop {
+        let port = NEXT.fetch_add(1, Ordering::SeqCst);
+        assert!(port < 30_000, "ran out of test ports");
+        // Confirm the port is actually free on this machine, then release it: what the caller
+        // needs is a port no *other* test in this process will take.
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 fn config_document(listen: u16, upstream: SocketAddr, origin: SocketAddr, renew: bool) -> String {
@@ -237,6 +252,43 @@ async fn start_proxy(dir: &tempfile::TempDir, document: &str) -> Result<Proxy, i
     panic!("the proxy never started listening on {listen}");
 }
 
+/// Start the binary on a config expected to fail, and return the exit code.
+///
+/// Distinct from [`start_proxy`] on purpose: a startup failure is observed by *waiting for the
+/// process to exit*, never by probing a port it was never going to bind.
+///
+/// The wait is a polling `await` rather than `Command::output`, which blocks. The fake origin
+/// this child is talking to lives on the calling test's current-thread runtime, so blocking that
+/// thread would stop the origin from ever answering — and the child would wait forever for the
+/// acquisition it is supposed to fail.
+#[allow(clippy::zombie_processes, reason = "reaped by try_wait, or by the kill below")]
+async fn exit_code(dir: &tempfile::TempDir, document: &str) -> i32 {
+    let path = dir.path().join("config.yaml");
+    std::fs::write(&path, document).unwrap();
+
+    let mut child = Command::new(BIN)
+        .arg("--config")
+        .arg(&path)
+        .env("CRED_USER", "svc@example.test")
+        .env("CRED_SECRET", "hunter2")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.code().unwrap_or(-1);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("the proxy never exited: a failed startup acquisition must not leave it running");
+}
+
 /// One request through the proxy.
 async fn get(addr: SocketAddr, path: &str, cookie: Option<&str>) -> Response<Bytes> {
     let client: hyper_util::client::legacy::Client<_, Full<Bytes>> =
@@ -272,7 +324,7 @@ async fn a_first_request_acquires_and_injects() {
     let upstream = spawn_upstream(false, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
+    let doc = config_document(free_port(), upstream, origin, true);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", None).await;
@@ -293,7 +345,7 @@ async fn a_request_carrying_the_marker_is_passed_through_untouched() {
     let upstream = spawn_upstream(false, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
+    let doc = config_document(free_port(), upstream, origin, true);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", Some("session=mine")).await;
@@ -313,7 +365,7 @@ async fn a_caller_cookie_without_the_marker_is_joined_not_replaced() {
     let upstream = spawn_upstream(false, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
+    let doc = config_document(free_port(), upstream, origin, true);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", Some("theme=dark")).await;
@@ -328,7 +380,7 @@ async fn a_401_renews_and_replays_once() {
     let upstream = spawn_upstream(true, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
+    let doc = config_document(free_port(), upstream, origin, true);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", None).await;
@@ -354,7 +406,7 @@ async fn without_renewal_configured_the_401_is_relayed() {
     let upstream = spawn_upstream(true, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, false);
+    let doc = config_document(free_port(), upstream, origin, false);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", None).await;
@@ -368,10 +420,10 @@ async fn an_unreachable_upstream_is_a_502_never_an_open_door() {
     let counters = Arc::new(Counters::default());
     let origin = spawn_origin(OriginBehaviour::Mint, Arc::clone(&counters)).await;
     // An address nothing is listening on.
-    let dead: SocketAddr = format!("127.0.0.1:{}", free_port().await).parse().unwrap();
+    let dead: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, dead, origin, true);
+    let doc = config_document(free_port(), dead, origin, true);
     let proxy = start_proxy(&dir, &doc).await.unwrap();
 
     let response = get(proxy.addr, "/page", None).await;
@@ -386,8 +438,8 @@ async fn a_refusing_origin_stops_the_rollout_with_exit_three() {
     let upstream = spawn_upstream(false, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
-    let code = start_proxy(&dir, &doc).await.unwrap_err();
+    let doc = config_document(free_port(), upstream, origin, true);
+    let code = exit_code(&dir, &doc).await;
 
     assert_eq!(
         code, 3,
@@ -402,8 +454,8 @@ async fn an_origin_that_mints_nothing_also_exits_three() {
     let upstream = spawn_upstream(false, Arc::clone(&counters)).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let doc = config_document(free_port().await, upstream, origin, true);
-    let code = start_proxy(&dir, &doc).await.unwrap_err();
+    let doc = config_document(free_port(), upstream, origin, true);
+    let code = exit_code(&dir, &doc).await;
 
     assert_eq!(code, 3);
 }
