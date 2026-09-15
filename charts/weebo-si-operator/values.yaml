@@ -145,6 +145,40 @@ registryConfig:
     enabled: false
   failurePolicy: Ignore
 
+# RFC 0009's `endpoint-auth`. Off by default like every other feature that needs a cluster-wide
+# grant: turning it on adds two webhook rules over the routing objects Che generates, and the
+# reconcile sweep that keeps them gated.
+#
+# `failurePolicy: Fail` is the default and is defensible *only* because of `namespaceLabel`
+# below: the rules are scoped to Che workspace namespaces, so an operator outage delays workspace
+# endpoints rather than blocking every `kubectl apply` in the cluster. Widening that selector and
+# keeping `Fail` is how this becomes a cluster-wide outage waiting for a bad deploy.
+endpointAuth:
+  rbac:
+    enabled: false
+  failurePolicy: Fail
+  # Which router this cluster runs: Traefik | Nginx | HaproxyIngress | Custom.
+  # It decides which *kind* the webhook rules are rendered for — a cluster whose apiserver does
+  # not serve `route.openshift.io/v1` must not carry a rule for it. The dialect the gateway
+  # itself attaches with is `spec.features.endpointAuth.gateway.dialect`; keep the two the same.
+  #
+  # `OpenShiftRoute` exists and is **deferred**: the code is written and its tests are a tier the
+  # base suite skips (`task test:openshift`), but nothing has run it against a real OpenShift
+  # router. Do not select it on a cluster you care about yet.
+  dialect: Traefik
+  # How Che labels workspace namespaces. A value rather than a constant because a Che install can
+  # be told to label them differently — and because a cluster that gets it wrong should discover
+  # it as "the feature covers nothing", visible in `weebo_si_endpoint_auth_indexed_endpoints`,
+  # not as silent absence.
+  namespaceLabel:
+    key: app.kubernetes.io/part-of
+    value: che.eclipse.org
+  # The gateway's `Service`, which the controller points the shared Traefik `Middleware` at.
+  gateway:
+    name: endpoint-gateway
+    namespace: weebo-si-hardening
+    port: 4180
+
 networkProfiles:
   cilium:
     enabled: false

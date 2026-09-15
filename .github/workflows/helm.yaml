@@ -35,7 +35,18 @@ jobs:
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=openshift > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=none > /dev/null
+          # RFC 0009's rules are rendered per dialect, so both shapes are rendered here: a
+          # cluster running OpenShift carries `routes` rules and no `ingresses` ones.
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
       - name: preauth-proxy
         run: |
           helm lint charts/preauth-proxy
           helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null
+      - name: endpoint-gateway
+        run: |
+          helm lint charts/endpoint-gateway
+          helm template ci charts/endpoint-gateway --namespace weebo-si-hardening > /dev/null
+          # `Observe` is the rollout step an admin actually uses first, so a template error in it
+          # would otherwise be found during a rollout rather than in CI.
+          helm template ci charts/endpoint-gateway --namespace weebo-si-hardening --set config.enforcement=Observe --set autoscaling.enabled=true > /dev/null

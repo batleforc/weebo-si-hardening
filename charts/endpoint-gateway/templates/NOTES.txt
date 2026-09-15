@@ -1,0 +1,30 @@
+endpoint-gateway is installed.
+
+Before it can gate anything, three things must be true:
+
+  1. The identity provider has {{ .Values.config.redirectUrl }} as a registered redirect URI.
+     Adding one does not affect Che's own callback.
+
+  2. `spec.features.endpointAuth` exists on the `WeeboSiConfig` named `cluster`, and its
+     `gateway.service` points at:
+
+       name:      {{ include "endpoint-gateway.fullname" . }}
+       namespace: {{ .Release.Namespace }}
+       port:      {{ .Values.service.port }}
+
+  3. The two secrets exist:
+
+       kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.secrets.sessionKeys.existingSecret }} \
+         --from-literal={{ .Values.secrets.sessionKeys.key }}="$(head -c 32 /dev/urandom | base64 | tr -d '=' | tr '/+' '_-')"
+       kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.secrets.clientSecret.existingSecret }} \
+         --from-literal={{ .Values.secrets.clientSecret.key }}='<the Che OIDC client secret>'
+
+Roll it out in four steps, not one — RFC 0009's *Rollout*:
+
+  mode: DryRun                                  how many endpoints would be gated
+  mode: Enforce + enforcement: Observe          who would be denied, before anyone is
+  namespaceSelector onto a pilot team           a real gate, for people you can talk to
+  cluster-wide
+
+`enforcement: Observe` is this chart's `config.enforcement`. It is the step that tells you which
+endpoint a probe has been hitting unauthenticated for a year, *before* the probe breaks.

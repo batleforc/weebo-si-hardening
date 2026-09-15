@@ -1,0 +1,71 @@
+{{/*
+  The gateway's configuration file. Everything a *decision* reads is either here or in an
+  annotation on the routing object — and the catalogue, the grants and the host patterns are in
+  neither, because the gateway watches `WeeboSiConfig` for those. One source of truth, two
+  readers: the operator attaches the gate, the gateway decides with it.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    listen: "[::]:{{ .Values.service.port }}"
+    issuer: {{ .Values.config.issuer | quote }}
+    client_id: {{ .Values.config.clientId | quote }}
+    client_secret_env: ENDPOINT_GATEWAY_CLIENT_SECRET
+    redirect_url: {{ .Values.config.redirectUrl | quote }}
+    claims:
+      username: {{ .Values.config.claims.username | quote }}
+      groups: {{ .Values.config.claims.groups | quote }}
+    hosts:
+      suffix: {{ .Values.config.hosts.suffix | quote }}
+      exclude:
+        {{- range .Values.config.hosts.exclude }}
+        - {{ . | quote }}
+        {{- end }}
+    session:
+      sso_ttl_secs: {{ .Values.config.session.ssoTtlSecs }}
+      host_ttl_secs: {{ .Values.config.session.hostTtlSecs }}
+      host_sliding: {{ .Values.config.session.hostSliding }}
+      grant_ttl_secs: {{ .Values.config.session.grantTtlSecs }}
+      max_groups: {{ .Values.config.session.maxGroups }}
+    bearer:
+      verify_own_issuer: {{ .Values.config.bearer.verifyOwnIssuer }}
+      service_account_token: {{ .Values.config.bearer.serviceAccountToken }}
+      foreign: {{ .Values.config.bearer.foreign }}
+    reverse_proxy: {{ .Values.config.reverseProxy }}
+    self_origin:
+      pod_network: {{ .Values.config.selfOrigin.podNetwork }}
+      client_ip_header: {{ .Values.config.selfOrigin.clientIpHeader | quote }}
+      service_account_token: {{ .Values.config.selfOrigin.serviceAccountToken }}
+      {{- if kindIs "string" .Values.config.selfOrigin.trustedProxy }}
+      trusted_proxy: {{ .Values.config.selfOrigin.trustedProxy }}
+      {{- else }}
+      trusted_proxy:
+        {{- toYaml .Values.config.selfOrigin.trustedProxy | nindent 8 }}
+      {{- end }}
+    probe:
+      enabled: {{ .Values.config.probe.enabled }}
+      interval_seconds: {{ .Values.config.probe.intervalSeconds }}
+      url: ""
+    revalidation:
+      mode: {{ .Values.config.revalidation.mode }}
+      interval_secs: {{ .Values.config.revalidation.intervalSecs }}
+    cache:
+      identity_max_entries: {{ .Values.config.cache.identityMaxEntries }}
+      identity_ttl_secs: {{ .Values.config.cache.identityTtlSecs }}
+      token_review_max_entries: {{ .Values.config.cache.tokenReviewMaxEntries }}
+    rules:
+      max_per_endpoint: {{ .Values.config.rules.maxPerEndpoint }}
+      reject_unnormalised_path: {{ .Values.config.rules.rejectUnnormalisedPath }}
+      on_unknown_key: {{ .Values.config.rules.onUnknownKey }}
+    enforcement: {{ .Values.config.enforcement }}
+    reveal_owner: {{ .Values.config.revealOwner }}
+    backchannel_logout:
+      enabled: {{ .Values.config.backchannelLogout.enabled }}
+      configmap: {{ .Values.config.backchannelLogout.configmap | quote }}
+      namespace: {{ .Release.Namespace | quote }}

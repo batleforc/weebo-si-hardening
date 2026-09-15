@@ -108,10 +108,38 @@ kube-leader-election = "0.44"
 # Driving kube-runtime's reflector streams (weebo-si-runtime's watch-backed caches).
 futures-util = "0.3"
 
+# `endpoint-gateway`'s sealed cookies (RFC 0009's *Two cookies, on purpose*). AES-256-GCM from
+# RustCrypto: pure Rust, no C toolchain, and an AEAD rather than a signature because a session
+# cookie carries claims that are the identity provider's business and not the browser's.
+aes-gcm = "0.10"
+# Nonces for the above, and the PKCE verifier / state / grant ids. `rand` rather than hand-rolling
+# over `/dev/urandom`: getrandom's platform handling is exactly the part nobody should rewrite.
+rand = "0.9"
+# Cookie payloads on the wire, and the PKCE challenge. URL-safe, unpadded.
+base64 = "0.22"
+# Bearer verification against the issuer's JWKS, on the request path, against keys already in
+# memory. `jsonwebtoken` rather than a full OIDC client for the verification half: the decision
+# path must not be able to reach the network, and a crate whose `validate` can only take keys it
+# is handed is the shape that guarantees it.
+jsonwebtoken = "10"
+
+# `hosts.ownership` regexes in RFC 0009's endpoint-auth configuration: an admin-written pattern
+# with a named `user` capture, compiled once at config load. Hand-rolling anchored matching with
+# a capture is the kind of thing a maintained crate should do, and `regex` is already in the
+# dependency graph through `serde_yaml_bw`.
+regex = "1.12"
+
+# Credential fingerprints for `weebo-si-endpoint-auth`'s identity caches: pure Rust, no C
+# toolchain, same constraint the rustls/ring choice above is written around. The cache keys are
+# hashes so that a cache holding "who this caller is" can never hold the credential itself.
+sha2 = "0.11"
+
 # Test-only.
 tempfile = "3.24"
-# The envtest harness's own HTTP client, polling `/healthz` while etcd/kube-apiserver start up.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# The envtest harness's own HTTP client, polling `/healthz` while etcd/kube-apiserver start up —
+# and `endpoint-gateway`'s client for the *login* path only: OIDC discovery, the JWKS refresh and
+# the code exchange. Never reachable from `/auth`, which is RFC 0009's whole request-cost claim.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Lints applied to every member via `[lints] workspace = true`.
 # The hardening bricks run as root-adjacent tooling inside other people's pods:

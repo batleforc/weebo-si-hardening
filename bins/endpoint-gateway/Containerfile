@@ -1,0 +1,54 @@
+# Build context is the repository root:
+#   podman build -f bins/endpoint-gateway/Containerfile -t endpoint-gateway .
+#
+# The design is RFC 0009. One process, one port, one job: decide whether a request may reach a
+# workspace endpoint.
+
+# --- build ------------------------------------------------------------------------------------
+FROM docker.io/library/rust:1-alpine AS build
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY bins ./bins
+COPY crates ./crates
+
+RUN cargo build --release --locked --package endpoint-gateway \
+      --target "$(rustc -vV | sed -n 's/^host: //p')" \
+ && install -D -m 0755 \
+      "target/$(rustc -vV | sed -n 's/^host: //p')/release/endpoint-gateway" \
+      /out/endpoint-gateway
+
+# The absence of a PT_INTERP segment, not the output of `ldd`: this is a static-PIE, and musl's
+# `ldd` prints a loader name for one because the binary self-loads. Every dependency here is pure
+# Rust plus the C source `ring` compiles itself — `aes-gcm`, `sha2` and `jsonwebtoken` are
+# RustCrypto, and `reqwest`/`kube` are pinned to rustls — so there is no libssl to leave behind.
+RUN if readelf -l /out/endpoint-gateway | grep -q INTERP; then \
+      echo 'endpoint-gateway is dynamically linked' >&2; exit 1; \
+    fi
+
+# --- final ------------------------------------------------------------------------------------
+# scratch, not alpine: this process reads a config file, opens one socket and talks to the
+# apiserver and the identity provider. There is nothing in this image to exec into, which is the
+# point for a component that holds a session-sealing key.
+#
+# The trust roots for the *identity provider* come from `webpki-roots`, compiled into the binary:
+# a cluster whose IdP is behind a private CA mounts that CA and points `SSL_CERT_FILE` at it, and
+# the apiserver's own CA arrives on the service-account volume as usual.
+FROM scratch
+
+COPY --from=build /out/endpoint-gateway /endpoint-gateway
+
+# A fixed non-root UID, matching every other image in this repo. The gateway needs no identity
+# beyond "not root": it reads a mounted config file and a mounted secret, and binds an
+# unprivileged port.
+USER 65532:65532
+
+# 4180: `/auth` and every other route. There is no second listener — metrics and health share it,
+# because a forward-auth gateway with a separate admin port is a second surface to firewall.
+EXPOSE 4180
+
+# No shell form: there is no shell. The process spawns nothing and reaps nothing, so it is its own
+# PID 1.
+ENTRYPOINT ["/endpoint-gateway"]

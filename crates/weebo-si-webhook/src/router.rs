@@ -44,7 +44,7 @@ fn log_admission(
             Mutation::SetConfigRef(dwoc_ref) => {
                 Some(format!("{}/{}", dwoc_ref.namespace, dwoc_ref.name))
             }
-            Mutation::Annotate { .. } => None,
+            Mutation::Annotate { .. } | Mutation::SetString { .. } => None,
         })
         .unwrap_or_else(|| "<unchanged>".to_string());
     match denial {

@@ -21,8 +21,10 @@
 //! this operator's objects more than others, and the guard's whole claim is that they are
 //! equally its own.
 
+pub mod endpoint_routing;
 pub mod guard;
 pub mod resource;
 
+pub use endpoint_routing::{EndpointRoutingGuard, EndpointRoutingWrite, ManagedField, Provenance};
 pub use guard::{GuardedWrite, PolicyGuard, WriteOperation};
 pub use resource::GuardedResource;

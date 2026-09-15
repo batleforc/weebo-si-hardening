@@ -51,6 +51,24 @@ tasks:
     cmds:
       - cargo test --workspace --all-features
 
+  test:openshift:
+    desc: "Run the deferred OpenShift tier — the ReverseProxy dialect's tests, which the base suite skips"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      # `-- --ignored` runs *only* the ignored tests, which in this workspace are exactly RFC
+      # 0009's OpenShift tier. They pass; what they do not do is prove anything about a real
+      # OpenShift router, which is why the base suite does not run them and why enabling the
+      # dialect is not yet a supported configuration.
+      - cargo test --workspace --all-features -- --ignored
+
+  bench:
+    desc: "Measure the endpoint-auth decision — RFC 0009's request-cost budget, asserted rather than hoped"
+    status:
+      - test -z "{{.HAS_MEMBER}}"
+    cmds:
+      - cargo bench -p weebo-si-endpoint-auth
+
   audit:
     desc: "Check Rust dependencies for known CVEs (RUSTSEC advisories)"
     status:

@@ -153,6 +153,385 @@ spec:
                     - default
                     - mode
                     type: object
+                  endpointAuth:
+                    description: '`spec.features.endpointAuth`, per RFC 0009.'
+                    nullable: true
+                    properties:
+                      breakGlassIdentities:
+                        default: []
+                        description: 'Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object.'
+                        items:
+                          type: string
+                        type: array
+                      catalog:
+                        description: The catalogue of access profiles.
+                        items:
+                          description: 'One catalogue entry: what a key means.'
+                          properties:
+                            anonymous:
+                              default: false
+                              description: No authentication at all. `delegation` is rejected on an anonymous entry.
+                              type: boolean
+                            delegation:
+                              default: []
+                              description: Who else, besides the owner, this profile lets in.
+                              items:
+                                description: |-
+                                  Who, besides the owner, a profile may let in. A list rather than a mode, per RFC 0009: `[]`
+                                  says "the owner and nobody else" where an unquoted `Off` is YAML 1.1's boolean `false`.
+                                enum:
+                                - Team
+                                - UsersAndGroups
+                                type: string
+                              type: array
+                            key:
+                              description: The key a grant, an annotation or a path rule names.
+                              type: string
+                          required:
+                          - key
+                          type: object
+                        type: array
+                      default:
+                        description: The key a namespace belonging to no team resolves to.
+                        type: string
+                      endpointSelection:
+                        default:
+                          annotation: hardening.weebo.io/access
+                          onUnknownKey: Default
+                        description: How an endpoint names its key.
+                        properties:
+                          annotation:
+                            description: |-
+                              The annotation DevWorkspace Operator copies from the devfile endpoint onto the routing
+                              object.
+                            type: string
+                          onUnknownKey:
+                            description: RFC 0002 semantics for a key the catalogue does not define.
+                            enum:
+                            - Default
+                            - Deny
+                            type: string
+                        required:
+                        - annotation
+                        - onUnknownKey
+                        type: object
+                      gateway:
+                        description: Where the gateway is and which router attaches to it.
+                        properties:
+                          allowedMiddlewares:
+                            default: []
+                            description: 'Traefik only: middleware names an `Ingress` may carry **after** ours.'
+                            items:
+                              type: string
+                            type: array
+                          custom:
+                            description: |-
+                              `Custom` only: the annotations this cluster's controller wants, and the keys the template
+                              declares it owns.
+                            nullable: true
+                            properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  The annotations to write. `${gateway_url}`, `${gateway_external_url}` and
+                                  `${middleware}` are substituted.
+                                type: object
+                              managedKeys:
+                                default: []
+                                description: |-
+                                  The annotation keys this template owns, declared rather than discovered: the guard pins
+                                  them by value and cannot read them out of a rendered string. A key written but not
+                                  declared is a configuration violation, not an unguarded annotation.
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - annotations
+                            type: object
+                          dialect:
+                            description: Which router this cluster runs.
+                            enum:
+                            - Traefik
+                            - Nginx
+                            - HaproxyIngress
+                            - OpenShiftRoute
+                            - Custom
+                            type: string
+                          enforcement:
+                            default: Enforce
+                            description: Whether the gate's own verdict is answered or only counted.
+                            enum:
+                            - Observe
+                            - Enforce
+                            type: string
+                          externalUrl:
+                            description: Where a browser is sent to sign in.
+                            type: string
+                          service:
+                            description: The gateway's in-cluster `Service`.
+                            properties:
+                              name:
+                                description: Its name.
+                                type: string
+                              namespace:
+                                description: Its namespace.
+                                type: string
+                              port:
+                                description: Its port.
+                                format: uint16
+                                maximum: 65535.0
+                                minimum: 0.0
+                                type: integer
+                            required:
+                            - name
+                            - namespace
+                            - port
+                            type: object
+                        required:
+                        - dialect
+                        - externalUrl
+                        - service
+                        type: object
+                      grants:
+                        additionalProperties:
+                          description: What a team may reach, and what it gets by default.
+                          properties:
+                            allowed:
+                              description: The keys this team's namespaces may name.
+                              items:
+                                description: |-
+                                  A catalogue key — `private`, `team`, `shared`, `open`. A newtype for the same reason
+                                  [`crate::RegistryKey`] is one: it must never typecheck where another feature's key is
+                                  expected.
+                                type: string
+                              type: array
+                            default:
+                              description: |-
+                                The key an endpoint resolves to when it names none. Singular: an endpoint resolves to
+                                exactly one profile.
+                              type: string
+                          required:
+                          - allowed
+                          - default
+                          type: object
+                        default: {}
+                        description: Per-team grants.
+                        type: object
+                      hosts:
+                        description: Which hosts this feature governs.
+                        properties:
+                          exclude:
+                            default: []
+                            description: 'Hosts the gate never attaches to: the Che gateway''s own, and the gateway''s own.'
+                            items:
+                              type: string
+                            type: array
+                          ownership:
+                            default: []
+                            description: How a host names the user who owns it — first match wins.
+                            items:
+                              description: 'One host-ownership pattern: how a host names the user who owns it.'
+                              properties:
+                                regex:
+                                  description: An anchored regex with a named `user` capture, for a naming scheme no template describes.
+                                  nullable: true
+                                  type: string
+                                template:
+                                  description: |-
+                                    A template over `{user}`, `{workspace}` and `{endpoint}`, matched against the host with
+                                    the suffix removed. `{user}` is the capture that matters; the others are wildcards that
+                                    may not contain a dot.
+                                  nullable: true
+                                  type: string
+                              type: object
+                            type: array
+                          suffix:
+                            description: The only suffix this feature governs. Must start with a dot.
+                            type: string
+                        required:
+                        - suffix
+                        type: object
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the webhook''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            default: []
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            default: {}
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      overrides:
+                        default: []
+                        description: Ordered, first match wins; may only narrow.
+                        items:
+                          description: |-
+                            An admin's per-user narrowing — per-user what a grant is per-team, and **only ever a
+                            narrowing**: every field is intersected with the team's, never substituted for it.
+                          properties:
+                            allowed:
+                              description: Keys this user may reach, intersected with the team's.
+                              items:
+                                description: |-
+                                  A catalogue key — `private`, `team`, `shared`, `open`. A newtype for the same reason
+                                  [`crate::RegistryKey`] is one: it must never typecheck where another feature's key is
+                                  expected.
+                                type: string
+                              nullable: true
+                              type: array
+                            default:
+                              description: A default of its own, which must survive the intersection like any other key.
+                              nullable: true
+                              type: string
+                            delegation:
+                              description: |-
+                                A delegation ceiling. `Some([])` is the hard form: this user may not share an endpoint at
+                                all, whichever catalogue key they reach.
+                              items:
+                                description: |-
+                                  Who, besides the owner, a profile may let in. A list rather than a mode, per RFC 0009: `[]`
+                                  says "the owner and nobody else" where an unquoted `Off` is YAML 1.1's boolean `false`.
+                                enum:
+                                - Team
+                                - UsersAndGroups
+                                type: string
+                              nullable: true
+                              type: array
+                            match:
+                              description: Who it applies to.
+                              properties:
+                                namespaceSelector:
+                                  description: Namespaces, by label.
+                                  nullable: true
+                                  properties:
+                                    matchExpressions:
+                                      default: []
+                                      description: Every expression must hold.
+                                      items:
+                                        description: One `matchExpressions` entry.
+                                        properties:
+                                          key:
+                                            description: The label key this expression tests.
+                                            type: string
+                                          operator:
+                                            description: How `values` is compared against the label's value, if any.
+                                            enum:
+                                            - In
+                                            - NotIn
+                                            - Exists
+                                            - DoesNotExist
+                                            type: string
+                                          values:
+                                            default: []
+                                            description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                            items:
+                                              type: string
+                                            type: array
+                                        required:
+                                        - key
+                                        - operator
+                                        type: object
+                                      type: array
+                                    matchLabels:
+                                      additionalProperties:
+                                        type: string
+                                      default: {}
+                                      description: Every key must be present with exactly this value.
+                                      type: object
+                                  type: object
+                                users:
+                                  default: []
+                                  description: Usernames. `contractor-*` matches by prefix.
+                                  items:
+                                    type: string
+                                  type: array
+                              type: object
+                          required:
+                          - match
+                          type: object
+                        type: array
+                      owner:
+                        description: How a namespace names its owner, and which identity DevWorkspace Operator writes as.
+                        properties:
+                          devworkspaceOperatorIdentity:
+                            description: |-
+                              The full `system:serviceaccount:<ns>:<name>` DevWorkspace Operator creates these objects
+                              as. Row 2 of the guard table is inert if this is wrong, and every workspace endpoint stops
+                              being created.
+                            type: string
+                          namespaceAnnotation:
+                            description: The namespace annotation Che writes the username into.
+                            type: string
+                        required:
+                        - devworkspaceOperatorIdentity
+                        - namespaceAnnotation
+                        type: object
+                      selfOrigin:
+                        default:
+                          podNetwork: Auto
+                          serviceAccountToken: true
+                        description: Whether, and how, a workspace may prove it is itself.
+                        properties:
+                          podNetwork:
+                            default: Auto
+                            description: Trust the client address the controller reported.
+                            enum:
+                            - Auto
+                            - On
+                            - Off
+                            type: string
+                          serviceAccountToken:
+                            default: true
+                            description: |-
+                              Accept the workspace's own service-account token — the answer where the address does not
+                              survive the network path.
+                            type: boolean
+                        type: object
+                    required:
+                    - catalog
+                    - default
+                    - gateway
+                    - hosts
+                    - mode
+                    - owner
+                    type: object
                   imagePolicy:
                     description: '`spec.features.imagePolicy`, per RFC 0005.'
                     nullable: true

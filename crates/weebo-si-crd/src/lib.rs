@@ -8,6 +8,7 @@
 
 pub mod dwoc;
 pub mod dwoc_pin;
+pub mod endpoint_auth;
 pub mod feature_mode;
 pub mod image_policy;
 pub mod kubearmor_policy;
@@ -24,6 +25,15 @@ pub use dwoc::DwocRef;
 pub use dwoc_pin::{
     Catalog, CatalogEntry, CatalogKey, ConfigViolation, DwocPinConfig, Grant, NamespaceSelection,
     OnMissingTarget, OnUnknownKey,
+};
+pub use endpoint_auth::{
+    ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AccessEntry, AccessGrant,
+    AccessKey, Attachment, AttachmentMode, COMPANION_SERVICE, CustomDialect, DEVELOPER_ANNOTATIONS,
+    DelegationKind, Dialect, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED,
+    EndpointAuthConfig, EndpointAuthConfigViolation, EndpointOverride, EndpointSelection,
+    GateEnforcement, GatewayRef, HostOwnership, HostsConfig, MIDDLEWARE_NAME, OverrideMatch,
+    OwnerConfig, RULES_ANNOTATION, Retarget, RoutingKind, SelfOriginConfig, ServiceRef, TriState,
+    UPSTREAM_ANNOTATION,
 };
 pub use feature_mode::FeatureMode;
 pub use image_policy::{

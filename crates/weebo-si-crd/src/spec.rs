@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::DwocPinConfig;
+use crate::endpoint_auth::EndpointAuthConfig;
 use crate::image_policy::ImagePolicyConfig;
 use crate::kubearmor_policy::KubeArmorPolicyConfig;
 use crate::network_profiles::NetworkProfilesConfig;
@@ -37,6 +38,9 @@ pub struct Features {
     /// `spec.features.registryConfig`, per RFC 0007.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_config: Option<RegistryConfig>,
+    /// `spec.features.endpointAuth`, per RFC 0009.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_auth: Option<EndpointAuthConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a

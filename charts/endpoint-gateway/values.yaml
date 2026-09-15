@@ -1,0 +1,168 @@
+# The `endpoint-gateway` deployment — RFC 0009's *What the admin installs*.
+#
+# Read *Failure mode* before tuning anything here down. The gate fails **closed**: with the
+# gateway unavailable, every workspace endpoint stops serving. That is a deliberate choice —
+# "the feature's entire value is that the FQDN path is closed, and a control that opens under
+# load is one an attacker can arrange to have open" — and the bill for it is itemised in the
+# defaults below: three replicas, anti-affinity, a PodDisruptionBudget, `maxUnavailable: 0`, and
+# `system-cluster-critical`.
+
+image:
+  repository: ghcr.io/batleforc/weebo-si-hardening/endpoint-gateway
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Three, not two: this process is on the request path of every workspace endpoint in the cluster,
+# where the operator's webhook is only on the path of a workspace *start*.
+replicaCount: 3
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
+podAntiAffinity: true
+priorityClassName: system-cluster-critical
+
+# An HPA on request rate rather than a bigger fixed size: RFC 0009's *Capacity* sizes the default
+# at roughly seven times a pessimistic cluster peak, and the autoscaler exists for the day that
+# estimate is wrong rather than because it is expected to be.
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+service:
+  port: 4180
+  # Keeps the forward-auth hop in-zone with the controller that makes it. The hop is the only
+  # part of a decision measured in milliseconds, so this is the one scheduling hint that shows up
+  # in a latency graph.
+  trafficDistribution: PreferClose
+
+# The gateway's own host — the one place a browser is ever sent to sign in.
+ingress:
+  enabled: true
+  className: traefik
+  host: auth.weebo.si
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: ""
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# Everything under `config` is rendered into the gateway's configuration file. The catalogue, the
+# grants, the overrides and the host-ownership patterns are **not** here: the gateway watches
+# `WeeboSiConfig` for those, so a grant edit takes effect at informer lag rather than at a
+# redeploy, and there is one source of truth rather than two that can disagree.
+config:
+  issuer: https://sso.weebo.si/realms/weebo
+  clientId: che-client
+  redirectUrl: https://auth.weebo.si/oidc/callback
+  claims:
+    # Must be the claim Che derives its username from, or every owner check fails closed and
+    # every developer is locked out of their own endpoint. `--check` verifies it against the
+    # discovery document before the first request.
+    username: preferred_username
+    groups: groups
+  hosts:
+    suffix: .weebo.si
+    exclude:
+      - che.weebo.si
+      - auth.weebo.si
+  session:
+    ssoTtlSecs: 43200
+    hostTtlSecs: 3600
+    hostSliding: true
+    grantTtlSecs: 30
+    maxGroups: 64
+  bearer:
+    verifyOwnIssuer: true
+    serviceAccountToken: true
+    foreign: Reject
+  selfOrigin:
+    podNetwork: Auto
+    clientIpHeader: X-Real-Ip
+    serviceAccountToken: true
+    # Which connections may state a caller's address. `any` is right on a forward-auth
+    # deployment, where the only thing that calls `/auth` is the ingress controller. With
+    # `reverseProxy: true` every caller reaches this process directly, so it must be the
+    # router's CIDRs instead — the gateway refuses to start on the unsafe combination rather
+    # than trusting a header anybody can set.
+    trustedProxy: any
+    # trustedProxy:
+    #   cidrs: ["10.128."]
+  # Carry traffic as well as deciding about it. `true` only on OpenShift, whose router has no
+  # external-auth hook: it puts this process on the data path of every WebSocket, upload and
+  # streamed response, and makes capacity a bandwidth question rather than a decisions-per-second
+  # one.
+  #
+  # **Deferred.** The mode is implemented and unvalidated — no OpenShift router has ever served a
+  # request through it — so the gateway logs a warning at startup when it is on, and its tests
+  # are a tier the base suite skips (`task test:openshift`). Leave it false.
+  reverseProxy: false
+  probe:
+    enabled: true
+    intervalSeconds: 900
+  revalidation:
+    mode: WhenNoBackchannel
+    intervalSecs: 3600
+  cache:
+    identityMaxEntries: 20000
+    identityTtlSecs: 300
+    tokenReviewMaxEntries: 5000
+  rules:
+    maxPerEndpoint: 16
+    rejectUnnormalisedPath: true
+    onUnknownKey: Default
+  # `Observe` computes, logs and counts every decision and answers 200 regardless — RFC 0009's
+  # third rollout step, and the only way to learn which endpoint a probe has been hitting
+  # unauthenticated for a year *before* the probe breaks.
+  enforcement: Enforce
+  revealOwner: true
+  backchannelLogout:
+    enabled: true
+    configmap: endpoint-auth-revocations
+
+# The session keys and the OIDC client secret. Both are `Secret` references rather than values:
+# a chart value ends up in `helm get values`, in a CI log, and in whatever holds the release
+# state.
+secrets:
+  # 32 random bytes, base64, newest first, comma-separated, under the key `keys`. Rotation is
+  # "prepend the new one, drop the old one twelve hours later" and costs nobody a login.
+  sessionKeys:
+    existingSecret: endpoint-gateway-session-keys
+    key: keys
+  clientSecret:
+    existingSecret: endpoint-gateway-oidc
+    key: client-secret
+
+rbac:
+  create: true
+serviceAccount:
+  create: true
+  name: ""
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# The error page a developer meets when the gateway itself is down, so they read "the platform is
+# down" rather than a bare 500 — RFC 0009's *Failure mode*.
+#
+# It deliberately points somewhere **else**: the page is for the case where this gateway is the
+# thing that is down, so a middleware pointing at it would serve nothing. Set `service` to
+# something that stays up (a static-page deployment, the platform's status page proxy) and the
+# chart renders a Traefik `errors` middleware for 5xx only — a 401, a 403 and the framed sign-in
+# page are answers the gateway means, and replacing those would hide the messages that make this
+# feature usable.
+errorPage:
+  enabled: true
+  service:
+    name: ""
+    port: 80
+  query: "/{status}.html"

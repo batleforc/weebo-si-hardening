@@ -1,0 +1,50 @@
+[package]
+name = "endpoint-gateway"
+version = "0.1.0"
+description = "The endpoint-auth gateway: one OIDC relying party and one authorisation decision in front of every workspace endpoint"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The decision, and every type it is made of. This binary is the composition root and the
+# adapters around it; nothing here decides anything.
+weebo-si-endpoint-auth = { version = "0.1.0", path = "../../crates/weebo-si-endpoint-auth" }
+# The catalogue, the grants and the host-ownership patterns live in `WeeboSiConfig`, and this
+# gateway watches that object rather than being handed a rendered copy of it: one source of
+# truth, and a grant edit that takes effect at informer lag instead of at a redeploy.
+weebo-si-crd = { version = "0.1.0", path = "../../crates/weebo-si-crd" }
+axum = { workspace = true }
+# The `ReverseProxy` shell's forwarding client and its `Upgrade` handling. `hyper` directly
+# rather than a higher-level client for the reason RFC 0003 gives for `preauth-proxy`: the job is
+# copying one request to another origin with precise control over headers, streaming and
+# upgrades, which is what a framework abstracts away.
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true }
+# The informers behind `EndpointCatalog`, `WorkloadIdentity`, `Teams` and `RevocationStore` —
+# every one of them a watch, so that the request path reads memory and the apiserver sees a
+# handful of long-lived connections rather than a call per request.
+kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
+k8s-openapi = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_bw = { workspace = true }
+prometheus = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+rustls = { workspace = true }
+
+[dev-dependencies]
+weebo-si-endpoint-auth = { version = "0.1.0", path = "../../crates/weebo-si-endpoint-auth", features = ["testing"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

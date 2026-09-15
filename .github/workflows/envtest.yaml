@@ -33,7 +33,9 @@ jobs:
   envtest:
     name: Envtest suites
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 35, not 20: this job used to run one suite and now runs four, each of which starts an
+    # apiserver per test and runs serialised. The old budget was sized for a third of the work.
+    timeout-minutes: 35
     env:
       ENVTEST_K8S_VERSION: "1.32.0"
       KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
@@ -57,7 +59,17 @@ jobs:
           curl -sSL -o /tmp/envtest.tar.gz \
             "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
           tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
+      # **Every suite, not just `envtest`.** This step listed one target while
+      # `.tasks/envtest.yaml` listed four, so three suites — RFC 0006's, RFC 0007's and RFC
+      # 0009's — ran locally and never in CI. A suite CI does not run is a suite that is already
+      # broken and nobody knows it, which is worse than not having written it.
+      #
+      # Serialised: each test owns an apiserver, and running several at once only multiplies the
+      # memory footprint for no wall-clock gain.
       - name: Run the envtest suites
-        # Serialised: each test owns an apiserver, and running several at once only multiplies
-        # the memory footprint for no wall-clock gain.
-        run: cargo test --workspace --features envtest --test envtest --locked -- --test-threads=1
+        run: |
+          for suite in envtest kubearmor_envtest registry_envtest endpoint_auth_envtest; do
+            echo "::group::$suite"
+            cargo test --workspace --features envtest --test "$suite" --locked -- --test-threads=1
+            echo "::endgroup::"
+          done

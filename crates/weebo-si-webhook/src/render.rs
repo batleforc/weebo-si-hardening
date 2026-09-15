@@ -34,6 +34,25 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
                     )
                 });
             }
+            Mutation::SetString { path, value } => {
+                // Every parent on the way down has to exist, or `add` is an error rather than a
+                // no-op — the same rule the two branches above follow, generalised. A `Route`
+                // always has `spec.to`; it does not always have `spec.port`.
+                for depth in 1..path.len() {
+                    let parent = &path[..depth];
+                    let pointer = PointerBuf::from_tokens(parent.iter().map(String::as_str));
+                    if object.pointer(pointer.as_str()).is_none() {
+                        ops.push(add(
+                            parent.iter().map(String::as_str),
+                            Value::Object(serde_json::Map::new()),
+                        ));
+                    }
+                }
+                ops.push(add(
+                    path.iter().map(String::as_str),
+                    Value::String(value.clone()),
+                ));
+            }
             Mutation::Annotate { key, value } => {
                 ops.push(if has_annotations {
                     add(
@@ -105,6 +124,36 @@ mod tests {
             }
             other => panic!("expected an Add operation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_string_creates_the_parents_a_route_does_not_already_have() {
+        // Attaching the gate on OpenShift writes `spec.to.name` — which exists — and
+        // `spec.port.targetPort`, which on a Route without an explicit port does not.
+        let object = serde_json::json!({"spec": {"to": {"kind": "Service", "name": "my-app"}}});
+        let mutations = vec![
+            Mutation::SetString {
+                path: vec!["spec".into(), "to".into(), "name".into()],
+                value: "weebo-si-endpoint-gateway".into(),
+            },
+            Mutation::SetString {
+                path: vec!["spec".into(), "port".into(), "targetPort".into()],
+                value: "http".into(),
+            },
+        ];
+        let patch = render_patch(&object, &mutations);
+        let paths: Vec<String> = patch
+            .0
+            .iter()
+            .map(|op| match op {
+                PatchOperation::Add(op) => op.path.to_string(),
+                other => panic!("expected an Add operation, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["/spec/to/name", "/spec/port", "/spec/port/targetPort"]
+        );
     }
 
     #[test]

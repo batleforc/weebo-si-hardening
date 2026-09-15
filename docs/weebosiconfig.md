@@ -184,6 +184,8 @@ rather than ignored at runtime.
 | [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy` (validating admission) |
 | [`imagePolicy`](#featuresimagepolicy) | [0005](./rfc/0005-image-policy.md) | `DevWorkspace`, `Pod` (validating admission) |
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
+| [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
+| [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
 
 ### `features.dwocPin`
 
@@ -535,6 +537,96 @@ Two things to know before enabling it:
 Explain a namespace's answer with `weebo-si-operator registry resolve --namespace <ns>`, and
 validate the catalogue against its templates with `weebo-si-operator registry check` before
 switching the mode.
+
+### `features.endpointAuth`
+
+Puts an authenticating, authorising gate in front of every workspace endpoint exposed on its own
+FQDN. See [RFC 0009](./rfc/0009-endpoint-auth.md).
+
+**This block configures three things at once** — the mutating webhook that attaches the gate, the
+guard that pins it, and the `endpoint-gateway` deployment that decides. One `mode` governs all
+three, which is what makes turning the feature off a single edit.
+
+```yaml
+endpointAuth:
+  mode: Enforce
+  gateway:
+    externalUrl: https://auth.weebo.si
+    service: { name: endpoint-gateway, namespace: weebo-si-hardening, port: 4180 }
+    dialect: Traefik # Traefik | Nginx | HaproxyIngress | OpenShiftRoute | Custom
+    enforcement: Enforce # Observe | Enforce — the gate's own verdict, not the feature's mode
+    allowedMiddlewares: [] # Traefik only: entries an Ingress may name *after* ours
+  breakGlassIdentities: []
+  owner:
+    namespaceAnnotation: che.eclipse.org/username
+    devworkspaceOperatorIdentity: "system:serviceaccount:devworkspace-controller:devworkspace-controller-serviceaccount"
+  hosts:
+    suffix: .weebo.si
+    ownership:
+      - { template: "{user}-{workspace}-{endpoint}" }
+      - { template: "dev.{user}-{workspace}" }
+    exclude: [che.weebo.si, auth.weebo.si]
+  catalog:
+    - { key: private, delegation: [] }
+    - { key: team, delegation: [Team] }
+    - { key: shared, delegation: [Team, UsersAndGroups] }
+    - { key: open, anonymous: true }
+  default: private
+  overrides:
+    - match: { users: ["contractor-*"] }
+      allowed: [private]
+      default: private
+      delegation: []
+  endpointSelection: { annotation: hardening.weebo.io/access, onUnknownKey: Default }
+  selfOrigin: { podNetwork: Auto, serviceAccountToken: true }
+  grants:
+    team-1: { allowed: [private, team, shared], default: team }
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `Off` also strips the annotations the sweep wrote. |
+| `namespaceSelector` | selector | no | everything | Narrows within the webhook's own scope. |
+| `gateway.externalUrl` | URL | yes | — | Where a browser is sent to sign in. Must be `https`. |
+| `gateway.service` | `{name,namespace,port}` | yes | — | The gateway's in-cluster `Service`. |
+| `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik`, `Nginx`, `HaproxyIngress` and `Custom` attach by annotation; `OpenShiftRoute` is **deferred** — written, never run against a real router. |
+| `gateway.enforcement` | `Observe`/`Enforce` | no | `Enforce` | `Observe` computes and counts every decision and answers `200` — the rollout step that finds the unauthenticated probe before it breaks. |
+| `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Entries an `Ingress` may carry **after** ours; anything else is denied, because the chain runs before `forwardAuth`. |
+| `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
+| `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Must match `claims.username` in the gateway's own config. |
+| `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2. Wrong here means every workspace endpoint stops being created. |
+| `hosts.suffix` | string | yes | — | Must start with a dot. |
+| `hosts.ownership` | `[{template}\|{regex}]` | yes | — | How a host names its owner. First match wins; a host no pattern describes is refused at admission. |
+| `hosts.exclude` | `[string]` | no | `[]` | Hosts the gate never attaches to — Che's own, and the gateway's. |
+| `catalog[].key` | string | yes | — | `private`, `team`, `shared`, `open`… admin vocabulary; a developer names one and never defines one. |
+| `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with `delegation`. |
+| `catalog[].delegation` | `[Team\|UsersAndGroups]` | no | `[]` | `[]` is "the owner and nobody else". |
+| `default` | key | yes | — | What a namespace in no team resolves to. |
+| `overrides[]` | list | no | `[]` | Per-user narrowing. Intersected with the team's grant — it can only ever take away. |
+| `endpointSelection.annotation` | string | no | `hardening.weebo.io/access` | |
+| `endpointSelection.onUnknownKey` | `Default`/`Deny` | no | `Default` | |
+| `selfOrigin.podNetwork` | `Auto`/`On`/`Off` | no | `Auto` | `Auto` trusts the client address only while the gateway's own probe says it can. |
+| `selfOrigin.serviceAccountToken` | bool | no | `true` | The answer where the cluster SNATs. |
+| `grants.<team>` | `{allowed, default}` | no | — | A team with no grant gets `default` and nothing else. |
+
+What a **developer** writes is four annotations, on the devfile endpoint or on their own routing
+object — and usually none of them:
+
+| Annotation | Meaning |
+| --- | --- |
+| `hardening.weebo.io/access` | A catalogue key their team was granted. |
+| `hardening.weebo.io/allow-users` | Comma-separated usernames. |
+| `hardening.weebo.io/allow-groups` | Comma-separated groups. |
+| `hardening.weebo.io/rules` | An ordered YAML list refining the profile per path. |
+
+Two write paths, and the difference is worth telling people once: `kubectl annotate` is live and
+the devfile is durable, and **the devfile wins at the next workspace start**. Share now with
+`kubectl`, share for good in the devfile.
+
+The gateway reads this block through its own watch on the `WeeboSiConfig`, so a grant edit takes
+effect at informer lag rather than at a redeploy. Its *own* configuration — the issuer, the
+claims, the cookie lifetimes, the caches — is a file the `endpoint-gateway` chart renders; see
+[`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md).
 
 ## `status`
 

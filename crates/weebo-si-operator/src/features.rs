@@ -51,4 +51,11 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0007",
         resource: "Namespace",
     },
+    // One entry, three enforcement points: RFC 0009's mutation, its guard and its reconcile
+    // sweep all report the same `FeatureId`, so one `mode` governs the gate end to end.
+    FeatureDescriptor {
+        id: "endpoint-auth",
+        rfc: "RFC 0009",
+        resource: "Ingress, Route",
+    },
 ];

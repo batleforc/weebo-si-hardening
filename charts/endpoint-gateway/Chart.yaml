@@ -1,0 +1,16 @@
+apiVersion: v2
+name: endpoint-gateway
+description: The endpoint-auth gateway — one OIDC relying party and one authorisation decision in front of every workspace endpoint
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - devworkspace
+  - eclipse-che
+  - forward-auth
+  - oidc
+home: https://github.com/batleforc/weebo-si-hardening
+sources:
+  - https://github.com/batleforc/weebo-si-hardening
+maintainers:
+  - name: batleforc

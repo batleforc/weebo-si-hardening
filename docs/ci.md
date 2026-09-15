@@ -15,9 +15,10 @@ supply-chain gate.
 | [`build-passwd-append`](../.github/workflows/build-passwd-append.yaml) | `bins/passwd-append/**`, `Cargo.toml`, `Cargo.lock` · daily | a broken musl build, a dynamically linked binary, a HIGH/CRITICAL image CVE |
 | [`build-preauth-proxy`](../.github/workflows/build-preauth-proxy.yaml) | `bins/preauth-proxy/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`build-weebo-si-operator`](../.github/workflows/build-weebo-si-operator.yaml) | any of the 7 `weebo-si-*` library crates its binary links, `Cargo.toml`, `Cargo.lock` · daily | same |
-| [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, a release build |
-| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, manifests | every envtest suite, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip |
-| [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for both charts, every certificate-provider variant |
+| [`build-endpoint-gateway`](../.github/workflows/build-endpoint-gateway.yaml) | `bins/endpoint-gateway/**`, `crates/weebo-si-endpoint-auth/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
+| [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, the deferred OpenShift tier, RFC 0009's decision budget, a release build |
+| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, manifests | all four envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip |
+| [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for all three charts, every certificate-provider variant and both endpoint-auth dialect shapes |
 | [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, configs | a malformed RFC, a stale RFC index, shellcheck, markdownlint, cspell |
 | [`dep-audit`](../.github/workflows/dep-audit.yaml) | manifests, `deny.toml` · daily | `cargo deny check advisories bans licenses sources` |
 | [`postmortem`](../.github/workflows/postmortem.yaml) | manifests · daily | a HIGH supply-chain vulnerability |
@@ -25,14 +26,28 @@ supply-chain gate.
 | [`semgrep`](../.github/workflows/semgrep.yaml) | Rust and shell changes · weekly | any ERROR-severity finding |
 | [`secret-scan`](../.github/workflows/secret-scan.yaml) | every push and PR · daily | a secret anywhere in history |
 
+**Two steps in `test` are about a claim rather than about correctness.** The
+*deferred OpenShift tier* runs the tests the base suite skips — RFC 0009's
+`ReverseProxy` dialect is written and has never met a real router, so nothing
+asserts it by default, but it still has to compile and still has to pass.
+The *decision budget* runs `benches/decide.rs`, which fails the build if a
+decision crosses 50 µs; RFC 0009 promises single-digit microseconds and measures
+about 130 ns, and a budget nobody measures is a wish.
+
+**`envtest` ran one suite out of four until 2026-09-15.** The workflow listed
+`--test envtest` while `.tasks/envtest.yaml` listed four targets, so RFC 0006's,
+RFC 0007's and RFC 0009's suites ran locally and never in CI. If you add a suite,
+add it in both places — or better, notice that this is exactly the drift the two
+lists invite.
+
 **The daily schedules are the point, not padding.** A CVE disclosed against a
 base image or a dependency *after* the last commit has to trip something, and a
 workflow that only fires on push never will.
 
 ## Per-brick builds
 
-`build-passwd-append` and `build-preauth-proxy` are twelve-line triggers that
-both call one reusable workflow, [`brick.yaml`](../.github/workflows/brick.yaml).
+`build-passwd-append`, `build-preauth-proxy` and `build-endpoint-gateway` are
+twelve-line triggers that all call one reusable workflow, [`brick.yaml`](../.github/workflows/brick.yaml).
 A brick rebuilds when **its own** code changes, or when `Cargo.toml`/`Cargo.lock`
 does — a dependency bump changes what every binary links, so both rebuild.
 

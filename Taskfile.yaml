@@ -39,6 +39,11 @@ tasks:
     cmds:
       - task: rust:test
 
+  test:openshift:
+    desc: "Run the deferred OpenShift tier (RFC 0009's ReverseProxy dialect) — skipped by `task test`"
+    cmds:
+      - task: rust:test:openshift
+
   build:
     desc: "Build every brick in release mode"
     cmds:

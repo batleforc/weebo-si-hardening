@@ -41,6 +41,18 @@ rules:
     resources: ["kubearmorpolicies"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if .Values.endpointAuth.rbac.enabled }}
+  # RFC 0009. Read-only on the shared role: the controller's sweep diffs against it, and the
+  # webhook reads the object out of the AdmissionReview body rather than from the apiserver.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  {{- if eq .Values.endpointAuth.dialect "OpenShiftRoute" }}
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- end }}
   {{- if .Values.registryConfig.rbac.enabled }}
   # RFC 0007's `registry-config`, and this is a grant to read carefully rather than skim.
   #
@@ -156,6 +168,38 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.endpointAuth.rbac.enabled }}
+  # RFC 0009's write half. `patch` and nothing else on the routing objects: the sweep writes the
+  # dialect's annotations and, on a `ReverseProxy` dialect, the backend — it never creates or
+  # deletes one, because those objects belong to DevWorkspace Operator and to the developer.
+  # Narrowed in code rather than by RBAC, which has no annotation-level grant: the patch is built
+  # from `EndpointAuthConfig::attachment` and can only ever carry the keys the dialect owns.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["patch"]
+  {{- if eq .Values.endpointAuth.dialect "OpenShiftRoute" }}
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["patch"]
+  # The companion `Service` and its `EndpointSlice`, in every workspace namespace — the price of
+  # a router that cannot be asked a question, since a `Route`'s `spec.to` is a local reference
+  # with no cross-namespace form. Only this dialect needs them, so only this dialect grants them.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
+  {{- if eq .Values.endpointAuth.dialect "Traefik" }}
+  # The one shared `forwardAuth` Middleware, in the operator's own namespace. An `Ingress`
+  # naming a middleware that does not exist is an `Ingress` Traefik refuses to route, so the
+  # object has to exist before the first annotation names it.
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
   {{- end }}
   {{- if .Values.registryConfig.rbac.enabled }}
   # RFC 0007's write half, and the strongest permission this project has asked for. Read its

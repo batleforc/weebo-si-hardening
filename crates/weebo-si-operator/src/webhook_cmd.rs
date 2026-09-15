@@ -14,7 +14,8 @@ use weebo_si_runtime::{
     KubeNsStore, KubePolicyStore, PrometheusObserver,
 };
 use weebo_si_webhook::{
-    AppState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState, RegistryGuardState,
+    AppState, EndpointAuthState, ImagePolicyState, NetworkProfilesAdmission, PolicyGuardState,
+    RegistryGuardState,
 };
 
 use crate::cli::flag;
@@ -164,8 +165,22 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     // so the two can be enabled independently — but the *same* `policyGuard` configuration
     // handle, so one `mode` and one `allowedIdentities` govern both.
     let registry_guard_state = Arc::new(RegistryGuardState {
-        operator_identity,
+        operator_identity: operator_identity.clone(),
         policy_guard_config: config_store.policy_guard_config(),
+        gate: config_store.clone(),
+        namespace_view: Arc::clone(&ns_store) as _,
+        dwoc_catalog: Arc::clone(&dwoc_store) as _,
+        observer: Arc::clone(&observer) as _,
+        metrics: metrics.clone(),
+    });
+
+    // RFC 0009's two routes — the mutation that attaches the gate and the guard that pins it.
+    // Registered unconditionally like every other feature, and inert until
+    // `spec.features.endpointAuth` exists: `FeatureGate::mode` reports `Off` until then, so the
+    // mutation never runs and the guard never denies.
+    let endpoint_auth_state = Arc::new(EndpointAuthState {
+        operator_identity,
+        config: config_store.endpoint_auth_config(),
         gate: config_store.clone(),
         namespace_view: Arc::clone(&ns_store) as _,
         dwoc_catalog: Arc::clone(&dwoc_store) as _,
@@ -214,7 +229,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         .merge(weebo_si_webhook::registry_guard_router(
             registry_guard_state,
         ))
-        .merge(weebo_si_webhook::image_policy_router(image_policy_state));
+        .merge(weebo_si_webhook::image_policy_router(image_policy_state))
+        .merge(weebo_si_webhook::endpoint_auth_router(endpoint_auth_state));
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         format!("{cert_dir}/tls.crt"),
         format!("{cert_dir}/tls.key"),

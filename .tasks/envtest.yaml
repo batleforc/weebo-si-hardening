@@ -57,3 +57,6 @@ tasks:
       # RFC 0007's suite is likewise its own target: it is specifically about a store that
       # watches every ConfigMap and Secret in the cluster, and `envtest` above assumes a bare one.
       - cargo test --workspace --features envtest --test registry_envtest -- --test-threads=1
+      # RFC 0009's suite is its own target for the same reason: it registers two admission rules
+      # over `ingresses`, a core resource every other suite's apiserver is assumed to be free of.
+      - cargo test --workspace --features envtest --test endpoint_auth_envtest -- --test-threads=1

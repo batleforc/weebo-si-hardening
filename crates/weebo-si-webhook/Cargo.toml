@@ -15,6 +15,11 @@ weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-pro
 weebo-si-policy-guard = { version = "0.1.0", path = "../weebo-si-policy-guard" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
+# RFC 0009's compiler, so that what admission accepts and what the gateway compiles are the *same*
+# function rather than two that agree today: a rule list the webhook admits and the gateway then
+# drops is a hole nobody sees. The crate is `serde` + `serde_yaml_bw` + `sha2` and nothing else,
+# which is what makes depending on it from the operator cheap.
+weebo-si-endpoint-auth = { version = "0.1.0", path = "../weebo-si-endpoint-auth" }
 axum = { workspace = true }
 kube = { workspace = true, features = ["admission", "client"] }
 k8s-openapi = { workspace = true }

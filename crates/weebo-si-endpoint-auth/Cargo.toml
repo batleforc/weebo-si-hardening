@@ -1,0 +1,43 @@
+[package]
+name = "weebo-si-endpoint-auth"
+version = "0.1.0"
+description = "The endpoint-auth decision: who may reach a workspace endpoint on its own FQDN"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Nothing from the operator: this crate is the gateway's brain, not a chassis feature. It reads a
+# configuration file the chart renders from `WeeboSiConfig` (RFC 0009, *What the admin installs* —
+# "one source of truth, two readers"), so a dependency on `weebo-si-crd` would buy a shared struct
+# and cost the gateway a dependency on the operator's release cycle.
+serde = { workspace = true }
+# The `hardening.weebo.io/rules` annotation is YAML written by a developer in a devfile. Parsed
+# here rather than in the webhook adapter because admission validation and the gateway's own
+# compile step must agree byte for byte — a rule the webhook accepts and the gateway drops is a
+# hole nobody sees.
+serde_yaml_bw = { workspace = true }
+# Identity caches are keyed by the hash of a credential, never by the credential. `Fingerprint`
+# is the type that makes that a property rather than a review convention, and it needs a real
+# digest to be one.
+sha2 = { workspace = true }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)` — same
+# pattern as `weebo-si-registry-config`'s and `weebo-si-network-profiles`' own `testing` feature.
+testing = []
+
+[dev-dependencies]
+# The benchmark builds its fixtures from the same fakes the tests use.
+weebo-si-endpoint-auth = { version = "0.1.0", path = ".", features = ["testing"] }
+
+# A plain `main` rather than a `criterion` harness: the claim RFC 0009 makes is "single-digit
+# microseconds and no I/O", which needs a timer and an assertion, not a statistics library and a
+# new dependency in front of the one crate every other brick will link.
+[[bench]]
+name = "decide"
+harness = false
+
+[lints]
+workspace = true

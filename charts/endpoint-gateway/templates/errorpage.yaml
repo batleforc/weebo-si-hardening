@@ -1,0 +1,40 @@
+{{- if .Values.errorPage.enabled }}
+{{/*
+  RFC 0009's *Failure mode*, the line item that is easy to skip: "an error-page middleware pinned
+  beside the gate so a developer reads 'the platform is down', not a bare `500`."
+
+  **It cannot point at the gateway itself.** The page is for the case where the gateway is the
+  thing that is down, so the service serving it has to be something else — which is why this is a
+  reference an admin fills in rather than a deployment this chart ships. Left unset, the chart
+  renders nothing and a gateway outage reads as whatever the router says by default, which is the
+  honest behaviour for a page nobody has provided.
+*/}}
+{{- if .Values.errorPage.service.name }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}-errors
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+spec:
+  errors:
+    # 5xx only: a `401`, a `403` and the framed sign-in page are answers this gateway means, and
+    # replacing them with an error page would hide exactly the messages RFC 0009's *Developer
+    # continuity* spends a section making readable.
+    status:
+      - "500-599"
+    service:
+      name: {{ .Values.errorPage.service.name }}
+      port: {{ .Values.errorPage.service.port }}
+    query: {{ .Values.errorPage.query | quote }}
+{{- else }}
+{{/*
+  Rendered as a comment rather than silently omitted, so `helm template` shows an admin that the
+  middleware exists and what it wants.
+
+  endpoint-gateway: errorPage.enabled is true but errorPage.service.name is unset, so no error
+  middleware was rendered. Point it at a service that stays up when the gateway does not.
+*/}}
+{{- end }}
+{{- end }}

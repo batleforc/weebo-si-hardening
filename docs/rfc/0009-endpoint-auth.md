@@ -4,7 +4,7 @@ title: endpoint-auth
 status: Accepted
 authors: [batleforc]
 created: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-15
 decided: 2026-09-13
 brick: crates/weebo-si-endpoint-auth
 supersedes: []
@@ -247,6 +247,9 @@ rules:
   reject_unnormalised_path: true # a path that does not survive normalisation is denied
 errors:
   reveal_owner: true # the 403 names the owner so the caller knows whom to ask
+cache: # identity only, never a verdict — see *Request cost*
+  identity: { max_entries: 20000, ttl: 5m } # opened sessions and verified bearers, keyed by hash
+  token_review: { max_entries: 5000 } # entries expire with the token they answer for
 ```
 
 `bearer` is where the difference between a gate and a suggestion is decided. The obvious rule —
@@ -1439,11 +1442,13 @@ after a long lunch still fails, and fails as a `401` the application can surface
 redirect that discards the body silently.
 
 **A latency budget, because 200 assets is 200 decisions.** Traefik's `forwardAuth` calls the
-gateway once per HTTP request, with no cache, so a page load is a burst. The decision is an
-in-memory cache lookup plus a cookie open: the budget is **p99 under 5 ms** in-cluster, tracked by
-`weebo_si_endpoint_auth_decision_seconds`, and the deployment starts at three replicas with an
-HPA on request rate rather than at a fixed size. If that budget is ever missed, the answer is
-capacity or a `Cache-Control` on the decision — never a longer session.
+gateway once per HTTP request, with no cache of its own, so a page load is a burst. The decision is
+an in-memory lookup plus a cookie open: the budget is **p99 under 5 ms** end to end in-cluster —
+of which the decision itself is single-digit microseconds and the rest is one round trip — tracked
+by `weebo_si_endpoint_auth_decision_seconds` and by the load step of the conformance run. The
+deployment starts at three replicas with an HPA on request rate rather than at a fixed size. If
+that budget is ever missed the answer is capacity, never a longer session and never an edge cache
+of the verdict. *Request cost* is the whole argument, including why there is no Valkey in it.
 
 **Break-glass is a stated procedure, not an improvisation.** An admin annotating one `Ingress`
 with `hardening.weebo.io/endpoint-auth: bypass` — a write only the operator's own identity and an
@@ -1453,6 +1458,257 @@ alone, so it survives the next DWO pass instead of being quietly undone. It rais
 condition naming the endpoint and counts in `weebo_si_endpoint_auth_bypassed`. It exists so that
 "the platform is blocking one developer" has an answer measured in seconds, and it is visible
 enough that nobody leaves it on.
+
+### Request cost
+
+A gate in front of every endpoint is a tax on every request, and the worry this section exists to
+settle is the right one: a page that pulls 200 assets pays the tax 200 times, an HMR socket
+reconnects on every save, and a developer who can feel the difference will ask for an exemption
+long before they file a bug. The claim defended below is that the tax is **single-digit
+microseconds of compute plus one in-cluster round trip**, that nothing on the request path talks to
+the API server, the identity provider or any store, and that what makes this true is a structural
+choice rather than an optimisation: **every input to a decision is already in the process's memory
+before the request arrives, put there by a watch rather than fetched by a request**.
+
+It also answers the question that follows naturally from it — whether a shared cache such as
+Valkey belongs here. It does not, and the reason is the same one: a network cache in front of data
+a watch already delivered replaces a hundred-nanosecond map read with a round trip, and buys a
+stateful dependency the fail-closed argument would then have to cover too.
+
+#### The invariant: no I/O on the request path
+
+Stated as a property, because it is the one a reviewer can check and a test can assert: **`/auth`
+makes no network call.** Not a fast one, not a cached one — none. Every input the decision reads is
+a lookup into memory, and every mechanism that could block lives on a different path.
+
+| Input to a decision              | Read from                                | Kept current by                           |
+| -------------------------------- | ---------------------------------------- | ----------------------------------------- |
+| policy for host `H`              | the compiled host index                  | `Ingress`/`Route` informer event          |
+| owner of the endpoint namespace  | the same index, resolved at compile time | `Namespace` informer event                |
+| the owner's team and its members | the same index, resolved at compile time | `Namespace` informer + `WeeboSiConfig`    |
+| session cookie → identity        | AES-GCM open, in process                 | the request itself                        |
+| bearer → identity                | signature check against the cached JWKS  | background JWKS refresh                   |
+| SA token → namespace             | the `TokenReview` result cache           | one API call per token, never per request |
+| client address → namespace       | the pod index                            | `Pod` informer event                      |
+| session revoked?                 | the revocation set                       | `ConfigMap` informer event                |
+
+The two rows that would otherwise be API calls — `TokenReview` and JWKS — are already behind a
+cache with a background refresh, argued under *Architecture* from the security side (an identity
+provider outage must not stop a `curl` holding a valid token). The latency argument is the same
+mechanism read the other way: without it, the two paths CI and scripts use most would pay a round
+trip per request, which is exactly where a gate becomes the reason a test suite got slower.
+
+A miss on either is bounded and shaped like a first use: one `TokenReview` for a token the replica
+has not seen, one JWKS fetch after a key rotation. Neither is on the hot path of a page load,
+because a page load presents the same credential 200 times.
+
+#### Compile at write time, not at read time
+
+The policy for an endpoint arrives as text: `allow-users` is a list in an annotation, the path
+rules are a small JSON document, delegation is a set of names. Parsing that per request is the
+cost a naive implementation would actually pay — sixteen rules of JSON per asset, times 200 assets,
+times every developer in the cluster — and it would be invisible in a unit test and obvious in
+production.
+
+So the informer event does the work once. Each indexed routing object is compiled into an
+immutable `EndpointPolicy` — owner, namespace, the owner's team, delegation **after** the
+`overrides` intersection, the ordered rules as matchers (a segment-boundary prefix matcher plus a
+method bitset), the bearer mode, the provenance, and a generation counter — and the host index
+holding them is swapped atomically. A request clones an `Arc` and reads; it never parses anything
+but its own URL.
+
+Three consequences are worth naming, because each one removes a cost that would otherwise be
+per-request:
+
+- **A malformed annotation is a compile-time failure, not a per-request one.** It resolves once to
+  a deny, an `Event` on the object and a metric. The request path has no parse step, so it has no
+  parse error branch to be slow or inconsistent in.
+- **Live configuration survives intact.** Invalidation is the informer event itself, so the
+  invariant under *Nothing here is restart-time configuration* still holds exactly: removing a name
+  from `allow-users` takes effect at informer lag, not at the expiry of a TTL. A cache with a TTL
+  would have traded that property away for nothing; a cache rebuilt by the watch does not.
+- **Team membership is not a selector evaluation per request.** `spec.teams` is an ordered list of
+  `namespaceSelector`s with first-match-wins semantics; evaluating it per request is label matching
+  in a loop, for every request in the cluster. Evaluated on the `Namespace` event it is one field
+  on the compiled policy, and a `WeeboSiConfig` change recompiles the index once.
+
+#### Cache the identity, never the verdict
+
+The rule that keeps the caching honest is the one *Nothing here is restart-time configuration*
+already states for the cookie, applied to memory: **what may be cached is who the caller is; what
+may never be cached is whether they are allowed.**
+
+| Cached                         | Key                         | Lifetime                                              | Dropped by                       |
+| ------------------------------ | --------------------------- | ----------------------------------------------------- | -------------------------------- |
+| verified bearer → claims       | SHA-256 of the token        | the token's own `exp`, capped at `cache.identity.ttl` | JWKS generation bump, revocation |
+| opened session cookie → claims | SHA-256 of the sealed value | the cookie's own expiry, capped the same way          | key rotation, revocation         |
+| `TokenReview` → namespace      | SHA-256 of the token        | the token's own `exp`                                 | eviction only                    |
+
+Everything else is recomputed on every request from the compiled policy: owner check, delegation,
+team, path rule, method. That costs a map lookup and a prefix match, and it is what makes delegation
+live — a name removed from `allow-users` mid-page-load is removed mid-page-load, for the assets
+still in flight.
+
+The asset burst is the exact case this shape is built for. Two hundred requests, one cookie, one
+host: the first pays an AEAD open, the other 199 pay a hash and a map read, and all 200 re-derive
+the verdict from policy that cannot be stale.
+
+Three properties of these caches, since a cache holding credentials deserves them stated: the key
+is a hash and never the credential, the value holds no token and no cookie, and the whole thing is
+bounded (`cache.identity.max_entries`, LRU) so a flood of distinct tokens evicts rather than grows.
+All of it is per-replica and rebuilt from traffic after a restart, which is why losing it costs a
+signature check rather than a login.
+
+**Caching the verdict at the edge is the option this design refuses**, and it is available: nginx
+can serve an `auth_request` subrequest from `proxy_cache`, and an admin looking at a latency graph
+will find that suggestion before they find this paragraph. It caches *authorisation* — keyed by
+whatever the cache key names, blind to the annotation that changed a second ago — and it turns
+"delegation takes effect on the next request" into "on the next request after the TTL, on this
+node". If the budget below is ever missed, the answer is capacity, never an edge cache of the
+verdict.
+
+#### Where the milliseconds actually are
+
+The decision is microseconds; nothing a developer can perceive. What is perceptible, if anything
+is, is the round trip the controller makes before forwarding — and being honest about which half
+costs what is the difference between tuning the right thing and tuning the fast thing.
+
+| Cost per request                     | Magnitude                          | What answers it                                      |
+| ------------------------------------ | ---------------------------------- | ---------------------------------------------------- |
+| the extra in-cluster hop             | 0.2–1 ms round trip                | connection reuse, and keeping the hop short          |
+| TCP (and mesh TLS) setup on that hop | a millisecond or more, if repeated | keep-alive; the gateway's idle timeout is the longer |
+| the decision itself                  | single-digit µs                    | the two sections above                               |
+| bytes on the wire                    | the request's headers, no body     | the body is never forwarded; the cookie is capped    |
+
+Four rules follow, stated here rather than left to whoever writes the chart:
+
+1. **Connection reuse is part of the contract, not an optimisation.** A controller that re-dials
+   per request pays a handshake where it should pay a round trip, and under a service mesh it pays
+   a TLS handshake. The gateway's idle timeout is configured longer than every dialect's, so the
+   controller is the side that decides when a connection ends, and the conformance suite asserts
+   that a 200-request burst uses a handful of connections rather than 200.
+2. **Keep the hop short.** The gateway `Service` sets `trafficDistribution: PreferClose`, so the
+   controller's auth request stays in-zone with the controller rather than crossing one. A
+   `DaemonSet` would make it node-local, and it is *Future work* rather than the default: it
+   multiplies the number of processes holding an informer by the size of the cluster, which trades
+   a cheap problem for an expensive one.
+3. **The auth request carries headers and never a body.** Traefik's `forwardBody` stays false and
+   `auth_request` sends none, so a 2 GB upload costs one small auth request rather than a second
+   copy of the bytes. The one part of that request whose size this design controls is the session
+   cookie, which rides on all of them — which is the latency half of the argument for filtering
+   group claims under *Group claims*, where the security half already lives.
+4. **The allow response is empty.** `200`, the three declared headers, no body. Bodies exist on the
+   challenge paths, which are per session rather than per request.
+
+Two shapes fall out of the forward-auth design and are worth stating so nobody budgets for them:
+a **WebSocket costs one decision for the lifetime of the socket**, because the gate is off the data
+path once the upgrade is allowed, and a **streamed or chunked response costs nothing after its
+first byte**, for the same reason. The gate's cost scales with requests, not with traffic.
+
+**`ReverseProxy` is a different cost model, and sizing it as if it were this one is a mistake.** On
+OpenShift the gateway carries the bytes, so its budget is throughput, buffers and connection count;
+`decide()` is noise against the copy loop. Capacity there is planned from the endpoints' traffic
+rather than from their request rate, and *Drawbacks* already says the two modes share a decision
+and nothing operational.
+
+#### Capacity, in numbers rather than adjectives
+
+The assumptions are written out so a reader can disagree with them rather than with the
+conclusion — and the first one is now measured rather than assumed, by
+`cargo bench -p weebo-si-endpoint-auth`:
+
+- **a decision is ~130 ns**, and ~270 ns against the sixteen-rule worst case a developer is
+  allowed to configure; a 200-asset burst costs ~195 ns per asset. That is an order of magnitude
+  under the "single-digit microseconds" this section originally claimed, because the compiled
+  policy turned out to make the rule match a prefix comparison rather than a parse;
+- call the whole request 50 µs of CPU including HTTP framing, hashing and metrics — still a
+  ~300-fold margin over the decision itself, and the honest number to plan with, since the
+  decision is no longer the expensive part of the request;
+- one core therefore serves on the order of 20 000 requests per second, and the starting
+  deployment of three replicas serves ~60 000;
+- a heavy page is 200 requests; 200 developers each triggering one every five seconds is 8 000
+  requests per second, and that is a pessimistic cluster rather than a typical one.
+
+The default deployment is therefore around seven times a pessimistic peak, and the HPA on request
+rate exists for the day one of those numbers is wrong rather than because it is expected to be.
+Memory is the smaller half: roughly 2 KB per indexed endpoint and 200 B per indexed pod, so ten
+thousand endpoints and twenty thousand pods sit well under 50 MB — which is why the index is
+cluster-wide over Che namespaces rather than sharded.
+
+The number that matters more than throughput is the one the control plane sees: **the API server
+gets watches, not requests.** A handful per replica, whatever the traffic. A design that resolved
+the owner with a `GET` per request, or ran a `SubjectAccessReview` per request — the alternative
+*Alternatives considered* rejects on other grounds too — would put a page load's worth of API calls on the apiserver for
+every reload in the cluster. That is the shape that melts a control plane, and it is the shape this
+one does not have.
+
+A budget nobody measures is a wish, so two things measure it. The first exists:
+`benches/decide.rs`, a plain timing harness rather than a statistics library, which prints the
+numbers above and **fails the build** if any of them crosses 50 µs — generous by two orders of
+magnitude on purpose, because a benchmark that fails on a noisy CI runner is a benchmark somebody
+deletes. The second is a load step in the dialect conformance run — a 200-request burst through a
+real Traefik with and without the middleware, asserting the added p99 stays inside the budget
+under *Developer continuity* — and it waits on a cluster like the rest of that suite.
+
+#### Why not Valkey
+
+| Candidate state                 | Where it lives now                    | What a shared cache changes                                                                                                         | Verdict                                                               |
+| ------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| policy, owner, team, path rules | compiled host index, fed by informers | replaces a ~100 ns map read with a round trip on **every** request, and makes the request path depend on a second stateful service  | No, and it would be the worst available regression                    |
+| sessions                        | sealed cookies, no server state       | reintroduces the session store this design deliberately does without: a lookup per request, and a restart that signs everyone out   | No                                                                    |
+| verified bearers, `TokenReview` | per-replica caches, keyed by hash     | saves at most one API call per token per replica, and puts credential hashes in a second process                                    | No                                                                    |
+| revoked session ids             | `ConfigMap` + informer                | faster propagation than informer lag, and no 1 MiB object ceiling — at the price of a new dependency for a set bounded by `sso_ttl` | No, with a trigger, below                                             |
+| redeemed grants, logout `jti`s  | per-replica sets                      | makes one-time truly global instead of at-most-once per replica; on the login path, so a round trip would be affordable             | No — *Data and state* argues the seam is worth nothing to an attacker |
+
+The general principle behind every row: **a shared cache earns its place when data is expensive to
+compute and cheap to fetch.** Here every input is cheap precisely because a watch already delivered
+it, so a socket in front of it is pure loss — latency on the request path, plus a service that must
+then be made highly available, secured, upgraded, and folded into the fail-closed story, since a
+gateway depending on Valkey is down whenever Valkey is.
+
+**What would change the answer** is state with three properties at once: written on the request
+path, required to be consistent across replicas, and not reconstructible from a watch. Nothing in
+this design has all three today. Three plausible futures do:
+
+- **global one-time grants**, closing the at-most-once-per-replica seam — on the login path, where
+  a round trip costs nothing anyone can feel;
+- **rate limiting per endpoint or per identity**, which is a counter written on every request and
+  meaningless if each replica keeps its own;
+- **a shared identity cache for a large `ReverseProxy` fleet**, if an OpenShift cluster ever runs
+  enough replicas that per-replica caches miss more often than they hit.
+
+If one arrives, the shape is already there: the revocation set and the replay set are ports
+(`RevocationStore`, `ReplayStore`) with the `ConfigMap` as one adapter, so Valkey lands as a second
+adapter and an optional chart dependency, with no change to the domain. One boundary holds in that
+future as it does now — **the request path still may not depend on it.** An unreachable store
+degrades a mechanism, exactly as an unreachable `ConfigMap` does today; it never becomes a fifth
+service that has to be up for a developer to load a page.
+
+#### What is configured, and what is measured
+
+`cache` in the gateway's configuration file is two bounded numbers and one TTL — small on purpose,
+because a cache with a rich configuration surface is one whose behaviour differs per cluster:
+
+```yaml
+cache:
+  identity: { max_entries: 20000, ttl: 5m } # opened sessions and verified bearers, keyed by hash
+  token_review: { max_entries: 5000 } # entries expire with the token they answer for
+```
+
+Three metrics beside the ones under *Observability*, with the same closed-label rule and no host,
+namespace or workspace id anywhere in them:
+
+- `weebo_si_endpoint_auth_identity_cache_total{kind,result}` — `kind` is `session|bearer|token_review`,
+  `result` is `hit|miss|evicted`. A miss ratio near 1 on `bearer` is not a capacity problem, it is a
+  client minting a fresh token per request: worth telling its owner, and cheap to see here.
+- `weebo_si_endpoint_auth_policy_compile_seconds` — the write-side cost, where an expensive
+  annotation shows up instead of on the request path.
+- `weebo_si_endpoint_auth_indexed_endpoints` — the index's size, which is the input to every memory
+  estimate above and the first thing to look at when one of them is wrong.
+
+`weebo_si_endpoint_auth_decision_seconds` keeps its meaning and gains a stated boundary: it is the
+in-process decision only. The hop is measured where it happens, in the controller's own metrics,
+and the two together are what the load step above compares.
 
 ### Architecture
 
@@ -1469,14 +1725,19 @@ decision must be testable without either.
 - `domain/port` — `EndpointCatalog` (host → `EndpointPolicy`, or a conflict), `IdentityProvider`
   (code exchange), `TokenVerifier` (verify a bearer against the issuer's keys), `WorkloadIdentity`
   (client address → namespace, SA token → namespace), `SessionCodec` (seal/open a session or a
-  one-time grant for a given host).
+  one-time grant for a given host), `RevocationStore` (revoked session ids) and `ReplayStore`
+  (redeemed grants, logout `jti`s). The last two are ports rather than fields for the reason
+  *Request cost* gives: their `ConfigMap` and in-memory implementations are the right ones today,
+  and the one plausible shared-store future has to be able to land as a second adapter without the
+  domain learning that a network exists.
 - `application` — `authorize_request`, `begin_login`, `complete_login`, `mint_host_session`,
   `redeem_grant`.
 - `adapters/inbound` — the `axum` router listed under *HTTP surface*.
 - `adapters/outbound` — `kube` informer over `Ingress` + `Namespace` implementing `EndpointCatalog`;
   a second `kube` informer over DWO-labelled `Pod`s plus a cached `TokenReview` client implementing
   `WorkloadIdentity`; `openidconnect` implementing `IdentityProvider` and `TokenVerifier`; AES-GCM
-  implementing `SessionCodec`.
+  implementing `SessionCodec`; a `ConfigMap` + informer implementing `RevocationStore` and a
+  bounded in-memory set implementing `ReplayStore`.
 
 `WorkloadIdentity` is a port rather than two fields on the request for the reason the domain cares
 about: `decide()` must be able to answer "this caller is the owner, by origin" in a table-driven
@@ -1488,9 +1749,18 @@ The adapter holds a JWKS cache refreshed in the background, so a decision is a s
 against keys already in memory, and an identity provider that is down cannot stop a `curl` that
 already has a valid token.
 
-`bins/endpoint-gateway` is the composition root only — flags, config load, wiring, `main`. The
+`bins/endpoint-gateway` is the composition root **and the adapters** — flags, config load,
+wiring, `main`, plus the `kube`, OIDC, AES-GCM and `axum` implementations of the ports above. The
 front-matter names `crates/weebo-si-endpoint-auth` as the brick because that is where every
 decision lives; the binary is its shell.
+
+**The adapters moved out of the crate during implementation**, and the reason is the dependency
+direction rather than taste: the operator side — `weebo-si-webhook`, `weebo-si-controller`,
+`weebo-si-policy-guard` — needs this feature's vocabulary, and would otherwise link `reqwest`,
+`aes-gcm`, `jsonwebtoken` and a Kubernetes client to read a type. With the crate holding the
+domain and the binary holding the adapters, `weebo-si-endpoint-auth` depends on `serde`,
+`serde_yaml_bw` and `sha2` and nothing else, which is the same move RFC 0002's own amendment made
+when its dependency rule needed `cargo` to enforce it rather than review.
 
 Operator-side changes are a feature module in the existing crates, not a new brick:
 `weebo-si-crd` gains `features.endpointAuth`, `weebo-si-webhook` gains the `Ingress` mutation,
@@ -1507,18 +1777,21 @@ therefore lives in a `ConfigMap` the API server holds and every replica watches 
 `sso_ttl`, swept, and reconstructible only in the sense that a lost one fails **open for revoked
 sessions until they expire**, which is why it is a `ConfigMap` and not a cache.
 
-Four in-memory caches, all rebuildable:
+The in-memory caches, all rebuildable, and all per-replica — *Request cost* argues why none of them
+is shared and what would have to become true for one of them to be:
 
 | Cache           | Contents                                               | Lost means                                     |
 | --------------- | ------------------------------------------------------ | ---------------------------------------------- |
 | informer        | `Ingress`/`Route` in Che namespaces + `Namespace`      | `/readyz` fails until resynced; verdict `deny` |
+| compiled policy | host → `EndpointPolicy`, built on the informer event   | rebuilt from the informer, no request affected |
+| identity        | token / cookie hash → claims, bounded LRU              | one signature check or AEAD open, not a login  |
 | pod index       | address → namespace, DWO-labelled pods only            | self-origin falls back to signing in           |
 | `TokenReview`   | token hash → subject, until the token's `exp`          | one API call per token, not per request        |
 | revocations     | the `ConfigMap`'s revoked `sid`s, via informer         | revoked sessions work until `sso_ttl`          |
 | JWKS            | the issuer's signing keys, refreshed in the background | bearer verification waits for one fetch        |
 | redeemed grants | the one-time grant ids still inside their short TTL    | a replayed grant could be redeemed twice       |
 
-The third one is the only one with a caveat worth stating: it is per-replica, so a grant redeemed
+Redeemed grants is the only one with a caveat worth stating: it is per-replica, so a grant redeemed
 on replica A is not known to replica B. A one-time grant is therefore *at-most-once per replica*
 rather than globally, which is why it is sealed, bound to one host and one path, and valid for
 30 seconds — the window is one redirect, and what the second redemption would yield is a cookie
@@ -1676,11 +1949,13 @@ accepts the previous key for the length of `sso_ttl`, so a rotation costs no log
   `weebo_si_endpoint_auth_logins_total{result}`, `weebo_si_endpoint_auth_host_conflicts`,
   `weebo_si_endpoint_auth_bypassed`, `weebo_si_endpoint_auth_self_origin_total{result}`,
   `weebo_si_endpoint_auth_client_ip_trusted` — the probe's verdict as a gauge, `0` being the state
-  in which pod-address identity is off — `weebo_si_endpoint_auth_insecure_hosts`, and
-  `weebo_si_endpoint_auth_revocations`. **Every label's value set is closed**, which this project
+  in which pod-address identity is off — `weebo_si_endpoint_auth_insecure_hosts`,
+  `weebo_si_endpoint_auth_revocations`, and the three from *Request cost*:
+  `weebo_si_endpoint_auth_identity_cache_total{kind,result}`,
+  `weebo_si_endpoint_auth_policy_compile_seconds` and `weebo_si_endpoint_auth_indexed_endpoints`. **Every label's value set is closed**, which this project
   has now had to correct twice after the fact (RFC 0007 and RFC 0008's changelogs): `verdict` is
   `allow|deny|challenge`, and `reason` is a Rust enum — `owner`, `delegated`, `anonymous`,
-  `self_origin`, `bearer_verified`, `bearer_passthrough`, `not_owner`, `no_identity`,
+  `self_origin`, `bearer_verified`, `bearer_passthrough`, `preflight`, `not_owner`, `no_identity`,
   `host_conflict`, `unnormalised_path`, `no_policy`, `insecure_scheme`, `revoked` — rendered by a
   `&'static str`, never by formatting whatever arrived. The prefix is `weebo_si_`, like every other metric this
   project emits, and **no label carries a namespace, a host or a workspace id** — RFC 0004's
@@ -1697,24 +1972,26 @@ accepts the previous key for the length of `sso_ttl`, so a rotation costs no log
 
 ## Alternatives considered
 
-| Alternative                                                             | Why rejected                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oauth2-proxy` + a small authorisation service                          | Two hops, two configs, two header contracts, and `--cookie-domain=.weebo.si` hands a domain-wide session cookie to every workspace application — the cross-host replay this RFC is built to prevent. The authorisation half has to exist anyway.                                                                                                                  |
-| Authentik forward-auth, domain-level                                    | Same shared-cookie problem, and the per-host authorisation cannot read an `Ingress` annotation from an expression policy. Also ties the control to an IdP the cluster does not otherwise need, where the Che client already exists.                                                                                                                               |
-| `urlRewriteSupported: true` on every endpoint                           | Free, and correct where it works — the Che gateway already authenticates that path. But it moves every application to a sub-path, which breaks absolute asset URLs, cookies and OAuth callbacks in the applications being developed. Offered as advice, not as the control.                                                                                       |
-| Kyverno `mutate` for the annotations                                    | Adds a policy engine as an operational dependency for one rule this repo already has three mechanisms to express, and its own generated objects would then need guarding. Consistent with RFC 0002 and RFC 0004.                                                                                                                                                  |
-| `SubjectAccessReview` against the user's token for the owner check      | Reuses Che's RBAC exactly, which is genuinely attractive. Rejected because it cannot express delegation to a non-owner (the whole point of the annotations), costs an API round trip per request, and needs the user's `id_token` forwarded into the decision path. Kept in *Future work* as a second, optional check.                                            |
-| Passing every `Authorization` header through untouched                  | A one-header bypass against applications that have no authentication of their own, which is the population this feature exists for. Verifying our own issuer's tokens keeps every non-browser client working without it.                                                                                                                                          |
-| Fail-open when the gateway is unavailable                               | Keeps developers working during an outage, at the cost of a control an attacker can arrange to have off. Rejected, and the availability bill is itemised under *Failure mode* instead — including a break-glass that reopens one endpoint rather than all of them.                                                                                                |
-| Nginx `auth-snippet` to rebuild the forwarded headers                   | `allow-snippet-annotations` is `false` by default since ingress-nginx 1.9, and turning it back on trades one hardening control for another. The dialect carries the request in `auth-url` nginx variables instead, which needs no snippet.                                                                                                                        |
-| Feeding `ingresses` to `policy-guard`'s existing three-row table        | Structurally wrong in both directions: row 2 denies the delegation edit this feature promises a developer, row 3 denies DevWorkspace Operator's own `CREATE`. A field-level verdict is a second subject type, the way RFC 0007's registry guard already is.                                                                                                       |
-| Inferring the trusted proxy passively from the headers                  | Cannot be done: a header the controller derived and one it repeated are identical on the wire. An inference would therefore conclude "trusted" from the absence of a signal, which is the one direction whose failure is an ownership escalation. Replaced by a peer check against the controller's endpoints and an active probe, both of which can only revoke. |
-| Allowing any in-cluster source address, unauthenticated                 | Solves the workspace-calling-itself case in one line, and hands every pod in the cluster an unauthenticated path to every endpoint — the east–west isolation of RFC 0004 undone at the front door. The index resolves an address to *one namespace*, which is the whole difference.                                                                               |
-| Injecting a per-workspace shared secret into the pod                    | Works everywhere, including behind SNAT, but provisions and rotates a new credential per workspace for something the workspace's own service-account token already proves. Kept as the fallback path rather than as the mechanism.                                                                                                                                |
-| A per-workspace sidecar doing the gate (the shape of eclipse-che#20190) | One extra container per workspace, multiplied by every workspace, to enforce a rule that is identical everywhere. Central forward-auth costs two pods for the cluster.                                                                                                                                                                                            |
-| Full reverse proxy instead of forward-auth, everywhere                  | Puts this brick on the data path of every WebSocket, upload and streamed response in the cluster. The decision is the valuable part; carrying bytes is not — **except where the router offers no way to ask**, which is why `OpenShiftRoute` is exactly this and the other three dialects are not.                                                                |
-| Not supporting OpenShift                                                | Would contradict the rest of this repo, whose other bricks target OpenShift explicitly (RFC 0001's arbitrary UIDs, RFC 0004's Cilium-less clusters, the chart's `openshift` certificate provider). The cost of supporting it is one attachment mode and one extra guarded field, which is cheaper than a second product.                                          |
-| Requiring community `haproxy-ingress` on OpenShift instead              | Technically the cleanest — it restores forward-auth and `Ingress` — and it asks a platform team to run a second ingress controller beside the one OpenShift ships and supports. Available to anyone who wants it (the `HaproxyIngress` dialect is the same dialect there), but not something this RFC can require.                                                |
+| Alternative                                                             | Why rejected                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `oauth2-proxy` + a small authorisation service                          | Two hops, two configs, two header contracts, and `--cookie-domain=.weebo.si` hands a domain-wide session cookie to every workspace application — the cross-host replay this RFC is built to prevent. The authorisation half has to exist anyway.                                                                                                                                                                                                                         |
+| Authentik forward-auth, domain-level                                    | Same shared-cookie problem, and the per-host authorisation cannot read an `Ingress` annotation from an expression policy. Also ties the control to an IdP the cluster does not otherwise need, where the Che client already exists.                                                                                                                                                                                                                                      |
+| `urlRewriteSupported: true` on every endpoint                           | Free, and correct where it works — the Che gateway already authenticates that path. But it moves every application to a sub-path, which breaks absolute asset URLs, cookies and OAuth callbacks in the applications being developed. Offered as advice, not as the control.                                                                                                                                                                                              |
+| Kyverno `mutate` for the annotations                                    | Adds a policy engine as an operational dependency for one rule this repo already has three mechanisms to express, and its own generated objects would then need guarding. Consistent with RFC 0002 and RFC 0004.                                                                                                                                                                                                                                                         |
+| `SubjectAccessReview` against the user's token for the owner check      | Reuses Che's RBAC exactly, which is genuinely attractive. Rejected because it cannot express delegation to a non-owner (the whole point of the annotations), costs an API round trip per request, and needs the user's `id_token` forwarded into the decision path. Kept in *Future work* as a second, optional check.                                                                                                                                                   |
+| Passing every `Authorization` header through untouched                  | A one-header bypass against applications that have no authentication of their own, which is the population this feature exists for. Verifying our own issuer's tokens keeps every non-browser client working without it.                                                                                                                                                                                                                                                 |
+| Fail-open when the gateway is unavailable                               | Keeps developers working during an outage, at the cost of a control an attacker can arrange to have off. Rejected, and the availability bill is itemised under *Failure mode* instead — including a break-glass that reopens one endpoint rather than all of them.                                                                                                                                                                                                       |
+| Valkey (or Redis) as a shared cache in front of the decision            | Every input is already in memory because a watch delivered it, so a socket in front of it replaces a map read with a round trip on every request and adds a stateful service the fail-closed argument would then have to cover. Kept as an optional adapter behind `RevocationStore`/`ReplayStore` for the day some state is written on the request path and must be consistent across replicas — *Request cost* names the three candidates and none of them exists yet. |
+| Caching the `/auth` verdict at the controller (nginx `proxy_cache`)     | The one cache that would genuinely remove the hop, and the one that cannot be allowed: it caches authorisation, so "delegation takes effect on the next request" becomes "on the next request after the TTL, on this node". Identity is cached instead, which removes the cost without touching the property.                                                                                                                                                            |
+| Nginx `auth-snippet` to rebuild the forwarded headers                   | `allow-snippet-annotations` is `false` by default since ingress-nginx 1.9, and turning it back on trades one hardening control for another. The dialect carries the request in `auth-url` nginx variables instead, which needs no snippet.                                                                                                                                                                                                                               |
+| Feeding `ingresses` to `policy-guard`'s existing three-row table        | Structurally wrong in both directions: row 2 denies the delegation edit this feature promises a developer, row 3 denies DevWorkspace Operator's own `CREATE`. A field-level verdict is a second subject type, the way RFC 0007's registry guard already is.                                                                                                                                                                                                              |
+| Inferring the trusted proxy passively from the headers                  | Cannot be done: a header the controller derived and one it repeated are identical on the wire. An inference would therefore conclude "trusted" from the absence of a signal, which is the one direction whose failure is an ownership escalation. Replaced by a peer check against the controller's endpoints and an active probe, both of which can only revoke.                                                                                                        |
+| Allowing any in-cluster source address, unauthenticated                 | Solves the workspace-calling-itself case in one line, and hands every pod in the cluster an unauthenticated path to every endpoint — the east–west isolation of RFC 0004 undone at the front door. The index resolves an address to *one namespace*, which is the whole difference.                                                                                                                                                                                      |
+| Injecting a per-workspace shared secret into the pod                    | Works everywhere, including behind SNAT, but provisions and rotates a new credential per workspace for something the workspace's own service-account token already proves. Kept as the fallback path rather than as the mechanism.                                                                                                                                                                                                                                       |
+| A per-workspace sidecar doing the gate (the shape of eclipse-che#20190) | One extra container per workspace, multiplied by every workspace, to enforce a rule that is identical everywhere. Central forward-auth costs two pods for the cluster.                                                                                                                                                                                                                                                                                                   |
+| Full reverse proxy instead of forward-auth, everywhere                  | Puts this brick on the data path of every WebSocket, upload and streamed response in the cluster. The decision is the valuable part; carrying bytes is not — **except where the router offers no way to ask**, which is why `OpenShiftRoute` is exactly this and the other three dialects are not.                                                                                                                                                                       |
+| Not supporting OpenShift                                                | Would contradict the rest of this repo, whose other bricks target OpenShift explicitly (RFC 0001's arbitrary UIDs, RFC 0004's Cilium-less clusters, the chart's `openshift` certificate provider). The cost of supporting it is one attachment mode and one extra guarded field, which is cheaper than a second product.                                                                                                                                                 |
+| Requiring community `haproxy-ingress` on OpenShift instead              | Technically the cleanest — it restores forward-auth and `Ingress` — and it asks a platform team to run a second ingress controller beside the one OpenShift ships and supports. Available to anyone who wants it (the `HaproxyIngress` dialect is the same dialect there), but not something this RFC can require.                                                                                                                                                       |
 
 ## Drawbacks and risks
 
@@ -1771,6 +2048,14 @@ accepts the previous key for the length of `sso_ttl`, so a rotation costs no log
   `LoadBalancer` SNATs, the pod-address mechanism silently degrades to "sign in", and the honest
   answer is the service-account token path with a documentation line rather than a fix. The metric
   makes the degradation visible; nothing makes it go away.
+- **The identity cache is one edit away from being a correctness bug.** Caching who the caller is
+  is verdict-neutral; caching what they may do is not, and the two look identical in a profile and
+  nearly identical in a diff. The day someone widens the cache key to include the host and the path
+  to "avoid recomputing the rule match", delegation stops being live and nobody finds out until a
+  developer cannot revoke a share. The invariant is written down in *Request cost*, the domain's
+  `decide()` takes the policy by reference rather than a memoised verdict, and there is a test that
+  a policy change alters the next request's outcome with the same credential — none of which stops
+  a determined optimisation, which is why it is here rather than only there.
 - **A gate on the critical path of the working day.** Every property under *Developer continuity*
   is a promise that can regress silently: a `302` where a `401` belonged breaks every SPA on the
   cluster and looks, to each developer, like their own bug. Those rows are conformance tests for
@@ -1780,27 +2065,28 @@ accepts the previous key for the length of `sso_ttl`, so a rotation costs no log
 
 ### Resolved
 
-| #   | Question                                                                              | Decision                                                                                                                                                                                                                                                                                                |
-| --- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Which router is the gate attached to?                                                 | **Traefik first; then community `haproxy-ingress` and Nginx as further forward-auth dialects, and OpenShift as a `ReverseProxy` dialect over `Route`.** "HAProxy" was one row hiding two products: the community controller has an `auth-url`, the OpenShift router has no external-auth hook at all.   |
-| 2   | Does the Che OIDC client emit a groups claim?                                         | **Yes**, so `allow-groups` ships in phase 1 rather than being deferred.                                                                                                                                                                                                                                 |
-| 3   | Is the owner readable from the namespace, with the same string as the username claim? | **Yes** — `che.eclipse.org/username` matches `claims.username`. The startup check stays anyway: it is one API call and it turns a cluster-wide lockout into a refused start.                                                                                                                            |
-| 4   | One `Middleware` per workspace namespace, or one shared?                              | **One shared**, in the operator's namespace: `allowCrossNamespace` is already true on this cluster, so the per-namespace copy buys nothing and costs an editable object in every user namespace. The setting's own cost is paid in the guard, which pins the middleware chain by value.                 |
-| 5   | Is `Custom` gated on a recorded conformance run?                                      | **No — `Degraded`.** Allowing the dialect is the admin's assertion that it conforms; the condition keeps that assertion visible. Blocking the feature on a test result this operator cannot itself run would be theatre.                                                                                |
-| 6   | Is a request carrying its own `Authorization` the gate's business?                    | **Yes, when we minted the token.** A bearer from our issuer is verified and authorised like a cookie; anything else is `401` unless a rule opts into `bearer: Passthrough`. Blind passthrough is a one-header bypass of the whole feature.                                                              |
-| 7   | Which object is the policy for a host, when two claim it?                             | **Only objects in a Che workspace namespace are indexed, admission refuses a host no ownership pattern ties to that namespace, and a surviving ambiguity denies.** Resolving a tie by sort order lets an attacker pick the verdict.                                                                     |
-| 8   | Can the Ingress guard be a row in RFC 0008's table?                                   | **No.** That table is resource-agnostic by construction and decides from `target_is_managed` alone; this needs a field-level verdict and a DWO exemption. It joins as a second subject type in the same crate, as RFC 0007's registry guard did.                                                        |
-| 9   | Does `mode: DryRun` produce the "who would be denied" number?                         | **No, and it never could** — no annotation means no traffic to the gateway. That number comes from `gateway.enforcement: Observe`, which is why the field exists and why *Rollout* has four steps rather than three.                                                                                    |
-| 10  | Does a webhook on `ingresses` risk the cluster?                                       | **Not with a `namespaceSelector` on Che workspace namespaces.** Only those reach it, so a failure closes workspace endpoints rather than every `kubectl apply` in the cluster. An `objectSelector` on the DWO label would have been narrower and would have left the developer's own `Ingress` ungated. |
-| 11  | Is one routing object one endpoint?                                                   | **Yes, on Eclipse Che, by default** — DWO publishes one per exposed endpoint, which is what makes per-object annotations mean per-endpoint policy. Enforced rather than assumed: an indexed object with more than one host is a conflict and denies.                                                    |
-| 11b | What about a routing object the developer wrote themselves?                           | **Gated like any other, with no opt-in**, because candidacy is the namespace rather than DWO's label — otherwise "write your own `Ingress`" was an opt-out. Provenance only decides how much of the object is frozen: a devfile's projection, or its author's own work.                                 |
-| 12  | Does OpenShift get this feature?                                                      | **Yes, through a second attachment mode.** Its router cannot be asked a question, so the `Route` is repointed at the gateway, which decides and proxies. The domain is unchanged; the operational surface is not, and *Drawbacks* says so.                                                              |
-| 13  | How long does a disabled account keep working?                                        | **Informer lag where back-channel logout exists; at most `revalidation.interval` where it does not.** A session in use re-proves itself at the token endpoint hourly, lazily and only on use, which also renews its claims. Both absent is a `Degraded` condition, not a default.                       |
-| 13b | Can an admin force one user's endpoints to stay closed?                               | **Yes — `overrides`**, matched on username or `namespaceSelector`, intersected with the team's grant so it can only narrow. `delegation: []` there means that user may not share an endpoint at all, whichever profile they reach.                                                                      |
-| 13c | Can a whole team reach a developer's endpoints by default?                            | **Yes — `delegation: [Team]` with `default: team`.** A team's members are the owners of its namespaces, derived from `spec.teams` and the namespace annotation, so nobody maintains a second list and only an admin can change who is in one.                                                           |
-| 14  | Are all of a user's groups sealed into the session?                                   | **No, only those some endpoint names**, with a generation and a silent `prompt=none` re-auth when that set has moved. Sealing every group is how a 4 KB cookie limit turns into a login loop nobody can diagnose.                                                                                       |
-| 15  | Is plain HTTP supported?                                                              | **No.** `__Host-` cookies require `Secure`, so an `http://` endpoint cannot hold a session. Refused with a `421`, and warned about three times before anyone meets it: an admission warning, an Event on the object, and a metric.                                                                      |
-| 16  | Does a developer have to authenticate to call their own endpoint from their own pod?  | **No.** A request from a pod of the endpoint's namespace resolves to the owner, and where the address does not survive the network path the workspace's own service-account token does the same job. Both are identities, not exemptions: they grant the owner's access and nothing wider.              |
+| #   | Question                                                                              | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Which router is the gate attached to?                                                 | **Traefik first; then community `haproxy-ingress` and Nginx as further forward-auth dialects, and OpenShift as a `ReverseProxy` dialect over `Route`.** "HAProxy" was one row hiding two products: the community controller has an `auth-url`, the OpenShift router has no external-auth hook at all.                                                                                                                                                                          |
+| 2   | Does the Che OIDC client emit a groups claim?                                         | **Yes**, so `allow-groups` ships in phase 1 rather than being deferred.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 3   | Is the owner readable from the namespace, with the same string as the username claim? | **Yes** — `che.eclipse.org/username` matches `claims.username`. The startup check stays anyway: it is one API call and it turns a cluster-wide lockout into a refused start.                                                                                                                                                                                                                                                                                                   |
+| 4   | One `Middleware` per workspace namespace, or one shared?                              | **One shared**, in the operator's namespace: `allowCrossNamespace` is already true on this cluster, so the per-namespace copy buys nothing and costs an editable object in every user namespace. The setting's own cost is paid in the guard, which pins the middleware chain by value.                                                                                                                                                                                        |
+| 5   | Is `Custom` gated on a recorded conformance run?                                      | **No — `Degraded`.** Allowing the dialect is the admin's assertion that it conforms; the condition keeps that assertion visible. Blocking the feature on a test result this operator cannot itself run would be theatre.                                                                                                                                                                                                                                                       |
+| 6   | Is a request carrying its own `Authorization` the gate's business?                    | **Yes, when we minted the token.** A bearer from our issuer is verified and authorised like a cookie; anything else is `401` unless a rule opts into `bearer: Passthrough`. Blind passthrough is a one-header bypass of the whole feature.                                                                                                                                                                                                                                     |
+| 7   | Which object is the policy for a host, when two claim it?                             | **Only objects in a Che workspace namespace are indexed, admission refuses a host no ownership pattern ties to that namespace, and a surviving ambiguity denies.** Resolving a tie by sort order lets an attacker pick the verdict.                                                                                                                                                                                                                                            |
+| 8   | Can the Ingress guard be a row in RFC 0008's table?                                   | **No.** That table is resource-agnostic by construction and decides from `target_is_managed` alone; this needs a field-level verdict and a DWO exemption. It joins as a second subject type in the same crate, as RFC 0007's registry guard did.                                                                                                                                                                                                                               |
+| 9   | Does `mode: DryRun` produce the "who would be denied" number?                         | **No, and it never could** — no annotation means no traffic to the gateway. That number comes from `gateway.enforcement: Observe`, which is why the field exists and why *Rollout* has four steps rather than three.                                                                                                                                                                                                                                                           |
+| 10  | Does a webhook on `ingresses` risk the cluster?                                       | **Not with a `namespaceSelector` on Che workspace namespaces.** Only those reach it, so a failure closes workspace endpoints rather than every `kubectl apply` in the cluster. An `objectSelector` on the DWO label would have been narrower and would have left the developer's own `Ingress` ungated.                                                                                                                                                                        |
+| 11  | Is one routing object one endpoint?                                                   | **Yes, on Eclipse Che, by default** — DWO publishes one per exposed endpoint, which is what makes per-object annotations mean per-endpoint policy. Enforced rather than assumed: an indexed object with more than one host is a conflict and denies.                                                                                                                                                                                                                           |
+| 11b | What about a routing object the developer wrote themselves?                           | **Gated like any other, with no opt-in**, because candidacy is the namespace rather than DWO's label — otherwise "write your own `Ingress`" was an opt-out. Provenance only decides how much of the object is frozen: a devfile's projection, or its author's own work.                                                                                                                                                                                                        |
+| 12  | Does OpenShift get this feature?                                                      | **Yes, through a second attachment mode.** Its router cannot be asked a question, so the `Route` is repointed at the gateway, which decides and proxies. The domain is unchanged; the operational surface is not, and *Drawbacks* says so.                                                                                                                                                                                                                                     |
+| 13  | How long does a disabled account keep working?                                        | **Informer lag where back-channel logout exists; at most `revalidation.interval` where it does not.** A session in use re-proves itself at the token endpoint hourly, lazily and only on use, which also renews its claims. Both absent is a `Degraded` condition, not a default.                                                                                                                                                                                              |
+| 13b | Can an admin force one user's endpoints to stay closed?                               | **Yes — `overrides`**, matched on username or `namespaceSelector`, intersected with the team's grant so it can only narrow. `delegation: []` there means that user may not share an endpoint at all, whichever profile they reach.                                                                                                                                                                                                                                             |
+| 13c | Can a whole team reach a developer's endpoints by default?                            | **Yes — `delegation: [Team]` with `default: team`.** A team's members are the owners of its namespaces, derived from `spec.teams` and the namespace annotation, so nobody maintains a second list and only an admin can change who is in one.                                                                                                                                                                                                                                  |
+| 14  | Are all of a user's groups sealed into the session?                                   | **No, only those some endpoint names**, with a generation and a silent `prompt=none` re-auth when that set has moved. Sealing every group is how a 4 KB cookie limit turns into a login loop nobody can diagnose.                                                                                                                                                                                                                                                              |
+| 15  | Is plain HTTP supported?                                                              | **No.** `__Host-` cookies require `Secure`, so an `http://` endpoint cannot hold a session. Refused with a `421`, and warned about three times before anyone meets it: an admission warning, an Event on the object, and a metric.                                                                                                                                                                                                                                             |
+| 17  | Does the per-request cost need a shared cache — Valkey or similar?                    | **No.** Every input is in memory before the request arrives, put there by a watch: the decision is single-digit microseconds and the only measurable cost is one in-cluster hop. A network cache in front of that is slower than the thing it caches, and a new dependency for a fail-closed component. It stays available as an adapter behind the revocation and replay ports for state that is written on the request path and must be shared — none of which exists today. |
+| 16  | Does a developer have to authenticate to call their own endpoint from their own pod?  | **No.** A request from a pod of the endpoint's namespace resolves to the owner, and where the address does not survive the network path the workspace's own service-account token does the same job. Both are identities, not exemptions: they grant the owner's access and nothing wider.                                                                                                                                                                                     |
 
 ### Still open
 
@@ -1837,6 +2123,14 @@ a decision someone will want to revisit with operating experience that does not 
   ownership in RBAC than in a namespace annotation.
 - **A UI**: "who can see my endpoint", read out of the same annotations, in the Che dashboard.
 - **Audit trail** of delegation changes, as events on the `DevWorkspace` rather than only in logs.
+- **A node-local gateway** (`DaemonSet` rather than `Deployment` with `PreferClose`), if the
+  in-cluster hop ever shows up in a real latency graph. It removes a network round trip and
+  multiplies the number of processes holding an informer by the size of the cluster, which is why
+  it is not the default.
+- **Valkey-backed `RevocationStore` / `ReplayStore`**, if revocation volume approaches the
+  `ConfigMap` ceiling, if a cluster wants revocation to propagate faster than informer lag, or if
+  per-endpoint rate limiting arrives — the three cases *Request cost* names. The request path stays
+  independent of it in every one of them.
 - **Gateway API `HTTPRoute`** as a further dialect, once the cluster's ingress story settles there.
 - **HAProxy and further dialects**, each landing as a `GateAttachment` implementation plus a
   conformance run, with no change to the domain.
@@ -1871,75 +2165,107 @@ the command that established it, so the next reader is not asked to take this RF
         mechanism in *Revocation* is the primary one or the fallback
   - [ ] Traefik: that a non-`2xx` from `forwardAuth`, `Set-Cookie` and body included, reaches the
         browser unaltered — the one property the two-cookie design cannot work without
-- [ ] `crates/weebo-si-endpoint-auth`: domain model and `decide()`, table-driven tests, no I/O
-- [ ] Path normalisation and rule matching, with a table of bypass attempts as the test corpus
-- [ ] Ports and in-memory fakes; `authorize_request` use case against the fakes
-- [ ] `openidconnect` adapter: code + PKCE, `TokenVerifier` with a background JWKS cache, startup
-      claim check
-- [ ] `SessionCodec`: sealed cookies, host binding, one-time host grants, key rotation with a
+- [x] `crates/weebo-si-endpoint-auth`: domain model and `decide()`, table-driven tests, no I/O
+- [x] Path normalisation and rule matching, with a table of bypass attempts as the test corpus
+- [x] Ports and in-memory fakes; `authorize_request` use case against the fakes
+- [x] OIDC adapter: code + PKCE, `TokenVerifier` with a background JWKS cache, startup claim
+      check against `claims_supported`. Built on `jsonwebtoken` + `reqwest` rather than the
+      `openidconnect` crate — see the changelog
+- [x] `SessionCodec`: sealed cookies, host binding, one-time host grants, key rotation with a
       previous key
-- [ ] `kube` informer adapter over `Ingress`/`Route` in Che namespaces + `Namespace`, host index
-      with conflict detection and provenance; `/readyz` gated on cache sync
-- [ ] `WorkloadIdentity`: pod-address index over DWO-labelled pods, cached `TokenReview` for
-      workspace service-account tokens
-- [ ] Trusted-proxy modes (`Auto` against `EndpointSlice`, `Static`, `Off`), the `/selftest` route
-      and the periodic probe, the `Auto`/`On`/`Off` table and its `Degraded` conditions, `--check`
-      running the probe once
-- [ ] Challenge selection: `302` for a navigation, `401` + `WWW-Authenticate` for everything else,
+- [x] `kube` informer adapter over `Ingress` in Che namespaces + `Namespace` + `WeeboSiConfig`,
+      host index with conflict detection and provenance; `/readyz` gated on cache sync. The
+      `Route` watch lands with the `OpenShiftRoute` proxy half below
+- [x] Policy compiled on the informer event — rules, delegation after `overrides`, team resolution —
+      into an immutable index swapped atomically, with a test that a malformed annotation fails at
+      compile time and that a change is visible on the next request rather than at a TTL (the
+      domain half: `compile()`, `HostIndex` and its conflict rule; the `kube` watch that calls
+      them is the informer-adapter item above)
+- [x] Identity caches (opened sessions, verified bearers, `TokenReview`), keyed by hash, bounded,
+      with the test that says a policy change alters the verdict for an already-cached identity
+- [x] A benchmark on `decide()` that fails the build past its threshold (`task rust:bench`) —
+      and it measured the decision an order of magnitude faster than this RFC assumed, which is
+      recorded under *Capacity*. Still absent: the load step of the conformance run, which needs
+      a real Traefik
+- [x] `WorkloadIdentity`: pod-address index over DWO-labelled pods, cached `TokenReview` for
+      workspace service-account tokens — the review itself in the inbound adapter, before the
+      decision, so the request path keeps its no-I/O invariant
+- [x] `/selftest` (behind this process's own probe token), the periodic probe, a forged address
+      that survives the trip revoking pod-address identity at runtime, and the `Static` CIDR mode
+      as `trusted_proxy: {cidrs: […]}` — which a `ReverseProxy` deployment is *required* to set.
+      Still absent: the `Auto` peer check against the controller's own `EndpointSlice`, and
+      `--check` running the probe once
+- [x] Challenge selection: `302` for a navigation, `401` + `WWW-Authenticate` for everything else,
       as a domain decision with its own test table
-- [ ] `bins/endpoint-gateway`: composition root, config file, `--check`
-- [ ] Chart: deployment (3 replicas, anti-affinity, `system-cluster-critical`), PDB, ingress,
-      `Secret` wiring, error-page middleware, revocation `ConfigMap` and its scoped RBAC, metrics,
-      webhook rules rendered per the dialect's `target_kind()`
-- [ ] Multi-stage `Containerfile` plus its `.hardened` variant, per-brick CI workflow, and
-      `task audit` covering the new binary — the same deliverables RFC 0002 shipped, not implied
-- [ ] Logging policy: denials always, one line per session-host, `allow_sample` for debugging, and
-      a test that no line carries a cookie, a token or a grant
-- [ ] `weebo-si-crd`: `features.endpointAuth`, catalogue, grants, `default`, `endpointSelection`,
+- [x] `bins/endpoint-gateway`: composition root, config file, `--check`
+- [x] Chart: deployment (3 replicas, anti-affinity, `system-cluster-critical`), PDB, ingress,
+      `Secret` wiring, revocation `ConfigMap` and its scoped RBAC, metrics, webhook rules
+      rendered per the dialect's `target_kind()`, and the error-page middleware — which points at
+      a service the admin names, because a page for "the gateway is down" cannot be served by the
+      gateway
+- [x] Multi-stage `Containerfile` (scratch, static-PIE, non-root), per-brick CI workflow, and
+      `task audit` covering the new binary. No `.hardened` variant — no brick in this repo has
+      one, which is a repo-wide gap rather than this feature's
+- [x] Logging policy: every denial and every challenge with its reason, one line per session per
+      host for allows, `allow_sample` for debugging, and a signature that cannot carry a cookie, a
+      token or a grant
+- [x] `weebo-si-crd`: `features.endpointAuth`, catalogue, grants, `default`, `endpointSelection`,
       `hosts`, `enforcement`, `breakGlassIdentities`, validation
-- [ ] Challenge selection's third shape: the framed-request page, alongside `302` and `401`
-- [ ] Back-channel logout: logout-token verification, `jti` replay cache, the `ConfigMap`
-      revocation store and its informer, the sweep, the discovery-document startup check
-- [ ] Periodic revalidation: refresh token sealed into the SSO cookie only, lazy re-proof on use at
-      `/host-session`, claim renewal, the sliding cap at `revalidation.interval`, and the
-      `Degraded` condition when neither mechanism is on
-- [ ] Delegation as a list, `Team` resolved from `spec.teams` through namespace ownership, and the
-      `overrides` intersection — with a test that an override can never widen
-- [ ] Group filtering: the interesting-set index, its generation, the sealed-size ceiling and the
-      `prompt=none` re-auth when a session predates the current generation
-- [ ] `GateAttachment` port with `AttachmentMode` and `target_kind()`, Traefik dialect, `Custom`
+- [x] Challenge selection's third shape: the framed-request page, alongside `302` and `401` — the
+      domain half; the page itself is the inbound adapter's
+- [x] Back-channel logout: logout-token verification, the `ConfigMap` revocation store and its
+      informer, the sweep, the discovery-document startup check. The replay set is the
+      one-time-grant cache; a `jti`-specific one is not separate yet
+- [x] Periodic revalidation: refresh token sealed into the SSO cookie only, lazy re-proof on use
+      at `/host-session`, claim renewal, and a startup warning when neither mechanism is on
+- [x] Delegation as a list, `Team` resolved from `spec.teams` through namespace ownership, and
+      the `overrides` intersection — with a test that an override can never widen
+- [x] Group filtering: the interesting-set index (the union of every `allow-groups` in the
+      cluster), its generation, the sealed-size ceiling, and a silent re-proof at the token
+      endpoint when a session predates the current generation
+- [x] The attachment port with `AttachmentMode` and `target_kind()`, Traefik dialect, `Custom`
       templating dialect with declared keys
-- [ ] `HaproxyIngress` dialect (community controller) and `Nginx` dialect
-- [ ] `OpenShiftRoute` dialect: `Route` retargeting, `hardening.weebo.io/upstream`, the per-namespace
-      companion `Service` + `EndpointSlice` and their reconciliation, `guarded_kinds()` growing two
-      kinds, the proxy shell around the same `decide()` — upgrades, streaming, timeouts, body
-      limits — and the test asserting both shells reach the same verdict for the same request
-- [ ] Host-ownership patterns: templates, anchored regexes with a named `user` capture, config-load
-      validation, and the refusal message naming the pattern list
-- [ ] `weebo-si-webhook`: `Ingress` mutation through the port, rule-list validation against grants,
-      host-ownership validation, `namespaceSelector` on Che workspace namespaces
+- [x] `HaproxyIngress` dialect (community controller) and `Nginx` dialect — annotations and
+      guard coverage; neither has been through a conformance run
+- [ ] **`OpenShiftRoute` is written and deferred, and the two are not the same thing.** In the
+      tree: `Route` retargeting and its sweep, `hardening.weebo.io/upstream`, the per-namespace
+      companion `Service` + `EndpointSlice`, `guarded_kinds()` growing two kinds, and the proxy
+      shell around the same `decide()` — streaming both ways, `Upgrade` honoured on both sides,
+      hop-by-hop headers dropped, the gate's own cookie kept out of the application, plus the test
+      asserting both shells build the same request. **Not** in: a single request served through a
+      real OpenShift router. So the base test suite asserts none of it — those tests are an
+      opt-in tier, `task test:openshift` — the chart's default dialect is `Traefik`, and the
+      gateway warns at startup when the mode is on. The item stays open until OpenShift is a
+      cluster somebody has run this against
+- [x] Host-ownership patterns: templates, anchored regexes with a named `user` capture,
+      config-load validation, and the refusal naming the namespace
+- [x] `weebo-si-webhook`: routing-object mutation through the port, host-ownership validation,
+      rule-list validation against grants **through the gateway's own compiler** rather than a
+      second implementation of it, `namespaceSelector` on Che workspace namespaces
 - [ ] Dialect conformance suite, run against a real Traefik — the four inbound headers, the three
       outbound, `Set-Cookie` on a `302`, the `401` body and its `WWW-Authenticate`, a spoofed
       `X-Auth-Request-User`, a forged `X-Real-Ip` from another namespace, a `403` that blocks;
       Nginx and HAProxy dialects behind it
-- [ ] `weebo-si-controller`: the shared `Middleware`, reconcile sweep, annotation stripping on `Off`
-- [ ] `weebo-si-policy-guard`: `EndpointRoutingWrite` subject and its nine-row table, DWO
+- [x] `weebo-si-controller`: the shared `Middleware`, reconcile sweep, annotation stripping on
+      `Off`
+- [x] `weebo-si-policy-guard`: `EndpointRoutingWrite` subject and its nine-row table, DWO
       exemption, chain pinning by value, break-glass identities
-- [ ] envtest: mutation, each guard row, DWO's own create and update surviving, a user-authored
-      `Ingress` being gated and remaining editable, reconcile convergence, host-collision refusal,
-      every row of the `podNetwork` / probe table including `On` being overruled by a probe that
-      saw a forgery
+- [x] envtest: the mutation attaching the chain, DWO's own create surviving, a user-authored
+      `Ingress` gated and still editable, a host another namespace owns refused, the chain pinned
+      by value, an unusable rule list refused with its reason, break-glass allowed for a listed
+      identity and refused for a developer, `DELETE` allowed. Still absent there: reconcile
+      convergence and the `podNetwork`/probe table, which need the controller and a network
 - [ ] End-to-end: owner allowed, non-owner denied, teammate allowed by `[Team]` and denied once an
       override narrows them, delegated user allowed, verified bearer allowed,
       foreign bearer `401`, cross-host cookie replay denied, `/healthz` open while `/actuator/` is
       not, path-confusion corpus, a prepended header-rewriting middleware refused at admission, a
       second namespace claiming the same host refused
-- [ ] *Developer continuity* as an executable table: WebSocket upgrade, SPA cross-endpoint `fetch`,
-      XHR on an expired session, sliding re-mint, preflight, break-glass, a `curl` from the
-      workspace pod with no credential at all, the same from another user's pod refused
+- [x] *Developer continuity* as an executable table —
+      `crates/weebo-si-endpoint-auth/tests/developer_continuity.rs`, one test per row, with the
+      four wire-level rows it cannot cover named in the suite rather than dropped
 - [ ] envtest on OpenShift-shaped objects: `Route` mutation, `spec.to` pinning, the retarget
       surviving a DWO update
-- [ ] Docs updated: `docs/weebosiconfig.md`, `docs/bricks/endpoint-gateway.md`
+- [x] Docs updated: `docs/weebosiconfig.md`, `docs/bricks/endpoint-gateway.md`
 - [ ] RFC flipped to `Implemented`
 
 ## References
@@ -1966,3 +2292,23 @@ the command that established it, so the next reader is not asked to take this RF
 
 | Date | Change |
 | ---- | ------ |
+| 2026-09-15 | **Implemented, except the parts that need a cluster and the `OpenShiftRoute` proxy half.** In: the decision core and its caches; the gateway binary with its OIDC relying party, sealed cookies, informer-backed catalogue, pod/`TokenReview` self-origin, revocation store, probe and metrics; `features.endpointAuth` on the CRD with validation; the mutating and validating webhooks; the reconcile sweep and the shared Traefik `Middleware`; the nine-row guard; the `endpoint-gateway` chart and the operator's webhook rules per dialect; the `Containerfile` and its CI workflow; both docs pages. Not in, and listed rather than implied: the ground-truth spike, the dialect conformance suite, the envtest tier, the `criterion` benchmark, the `ReverseProxy` shell that would let the `OpenShiftRoute` dialect carry traffic, the trusted-proxy peer check, group filtering beyond a cap, and the per-session allow log line. The plan above is ticked to match. |
+| 2026-09-15 | **`jsonwebtoken` + `reqwest` rather than the `openidconnect` crate.** *Architecture* named one crate for both halves; the implementation splits them, because the two halves have opposite requirements. `TokenVerifier` must be **synchronous and unable to reach the network** — that is how "no I/O on the request path" becomes a compile-time property — and a crate whose verification API is built around an async client cannot express that. The login path is three HTTP calls against a spec (discovery, token, refresh) written out in about two hundred lines, which is a smaller surface than the generic client it replaces and one where the PKCE and state handling are visible rather than configured. |
+| 2026-09-15 | **The adapters live in `bins/endpoint-gateway`, not in the brick crate** — *Architecture* above says why, and the short version is that the operator would otherwise link the gateway's whole dependency tree to read an enum. |
+| 2026-09-15 | **`Mutation::SetString` is new in the chassis.** The `ReverseProxy` dialect attaches the gate by writing `spec.to.name`, which neither existing variant can express. Deliberately string-valued and path-segmented: a variant carrying arbitrary structure would be a way for a feature to rewrite an object rather than to annotate one, and the chassis still does not know what a JSON Pointer is. |
+| 2026-09-15 | **A service-account `TokenReview` happens in the inbound adapter, before `decide()`, never inside it.** The port stays synchronous and cache-only; the handler fills that cache on a miss. This is the one place where RFC 0009's no-I/O invariant met a mechanism that genuinely needs an API call, and putting the call *above* the decision — visible in the handler, once per token — was the only resolution that did not weaken the invariant into a convention. |
+| 2026-09-15 | **The gateway watches `WeeboSiConfig` itself** rather than being handed a chart-rendered copy of the catalogue and the grants. *What the admin installs* implied the chart would render both readers' configuration; in practice that makes a grant edit a redeploy, and two files that can disagree about who may reach what. The gateway's own file now holds only what is *its* — issuer, claims, cookies, caches — and everything shared comes from the object, at informer lag. |
+| 2026-09-15 | **Sliding re-mint needs Traefik's `addAuthCookiesToResponse`**, which the RFC did not name. Without it a `Set-Cookie` on the gate's own `200` never reaches the browser, so *Developer continuity*'s "an endpoint in continuous use never expires under the person using it" would have been false on the reference dialect. The controller now sets it on the shared `Middleware`, and the cookie is re-minted only past half-life so a two-hundred-asset page load mints one cookie rather than two hundred. |
+| 2026-09-15 | **OpenShift is deferred, and the base test suite says so.** The `ReverseProxy` dialect is in the tree and no OpenShift router has ever served a request through it, which are two different facts that a green test suite would have blurred into one. So the suite does not assert it: its thirteen tests are an opt-in tier (`task test:openshift`, which runs exactly the ignored ones), the dialect table in the base test covers `Traefik`, `Nginx` and `HaproxyIngress` only, the chart's default dialect is `Traefik`, and the gateway logs a warning at startup when the mode is on. This is the same distinction the `Custom` dialect's `Degraded` condition makes — "allowing the dialect *is* the admin's assertion that it conforms" — applied to a dialect this repo wrote itself. |
+| 2026-09-15 | **The mutation was quietly making the guard's row 6 unreachable, and the envtest is what found it.** Mutating admission runs *before* validating admission, so a mutation that overwrote a conflicting managed annotation meant the guard never saw the tampering: a developer prepending a `headers` middleware in front of the gate had their edit silently corrected and was told nothing, and row 6 — the row an attacker reads first — could not fire at all. The rule is now asymmetric and the asymmetry is the whole relationship between the two webhooks: **absent means attach, present-but-different means leave it to the guard**, except on `CREATE`, where there is no previous gate to compare against and the mutation does own the value outright. DevWorkspace Operator dropping our annotations is "absent", so the self-healing property is untouched. Taught us that "the patch is idempotent" and "the patch cannot mask a refusal" are different claims, and this RFC only argued the first. |
+| 2026-09-15 | **What the guard expects is computed from the object that already exists, never from the submitted one.** Found while writing the same suite: reading the proposed object let an `UPDATE` write `hardening.weebo.io/endpoint-auth: bypass` and, in the same request, make the guard compute "this endpoint expects no gate" — the one-annotation bypass, performed by the person the feature constrains. The same mistake RFC 0007's registry guard documents about `target_is_managed`, made again in a different shape, in a feature whose own RFC quotes that guard. |
+| 2026-09-15 | **Second pass: the `ReverseProxy` shell, and the measurements.** `OpenShiftRoute` can now carry traffic — the same `decide()`, then a streaming forward to the backend recorded in `hardening.weebo.io/upstream`, with `Upgrade` honoured on both sides so an HMR socket still reconnects, hop-by-hop headers dropped, and the gate's own cookie stripped before the application sees it. The `Route` sweep and the per-namespace companion `Service` + `EndpointSlice` came with it. **Written is not supported**: see the entry below. Also landed: the identity-cache and logging policies as configured rather than implied, group filtering with a generation, rule-list validation at admission through the gateway's own compiler, the benchmark, the *Developer continuity* table as tests, the error-page middleware, and an envtest tier over real `Ingress` admission. |
+| 2026-09-15 | **The decision is ~130 ns, not "single-digit microseconds".** The benchmark this RFC asked for was written and immediately corrected the section that asked for it: compiling the policy on the informer event turned rule matching into a prefix comparison, so the worst case a developer can configure — sixteen rules, matched last — is ~270 ns, and a 200-asset burst is ~195 ns per asset. *Capacity* now plans from the request (~50 µs of CPU) rather than from the decision, because the decision stopped being the expensive part. |
+| 2026-09-15 | **A `ReverseProxy` deployment may not believe a client-address header from any caller, and the gateway refuses to start if told to.** On a forward-auth dialect the only thing that ever calls `/auth` is the ingress controller, so trusting `X-Real-Ip` is sound. In reverse-proxy mode every caller reaches the process directly, and the same trust would let any pod that can open a connection claim any namespace's identity with one header. `trusted_proxy` gained `any` / `cidrs` / `off`, and the unsafe combination is a startup refusal rather than a documentation note — this is the one place where the two modes' security properties genuinely differ, and *Attaching the gate* did not say so. |
+| 2026-09-15 | **Admission validates the developer's annotations by calling the gateway's own compiler.** RFC 0009 promised "rejected with the reason, not silently dropped", and the obvious implementation — a second parser in the webhook — is how admission ends up accepting what the gate then refuses. `weebo-si-webhook` therefore depends on `weebo-si-endpoint-auth`, which is exactly what keeping that crate at three dependencies bought. One difference is deliberate: admission uses `onUnknownKey: Deny` where the gateway uses the cluster's setting, because at admission there is a person watching and a typo is worth naming, while at runtime an endpoint that stops answering is worse than one that is more closed than its author meant. |
+| 2026-09-15 | **First implementation slice: the decision core, with no adapters.** `crates/weebo-si-endpoint-auth` now holds the domain (`decide()`, path normalisation, policy compilation, the host index and its conflict rule), the ports, the identity caches and the in-memory fakes — 84 tests, no cluster, no identity provider, no network. What is *not* here and is the next slice: every adapter (`kube` informers, `openidconnect`, the AES-GCM `SessionCodec`, the `axum` router), the `endpoint-gateway` binary, the chart, and the whole operator side (CRD, webhook, reconciler, guard). The plan above is ticked accordingly rather than optimistically. |
+| 2026-09-15 | **The first bug the tables caught was narrowing, and it was silent.** `authorise()` read `policy.profile` — the *endpoint's* profile — where it had to read the profile the *path* resolved to, so an endpoint shared with a colleague delegated on `/actuator/` as readily as on `/`. Every unit test on delegation passed; the one test written from *What the developer writes* — "narrowing is invisible to the owner and the whole point for the delegate" — failed. Taught us that per-path narrowing needs a test whose owner-side and delegate-side assertions sit in one function: each half alone looks correct. |
+| 2026-09-15 | **`preflight` joins the `reason` enum.** *The decision* allows a genuine CORS preflight before any identity is considered, and the closed label list in *Observability* had no word for that allow — the first implementation reached for `anonymous`, which would have made a preflight indistinguishable from an `open` path rule in the one metric an admin uses to find unauthenticated traffic. The list is amended above rather than the code bent to fit it. |
+| 2026-09-15 | **"No I/O on the request path" is now a compile-time property, not a convention.** Every port the decision reaches for is a *synchronous* trait (`EndpointCatalog`, `SessionCodec`, `TokenVerifier`, `WorkloadIdentity`, `RevocationStore`, `Teams`), so an adapter that wanted to call the apiserver while a request waits has nowhere to `await` it. `IdentityProvider` — the code exchange, once per sign-in — is the one boxed-future port. *Request cost* argued this as an intention; the type system is where it stops being one. |
+| 2026-09-15 | **Cached identities carry no team.** *Request cost* says "cache the identity, never the verdict", and team membership turned out to sit on the wrong side of that line: it is derived from namespace ownership, it moves when an admin edits `spec.teams`, and sealing it into a cache entry would have made "add Bob to the team" take effect at the cache TTL instead of on the next request. The cached value is username, groups and `sid`; the team is resolved per request through the `Teams` port, which is a map read from the same informer. |
+| 2026-09-15 | **A compile failure fails closed *with an owner*.** The RFC says an unparseable annotation is refused at admission and recorded; it did not say what the gateway indexes for an object that reaches it broken anyway — a grant narrowed after the annotation was written, or a webhook that was off at the time. Leaving it out of the index denies identically, and leaves the developer no way to reach their own application and read the Event explaining why. `EndpointPolicy::closed` keeps the owner and drops everything else. |

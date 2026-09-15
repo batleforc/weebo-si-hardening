@@ -1,0 +1,92 @@
+{{- if .Values.rbac.create }}
+{{/*
+  Every grant here is a *watch*, with exactly one exception, and that shape is the point: RFC
+  0009's request path reads memory, so the apiserver sees a handful of long-lived connections
+  rather than a call per request.
+
+  The exception is the revocation `ConfigMap` — the gateway's only write verb, on one named
+  object in its own namespace. `TokenReview` is a `create` by API shape rather than a write:
+  it asks the apiserver to authenticate a token the caller already presented.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+rules:
+  # The catalogue, the grants, the overrides and the host-ownership patterns.
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebosiconfigs"]
+    verbs: ["get", "list", "watch"]
+  # Which namespace an endpoint lives in, who owns it, and which team that owner is in.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # The routing objects whose annotations *are* the policy.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  # Workspace pods, for the address → namespace index. The watch is label-selected to
+  # DevWorkspace-labelled pods in code; RBAC cannot express that, which is why the selector is
+  # part of the adapter rather than of this grant.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # The self-origin fallback where the cluster SNATs: resolving a workspace's own service-account
+  # token to its namespace.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "endpoint-gateway.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "endpoint-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# The one write verb, on one named object, in this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}-revocations
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .Values.config.backchannelLogout.configmap | quote }}]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # `create` cannot be narrowed by `resourceNames` — Kubernetes RBAC has no name-level grant for
+  # it — so the first revocation of a fresh install creates the object and every later one
+  # patches the named one above.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}-revocations
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "endpoint-gateway.fullname" . }}-revocations
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "endpoint-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

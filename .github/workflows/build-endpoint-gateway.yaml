@@ -1,0 +1,41 @@
+name: Build endpoint-gateway
+# Fires only when this brick's own code moves, or when a workspace-level change
+# means every binary links something different. RFC 0009 is the design.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "bins/endpoint-gateway/**"
+      - "crates/weebo-si-endpoint-auth/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/build-endpoint-gateway.yaml"
+      - ".github/workflows/brick.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "bins/endpoint-gateway/**"
+      - "crates/weebo-si-endpoint-auth/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/build-endpoint-gateway.yaml"
+      - ".github/workflows/brick.yaml"
+  # Daily, so a CVE disclosed against the base image or a dependency *after* the
+  # last commit still trips CI the next morning. This is the "future CVE" catch,
+  # not a build-time snapshot.
+  schedule:
+    - cron: "40 2 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  brick:
+    name: endpoint-gateway
+    uses: ./.github/workflows/brick.yaml
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+    with:
+      crate: endpoint-gateway
+      path: bins/endpoint-gateway

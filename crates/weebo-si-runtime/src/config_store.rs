@@ -16,9 +16,9 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, DwocPinConfig, FeatureMode, ImagePolicyConfig, KubeArmorPolicyConfig, NamespaceName,
-    NetworkProfilesConfig, PolicyGuardConfig, RegistryConfig, RuntimeBackend, SINGLETON_NAME, Team,
-    WeeboSiConfig,
+    Backend, DwocPinConfig, EndpointAuthConfig, FeatureMode, ImagePolicyConfig,
+    KubeArmorPolicyConfig, NamespaceName, NetworkProfilesConfig, PolicyGuardConfig, RegistryConfig,
+    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig,
 };
 
 use weebo_si_chassis::FeatureId;
@@ -58,6 +58,7 @@ pub struct KubeConfigStore {
     image_policy: Arc<RwLock<Option<ImagePolicyConfig>>>,
     kubearmor_policy: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: Arc<RwLock<Option<RegistryConfig>>>,
+    endpoint_auth: Arc<RwLock<Option<EndpointAuthConfig>>>,
     resolved_backend: Arc<RwLock<Backend>>,
     /// The engine `kubearmor-policy` resolved. A second handle rather than a variant of
     /// `resolved_backend`: the two features resolve different enums against different
@@ -102,6 +103,7 @@ impl KubeConfigStore {
         let image_policy = Arc::new(RwLock::new(None));
         let kubearmor_policy = Arc::new(RwLock::new(None));
         let registry_config = Arc::new(RwLock::new(None));
+        let endpoint_auth = Arc::new(RwLock::new(None));
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
         let metrics = Metrics::register(registry).map_err(|err| {
@@ -121,6 +123,7 @@ impl KubeConfigStore {
         let image_policy_for_task = Arc::clone(&image_policy);
         let kubearmor_policy_for_task = Arc::clone(&kubearmor_policy);
         let registry_config_for_task = Arc::clone(&registry_config);
+        let endpoint_auth_for_task = Arc::clone(&endpoint_auth);
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
         let annotation_key_for_task = Arc::clone(&annotation_key);
@@ -141,6 +144,7 @@ impl KubeConfigStore {
                         &image_policy_for_task,
                         &kubearmor_policy_for_task,
                         &registry_config_for_task,
+                        &endpoint_auth_for_task,
                         &resolved_backend_for_task,
                         &resolved_runtime_backend_for_task,
                         &annotation_key_for_task,
@@ -173,6 +177,7 @@ impl KubeConfigStore {
             &image_policy,
             &kubearmor_policy,
             &registry_config,
+            &endpoint_auth,
             &resolved_backend,
             &resolved_runtime_backend,
             &annotation_key,
@@ -188,6 +193,7 @@ impl KubeConfigStore {
             image_policy,
             kubearmor_policy,
             registry_config,
+            endpoint_auth,
             resolved_backend,
             resolved_runtime_backend,
             namespace_view,
@@ -238,6 +244,14 @@ impl KubeConfigStore {
     /// disagree about what this operator owns.
     pub fn registry_config(&self) -> Arc<RwLock<Option<RegistryConfig>>> {
         Arc::clone(&self.registry_config)
+    }
+
+    /// The `Arc` RFC 0009's admission routes and its reconcile sweep are both constructed with.
+    /// **One handle, three readers** — the mutation, the guard and the controller — for the same
+    /// reason `image-policy` shares one: two copies of the dialect free to disagree is a gate
+    /// attached one way and pinned another.
+    pub fn endpoint_auth_config(&self) -> Arc<RwLock<Option<EndpointAuthConfig>>> {
+        Arc::clone(&self.endpoint_auth)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -340,6 +354,7 @@ fn sync_from_store_initial(
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
+    endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -362,6 +377,7 @@ fn sync_from_store_initial(
         image_policy,
         kubearmor_policy,
         registry_config,
+        endpoint_auth,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -383,6 +399,7 @@ fn sync_from_store(
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
+    endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -407,6 +424,7 @@ fn sync_from_store(
         image_policy,
         kubearmor_policy,
         registry_config,
+        endpoint_auth,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -516,6 +534,19 @@ fn sync_from_store(
                 .unwrap_or(0),
         );
 
+    metrics
+        .feature_mode
+        .with_label_values(&["endpoint-auth"])
+        .set(
+            config
+                .spec
+                .features
+                .endpoint_auth
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
     // Set from a full recount rather than incremented, same as the gauge below: an entry whose
     // pattern was fixed must drop out of `invalid`, not keep reporting a fault that is gone.
     let (mut valid, mut invalid) = (0i64, 0i64);
@@ -570,6 +601,7 @@ fn apply_config(
     image_policy: &Arc<RwLock<Option<ImagePolicyConfig>>>,
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
+    endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -596,6 +628,9 @@ fn apply_config(
     }
     if let Ok(mut guard) = registry_config.write() {
         *guard = config.spec.features.registry_config.clone();
+    }
+    if let Ok(mut guard) = endpoint_auth.write() {
+        *guard = config.spec.features.endpoint_auth.clone();
     }
     if let Ok(mut guard) = resolved_runtime_backend.write() {
         let preference = config
@@ -699,6 +734,20 @@ impl FeatureGate for KubeConfigStore {
             "registry-config" => {
                 let guard = self
                     .registry_config
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
+            // One arm, three readers: RFC 0009's mutation, its guard and its reconcile sweep all
+            // report this `FeatureId`, so one `mode` and one `namespaceSelector` govern the whole
+            // feature — turning it off turns off all three at once, which is what makes the
+            // rollback in *Operational considerations* one edit.
+            "endpoint-auth" => {
+                let guard = self
+                    .endpoint_auth
                     .read()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match guard.as_ref() {

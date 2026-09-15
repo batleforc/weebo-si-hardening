@@ -11,6 +11,7 @@ repository.workspace = true
 kube = { workspace = true, features = ["derive"] }
 k8s-openapi = { workspace = true }
 schemars = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 # Not used directly — required in scope for `#[derive(CustomResource)]`'s generated `crd()`
 # method, which names `serde_json` from the call site.

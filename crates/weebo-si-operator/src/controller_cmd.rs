@@ -221,6 +221,16 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         operator_namespace: NamespaceName::new(operator_namespace.clone()),
     };
 
+    // RFC 0009's sweep: it covers the routing objects that existed before the feature was
+    // switched on, puts the annotations back when anything strips them, and owns the one shared
+    // Traefik `Middleware` every gated Ingress names. Constructed unconditionally and inert
+    // until `spec.features.endpointAuth` exists, like the admission half.
+    let endpoint_auth = weebo_si_controller::EndpointAuthDeps {
+        config: config_store.endpoint_auth_config(),
+        gate: config_store.clone(),
+        operator_namespace: NamespaceName::new(operator_namespace.clone()),
+    };
+
     let ready = Ready::default();
     ready.mark_ready();
     tokio::spawn(observability::serve(
@@ -244,6 +254,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         Some(network_profiles),
         kubearmor_policy,
         Some(registry_config),
+        Some(endpoint_auth),
     )
     .await;
     Ok(())

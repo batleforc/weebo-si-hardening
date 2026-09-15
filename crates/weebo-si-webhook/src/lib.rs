@@ -5,6 +5,7 @@
 //! `image-policy`'s two validating routes over `DevWorkspace` and `Pod` (RFC 0005's *Two
 //! enforcement points*).
 
+pub mod endpoint_auth;
 pub mod extract;
 pub mod image_policy;
 pub mod metrics;
@@ -13,6 +14,10 @@ pub mod registry_guard;
 pub mod render;
 pub mod router;
 
+pub use endpoint_auth::{
+    EndpointAuthState, GateMutation, MUTATE_INGRESSES_PATH, MUTATE_ROUTES_PATH, RoutingObjectWrite,
+    VALIDATE_INGRESSES_PATH, VALIDATE_ROUTES_PATH, endpoint_auth_router,
+};
 pub use image_policy::{
     ImagePolicyState, VALIDATE_DEVWORKSPACES_PATH, VALIDATE_PODS_PATH, image_policy_router,
     registries,

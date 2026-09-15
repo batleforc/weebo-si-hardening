@@ -68,11 +68,25 @@ jobs:
           fi
       - name: cargo test
         run: cargo test --workspace --all-features --locked
+      # RFC 0009's `ReverseProxy` dialect is deferred: written, never run against a real
+      # OpenShift router, and deliberately not asserted by the suite above. It is still *built*
+      # and still run here, in a step that says what it is — deferred code that nothing exercises
+      # is deferred code that stops compiling, and finding that out the day OpenShift arrives is
+      # the expensive way.
+      - name: Deferred OpenShift tier (not a supported configuration)
+        run: cargo test --workspace --all-features --locked -- --ignored
+
+      # The request-cost budget RFC 0009 promises, asserted rather than hoped: the benchmark
+      # fails the build if a decision crosses 50 µs. Generous by two orders of magnitude, because
+      # a benchmark that fails on a noisy runner is a benchmark somebody deletes.
+      - name: Decision budget
+        run: cargo bench -p weebo-si-endpoint-auth --locked
+
       # `--doc` is an error, not an empty run, when no workspace member has a lib
-      # target — and today both bricks are binaries. The guard is here rather
-      # than a deleted step because `crates/` is coming: the day a shared crate
-      # lands, its doc examples get tested without anyone remembering to re-add
-      # this. jq is preinstalled on GitHub-hosted runners.
+      # target. The guard predates `crates/` and now passes — the shared crates
+      # have lib targets, so their doc examples are tested — and it stays
+      # because the condition it guards against is a configuration, not a phase.
+      # jq is preinstalled on GitHub-hosted runners.
       - name: Doc tests
         run: |
           if cargo metadata --no-deps --format-version 1 \

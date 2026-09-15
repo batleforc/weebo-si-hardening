@@ -6,9 +6,19 @@ tasks:
     cmds:
       - helm lint charts/weebo-si-operator
       - helm lint charts/preauth-proxy
+      - helm lint charts/endpoint-gateway
       # `helm lint` alone does not catch a template execution error (e.g. a `required` value
       # with no default) — `helm template` does, so both charts are actually rendered here too.
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening > /dev/null
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=openshift > /dev/null
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set certificates.provider=none > /dev/null
       - helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null
+      # RFC 0009's gateway, rendered in both enforcement modes and with the autoscaler on: the
+      # `Observe` path is the one an admin actually uses first, so a template error in it would
+      # be found during a rollout rather than in CI.
+      - helm template ci charts/endpoint-gateway --namespace weebo-si-hardening > /dev/null
+      - helm template ci charts/endpoint-gateway --namespace weebo-si-hardening --set config.enforcement=Observe --set autoscaling.enabled=true > /dev/null
+      # And the operator's own rules for both dialect shapes, since which *kind* they are
+      # rendered for is a chart value rather than a code path.
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
