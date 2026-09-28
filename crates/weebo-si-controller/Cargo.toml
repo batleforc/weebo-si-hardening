@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy" }
@@ -26,12 +27,17 @@ envtest = []
 
 [dev-dependencies]
 weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+# The real kube adapters, so the envtest tier proves the provisioning half against an apiserver
+# with the upstream CRDs installed rather than against a fake.
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity", features = ["testing"] }
 weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy", features = ["testing"] }
 weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config", features = ["testing"] }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_yaml_bw = { workspace = true }
 
 [lints]
 workspace = true

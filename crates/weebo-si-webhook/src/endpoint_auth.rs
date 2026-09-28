@@ -34,8 +34,8 @@ use weebo_si_chassis::{
 };
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AttachmentMode,
-    DEVELOPER_ANNOTATIONS, DEVWORKSPACE_ID_LABEL, EndpointAuthConfig, NamespaceName,
-    RULES_ANNOTATION, RoutingKind,
+    DEVELOPER_ANNOTATIONS, DEVWORKSPACE_ID_LABEL, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_MANAGED,
+    EndpointAuthConfig, NamespaceName, RULES_ANNOTATION, RoutingKind,
 };
 use weebo_si_policy_guard::{
     EndpointRoutingGuard, EndpointRoutingWrite, ManagedField, Provenance, WriteOperation,
@@ -166,7 +166,26 @@ impl Feature<RoutingObjectWrite> for GateMutation {
             })
             .collect();
 
-        if let Some(retarget) = attachment.retarget.as_ref() {
+        // The retarget obeys the same asymmetry, and for the same reason — which it did not when
+        // it was written, because the rule above was reasoned about for annotations and the
+        // `ReverseProxy` dialect moved the gate somewhere an annotation is not. On this dialect
+        // the gate **is** `spec.to`, so a developer repointing their endpoint back at their own
+        // application is row 6's tampering wearing different clothes: correcting it here would
+        // discard that edit silently and make the guard's pin unreachable.
+        //
+        // "Absent" is the managed marker, not the backend: DevWorkspace Operator regenerating the
+        // object from the devfile drops our annotations along with the retarget, which is the
+        // self-healing case and must keep working; an object that still says `managed` while
+        // pointing somewhere else is somebody editing the gate.
+        let already_gated = subject
+            .annotations
+            .get(ENDPOINT_AUTH_ANNOTATION)
+            .map(String::as_str)
+            == Some(ENDPOINT_AUTH_MANAGED);
+        let retarget_is_ours = subject.operation == WriteOperation::Create || !already_gated;
+        if let Some(retarget) = attachment.retarget.as_ref()
+            && retarget_is_ours
+        {
             mutations.push(Mutation::SetString {
                 path: vec!["spec".into(), "to".into(), "name".into()],
                 value: retarget.service.clone(),
@@ -702,6 +721,7 @@ mod tests {
                 enforcement: GateEnforcement::Enforce,
                 allowed_middlewares: Vec::new(),
                 custom: None,
+                haproxy_prerequisite: false,
             },
             break_glass_identities: Vec::new(),
             owner: OwnerConfig {
@@ -863,6 +883,56 @@ mod tests {
             mutation,
             Mutation::Annotate { key, value } if key == weebo_si_crd::UPSTREAM_ANNOTATION && value == "my-app:80"
         )));
+    }
+
+    /// The retarget's half of "absent means attach, present-but-different means leave it to the
+    /// guard" — found missing by RFC 0009's OpenShift envtest tier on its first run.
+    ///
+    /// **Not `#[ignore]`d, while its sibling above is**, and the difference is the point: that one
+    /// is about a dialect no OpenShift router has served a request through, and this one is about
+    /// a mutation rule whose absence made a guard refusal unreachable. A regression test for a
+    /// security rule does not belong in an opt-in tier.
+    #[test]
+    fn the_retarget_is_not_reapplied_over_a_developer_moving_the_backend_back() {
+        let subject = |operation, annotations: BTreeMap<String, String>| RoutingObjectWrite {
+            operation,
+            namespace: NamespaceName::new("user-alice"),
+            kind: RoutingKind::Route,
+            annotations,
+            backend: Some(("my-app".to_owned(), 80)),
+        };
+        let facts = weebo_si_chassis::NamespaceFacts {
+            labels: Default::default(),
+            selection_annotation: None,
+        };
+        let catalog = weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog::new([]);
+        let ctx = Context::new(&[], &facts, &catalog);
+        let retargets = |subject: &RoutingObjectWrite| {
+            GateMutation::new(config(Dialect::OpenShiftRoute))
+                .evaluate(subject, &ctx)
+                .unwrap()
+                .mutations
+                .iter()
+                .any(|mutation| {
+                    matches!(mutation, Mutation::SetString { path, .. }
+                    if path == &vec!["spec".to_owned(), "to".to_owned(), "name".to_owned()])
+                })
+        };
+
+        // A CREATE: the mutation owns the backend outright, as it owns the annotations.
+        assert!(retargets(&subject(WriteOperation::Create, BTreeMap::new())));
+
+        // DevWorkspace Operator regenerating the object from the devfile drops our annotations
+        // along with the retarget. That is the self-healing case, and it must keep working — it
+        // is the whole reason the feature survives a workspace restart.
+        assert!(retargets(&subject(WriteOperation::Update, BTreeMap::new())));
+
+        // A developer repointing their gated endpoint back at their own application is row 6's
+        // tampering in a different field. Correcting it here would discard the edit in silence
+        // and make the guard's pin unreachable, so the mutation leaves it alone and the
+        // validating webhook is what answers.
+        let gated = BTreeMap::from([(ENDPOINT_AUTH_ANNOTATION.to_owned(), "managed".to_owned())]);
+        assert!(!retargets(&subject(WriteOperation::Update, gated)));
     }
 
     #[test]

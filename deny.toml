@@ -8,7 +8,28 @@ all-features = true
 # Any RUSTSEC advisory fails the audit. Exceptions go here with a comment saying why and
 # what unblocks them — never as a silent entry.
 yanked = "deny"
-ignore = []
+ignore = [
+  # RUSTSEC-2023-0071 — the Marvin attack on `rsa`: a timing sidechannel in RSA **private-key**
+  # operations (PKCS#1 v1.5 decryption and signing), through which an attacker who can observe
+  # timings can recover the key.
+  #
+  # `rsa` reaches this workspace one way only: `jsonwebtoken`'s `rust_crypto` feature, in
+  # `endpoint-gateway`, which uses it to **verify** RS256 signatures against the public keys the
+  # identity provider publishes at its JWKS. No RSA private key exists in that process — it holds
+  # no signing key, decrypts nothing, and mints no JWT — so there is no secret for the sidechannel
+  # to leak. The exposure the advisory describes is not reachable from any code path here.
+  #
+  # Nor is the feature optional. Built without `rust_crypto` (or `aws_lc_rs`), jsonwebtoken 10
+  # resolves a crypto provider that *panics* on the first signature it is asked about, which for
+  # this binary is the first bearer token any endpoint in the cluster ever presents. The other
+  # provider, `aws_lc_rs`, pulls `aws-lc-sys` — a C library built through cc/cmake — which breaks
+  # the no-cross-C-toolchain promise the whole dependency set and both musl builds are written
+  # around (see the `axum-server` comment in Cargo.toml).
+  #
+  # What unblocks it: `rsa` shipping constant-time padding (RustCrypto/RSA#626), or jsonwebtoken
+  # splitting `rust_crypto` so RSA verification does not drag in the private-key half.
+  "RUSTSEC-2023-0071",
+]
 
 [licenses]
 # Permissive only. These bricks ship inside images we redistribute, so a copyleft dependency

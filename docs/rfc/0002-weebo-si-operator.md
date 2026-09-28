@@ -4,7 +4,7 @@ title: weebo-si-operator
 status: Implemented
 authors: [batleforc]
 created: 2026-08-23
-updated: 2026-08-25
+updated: 2026-09-25
 decided: 2026-08-24
 brick: crates/weebo-si-operator
 supersedes: []
@@ -114,7 +114,10 @@ spec:
 
 Turning the first feature on is a two-step move, and the first step mutates nothing. The
 configuration has two halves: a **catalogue** of the DWOCs an admin is willing to see in use,
-and the **grants** deciding which of them a team reaches.
+and the per-team answer deciding which of them a team reaches. That second half was a `grants`
+map on this resource when this RFC was written and has been a `WeeboSiTeam` object since
+[RFC 0011](./0011-teams-and-users.md); the halves, and the reason there are two of them, are
+unchanged.
 
 ```yaml
 spec:
@@ -134,7 +137,7 @@ spec:
       default: baseline
 ```
 
-With no `spec.teams` and no `grants` written yet, every namespace resolves to `baseline`. That
+With no team declared yet, every namespace resolves to `baseline`. That
 is deliberately the simplest useful configuration — one mandated DWOC for the whole cluster —
 and it is the right thing to measure before any routing exists.
 
@@ -154,39 +157,62 @@ $ kubectl get weebosiconfig cluster -o jsonpath='{.status.features}'
   "message":"evaluated 214 workspaces: 6 would be replaced, 208 would be pinned"}]
 ```
 
-Then the teams are declared once, at the top of the resource, and each feature says what a team
-gets. Enforcement is narrowed to one namespace first:
+Then each team is declared once, in its own object, and says what it reaches from each feature.
+Enforcement is narrowed to one namespace first:
 
 ```yaml
 spec:
-  teams:                                # chassis-level: identity only, no policy
-    - name: team-1
-      namespaceSelector:
-        matchLabels:
-          weebo.io/team: team-1
-    - name: team-2
-      namespaceSelector:
-        matchLabels:
-          weebo.io/team: team-2
   features:
     dwocPin:
       mode: Enforce
-      catalog: [ ... ]                  # unchanged
+      catalog: [ ... ]                  # unchanged: the platform's own entries
       default: baseline                 # for a namespace in no team
-      grants:                           # what dwoc-pin gives each team
-        team-1: {allowed: [gpu], default: gpu}
-        team-2: {allowed: [baseline, amd], default: baseline}
       namespaceSelection:
         annotation: hardening.weebo.io/dwoc
         onUnknownKey: Default
       namespaceSelector:
         matchLabels:
           hardening.weebo.io/pilot: "true"
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam                       # identity and entitlement, one object per team
+metadata:
+  name: team-1
+spec:
+  priority: 100                         # lowest wins when a namespace matches two teams
+  namespaceSelector:
+    matchLabels:
+      weebo.io/team: team-1
+  features:
+    dwocPin:                            # what dwoc-pin gives this team
+      catalog:
+        - key: gpu
+          name: gpu-config
+          namespace: eclipse-che
+      default: gpu
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: team-2
+spec:
+  priority: 200
+  namespaceSelector:
+    matchLabels:
+      weebo.io/team: team-2
+  features:
+    dwocPin:
+      catalog:
+        - key: amd
+          name: amd-config
+          namespace: eclipse-che
+      default: baseline                 # the cluster default, reachable without redeclaring it
 ```
 
-`spec.teams` answers "who is team-1" once, for the whole operator. `grants` answers "and what
-does team-1 get from *this* feature", so a second feature adds a second `grants` map rather than
-a second copy of the selector.
+A `WeeboSiTeam` answers "who is team-1" once, for the whole operator, and "what does team-1 get
+from *this* feature" in that feature's own block — so a second feature adds a second block on the
+same object rather than a second copy of the selector. That was this RFC's original decision and
+is unchanged; what moved, in RFC 0011, is where the answer is written.
 
 Team 1 runs on GPU nodes: every one of its namespaces gets `gpu`, and it has nothing else to
 reach for. Team 2 defaults to the baseline and may move one of its namespaces onto `amd` — by
@@ -267,16 +293,12 @@ convention. There is no third spelling.
   `weebo-si-dwoc-pin`, and any future feature crate — holds the original rule without exception.
 
 ```yaml
-spec:
-  teams:                             # chassis-level, ordered, first match wins
-    - name: <teamName>                  # referenced by every feature's `grants`
-      namespaceSelector: {}             # metav1.LabelSelector over namespaces
+spec:                                # `spec.teams` lived here until RFC 0011 moved it to
+                                     # its own kind; the skeleton is that kind's, below
   features:
     <featureName>:                   # one optional field per registered feature, typed
       mode: Off | DryRun | Enforce      # required; there is no implicit default in the resource
       namespaceSelector: {}             # optional metav1.LabelSelector, narrows within the webhook's own scope
-      grants:                           # optional, per team; the shape is the feature's own
-        <teamName>: <feature-specific>
       <feature-specific fields>
 status:
   observedGeneration: 0
@@ -286,6 +308,20 @@ status:
       message: <human text>
       observedGeneration: 0
   conditions: []                     # standard metav1.Condition list: Ready, Degraded
+```
+
+```yaml
+# One per team, cluster-scoped, since RFC 0011 — the shape `spec.teams` plus every feature's
+# `grants` map had between them.
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: <teamName>                   # this IS the team name every reference uses
+spec:
+  priority: 1000                        # lowest wins; ties break on name
+  namespaceSelector: {}                 # metav1.LabelSelector over namespaces
+  features:
+    <featureName>: <feature-specific>   # this team's catalogue entries and its defaults
 ```
 
 **Modes, and why three rather than a boolean.**
@@ -314,16 +350,15 @@ acts on. Two levels, because one webhook endpoint serves every feature for a res
 below) and the features do not share a rollout schedule. The in-process selector can only
 narrow, never widen: a namespace the webhook configuration excludes is invisible here.
 
-`spec.teams` adds a third selector, and it is a different kind of thing. The first two answer
+A team's own `namespaceSelector` adds a third selector, and it is a different kind of thing. The first two answer
 *whether* a feature runs on a namespace; a team's `namespaceSelector` answers *which group a
 namespace belongs to*, which every feature then reads its own answer from. Keeping the two roles
 apart is what lets a rollout widen without touching the routing, and a namespace move between
 teams without touching any rollout. The rule for the chassis: a selector either scopes a feature
 or names a team, never both.
 
-**Teams are chassis-level, and that is a decision worth its own paragraph.** A team is
-`{name, namespaceSelector}` and nothing else — it carries no policy, only identity. Every
-feature then declares what that team gets, under its own `grants` map keyed by team name, in
+**Teams are chassis-level, and that is a decision worth its own paragraph.** A team carries
+identity — a name and a `namespaceSelector` — and every feature declares what that team gets in
 whatever shape the feature needs: `dwoc-pin` grants a set of catalogue keys and a default,
 another feature grants something else entirely. The alternative — each feature carrying its own
 list of `{name, namespaceSelector, ...}` — was the first draft of this RFC and is rejected under
@@ -331,18 +366,33 @@ list of `{name, namespaceSelector, ...}` — was the first draft of this RFC and
 same selector, and the day they diverge nothing reports it, because both are individually valid.
 Identity is defined once; entitlement is per feature.
 
+**Amended by [RFC 0011](./0011-teams-and-users.md), which moved both halves onto one object per
+team.** The decision above survives intact — identity once, entitlement per feature — and what
+changed is where it is written: a `WeeboSiTeam` instead of `spec.teams` plus a `grants` map on
+every feature. The trigger was the lifetime: entitlements keyed by a bare string in six unrelated
+maps do not go away when the team does, so deleting a team left six orphans, each correctly
+reported as a violation, and a completed delete looked exactly like a typo. See that RFC's
+*Motivation* for the rest, including the second reason (a team object can be reviewed and granted
+by name; a row in the singleton cannot).
+
 Three rules follow, all chassis-level so no feature restates them:
 
-- **`spec.teams` is ordered and the first match wins.** A namespace matching two teams belongs
-  to the first. Inferring intent from selector specificity is a well-known source of surprise,
-  and this list is written by one admin in one file, where reading order is an intuition already
-  available.
+- **Teams are ordered, and the first match wins.** A namespace matching two teams belongs to the
+  first. Inferring intent from selector specificity is a well-known source of surprise. The order
+  was this RFC's document order, justified by "one admin, one file, where reading order is an
+  intuition already available"; separate objects have no file and no order, so RFC 0011 replaced
+  it with an explicit `priority`, lowest first, ties broken by name. The rule is the same rule —
+  what changed is where the reader finds the answer.
 - **A namespace matching no team has no team**, and every feature must define what it does for
   one. There is no implicit "default team", because a default team would be a policy hiding in
   the chassis.
-- **A `grants` key naming an unknown team is a `Degraded` condition** at reconcile, never a
-  silently ignored entry. A grant nobody can reach is the security-toggle equivalent of a
-  misspelled feature name, which is the failure the CRD exists to make impossible.
+- **A configuration mistake about teams is a `Degraded` condition** at reconcile, never a
+  silently ignored entry. This RFC's mistake was a `grants` key naming a team nobody declared —
+  unreachable through the wire since RFC 0011, because grants are built from the team objects
+  themselves. Its replacement is a team redefining a catalogue key somebody already defined
+  differently: reported on the team that wrote it, with the first definition standing. Both are
+  the security-toggle equivalent of a misspelled feature name, which is the failure the CRD
+  exists to make impossible.
 
 #### Webhook configuration
 
@@ -436,15 +486,15 @@ use, and decides which of them each namespace runs with.
 | `namespaceSelector` | LabelSelector | none | per the chassis |
 | `catalog` | list of `{key, name, namespace}` | — | required, non-empty. Every DWOC a workspace is permitted to run with. `key` is a short identifier, unique in the list. |
 | `default` | catalogue key | — | required. The entry for a namespace belonging to no team. |
-| `grants` | map, team name → `{allowed, default}` | empty | What each team may reach. `allowed` is a non-empty list of catalogue keys; `default` is one of them. |
+| per-team catalogue and default | on `WeeboSiTeam` | absent | What each team may reach. A `grants` map on this resource until RFC 0011; `spec.features.dwocPin.{catalog,default}` on the team's own object since. |
 | `namespaceSelection.annotation` | string | `hardening.weebo.io/dwoc` | Namespace annotation naming a catalogue key, choosing inside what the team is granted. The empty string disables namespace selection entirely. |
 | `namespaceSelection.onUnknownKey` | `Default` \| `Deny` | `Default` | What to do when that annotation names a key the namespace cannot reach. |
 | `onMissingTarget` | `Skip` \| `Deny` | `Skip` | What to do when the resolved entry does not point at a live DWOC. |
 
-The team names are `spec.teams` entries and nothing else — a `grants` key naming a team nobody
-declared is a `Degraded` condition, per the chassis. A team with no grant here falls back to
-`default`, exactly like a namespace with no team: a team is an identity, and a feature saying
-nothing about it is a feature that has nothing to say.
+A team is a `WeeboSiTeam` object and nothing else, so this feature can no longer be told about a
+team nobody declared — the shape that made that possible is the one RFC 0011 removed. A team with
+no block here falls back to `default`, exactly like a namespace with no team: a team is an
+identity, and a feature saying nothing about it is a feature that has nothing to say.
 
 **Why keys rather than references.** A grant and a namespace annotation name a catalogue `key`,
 never a `{name, namespace}` pair. Three reasons, in order of weight. The key is validated
@@ -456,11 +506,11 @@ door open to routing by label instead of by annotation later.
 
 **Resolution.** For an incoming DevWorkspace, in this order, stopping at the first answer:
 
-1. **The team, and its grant.** The first entry of `spec.teams` whose `namespaceSelector`
-   matches the workspace's namespace, then this feature's `grants` entry for that team. When the
-   namespace belongs to no team, or its team has no grant here, the allowed set is `[default]`
-   and the default is `default` — which is exactly the single-target behaviour, and is why a
-   configuration with no teams at all is the simplest useful one.
+1. **The team, and its grant.** The first team in resolution order — lowest `priority`, ties
+   broken by name — whose `namespaceSelector` matches the workspace's namespace, then that team's
+   own `dwocPin` block. When the namespace belongs to no team, or its team has no block here, the
+   allowed set is `[default]` and the default is `default` — which is exactly the single-target
+   behaviour, and is why a configuration with no teams at all is the simplest useful one.
 2. **The workspace's own attribute.** Read
    `spec.template.attributes["controller.devfile.io/devworkspace-config"]`. When it names a
    catalogue entry inside the grant's `allowed` set, it is kept.
@@ -531,10 +581,10 @@ is the one place where the catalogue is safer than what it replaces rather than 
 expressive.
 
 **Validating the configuration itself belongs to the controller**, at reconcile, not to the
-webhook: duplicate keys, a `default` absent from the catalogue, a grant whose `allowed` is empty
-or names an unknown key, a grant `default` outside its own `allowed`, and — from the chassis — a
-`grants` key naming a team nobody declared. Each is a `Degraded` condition naming the offending
-grant. This is also what earns the controller role its place; against a single target its only
+webhook: duplicate keys, a `default` absent from the catalogue, a team reaching a key nothing
+declares, a team's `default` outside what it reaches, and — from the chassis, since RFC 0011 — a
+team redefining a catalogue key somebody already defined differently. Each is a `Degraded`
+condition naming the offending team. This is also what earns the controller role its place; against a single target its only
 reconcile was copying `spec` into `status`.
 
 Ambiguity between teams is the chassis's problem and is resolved by order, never by specificity;
@@ -857,8 +907,10 @@ requested. It also has no `escalate`, no `bind`, no `impersonate`, and no access
 than its own mounted serving certificate.
 
 **The privilege it does hold** is `spec.features.dwocPin`: the catalogue naming every
-configuration any workspace in the cluster may run with, and the grants deciding who gets which
-— together with `spec.teams`, which decides who "who" is. Whoever writes those fields sets the pod and container security context, the init
+configuration any workspace in the cluster may run with, and the per-team answers deciding who
+gets which — together with the `WeeboSiTeam` objects, which decide who "who" is, and which are
+cluster-scoped and admin-only for exactly this reason (RFC 0011's *Trust boundary* records that
+as a decision: no team lead gets `edit` on their own team's object). Whoever writes those fields sets the pod and container security context, the init
 containers, the storage class and the image pull policy for the entire fleet, indirectly. It is
 the most powerful field in this design. Three things bound it, all deliberate:
 
@@ -888,8 +940,8 @@ and it belongs on the install checklist next to the exclusion label. In a Che cl
 namespaces are created by Che and their users hold rights *inside* the namespace, not on the
 Namespace object — patching namespace metadata is an admin verb. Where that is not true, the
 mitigation is one line: set `namespaceSelection.annotation` to the empty string, which removes
-step 3 of the chain entirely and leaves routing to the teams and their grants, which only a
-cluster admin can write. The feature is designed so that this is a configuration change rather than a redesign.
+step 3 of the chain entirely and leaves routing to the team objects, which only a cluster admin
+can write. The feature is designed so that this is a configuration change rather than a redesign.
 
 **Namespace labels are load-bearing now, and they were not before.** A team matches on labels,
 so labelling a namespace into another team moves it onto that team's configurations — and,
@@ -1021,7 +1073,7 @@ resource rather than the feature: splitting a configuration later is a new objec
    `weebo_si_dwoc_pin_total` and the decision logs. The number that matters is
    `result="replaced"` — every one of those is a workspace that will change behaviour, and
    `DryRun` is the only chance to look at them before they do.
-3. **Add `spec.teams` and the grants, still in `DryRun`.** This step is new with the catalogue
+3. **Add the `WeeboSiTeam` objects, still in `DryRun`.** This step is new with the catalogue
    and it is the one worth not skipping: routing is the part with no analogue in the previous
    behaviour, and `result` broken down by `team` is how an admin confirms that team-1's
    namespaces are the ones landing on team-1's config. A namespace routed to the wrong team is
@@ -1102,8 +1154,9 @@ inferred from what the team's workspaces happen to request.
 network-profiles feature was sketched against it. It reads well with one feature and it is a trap with two: the
 same team is described by two selectors in two places, both individually valid, and the day one
 is edited and the other is not, nothing reports it — the features simply disagree about who
-team-1 is, silently, in a security control. Rejected in favour of `spec.teams` holding identity
-once and each feature holding entitlement. The cost is real and worth naming: teams become a
+team-1 is, silently, in a security control. Rejected in favour of one place holding identity
+once and each feature holding entitlement — `spec.teams` when this was written, a `WeeboSiTeam`
+since RFC 0011, and the same rejection either way. The cost is real and worth naming: teams become a
 shared contract, so re-labelling a namespace moves it for every feature at once, and a feature
 can no longer roll out its routing independently of the others. The rollout knob that remains
 per feature is `namespaceSelector`, which is the one that was designed for it.
@@ -1225,9 +1278,9 @@ injection would duplicate work already done at build time for the images that ma
   reading `weebo_si_dwoc_pin_total` by team during step 3 of the rollout, which is why that step
   exists.
 - **Teams are a shared contract across features.** Hoisting them removes the risk of two
-  features disagreeing about who team-1 is, and creates a smaller one: a change to
-  `spec.teams` moves a namespace for every feature at once, so what used to be a one-feature
-  edit is now a cluster-wide one. With one feature this is free. It is the kind of coupling that
+  features disagreeing about who team-1 is, and creates a smaller one: a change to a team's
+  `namespaceSelector` moves a namespace for every feature at once, so what used to be a
+  one-feature edit is now a cluster-wide one. With one feature this is free. It is the kind of coupling that
   is correct and still deserves a change-review habit.
 - **Namespace metadata becomes security-relevant.** Labels route and an annotation selects, so
   "who can edit a Namespace object" moves from a question nobody in this repo asked to a
@@ -1407,7 +1460,9 @@ work at the end of this plan, none of it envtest-shaped.
 - [x] `spec.teams` and `grants` round-trip with their `matchExpressions` forms intact — the
       `Selector` wire-compatibility claim, now proven live too
       (`teams_with_match_expressions_round_trip`), not only by
-      `selector::tests::wire_shape_matches_upstream_label_selector` at the unit level
+      `selector::tests::wire_shape_matches_upstream_label_selector` at the unit level. RFC 0011
+      moved that test onto `WeeboSiTeam`, where the selector now lives; the claim it proves is
+      the same one
 
 `weebo-si-controller`:
 
@@ -1572,6 +1627,7 @@ work at the end of this plan, none of it envtest-shaped.
 | 2026-08-24 | **Closed most of the "did not get built in the same pass" list from the entry below.** Leader election (a `LeaseLock`-backed race against the reconcile loop, opt-in via `weebo-si-operator controller --leader-election`), the per-feature `namespaceSelector` rollout knob (`KubeConfigStore::mode()` now checks it against the requesting namespace before reporting a mode), and `namespaceSelection.annotation` hot-reload (`KubeNsStore` now reads it from an `Arc<RwLock<String>>` the config-cache adapter writes) are all implemented. All six observability-contract metrics now have a code path: `weebo_si_admission_duration_seconds` via a new `WebhookMetrics`, `weebo_si_feature_mode`/`weebo_si_dwoc_pin_catalog_entries`/`weebo_si_config_observed_generation` via `KubeConfigStore`'s own `Metrics`, alongside the pre-existing `weebo_si_admission_requests_total`/`weebo_si_dwoc_pin_total`. `task recu` gained a conditional CRD-regeneration step (`scripts/crd-regen.sh`): `crates/weebo-si-crd` staged → `crd.yaml` regenerates automatically, and `task lint`'s new `crd:check` fails a commit where it has drifted — the same generate-and-verify pairing the RFC index already uses. The envtest scenario checklist grew from 8 tests to 21 (5 crd, 5 controller, 11 webhook), closing every scenario previously named as a known gap except the boot-only "feature never configured, then configured" hot-reload caveat and the logging audit, both still open. Still entirely unstarted: the deployment manifests (RBAC, Deployment ×2, PDB, Service, `MutatingWebhookConfiguration`, serving certificate), the Containerfile, `task audit` coverage for the new crates, and the install/rollout runbook — so the RFC stays `Accepted`, not `Implemented`. |
 | 2026-08-24 | **Restructured from one crate into seven** (`weebo-si-crd`, `weebo-si-chassis`, `weebo-si-dwoc-pin`, `weebo-si-runtime`, `weebo-si-webhook`, `weebo-si-controller`, `weebo-si-operator`), reversing this RFC's own "A separate `weebo-si-webhook` crate" rejection at the library level (the binary/Deployment contract is unchanged) — modeled on `batleforc/proxyauthk8s`'s crate-per-concern workspace, adopted so the dependency rule `hexagonal.md` calls for is enforced by `cargo` rather than by review. Two corrections fell out of actually building the webhook and the controller against the new boundaries, not from the restructuring itself: `Decision<S>`'s provenance is narrowed to `team`+`note` (a per-feature provenance struct would have made the chassis crate depend on the feature crate that depends on the chassis crate — invisible in one crate, a compile error in seven), and `Selector` is now the CRD field's native type instead of a converted one, deleting the load-time conversion step this RFC previously specified. **Also delivered in the same pass**: real (not scaffolded) `weebo-si-webhook` and `weebo-si-controller` implementations, and an **envtest tier** — a real ephemeral `etcd`+`kube-apiserver`, ported from `batleforc/proxyauthk8s`'s own envtest harness — proving against a live apiserver that the generated CRD is accepted, that a malformed `WeeboSiConfig` is reported `Degraded`, and, hardest of the three, that a real `MutatingWebhookConfiguration` calling back into a real running webhook actually pins a `DevWorkspace`-shaped object end to end and that `failurePolicy: Fail` fails closed when the webhook is unreachable. What did not get built in the same pass is named directly in the *Implementation plan*'s now-checked/unchecked split, not left implicit: leader election, the per-feature `namespaceSelector` rollout knob, hot-reloading `namespaceSelection.annotation` itself, four of the six observability-contract metrics, and the deployment-facing items (manifests, Containerfile, docs runbook) all remain open. |
 | 2026-08-24 | Both items under *Unresolved questions* blocking acceptance are resolved. The API group, `hardening.weebo.io`, is confirmed. Catalogued DWOC authorship is not restricted to one party — Eclipse Che keeps authoring the `baseline` entry it already owns, and `weebo-si-operator` may author team-specific entries as a later feature — but a catalogued entry must never be authored by the team it is granted to, which is stated as a rule under *Security considerations*. |
+| 2026-09-25 | Amended after implementation: **teams leave this resource for their own object.** [RFC 0011](./0011-teams-and-users.md) replaces `spec.teams` and every per-feature `grants` map with a cluster-scoped `WeeboSiTeam` carrying both halves, and adds a `WeeboSiUser` beside it. What is *not* amended is the decision the 2026-08-24 row below records — identity defined once, entitlement per feature — which RFC 0011 keeps word for word; what is amended is where it is written, and three rules that followed from it. Document order becomes an explicit `priority` (separate objects have no file to read in order). A `grants` key naming an undeclared team stops being expressible, and the violation it protected against is replaced by "a team redefined a catalogue key", first definition standing. And the feature tables here stop describing a `grants` map they no longer carry. The trigger was the lifetime of an entitlement: six maps keyed by a bare string do not go away when the team does, so deleting a team left six orphans — each correctly reported, and a completed delete indistinguishable from a typo. The cut is hard, with no release reading both shapes: `weebo-si-operator teams export` migrates a running cluster, and RFC 0011's *Rollout* has the ordered steps. |
 | 2026-08-24 | Amended before review, a second time and in the same revision: **teams are hoisted into the chassis.** `spec.teams` holds `{name, namespaceSelector}` once for the whole operator, ordered and first-match-wins, and each feature declares what a team gets under its own `grants` map keyed by team name. The trigger was sketching a second feature — network policy profiles, RFC 0004 — against the shape below and finding it would carry a second copy of every team's selector. Two features disagreeing about who team-1 is, both individually valid, with nothing reporting the divergence, is a failure mode a security control cannot have. The cost is stated under *Drawbacks* and is real: teams become a shared contract, so re-labelling a namespace moves it for every feature at once, and per-feature routing rollout is gone — `namespaceSelector`, which was designed for that, remains. The rejected shape is kept under *Alternatives considered*. |
 | 2026-08-24 | Amended before review: `dwoc-pin` gains a **catalogue and per-team grants** in place of a single `target` plus a flat `allowedOverrides` list. The trigger was a requirement the old shape could not express — team 1 reaches only the GPU config and defaults to it, team 2 defaults to the baseline and may also reach AMD — and the reason the old shape could not is worth recording: `allowedOverrides` was an allow-list of *references*, so an entitlement could only be exercised by every workspace of a team asking for it, one workspace at a time. It had no notion of a default per team, which is the thing an admin wants to set. The new shape is a closed catalogue of admin-authored DWOCs keyed by a short identifier, a per-team grant of a subset with a default inside it, and a namespace annotation choosing within that subset. Three consequences the design had to absorb. **A third watch**, on `namespaces`, which is the first RBAC grant in this brick reaching outside two niche CRDs — bounded in the cache by a `NamespaceFacts` projection, not at the apiserver, and `/readyz` now waits for it. **Namespace metadata becomes security-relevant**: a label routes and an annotation selects, so "who may edit a Namespace" moved onto the install checklist, with `namespaceSelection.annotation: ""` as the one-line way to remove the annotation half where the answer is wrong. The containment argument is that the catalogue is *closed* — every path through the resolution chain ends on a catalogued entry, a workspace attribute is only ever kept and never adopted — so delegating the choice to a namespace is a downgrade within an admin-authored set, never an escape from it. And **the controller earns its keep**: duplicate keys, dangling keys and a grant default outside its own `allowed` are reconcile-time `Degraded` conditions, where before its only job was copying `spec` into `status`. One question was raised and settled while writing this: whether step 2 of the chain should exist at all — whether a workspace may keep a reference its team is granted, or whether a namespace runs exactly one configuration and the attribute is always replaced. **It exists.** Che gives each user their own namespace, so *namespace* and *user* are the same scope here, and the strict reading would let a developer run exactly one configuration across all of their workspaces — worse than the upstream behaviour this RFC constrains. The chain therefore reads as three nested scopes, team by label, user by annotation, workspace by attribute, most specific winning; `allowed` is what keeps the most specific level from being a hole. The rejected reading is kept under *Alternatives considered* with its premise attached, because a Che topology where namespaces belong to teams rather than to people would decide it the other way. |
 | 2026-08-25 | **The `resource` label in the *Observability contract* above was never implemented, and nobody noticed for four RFCs.** `PrometheusObserver` wrote the literal `"DevWorkspace"` into it — correct for `dwoc-pin`, the only feature that existed when the adapter was written, and wrong for every feature added since: `network-profiles`' workspace gate, `image-policy`'s Pod route, `policy-guard`'s three policy kinds and `registry-config`'s ConfigMaps and Secrets all reported themselves as DevWorkspace admissions. The contract said one thing and the one line implementing it said another, in a direction no test looked at, because the metric was only ever summed and never grouped. Found while implementing [RFC 0008](./0008-policy-guard-coverage.md). **The fix is a contract change here, not a patch there**: `Subject` gained a required `resource() -> &'static str`, `FeatureOutcome` gained the field, and `admit` carries it from the subject to the observer — so the value now comes from the only place that can know it, and a new subject type cannot compile without answering. The general lesson is about where a label's *value* is decided: `feature` and `mode` were always right because the chassis supplies them, and `resource` was always wrong because an adapter did. |

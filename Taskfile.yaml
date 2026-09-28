@@ -9,6 +9,7 @@ includes:
   envtest: ./.tasks/envtest.yaml
   crd: ./.tasks/crd.yaml
   helm: ./.tasks/helm.yaml
+  spike: ./.tasks/spike.yaml
 
 tasks:
   init:
@@ -43,6 +44,11 @@ tasks:
     desc: "Run the deferred OpenShift tier (RFC 0009's ReverseProxy dialect) — skipped by `task test`"
     cmds:
       - task: rust:test:openshift
+
+  test:conformance:
+    desc: "Run RFC 0009's dialect conformance suite against a real Traefik — skipped by `task test`"
+    cmds:
+      - task: envtest:conformance
 
   build:
     desc: "Build every brick in release mode"

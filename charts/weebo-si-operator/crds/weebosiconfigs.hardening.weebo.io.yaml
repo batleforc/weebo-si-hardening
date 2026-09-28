@@ -20,7 +20,13 @@ spec:
             properties:
               features:
                 default: {}
-                description: One optional field per registered feature.
+                description: |-
+                  One optional field per registered feature.
+
+                  `spec.teams` used to sit beside this and does not any more: RFC 0011 moved teams to their
+                  own `WeeboSiTeam` objects, and removed the field rather than deprecating it. A manifest
+                  still carrying it is pruned by the API server, which reads as "my teams vanished" — the
+                  loud failure a hard cut should have.
                 properties:
                   dwocPin:
                     description: '`spec.features.dwocPin`.'
@@ -51,30 +57,6 @@ spec:
                       default:
                         description: The entry for a namespace belonging to no team.
                         type: string
-                      grants:
-                        additionalProperties:
-                          description: |-
-                            What one team may reach: a non-empty set of catalogue keys, and the one among them a
-                            namespace with no more specific answer gets.
-                          properties:
-                            allowed:
-                              description: The catalogue keys this team may reach.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue. Never a
-                                  `{name, namespace}` pair — see RFC 0002's *Why keys rather than references*.
-                                type: string
-                              type: array
-                            default:
-                              description: The one among `allowed` a namespace with no more specific answer gets.
-                              type: string
-                          required:
-                          - allowed
-                          - default
-                          type: object
-                        default: {}
-                        description: What each team may reach, keyed by team name.
-                        type: object
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
@@ -107,7 +89,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -137,7 +118,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -268,6 +248,30 @@ spec:
                           externalUrl:
                             description: Where a browser is sent to sign in.
                             type: string
+                          haproxyPrerequisite:
+                            default: false
+                            description: |-
+                              `HaproxyIngress` only: the admin asserts that this cluster's haproxy-ingress controller
+                              carries the `config-frontend` prerequisite.
+
+                              **Why this is an assertion and not a check.** That controller builds its auth request by
+                              copying the *caller's* headers onto a fixed path, so on a default install the gate is
+                              handed no host and no path, a caller can state the `X-Forwarded-Host` it is judged
+                              against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the
+                              gate does not put a name on. Six lines in the controller's own ConfigMap close all three —
+                              and an annotation cannot, because a per-ingress `config-backend` snippet is emitted *after*
+                              the auth call and so rewrites what the application is handed rather than what the gate is
+                              asked. The lines therefore belong to whoever installed the controller, which is nobody this
+                              operator can write to, own, or pin with `policy-guard`.
+
+                              Nothing can verify it afterwards either: the header a controller sets and the header a
+                              caller sends are the same header, with nothing left to compare against. So this is the
+                              `Custom` dialect's bargain in a field — enabling the dialect *is* the assertion — and
+                              leaving it `false` raises `Degraded` with the reason. The gate still attaches, because a
+                              gate a knowing attacker can bypass is better than the endpoint being open to everyone.
+
+                              The six lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
+                            type: boolean
                           service:
                             description: The gateway's in-cluster `Service`.
                             properties:
@@ -292,31 +296,6 @@ spec:
                         - dialect
                         - externalUrl
                         - service
-                        type: object
-                      grants:
-                        additionalProperties:
-                          description: What a team may reach, and what it gets by default.
-                          properties:
-                            allowed:
-                              description: The keys this team's namespaces may name.
-                              items:
-                                description: |-
-                                  A catalogue key — `private`, `team`, `shared`, `open`. A newtype for the same reason
-                                  [`crate::RegistryKey`] is one: it must never typecheck where another feature's key is
-                                  expected.
-                                type: string
-                              type: array
-                            default:
-                              description: |-
-                                The key an endpoint resolves to when it names none. Singular: an endpoint resolves to
-                                exactly one profile.
-                              type: string
-                          required:
-                          - allowed
-                          - default
-                          type: object
-                        default: {}
-                        description: Per-team grants.
                         type: object
                       hosts:
                         description: Which hosts this feature governs.
@@ -364,7 +343,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -394,7 +372,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -442,7 +419,6 @@ spec:
                                   nullable: true
                                   properties:
                                     matchExpressions:
-                                      default: []
                                       description: Every expression must hold.
                                       items:
                                         description: One `matchExpressions` entry.
@@ -472,7 +448,6 @@ spec:
                                     matchLabels:
                                       additionalProperties:
                                         type: string
-                                      default: {}
                                       description: Every key must be present with exactly this value.
                                       type: object
                                   type: object
@@ -532,6 +507,67 @@ spec:
                     - mode
                     - owner
                     type: object
+                  identity:
+                    description: |-
+                      `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems
+                      other than this cluster's own, and the only one with allow-lists of its own.
+                    nullable: true
+                    properties:
+                      authentik:
+                        default:
+                          allowedGroupRefs: []
+                        description: The identity provider half.
+                        properties:
+                          allowedGroupRefs:
+                            default: []
+                            description: |-
+                              Authentik group names a team or a person may request. `team-*` matches by prefix. Empty
+                              allows none, which is why a cluster that turns this feature on with no list provisions
+                              users with no group rather than users with every group.
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      che:
+                        default:
+                          allowedProjects: []
+                          allowedRepoUrls: []
+                          applicationNamespace: argocd
+                        description: The workspace half.
+                        properties:
+                          allowedProjects:
+                            default: []
+                            description: Argo CD projects a team template may name. Empty allows none.
+                            items:
+                              type: string
+                            type: array
+                          allowedRepoUrls:
+                            default: []
+                            description: |-
+                              Chart or git repositories a team template may name. `https://charts.weebo.io/*` matches by
+                              prefix. Empty allows none.
+                            items:
+                              type: string
+                            type: array
+                          applicationNamespace:
+                            default: argocd
+                            description: |-
+                              The one namespace `Application` objects are created in. One namespace is what keeps this
+                              operator's RBAC to one namespace, so it is a cluster-level field and never a team's.
+                            type: string
+                        type: object
+                      mode:
+                        description: |-
+                          Required, per the chassis: `Off` | `DryRun` | `Enforce`. `DryRun` plans everything and
+                          writes nothing, which is the same computation with the write withheld.
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                    required:
+                    - mode
+                    type: object
                   imagePolicy:
                     description: '`spec.features.imagePolicy`, per RFC 0005.'
                     nullable: true
@@ -572,37 +608,6 @@ spec:
                             `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
                           type: string
                         type: array
-                      grants:
-                        additionalProperties:
-                          description: |-
-                            What one team may reach: the set of entry keys it may reach, and the subset applied when a
-                            workspace asks for nothing. Either may legitimately be empty — an ungranted team reaches
-                            only the platform set.
-                          properties:
-                            allowed:
-                              default: []
-                              description: The entry keys this team may reach.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
-                                  `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
-                                  `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
-                                type: string
-                              type: array
-                            default:
-                              default: []
-                              description: The subset of `allowed` applied when a workspace names nothing more specific.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
-                                  `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
-                                  `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
-                                type: string
-                              type: array
-                          type: object
-                        default: {}
-                        description: What each team may reach, keyed by team name.
-                        type: object
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
@@ -627,7 +632,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -657,7 +661,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -816,37 +819,6 @@ spec:
                                 type: string
                             type: object
                         type: object
-                      grants:
-                        additionalProperties:
-                          description: |-
-                            What one team may reach: the set of runtime profile keys it may reach, and the subset of them
-                            applied when a workspace asks for nothing. Either may legitimately be empty — an ungranted
-                            team reaches only the baseline.
-                          properties:
-                            allowed:
-                              default: []
-                              description: The runtime profile keys this team may reach.
-                              items:
-                                description: |-
-                                  A short identifier for a runtime profile catalogue entry, unique within the catalogue. Never
-                                  a `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin` and `ProfileKey` in
-                                  `network_profiles`.
-                                type: string
-                              type: array
-                            default:
-                              default: []
-                              description: The subset of `allowed` applied when a workspace names nothing more specific.
-                              items:
-                                description: |-
-                                  A short identifier for a runtime profile catalogue entry, unique within the catalogue. Never
-                                  a `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin` and `ProfileKey` in
-                                  `network_profiles`.
-                                type: string
-                              type: array
-                          type: object
-                        default: {}
-                        description: What each team may reach, keyed by team name.
-                        type: object
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
@@ -871,7 +843,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -901,7 +872,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -1013,35 +983,6 @@ spec:
                             - intervalSeconds
                             type: object
                         type: object
-                      grants:
-                        additionalProperties:
-                          description: |-
-                            What one team may reach: the set of profile keys it may reach, and the subset of them applied
-                            when a workspace asks for nothing. Either may legitimately be empty — an ungranted team
-                            reaches only the baseline.
-                          properties:
-                            allowed:
-                              default: []
-                              description: The profile keys this team may reach.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue. Never a
-                                  `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
-                                type: string
-                              type: array
-                            default:
-                              default: []
-                              description: The subset of `allowed` applied when a workspace names nothing more specific.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue. Never a
-                                  `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
-                                type: string
-                              type: array
-                          type: object
-                        default: {}
-                        description: What each team may reach, keyed by team name.
-                        type: object
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
@@ -1066,7 +1007,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -1096,7 +1036,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -1146,7 +1085,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -1176,7 +1114,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -1252,37 +1189,6 @@ spec:
                           - sources
                           type: object
                         type: array
-                      grants:
-                        additionalProperties:
-                          description: |-
-                            What one team may reach: the keys it may be granted, and the subset applied when a namespace
-                            asks for nothing. Either may legitimately be empty — an ungranted team gets no registry
-                            configuration at all, which is this brick's whole "no baseline" position.
-                          properties:
-                            allowed:
-                              default: []
-                              description: The registry keys this team may reach.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
-                                  namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
-                                  registry key must never typecheck where a network profile key is expected.
-                                type: string
-                              type: array
-                            default:
-                              default: []
-                              description: The subset of `allowed` applied when a namespace names nothing more specific.
-                              items:
-                                description: |-
-                                  A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
-                                  namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
-                                  registry key must never typecheck where a network profile key is expected.
-                                type: string
-                              type: array
-                          type: object
-                        default: {}
-                        description: What each team may reach, keyed by team name.
-                        type: object
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
@@ -1307,7 +1213,6 @@ spec:
                         nullable: true
                         properties:
                           matchExpressions:
-                            default: []
                             description: Every expression must hold.
                             items:
                               description: One `matchExpressions` entry.
@@ -1337,7 +1242,6 @@ spec:
                           matchLabels:
                             additionalProperties:
                               type: string
-                            default: {}
                             description: Every key must be present with exactly this value.
                             type: object
                         type: object
@@ -1353,61 +1257,6 @@ spec:
                     - mode
                     type: object
                 type: object
-              teams:
-                default: []
-                description: Chassis-level, ordered, first match wins.
-                items:
-                  description: |-
-                    One entry of `spec.teams`. `spec.teams` as a whole is ordered and first-match-wins — that
-                    rule is applied by [`crate::dwoc_pin::DwocPinConfig::validate`] and by the resolution chain
-                    in `weebo-si-dwoc-pin`, not encoded on this type.
-                  properties:
-                    name:
-                      description: This team's identity, referenced by every feature's `grants`.
-                      type: string
-                    namespaceSelector:
-                      description: The namespaces that belong to this team.
-                      properties:
-                        matchExpressions:
-                          default: []
-                          description: Every expression must hold.
-                          items:
-                            description: One `matchExpressions` entry.
-                            properties:
-                              key:
-                                description: The label key this expression tests.
-                                type: string
-                              operator:
-                                description: How `values` is compared against the label's value, if any.
-                                enum:
-                                - In
-                                - NotIn
-                                - Exists
-                                - DoesNotExist
-                                type: string
-                              values:
-                                default: []
-                                description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
-                                items:
-                                  type: string
-                                type: array
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                        matchLabels:
-                          additionalProperties:
-                            type: string
-                          default: {}
-                          description: Every key must be present with exactly this value.
-                          type: object
-                      type: object
-                  required:
-                  - name
-                  - namespaceSelector
-                  type: object
-                type: array
             type: object
           status:
             description: |-

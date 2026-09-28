@@ -18,9 +18,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::network_profiles::{OnNotGranted, TemplateRef};
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// A short identifier for a runtime profile catalogue entry, unique within the catalogue. Never
 /// a `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin` and `ProfileKey` in
@@ -228,6 +229,22 @@ pub struct RuntimeProfileGrant {
     pub default: Vec<RuntimeProfileKey>,
 }
 
+/// `spec.features.kubearmor_policy` on a `WeeboSiTeam` — this team's own catalogue entries and its
+/// defaults, per RFC 0006 and RFC 0011.
+///
+/// No `allowed` list, for the reason [`crate::dwoc_pin::TeamDwocPin`] spells out: a team's
+/// reachable set is the catalogue it declares, widened only by what the cluster hands everybody.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamKubeArmorPolicy {
+    /// This team's catalogue entries, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: RuntimeProfileCatalog,
+    /// The runtime profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way.
+    #[serde(default)]
+    pub default: Vec<RuntimeProfileKey>,
+}
+
 /// `spec.features.kubearmorPolicy.namespaceSelection` — the namespace annotation naming a
 /// comma-separated runtime profile key list, read when the workspace attribute is not set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -288,7 +305,11 @@ pub struct KubeArmorPolicyConfig {
     /// The profile applied to every workspace pod in scope, never negotiable.
     pub baseline: RuntimeProfileKey,
     /// What each team may reach, keyed by team name.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`KubeArmorPolicyConfig::resolve`] fills this in from them, and a configuration nobody
+    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<String, RuntimeProfileGrant>,
     /// The namespace annotation naming a runtime profile key list.
     #[serde(default)]
@@ -308,6 +329,63 @@ impl KubeArmorPolicyConfig {
     /// This team's grant, if `grants` has one.
     pub fn grant_for(&self, team: &TeamName) -> Option<&RuntimeProfileGrant> {
         self.grants.get(team.as_str())
+    }
+
+    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`KubeArmorPolicyConfig::validate`], which now runs over the resolved shape and therefore over
+    /// exactly what the feature will evaluate.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<KubeArmorPolicyConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<RuntimeProfile>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .kubearmor_policy
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.entries().to_vec()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
+        self.catalog = RuntimeProfileCatalog::new(entries);
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.kubearmor_policy.as_ref()?;
+                let mut allowed: Vec<RuntimeProfileKey> = block
+                    .catalog
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                for key in [self.baseline.clone()] {
+                    if !allowed.contains(&key) {
+                        allowed.push(key);
+                    }
+                }
+                Some((
+                    team.team_name().to_string(),
+                    RuntimeProfileGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(
+                |conflict| KubeArmorPolicyConfigViolation::CatalogKeyConflict {
+                    team: conflict.team,
+                    key: conflict.key,
+                },
+            )
+            .collect()
     }
 }
 
@@ -337,8 +415,18 @@ pub enum KubeArmorPolicyConfigViolation {
         /// The uncatalogued key.
         key: RuntimeProfileKey,
     },
-    /// `grants` names a team `spec.teams` never declared.
+    /// `grants` names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept so a resolution bug
+    /// producing one is reported rather than silently dropped.
     GrantNamesUndeclaredTeam(TeamName),
+    /// A team redefined a runtime profile key somebody already defined, differently. The first definition
+    /// stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: RuntimeProfileKey,
+    },
 }
 
 impl fmt::Display for KubeArmorPolicyConfigViolation {
@@ -361,11 +449,12 @@ impl fmt::Display for KubeArmorPolicyConfigViolation {
                 write!(f, "grant for team {team} allows uncatalogued key {key}")
             }
             Self::GrantNamesUndeclaredTeam(team) => {
-                write!(
-                    f,
-                    "grant names team {team}, which spec.teams never declared"
-                )
+                write!(f, "grant names team {team}, which no WeeboSiTeam declares")
             }
+            Self::CatalogKeyConflict { team, key } => write!(
+                f,
+                "team {team} redefines catalogue key {key}, which is already defined differently"
+            ),
         }
     }
 }

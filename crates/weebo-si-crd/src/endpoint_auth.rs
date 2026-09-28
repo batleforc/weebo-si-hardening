@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::OnUnknownKey;
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// `hardening.weebo.io/access` — the catalogue key an endpoint resolves to.
 pub const ACCESS_ANNOTATION: &str = "hardening.weebo.io/access";
@@ -115,6 +116,22 @@ pub struct AccessGrant {
     pub allowed: Vec<AccessKey>,
     /// The key an endpoint resolves to when it names none. Singular: an endpoint resolves to
     /// exactly one profile.
+    pub default: AccessKey,
+}
+
+/// `spec.features.endpointAuth` on a `WeeboSiTeam` — this team's own access profiles, and the one
+/// an endpoint of its namespaces resolves to when it names none.
+///
+/// No `allowed` list, for the reason [`crate::dwoc_pin::TeamDwocPin`] spells out. The cluster
+/// `default` stays reachable: a team never loses the profile everybody has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamEndpointAuth {
+    /// This team's access profiles, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: Vec<AccessEntry>,
+    /// The key an endpoint of this team resolves to when it names none. Singular: an endpoint
+    /// resolves to exactly one profile.
     pub default: AccessKey,
 }
 
@@ -335,6 +352,28 @@ pub struct GatewayRef {
     /// declares it owns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomDialect>,
+    /// `HaproxyIngress` only: the admin asserts that this cluster's haproxy-ingress controller
+    /// carries the `config-frontend` prerequisite.
+    ///
+    /// **Why this is an assertion and not a check.** That controller builds its auth request by
+    /// copying the *caller's* headers onto a fixed path, so on a default install the gate is
+    /// handed no host and no path, a caller can state the `X-Forwarded-Host` it is judged
+    /// against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the
+    /// gate does not put a name on. Six lines in the controller's own ConfigMap close all three —
+    /// and an annotation cannot, because a per-ingress `config-backend` snippet is emitted *after*
+    /// the auth call and so rewrites what the application is handed rather than what the gate is
+    /// asked. The lines therefore belong to whoever installed the controller, which is nobody this
+    /// operator can write to, own, or pin with `policy-guard`.
+    ///
+    /// Nothing can verify it afterwards either: the header a controller sets and the header a
+    /// caller sends are the same header, with nothing left to compare against. So this is the
+    /// `Custom` dialect's bargain in a field — enabling the dialect *is* the assertion — and
+    /// leaving it `false` raises `Degraded` with the reason. The gate still attaches, because a
+    /// gate a knowing attacker can bypass is better than the endpoint being open to everyone.
+    ///
+    /// The six lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
+    #[serde(default)]
+    pub haproxy_prerequisite: bool,
 }
 
 fn default_enforcement() -> GateEnforcement {
@@ -506,11 +545,39 @@ impl Dialect {
                         gateway.external_url
                     ),
                 );
+                // The sliding re-mint, which *Developer continuity* rests on: "an endpoint in
+                // continuous use never expires under the person using it". Without this, this
+                // controller forwards the gate's `Set-Cookie` only when the *application's* own
+                // answer was `2xx` — so a developer whose SPA is pulling 404s while they work
+                // stops having their session extended, and is signed out mid-task by a rule
+                // about somebody else's status codes.
+                annotations.insert(
+                    "nginx.ingress.kubernetes.io/auth-always-set-cookie".to_owned(),
+                    "true".to_owned(),
+                );
             }
             Self::HaproxyIngress => {
                 annotations.insert(
                     "haproxy-ingress.github.io/auth-url".to_owned(),
                     format!("{url}/auth"),
+                );
+                // Without this every request reaches the gate as a `GET`, whatever the caller
+                // sent, so a rule naming a method decides about a method nobody used.
+                annotations.insert(
+                    "haproxy-ingress.github.io/auth-method".to_owned(),
+                    "*".to_owned(),
+                );
+                // This controller copies the caller's headers into the auth request, and the
+                // default is `*` — everything the gate reads is then something the caller can
+                // state. The list is exactly what `decide()` reads: the session and the bearer,
+                // the client address, the four forwarded inputs, the three headers challenge
+                // selection branches on, and the two that make a CORS preflight a preflight.
+                annotations.insert(
+                    "haproxy-ingress.github.io/auth-headers-request".to_owned(),
+                    "cookie,authorization,x-real-ip,x-forwarded-host,x-forwarded-uri,\
+                     x-forwarded-method,x-forwarded-proto,accept,sec-fetch-dest,sec-fetch-mode,\
+                     origin,access-control-request-method"
+                        .to_owned(),
                 );
                 annotations.insert(
                     "haproxy-ingress.github.io/auth-headers-succeed".to_owned(),
@@ -655,7 +722,11 @@ pub struct EndpointAuthConfig {
     #[serde(default)]
     pub self_origin: SelfOriginConfig,
     /// Per-team grants.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`EndpointAuthConfig::resolve`] fills this in from them, and a configuration nobody
+    /// resolved grants nothing — every namespace falls to `default`, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<TeamName, AccessGrant>,
 }
 
@@ -726,8 +797,18 @@ pub enum EndpointAuthConfigViolation {
         /// The key.
         key: AccessKey,
     },
-    /// A grant names a team `spec.teams` does not define.
+    /// A grant names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept so a resolution bug
+    /// producing one is reported rather than silently dropped.
     UnknownTeam(TeamName),
+    /// A team redefined an access key somebody already defined, differently. The first
+    /// definition stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: AccessKey,
+    },
     /// The suffix does not start with a dot, so `.weebo.si` was written `weebo.si` and
     /// `notweebo.si` would match it.
     SuffixNotDotted(String),
@@ -745,6 +826,9 @@ pub enum EndpointAuthConfigViolation {
     UndeclaredManagedKey(String),
     /// The gateway's external URL is not https, so no `__Host-` cookie can be minted on it.
     GatewayUrlNotHttps(String),
+    /// The `HaproxyIngress` dialect is selected without the admin asserting that the controller
+    /// carries the prerequisite this dialect cannot install for itself.
+    HaproxyPrerequisiteNotAsserted,
 }
 
 impl fmt::Display for EndpointAuthConfigViolation {
@@ -758,7 +842,11 @@ impl fmt::Display for EndpointAuthConfigViolation {
             Self::DefaultNotAllowed { team, key } => {
                 write!(f, "team {team}'s default {key} is not in its allowed list")
             }
-            Self::UnknownTeam(team) => write!(f, "no team named {team} in spec.teams"),
+            Self::UnknownTeam(team) => write!(f, "no WeeboSiTeam named {team}"),
+            Self::CatalogKeyConflict { team, key } => write!(
+                f,
+                "team {team} redefines access key {key}, which is already defined differently"
+            ),
             Self::SuffixNotDotted(suffix) => {
                 write!(f, "hosts.suffix {suffix:?} must start with a dot")
             }
@@ -774,6 +862,12 @@ impl fmt::Display for EndpointAuthConfigViolation {
                 write!(f, "custom template writes {key:?} without declaring it")
             }
             Self::GatewayUrlNotHttps(url) => write!(f, "gateway.externalUrl {url:?} must be https"),
+            Self::HaproxyPrerequisiteNotAsserted => f.write_str(
+                "dialect HaproxyIngress needs gateway.haproxyPrerequisite: this controller builds \
+                 its auth request from the caller's own headers, so without the config-frontend \
+                 lines in docs/bricks/endpoint-gateway.md a caller states the host it is judged \
+                 against",
+            ),
         }
     }
 }
@@ -866,6 +960,10 @@ impl EndpointAuthConfig {
             ));
         }
 
+        if self.gateway.dialect == Dialect::HaproxyIngress && !self.gateway.haproxy_prerequisite {
+            violations.push(EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted);
+        }
+
         match (self.gateway.dialect, self.gateway.custom.as_ref()) {
             (Dialect::Custom, None) => {
                 violations.push(EndpointAuthConfigViolation::CustomDialectHasNoTemplate);
@@ -938,6 +1036,57 @@ impl EndpointAuthConfig {
         self.catalog.iter().find(|entry| &entry.key == key)
     }
 
+    /// Merge every team's catalogue and default into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`EndpointAuthConfig::validate`], which now runs over the resolved shape.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<EndpointAuthConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<AccessEntry>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .endpoint_auth
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.clone()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(&self.catalog, &blocks, |entry| entry.key.clone());
+        self.catalog = entries;
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.endpoint_auth.as_ref()?;
+                let mut allowed: Vec<AccessKey> = block
+                    .catalog
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                if !allowed.contains(&self.default) {
+                    allowed.push(self.default.clone());
+                }
+                Some((
+                    team.team_name(),
+                    AccessGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(|conflict| EndpointAuthConfigViolation::CatalogKeyConflict {
+                team: conflict.team,
+                key: conflict.key,
+            })
+            .collect()
+    }
+
     /// The grant that applies to a namespace in `team`, or the cluster default for a namespace in
     /// no team.
     pub fn grant_for(&self, team: Option<&TeamName>) -> AccessGrant {
@@ -988,6 +1137,9 @@ mod tests {
             enforcement: GateEnforcement::Enforce,
             allowed_middlewares: Vec::new(),
             custom: None,
+            // Deliberately false, so every test that reaches for a haproxy config starts from
+            // what an admin who has not read the prerequisite would have written.
+            haproxy_prerequisite: false,
         }
     }
 
@@ -1107,6 +1259,23 @@ mod tests {
         }
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-response-headers"));
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-signin"));
+
+        // The sliding re-mint's cookie is forwarded only when the *application's* own answer was
+        // `2xx` unless this is set — established against ingress-nginx v1.15.1 by the ground-truth
+        // spike, which watched a re-minted cookie vanish because the backend said 404. Without it
+        // a developer working against an endpoint that is answering 404s is quietly signed out
+        // partway through, which is the failure *Developer continuity* exists to prevent.
+        assert_eq!(
+            annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"], "true",
+            "a session extended only on 2xx is not extended on a working day"
+        );
+
+        // And every key this dialect writes is guarded: the mutation and the guard learn the set
+        // from the same place, so a new annotation cannot become an unpinned one.
+        let managed = Dialect::Nginx.managed_keys(&gateway(Dialect::Nginx));
+        for key in annotations.keys() {
+            assert!(managed.contains(key), "{key} is written but not guarded");
+        }
     }
 
     #[ignore = "OpenShift's ReverseProxy dialect is deferred (RFC 0009): the code is here, nothing has run it against a router, and the base suite does not assert it. Run this tier with `task test:openshift`."]
@@ -1234,6 +1403,86 @@ mod tests {
         let grant = config.grant_for(None);
         assert_eq!(grant.default, AccessKey::new("private"));
         assert_eq!(grant.allowed, vec![AccessKey::new("private")]);
+    }
+
+    #[test]
+    fn haproxy_without_the_admin_s_assertion_is_a_violation() {
+        // The spike established that this controller hands the gate whatever the caller put in
+        // the request, so the dialect is safe only on a prerequisite installed outside this
+        // operator's reach. Nothing downstream can check it — the header a controller sets and
+        // the header a caller sends are the same header — so the check that *can* exist is this
+        // one: did somebody say they installed it.
+        let mut haproxy = config(Dialect::HaproxyIngress);
+        assert!(
+            haproxy
+                .validate(&[])
+                .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted),
+            "a default install must not pass validation silently"
+        );
+
+        haproxy.gateway.haproxy_prerequisite = true;
+        assert!(
+            !haproxy
+                .validate(&[])
+                .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted)
+        );
+
+        // And it is this dialect's condition alone: the others have nothing to assert.
+        for dialect in [Dialect::Traefik, Dialect::Nginx] {
+            assert!(
+                !config(dialect)
+                    .validate(&[])
+                    .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted),
+                "{dialect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_haproxy_dialect_writes_what_the_gate_actually_needs() {
+        let haproxy = config(Dialect::HaproxyIngress);
+        let annotations = Dialect::HaproxyIngress.annotations(&haproxy.gateway);
+
+        // Without auth-method the controller asks the gate about a GET whatever the caller sent,
+        // so every rule naming a method decides about a method nobody used.
+        assert_eq!(
+            annotations["haproxy-ingress.github.io/auth-method"], "*",
+            "the caller's method has to survive the hop"
+        );
+
+        // And the copied-header list is an allow-list because the default is `*`: on this
+        // controller, every header the gate reads is one the caller could have written.
+        let copied = &annotations["haproxy-ingress.github.io/auth-headers-request"];
+        assert!(
+            !copied.contains(' '),
+            "a list with spaces is a list with dead entries"
+        );
+        for needed in [
+            "cookie",           // the host session
+            "authorization",    // the bearer branch
+            "x-real-ip",        // self-origin
+            "x-forwarded-host", // the four inputs the decision is made from
+            "x-forwarded-uri",
+            "x-forwarded-method",
+            "x-forwarded-proto",
+            "accept", // challenge selection: navigation or not
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "origin", // and what makes a preflight a preflight
+            "access-control-request-method",
+        ] {
+            assert!(
+                copied.split(',').any(|header| header == needed),
+                "{needed} is read by decide() and would never arrive"
+            );
+        }
+
+        // Every key this dialect writes is pinned by value, the new two included: they are the
+        // difference between a gate that is asked the right question and one that is not.
+        let managed = Dialect::HaproxyIngress.managed_keys(&haproxy.gateway);
+        for key in annotations.keys() {
+            assert!(managed.contains(key), "{key} is written but not guarded");
+        }
     }
 
     #[test]

@@ -39,14 +39,17 @@ pub struct Expression {
 
 /// `matchLabels` plus `matchExpressions`, ANDed together. The default value — both empty —
 /// matches everything, per upstream `LabelSelector` semantics.
+///
+/// An empty half is omitted on the wire, like upstream's own `omitempty`: a selector printed by
+/// `weebo-si-operator teams export` should read like something a person would have written.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Selector {
     /// Every key must be present with exactly this value.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub match_labels: BTreeMap<String, String>,
     /// Every expression must hold.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub match_expressions: Vec<Expression>,
 }
 

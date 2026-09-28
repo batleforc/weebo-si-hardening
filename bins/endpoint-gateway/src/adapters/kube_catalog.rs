@@ -26,6 +26,7 @@ use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, DEVWORKSPACE_ID_LABEL,
     EndpointAuthConfig, RULES_ANNOTATION, SINGLETON_NAME, Team, UPSTREAM_ANNOTATION, WeeboSiConfig,
+    WeeboSiTeam, team_views,
 };
 use weebo_si_endpoint_auth::compile::{
     Catalogue, CompileSettings, Grant, Override, OverrideMatch, RawEndpoint,
@@ -73,6 +74,7 @@ impl KubeCatalog {
         namespace_label: Option<(String, String)>,
     ) -> Result<Arc<Self>, kube::Error> {
         let configs: Api<WeeboSiConfig> = Api::all(client.clone());
+        let weebo_teams: Api<WeeboSiTeam> = Api::all(client.clone());
         let namespaces: Api<Namespace> = Api::all(client.clone());
         let ingresses: Api<Ingress> = Api::all(client);
 
@@ -82,12 +84,22 @@ impl KubeCatalog {
         };
 
         let (config_store, config_writer) = reflector::store();
+        let (team_store, team_writer) = reflector::store();
         let (namespace_store, namespace_writer) = reflector::store();
         let (ingress_store, ingress_writer) = reflector::store();
 
         let notify = Arc::new(tokio::sync::Notify::new());
         spawn_reflector(
             reflector::reflector(config_writer, watcher(configs, watcher::Config::default())),
+            Arc::clone(&notify),
+        );
+        // RFC 0011: a team's own catalogue and default are part of what an endpoint resolves to,
+        // so a `WeeboSiTeam` edit rebuilds the index exactly like a `WeeboSiConfig` edit does.
+        spawn_reflector(
+            reflector::reflector(
+                team_writer,
+                watcher(weebo_teams, watcher::Config::default()),
+            ),
             Arc::clone(&notify),
         );
         spawn_reflector(
@@ -125,6 +137,7 @@ impl KubeCatalog {
         let rebuild = Arc::clone(&catalog);
         let stores = Stores {
             configs: config_store,
+            teams: team_store,
             namespaces: namespace_store,
             ingresses: ingress_store,
         };
@@ -209,11 +222,22 @@ impl KubeCatalog {
             self.store(Snapshot::default());
             return;
         };
-        let teams = config.spec.teams.clone();
-        let Some(feature) = config.spec.features.endpoint_auth.clone() else {
+        let declared: Vec<WeeboSiTeam> = stores
+            .teams
+            .state()
+            .iter()
+            .map(|team| (**team).clone())
+            .collect();
+        let teams = team_views(&declared);
+        let Some(mut feature) = config.spec.features.endpoint_auth.clone() else {
             self.store(Snapshot::default());
             return;
         };
+        // The grants this gate reads are the merge of the singleton and the team objects. A
+        // conflict is reported by the controller on the `WeeboSiConfig`, not here: this replica's
+        // job is to serve the resolved answer, and the resolved answer is the same one the
+        // webhook computes from the same two inputs.
+        let _conflicts = feature.resolve(&declared);
 
         let (catalogue, overrides) = translate(&feature);
         let owners = owners_of(&stores.namespaces, &feature, &teams);
@@ -320,6 +344,7 @@ fn fnv(value: &str) -> u64 {
 
 struct Stores {
     configs: Store<WeeboSiConfig>,
+    teams: Store<WeeboSiTeam>,
     namespaces: Store<Namespace>,
     ingresses: Store<Ingress>,
 }

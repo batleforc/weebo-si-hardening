@@ -9,6 +9,7 @@ Operator-facing documentation for what is built. Each page is the *how*; the mat
 | `preauth-proxy` | [`preauth-proxy.md`](./preauth-proxy.md) | [0003](../rfc/0003-preauth-proxy.md) | `bins/`, hexagonal |
 | `weebo-si-operator` | [`weebo-si-operator.md`](./weebo-si-operator.md) | [0002](../rfc/0002-weebo-si-operator.md) | `crates/`, hexagonal, 10 crates |
 | `endpoint-gateway` | [`endpoint-gateway.md`](./endpoint-gateway.md) | [0009](../rfc/0009-endpoint-auth.md) | `bins/` + `crates/weebo-si-endpoint-auth`, hexagonal |
+| `WeeboSiTeam` / `WeeboSiUser` | [`teams-and-users.md`](./teams-and-users.md) | [0011](../rfc/0011-teams-and-users.md) | `crates/weebo-si-crd` + `crates/weebo-si-identity`, hexagonal |
 
 A brick with no page here has not shipped yet. Check the
 [RFC index](../rfc/readme.md#index) for what is designed and where it stands.

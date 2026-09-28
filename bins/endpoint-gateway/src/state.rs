@@ -16,6 +16,7 @@ use weebo_si_endpoint_auth::port::{Clock, EndpointCatalog, RevocationStore};
 use weebo_si_endpoint_auth::time::Timestamp;
 use weebo_si_endpoint_auth::{Enforcement, Outcome, Presented};
 
+use crate::adapters::introspection::Introspector;
 use crate::adapters::kube_catalog::KubeCatalog;
 use crate::adapters::kube_revocations::KubeRevocations;
 use crate::adapters::kube_workload::KubeWorkloadIdentity;
@@ -36,6 +37,9 @@ pub struct Caches {
     pub redeemed: IdentityCache<()>,
     /// Sessions already logged as reaching a host.
     pub logged: IdentityCache<()>,
+    /// Opaque tokens the issuer has already called `inactive`, so a flood of invented ones costs
+    /// one introspection per token rather than one per request.
+    pub introspection_negative: IdentityCache<()>,
 }
 
 /// The system clock, as a port, so that nothing below it can read one by accident.
@@ -75,6 +79,11 @@ pub struct GatewayState {
     pub codec: SealedCodec,
     /// Bearer verification against cached keys.
     pub verifier: JwksVerifier,
+    /// Asking the issuer about an opaque bearer. `None` unless `bearer.introspection.enabled`,
+    /// which is the default: an opaque token has nothing to check offline, so this path trades
+    /// the JWKS cache's outage tolerance for the ability to serve a platform whose access tokens
+    /// carry no claims.
+    pub introspector: Option<Introspector>,
     /// The login path. `None` where discovery failed at boot and the gateway is serving cookies
     /// it already minted — a sign-in is then unavailable, and every existing session still works.
     pub oidc: Option<OidcClient>,
@@ -88,6 +97,12 @@ pub struct GatewayState {
     pub service_account_cache: IdentityCache<weebo_si_endpoint_auth::identity::NamespaceName>,
     /// One-time grants already redeemed on this replica.
     pub redeemed: IdentityCache<()>,
+    /// Opaque tokens already known to be inactive.
+    pub introspection_negative: IdentityCache<()>,
+    /// The per-address limiter in front of the login surface — RFC 0009's *The login surface is
+    /// a surface*. `/auth` is exempt: it is the hot path, the ingress controller is its only
+    /// caller, and the peer check of *Checking that assumption* is what protects it instead.
+    pub login_limiter: crate::ratelimit::RateLimiter,
     /// Sessions that have already been logged as reaching a host — the bounded set behind
     /// "one line per user per host per session" rather than one per asset.
     pub logged: IdentityCache<()>,
@@ -129,25 +144,78 @@ impl GatewayState {
     /// a request, it happens once per token rather than once per request, and it is here — in
     /// the handler, where a reader trips over it — rather than inside `decide()`, which may not
     /// do any.
-    pub async fn prewarm_service_account(&self, token: Option<&str>) {
-        let Some(token) = token else {
+    pub async fn prewarm_bearer(&self, token: Option<&str>, address: Option<&str>) {
+        let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
             return;
         };
-        if !crate::adapters::kube_workload::KubeWorkloadIdentity::looks_like_service_account_token(
+        let now = self.now();
+        if crate::adapters::kube_workload::KubeWorkloadIdentity::looks_like_service_account_token(
             token,
         ) {
+            if weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_service_account(
+                self.workloads.as_ref(),
+                token,
+                now,
+            )
+            .is_none()
+            {
+                let reviewed = self.workloads.review(token, now).await;
+                self.metrics.bearer(
+                    weebo_si_endpoint_auth::bearer::TokenShape::ServiceAccount,
+                    if reviewed.is_some() {
+                        weebo_si_endpoint_auth::bearer::BearerResult::Accepted
+                    } else {
+                        weebo_si_endpoint_auth::bearer::BearerResult::Unverifiable
+                    },
+                );
+            }
             return;
         }
-        let now = self.now();
-        if weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_service_account(
-            self.workloads.as_ref(),
-            token,
-            now,
-        )
-        .is_none()
-        {
-            let _ = self.workloads.review(token, now).await;
+        // The second thing that genuinely needs an API call on this path, and it goes where the
+        // first one does: above `decide()`, once per token, visible to a reader. A JWT never
+        // reaches it — `is_opaque` is a header decode, not a round trip.
+        let Some(introspector) = self.introspector.as_ref() else {
+            return;
+        };
+        if !Introspector::is_opaque(token) {
+            return;
         }
+        if let Some(introspected) = introspector
+            .prewarm(
+                token,
+                address.unwrap_or_default(),
+                now,
+                &self.bearer_cache,
+                &self.introspection_negative,
+            )
+            .await
+        {
+            self.metrics
+                .bearer(Introspector::shape(), introspected.result);
+        }
+    }
+
+    /// What the per-address limiter keys on.
+    ///
+    /// A hint, never an identity: it is the address the controller stated, and a caller who can
+    /// vary it can vary their source address too. It bounds the cost of a flood; nothing here
+    /// decides who anybody is, which is why it may read a header the identity path refuses to.
+    pub fn limit_key(
+        &self,
+        headers: &axum::http::HeaderMap,
+        peer: Option<std::net::SocketAddr>,
+    ) -> String {
+        headers
+            .get(
+                self.config
+                    .self_origin
+                    .client_ip_header
+                    .to_ascii_lowercase(),
+            )
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .or_else(|| peer.map(|peer| peer.ip().to_string()))
+            .unwrap_or_default()
     }
 
     /// Whether the client-address header may be believed for this connection.
@@ -249,22 +317,22 @@ impl GatewayState {
             return Some(payload.claims());
         }
         let token = presented.bearer.as_deref()?;
-        match weebo_si_endpoint_auth::port::TokenVerifier::verify(&self.verifier, token, now) {
-            weebo_si_endpoint_auth::port::TokenOutcome::Ours { claims, .. } => Some(claims),
-            _ => None,
-        }
+        // `examine` rather than the port's `verify`: this runs on the *allow* path of every
+        // request that carried a bearer, and counting it would turn a verification counter into a
+        // request counter.
+        self.verifier
+            .examine(token, now)
+            .identity
+            .map(|(claims, _)| claims)
     }
 
-    /// The claims an ID token carries, verified against the issuer's keys like any other token.
+    /// The claims an ID token carries, verified against the issuer's keys.
+    ///
+    /// Its own entry point rather than the bearer branch, because the two want opposite things
+    /// from the same token: the bearer branch refuses an ID token structurally, and the login path
+    /// is the one place an ID token is exactly what should have arrived.
     pub fn claims_of_id_token(&self, id_token: &str) -> Option<Claims> {
-        match weebo_si_endpoint_auth::port::TokenVerifier::verify(
-            &self.verifier,
-            id_token,
-            self.now(),
-        ) {
-            weebo_si_endpoint_auth::port::TokenOutcome::Ours { claims, .. } => Some(claims),
-            _ => None,
-        }
+        self.verifier.claims_of_id_token(id_token, self.now())
     }
 
     /// Verify a logout token and record the revocation it names.
@@ -277,18 +345,11 @@ impl GatewayState {
         logout_token: &str,
     ) -> Result<Option<String>, kube::Error> {
         let now = self.now();
-        let session = match weebo_si_endpoint_auth::port::TokenVerifier::verify(
-            &self.verifier,
-            logout_token,
-            now,
-        ) {
-            weebo_si_endpoint_auth::port::TokenOutcome::Ours { claims, .. } => claims
-                .session
-                .as_ref()
-                .map(|session| session.as_str().to_owned()),
-            _ => None,
-        };
-        let Some(session) = session else {
+        let Some(session) = self
+            .verifier
+            .session_of_logout_token(logout_token, now)
+            .map(|session| session.as_str().to_owned())
+        else {
             return Ok(None);
         };
         self.revocations
@@ -514,6 +575,11 @@ impl GatewayState {
             // The logged-once set. Bounded like every other cache here: losing an entry costs one
             // extra log line, which is the cheapest failure in this file.
             logged: IdentityCache::new(CacheKind::Session, 100_000, 43_200),
+            introspection_negative: IdentityCache::new(
+                CacheKind::Bearer,
+                config.cache.identity_max_entries,
+                config.bearer.introspection.negative_ttl_secs.max(1),
+            ),
         }
     }
 }

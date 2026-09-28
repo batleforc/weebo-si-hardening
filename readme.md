@@ -37,7 +37,7 @@ task rfc:check         # validate every RFC against the format
 | Task | Does |
 | --- | --- |
 | `task lint` | `cargo fmt`, `clippy -D warnings`, `shellcheck`, `rfc:check`, `crd:check`, `helm:lint` (also runs in the pre-commit hook) |
-| `task recu` | regenerates what is derived from source — the RFC index, and `crates/weebo-si-operator/deploy/crd.yaml` when the CRD schema is staged (also in the hook) |
+| `task recu` | regenerates what is derived from source — the RFC index, and the checked-in CRDs (`crates/weebo-si-operator/deploy/crd.yaml`, `charts/weebo-si-operator/crds/`) when the CRD schema is staged (also in the hook) |
 | `task test` | the whole test suite |
 | `task build` | release build of every brick |
 | `task audit` | `cargo deny` for RUSTSEC advisories, `trivy fs` for the rest |

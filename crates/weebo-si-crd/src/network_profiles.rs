@@ -8,9 +8,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::namespace::NamespaceName;
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// A short identifier for a catalogue entry, unique within the catalogue. Never a
 /// `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
@@ -142,6 +143,22 @@ pub struct ProfileGrant {
     pub default: Vec<ProfileKey>,
 }
 
+/// `spec.features.network_profiles` on a `WeeboSiTeam` — this team's own catalogue entries and its
+/// defaults, per RFC 0004 and RFC 0011.
+///
+/// No `allowed` list, for the reason [`crate::dwoc_pin::TeamDwocPin`] spells out: a team's
+/// reachable set is the catalogue it declares, widened only by what the cluster hands everybody.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamNetworkProfiles {
+    /// This team's catalogue entries, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: ProfileCatalog,
+    /// The profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way.
+    #[serde(default)]
+    pub default: Vec<ProfileKey>,
+}
+
 /// What to do when a workspace names a profile key its team's grant does not allow.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum OnNotGranted {
@@ -242,7 +259,11 @@ pub struct NetworkProfilesConfig {
     /// The profile applied to every namespace in scope, never negotiable.
     pub baseline: ProfileKey,
     /// What each team may reach, keyed by team name.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`NetworkProfilesConfig::resolve`] fills this in from them, and a configuration nobody
+    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<String, ProfileGrant>,
     /// The namespace annotation naming a profile key list.
     #[serde(default)]
@@ -262,6 +283,63 @@ impl NetworkProfilesConfig {
     /// This team's grant, if `grants` has one.
     pub fn grant_for(&self, team: &TeamName) -> Option<&ProfileGrant> {
         self.grants.get(team.as_str())
+    }
+
+    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`NetworkProfilesConfig::validate`], which now runs over the resolved shape and therefore over
+    /// exactly what the feature will evaluate.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<NetworkProfilesConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<Profile>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .network_profiles
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.entries().to_vec()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
+        self.catalog = ProfileCatalog::new(entries);
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.network_profiles.as_ref()?;
+                let mut allowed: Vec<ProfileKey> = block
+                    .catalog
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                for key in [self.baseline.clone()] {
+                    if !allowed.contains(&key) {
+                        allowed.push(key);
+                    }
+                }
+                Some((
+                    team.team_name().to_string(),
+                    ProfileGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(
+                |conflict| NetworkProfilesConfigViolation::CatalogKeyConflict {
+                    team: conflict.team,
+                    key: conflict.key,
+                },
+            )
+            .collect()
     }
 }
 
@@ -295,8 +373,18 @@ pub enum NetworkProfilesConfigViolation {
         /// The uncatalogued key.
         key: ProfileKey,
     },
-    /// `grants` names a team `spec.teams` never declared.
+    /// `grants` names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept so a resolution bug
+    /// producing one is reported rather than silently dropped.
     GrantNamesUndeclaredTeam(TeamName),
+    /// A team redefined a network profile key somebody already defined, differently. The first definition
+    /// stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: ProfileKey,
+    },
 }
 
 impl fmt::Display for NetworkProfilesConfigViolation {
@@ -321,11 +409,12 @@ impl fmt::Display for NetworkProfilesConfigViolation {
                 write!(f, "grant for team {team} allows uncatalogued key {key}")
             }
             Self::GrantNamesUndeclaredTeam(team) => {
-                write!(
-                    f,
-                    "grant names team {team}, which spec.teams never declared"
-                )
+                write!(f, "grant names team {team}, which no WeeboSiTeam declares")
             }
+            Self::CatalogKeyConflict { team, key } => write!(
+                f,
+                "team {team} redefines catalogue key {key}, which is already defined differently"
+            ),
         }
     }
 }

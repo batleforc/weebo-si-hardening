@@ -55,6 +55,14 @@ checksum = "sha256:551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f247
 url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz"
 url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/378332058"
 
+[[tools.helm]]
+version = "4.2.4"
+backend = "aqua:helm/helm"
+
+[tools.helm."platforms.linux-x64"]
+checksum = "sha256:c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3"
+url = "https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz"
+
 [[tools.node]]
 version = "24.19.0"
 backend = "core:node"
@@ -73,7 +81,7 @@ url = "https://github.com/rtk-ai/rtk/releases/download/v0.45.0/rtk-x86_64-unknow
 url_api = "https://api.github.com/repos/rtk-ai/rtk/releases/assets/504971573"
 
 [[tools.rust]]
-version = "1.98.0"
+version = "1.98.1"
 backend = "core:rust"
 
 [[tools.shellcheck]]
@@ -93,6 +101,15 @@ backend = "aqua:go-task/task"
 checksum = "sha256:a54a408f6861ff921f6e87774180db31bacd8c1e7c944ca696db9fea49a82fc7"
 url = "https://github.com/go-task/task/releases/download/v3.53.1/task_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/go-task/task/releases/assets/519645449"
+
+[[tools.traefik]]
+version = "3.7.13"
+backend = "github:traefik/traefik"
+
+[tools.traefik."platforms.linux-x64"]
+checksum = "sha256:52cd039a34258dd61c617a95d69252bc6bcae27c520f338186c31c7fef8f6394"
+url = "https://github.com/traefik/traefik/releases/download/v3.7.13/traefik_v3.7.13_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/traefik/traefik/releases/assets/544321289"
 
 [[tools.trivy]]
 version = "0.74.0"

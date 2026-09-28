@@ -11,10 +11,11 @@ use weebo_si_kubearmor_policy::KubeArmorPolicy;
 use weebo_si_network_profiles::NetworkProfiles;
 use weebo_si_registry_config::RegistryConfigFeature;
 use weebo_si_runtime::{
-    DEFAULT_CANARY_IMAGE, KubeArmorCapabilities, KubeArmorMetrics, KubeArmorPolicyStore,
-    KubeArmorTemplateStore, KubeCanary, KubeCapabilities, KubeConfigStore, KubeDwocStore,
-    KubeNodeEnforcerView, KubeNsStore, KubePolicyStore, KubeRegistryObjectStore,
-    KubeRegistryTemplateStore, KubeTemplateStore, NetworkMetrics, RegistryMetrics,
+    DEFAULT_CANARY_IMAGE, IdentityMetrics, KubeArmorCapabilities, KubeArmorMetrics,
+    KubeArmorPolicyStore, KubeArmorTemplateStore, KubeCanary, KubeCapabilities, KubeConfigStore,
+    KubeDwocStore, KubeNodeEnforcerView, KubeNsStore, KubePolicyStore, KubeProvisioner,
+    KubeRegistryObjectStore, KubeRegistryTemplateStore, KubeTemplateStore, NetworkMetrics,
+    RegistryMetrics,
 };
 
 use crate::cli::{flag, has_flag};
@@ -231,6 +232,20 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         operator_namespace: NamespaceName::new(operator_namespace.clone()),
     };
 
+    // RFC 0011's `identity`. Constructed unconditionally and inert until
+    // `spec.features.identity` exists: the two loops still report team and user status, and
+    // neither provisioner is called at all while the feature is absent or `Off`. Both handles
+    // discover their kind lazily, so a cluster that installs the Authentik operator or Argo CD
+    // later starts provisioning without a restart.
+    let identity_metrics =
+        IdentityMetrics::register(&prometheus_registry).map_err(|err| err.to_string())?;
+    let identity = weebo_si_controller::IdentityDeps {
+        config: config_store.identity_config(),
+        authentik: Arc::new(KubeProvisioner::authentik_user(client.clone())) as _,
+        workspace: Arc::new(KubeProvisioner::argo_application(client.clone())) as _,
+        observer: Arc::new(identity_metrics) as _,
+    };
+
     let ready = Ready::default();
     ready.mark_ready();
     tokio::spawn(observability::serve(
@@ -255,6 +270,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         kubearmor_policy,
         Some(registry_config),
         Some(endpoint_auth),
+        Some(identity),
     )
     .await;
     Ok(())

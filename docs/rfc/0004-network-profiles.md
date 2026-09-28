@@ -4,7 +4,7 @@ title: network-profiles
 status: Implemented
 authors: [batleforc]
 created: 2026-08-24
-updated: 2026-08-25
+updated: 2026-09-25
 decided: 2026-08-24
 brick: crates/weebo-si-network-profiles
 supersedes: []
@@ -26,8 +26,9 @@ whose RBAC does not.
 This is the first feature that **writes objects**, the first to use the controller role, and the
 first with a pluggable enforcement backend: plain `NetworkPolicy` where that is all the cluster
 has, `CiliumNetworkPolicy` where the CNI offers more, with the degradation named rather than
-silent. It builds on an amendment to [RFC 0002](./0002-weebo-si-operator.md) — `spec.teams` —
-which shipped with that RFC, and on a second chassis trait, `ReconcileFeature<S>`, which that
+silent. It builds on an amendment to [RFC 0002](./0002-weebo-si-operator.md) — chassis-level
+teams, `spec.teams` then and a `WeeboSiTeam` object since
+[RFC 0011](./0011-teams-and-users.md) — which shipped with that RFC, and on a second chassis trait, `ReconcileFeature<S>`, which that
 RFC predicted it would need.
 
 ## Motivation
@@ -79,7 +80,8 @@ something weaker and looking healthy.
 ## Guide-level explanation
 
 Both features start `Off`, per the chassis. `network-profiles` needs three things: a catalogue,
-a baseline, and grants against the teams `spec.teams` already declares.
+a baseline, and — on each `WeeboSiTeam`, the object the chassis already declares a team in —
+what that team reaches.
 
 ```yaml
 apiVersion: hardening.weebo.io/v1alpha1
@@ -87,18 +89,26 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams:                                  # chassis-level, shared with dwoc-pin
-    - name: team-1
-      namespaceSelector:
-        matchLabels: {weebo.io/team: team-1}
   features:
     networkProfiles:
       mode: DryRun
-      catalog:
+      catalog:                            # the platform's own entries; a team brings its own
         - key: base
           variants:
             - backend: NetworkPolicy
               templateRef: {name: weebo-base, namespace: weebo-si-hardening}
+      baseline: base                      # applied to every namespace in scope, never negotiable
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam                         # chassis-level, shared with every other feature
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels: {weebo.io/team: team-1}
+  features:
+    networkProfiles:                      # this team's own entries, and its default
+      catalog:
         - key: git
           variants:
             - backend: NetworkPolicy
@@ -107,9 +117,7 @@ spec:
           variants:
             - backend: NetworkPolicy
               templateRef: {name: weebo-vault, namespace: weebo-si-hardening}
-      baseline: base                      # applied to every namespace in scope, never negotiable
-      grants:
-        team-1: {allowed: [git, vault], default: [git]}
+      default: [git]
 ```
 
 A template is an ordinary policy object in a namespace users cannot write, authored with
@@ -215,7 +223,7 @@ namespace in scope regardless of team, and it is the only one no grant can withh
 | `namespaceSelector` | LabelSelector | none | per the chassis — the rollout knob |
 | `catalog` | list of profiles | — | required, non-empty. Each is `{key, variants}`. |
 | `baseline` | profile key | — | required. Applied to every namespace in scope. |
-| `grants` | map, team name → `{allowed, default}` | empty | `allowed` is the set of keys a team may reach; `default` is the subset applied when a workspace asks for nothing. Both may be empty. |
+| per-team catalogue and default | on `WeeboSiTeam` | absent | What a team reaches beyond the baseline, and what it gets when a workspace asks for nothing. A `grants` map here until [RFC 0011](./0011-teams-and-users.md); `spec.features.networkProfiles.{catalog,default}` on the team's own object since. |
 | `namespaceSelection.annotation` | string | `hardening.weebo.io/network-profiles` | Namespace annotation carrying a comma-separated key list, overriding the team default for that namespace. Empty string disables it. |
 | `workspaceSelection.attribute` | string | `hardening.weebo.io/network-profiles` | DevWorkspace attribute carrying the same, overriding the namespace. Empty string disables it. |
 | `onNotGranted` | `Default` \| `Deny` | `Default` | What to do when a workspace names a key its team lacks. |
@@ -663,7 +671,7 @@ Which leads to the sentence this RFC most needs to be read for:
 
 > **The per-workspace level is least privilege, not an authorization boundary.** A user whose
 > team is granted `vault` can give any of their workspaces `vault`, by editing a devfile. The
-> boundary is the grant, and only a cluster admin writes grants.
+> boundary is what the team itself reaches, and only a cluster admin writes that.
 
 What that buys is still worth having, and it is worth being precise about what it is: a
 workspace that never asked for Vault cannot reach Vault *whatever runs inside it*. The threat
@@ -799,10 +807,10 @@ and this RFC is where that rule starts.
 1. Install, both features `Off`. Run `weebo-si-operator canary` and `backends` by hand. If the
    canary says `not_enforcing`, stop: nothing below this line will do anything, and finding that
    out now costs an afternoon rather than a quarter.
-2. `networkProfiles: mode: DryRun`, catalogue and baseline written, no grants. Read the diff.
+2. `networkProfiles: mode: DryRun`, catalogue and baseline written, no teams. Read the diff.
    Every namespace should show one `create:weebo-base` and nothing else.
-3. Add the grants, still `DryRun`. Read the diff per team. This is where a wrong `spec.teams`
-   label shows up as a namespace on the wrong grant.
+3. Add the `WeeboSiTeam` objects, still `DryRun`. Read the diff per team. This is where a wrong
+   team label shows up as a namespace on the wrong grant.
 4. `mode: Enforce` with a `namespaceSelector` on a pilot label, one namespace, and **then start
    a workspace in it**. The objects existing is not the test; the workspace working is.
 5. Remove the selector. Widening is the step to do during working hours: it is the one that
@@ -1161,8 +1169,8 @@ to miss inside the *Contract* table alone:
       managed object. **Not covered**: `onNotGranted: Deny`, drift restored, `mode: Off` deleting
       everything, the guard denying a `CREATE`, and any real connectivity assertion (needs a
       policy-enforcing CNI, which envtest does not provide) — the RBAC suite
-      (`crates/weebo-si-operator/tests/envtest.rs`) separately proves the new grants for real
-      against an RBAC-enforcing apiserver
+      (`crates/weebo-si-operator/tests/envtest.rs`) separately proves the new RBAC grants for
+      real against an RBAC-enforcing apiserver
 - [x] Docs: `docs/bricks/weebo-si-operator.md` gained an RFC 0004 section — install checklist,
       rollout, rollback, logs, observability, and *Known limitations* naming everything above
       that is not implemented. No dedicated runbook page; folded into the existing one
@@ -1206,4 +1214,5 @@ to miss inside the *Contract* table alone:
 | 2026-08-24 | Third implementation slice, the first to touch `kube`: the three adapters (`KubePolicyStore`, `KubeTemplateStore`, `KubeCapabilities`), the controller's `Namespace`/`DevWorkspace` reconcile loops, `policy-guard`'s admission adapter, RBAC and `ValidatingWebhookConfiguration` manifests, the `backends` subcommand, and a real-apiserver test suite (4 tests in `weebo-si-runtime`, plus RBAC assertions extended in `weebo-si-operator`) — all passing against real `etcd`+`kube-apiserver` processes, not just `helm template`. Building the adapters surfaced three gaps the pure-domain phases could not have: `PolicyBody` needed a narrow `as_bytes()` accessor (the *domain* never inspects it; the adapter serializing it to the apiserver has to), `TemplateStore::body` needed a `Backend` parameter (the two dialects can name the same `{name, namespace}` and be different objects), and `PolicyStore::apply` had to become genuinely async (a real write is I/O, `Off`-mode's synchronous port trait couldn't stay synchronous once one implementor actually talks to a cluster) — which in turn required `DwocCatalog`, `ReconcileFeature<S>` and `PolicyStore` to gain `Send + Sync` supertraits so `Context` and an `async fn` holding these trait objects could be `Send` across an `.await`. Also resolved the `NamespaceFacts` single-annotation gap flagged in the first slice's changelog entry: `NamespaceView` gained a general `annotation(ns, key)` method alongside the existing fixed-key `facts()`, and `KubeNsStore` implements it by reading any key off its already-cached `Namespace` objects — no chassis type needed to grow a second slot. **Not implemented**: the canary, the `DevWorkspace` `CREATE` rejection for a namespace with no baseline, and the end-to-end test that the controller writes through its own `policy-guard`. RFC stays `Proposed`, not `Implemented`, until those close — see the *Implementation plan* for specifics. |
 | 2026-08-24 | Fourth and final implementation slice; flipped to `Implemented`. Closes the three gaps the third slice refused to flip over, plus the *Observability contract* the runbook had recorded as not wired up. **The canary**: a pure two-observation verdict (`canary.rs`), a two-leg sequencer (`application::run_canary`) and a pod-pair adapter (`kube_canary.rs`), driving `weebo_si_network_canary` from the controller and answerable by hand with `weebo-si-operator canary`, which exits non-zero on anything but `enforcing`. **The `DevWorkspace` `CREATE` rejection**: `feature/workspace_gate.rs`, a `Feature<WorkspaceAdmission>` reporting the `network-profiles` `FeatureId` so one `mode` gates both halves of the feature — which also makes `onNotGranted: Deny` refuse a DevWorkspace at admission, as this RFC's *Design* had claimed since the first revision and the first slice's changelog entry had flagged as untrue. **The end-to-end guard test**: two authenticated identities against a live `ValidatingWebhookConfiguration`, asserting the controller writes through its own guard and a workspace owner does not. Three things surfaced that the earlier slices could not have: `DesiredState` had to grow `team`/`not_granted`/`unsupported` (a metric label whose value comes from `resolve()` must travel out of the one place the resolution chain runs, not be recomputed by a controller free to drift from it); the structural namespace exclusion had to move from `weebo-si-controller` into the domain crate (the webhook now needs the identical verdict, and two copies that disagree wedge a namespace); and the webhook role gained a read-only `networkpolicies` watch for `BaselineView`, which is a real widening of the role RFC 0002 describes as holding nothing but watches — still watches, one more of them, and deliberately *not* the write verbs, which stay on the controller-only role. |
 | 2026-08-24 | Canary test coverage, after review pushed back on "the adapter is untestable without a kubelet" — which was wrong. The probe reads pod *status*, and a test can write pod status through the `/status` subresource, so the whole sequence is reachable in envtest after all: 8 real-apiserver tests over `server_ip`/`set_deny`/`dial`/`cleanup` and `run_canary` end to end, driven by a fixture that decides the client pod's exit status from whether the deny policy exists (making it a cluster that enforces policy, or one that does not, on a boolean). Plus 11 unit tests over the now-extracted pure spec builders, which turn the RFC's own requirements for this pod — no service account token, non-root, `restartPolicy: Never`, a deny policy selecting only the server and not carrying the ownership label — into assertions. Fixed a latent bug found while writing them: `KubeCanary::pod` ended in `serde_json::from_value(..).unwrap_or_default()`, so a malformed spec became an empty `Pod` and surfaced as an apiserver rejection describing the symptom rather than the cause; it now returns a `DomainError` naming the pod. Both new suites were mutation-checked — breaking the pod spec's types fails four unit tests, and making `set_deny` silently skip its write fails the two envtests that matter. |
+| 2026-09-25 | Amended for [RFC 0011](./0011-teams-and-users.md): **what a team reaches moved onto the team's own object.** The `grants` map this RFC put under `spec.features.networkProfiles` is gone from the wire; a `WeeboSiTeam` carries that team's own catalogue entries and its `default`, and the cluster catalogue keeps the `baseline` — which is a cluster fact rather than team property and could not have moved. Nothing about the resolution chain, the selection tiers or `onNotGranted` changes: a team still reaches what it was granted, and a workspace still picks inside it. The guide-level example and the contract table follow the new shape; `weebo-si-operator teams export` migrates an existing configuration. |
 | 2026-08-25 | **`policy-guard` moved out of this crate**, per [RFC 0008](./0008-policy-guard-coverage.md): `crates/weebo-si-policy-guard`, with `NetworkPolicyWrite` renamed `GuardedWrite`, `NetworkPolicyOperation` renamed `WriteOperation`, and a `GuardedResource` field the verdict never branches on. No behavioural change and no wire-format change — the three-row table, the webhook path and the `failurePolicy` argument this RFC settled are all unchanged, and the guard now applies them to `kubearmorpolicies` as well. The placement here was right when this RFC introduced both; it stopped being right the moment a second brick started writing objects into workspace namespaces, since `weebo-si-kubearmor-policy` would have had to depend on `weebo-si-network-profiles` to be guarded by it. |

@@ -16,9 +16,10 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, DwocPinConfig, EndpointAuthConfig, FeatureMode, ImagePolicyConfig,
+    Backend, DwocPinConfig, EndpointAuthConfig, FeatureMode, IdentityConfig, ImagePolicyConfig,
     KubeArmorPolicyConfig, NamespaceName, NetworkProfilesConfig, PolicyGuardConfig, RegistryConfig,
-    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig,
+    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiConfigSpec, WeeboSiTeam,
+    team_views,
 };
 
 use weebo_si_chassis::FeatureId;
@@ -59,6 +60,7 @@ pub struct KubeConfigStore {
     kubearmor_policy: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: Arc<RwLock<Option<RegistryConfig>>>,
     endpoint_auth: Arc<RwLock<Option<EndpointAuthConfig>>>,
+    identity: Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: Arc<RwLock<Backend>>,
     /// The engine `kubearmor-policy` resolved. A second handle rather than a variant of
     /// `resolved_backend`: the two features resolve different enums against different
@@ -94,8 +96,10 @@ impl KubeConfigStore {
         capabilities: Arc<dyn Capabilities + Send + Sync>,
         runtime_capabilities: Arc<dyn RuntimeCapabilities + Send + Sync>,
     ) -> Result<Self, kube::Error> {
-        let api: Api<WeeboSiConfig> = Api::all(client);
+        let api: Api<WeeboSiConfig> = Api::all(client.clone());
+        let team_api: Api<WeeboSiTeam> = Api::all(client);
         let (reader, writer) = reflector::store();
+        let (team_reader, team_writer) = reflector::store();
         let teams = Arc::new(RwLock::new(Vec::new()));
         let dwoc_pin = Arc::new(RwLock::new(None));
         let network_profiles = Arc::new(RwLock::new(None));
@@ -104,6 +108,7 @@ impl KubeConfigStore {
         let kubearmor_policy = Arc::new(RwLock::new(None));
         let registry_config = Arc::new(RwLock::new(None));
         let endpoint_auth = Arc::new(RwLock::new(None));
+        let identity = Arc::new(RwLock::new(None));
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
         let metrics = Metrics::register(registry).map_err(|err| {
@@ -112,10 +117,24 @@ impl KubeConfigStore {
             ))
         })?;
 
-        let stream = reflector::reflector(writer, watcher(api, watcher::Config::default()))
-            .default_backoff();
+        // Two watches, one loop: a `WeeboSiTeam` changing has to re-resolve exactly what a
+        // `WeeboSiConfig` changing does, per RFC 0011 — the catalogues and grants the features
+        // read are the merge of both. `select` rather than two tasks so one sync can never run
+        // against half of a change.
+        let stream = futures_util::StreamExt::map(
+            reflector::reflector(writer, watcher(api, watcher::Config::default()))
+                .default_backoff(),
+            |event| event.map(|_| ()),
+        );
+        let team_stream = futures_util::StreamExt::map(
+            reflector::reflector(team_writer, watcher(team_api, watcher::Config::default()))
+                .default_backoff(),
+            |event| event.map(|_| ()),
+        );
+        let stream = futures_util::stream::select(stream, team_stream);
 
         let store_for_task = reader.clone();
+        let team_store_for_task = team_reader.clone();
         let teams_for_task = Arc::clone(&teams);
         let dwoc_pin_for_task = Arc::clone(&dwoc_pin);
         let network_profiles_for_task = Arc::clone(&network_profiles);
@@ -124,6 +143,7 @@ impl KubeConfigStore {
         let kubearmor_policy_for_task = Arc::clone(&kubearmor_policy);
         let registry_config_for_task = Arc::clone(&registry_config);
         let endpoint_auth_for_task = Arc::clone(&endpoint_auth);
+        let identity_for_task = Arc::clone(&identity);
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
         let annotation_key_for_task = Arc::clone(&annotation_key);
@@ -135,8 +155,9 @@ impl KubeConfigStore {
             loop {
                 use futures_util::StreamExt;
                 match stream.next().await {
-                    Some(Ok(_)) => sync_from_store(
+                    Some(Ok(())) => sync_from_store(
                         &store_for_task,
+                        &team_store_for_task,
                         &teams_for_task,
                         &dwoc_pin_for_task,
                         &network_profiles_for_task,
@@ -145,6 +166,7 @@ impl KubeConfigStore {
                         &kubearmor_policy_for_task,
                         &registry_config_for_task,
                         &endpoint_auth_for_task,
+                        &identity_for_task,
                         &resolved_backend_for_task,
                         &resolved_runtime_backend_for_task,
                         &annotation_key_for_task,
@@ -159,6 +181,11 @@ impl KubeConfigStore {
             }
         });
 
+        // Only the config store is waited on. A cluster where `weebositeams` is not installed
+        // yet — the first step of RFC 0011's rollout, before the chart's CRDs land — would
+        // otherwise never become ready, and a hardening webhook that never becomes ready blocks
+        // everything. Teams arrive with the team reflector's own first list, which is itself a
+        // stream event and therefore triggers a resync.
         reader.wait_until_ready().await.map_err(|err| {
             kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(
                 err.to_string(),
@@ -170,6 +197,7 @@ impl KubeConfigStore {
         // gauge before its first observation.
         sync_from_store_initial(
             &reader,
+            &team_reader,
             &teams,
             &dwoc_pin,
             &network_profiles,
@@ -178,6 +206,7 @@ impl KubeConfigStore {
             &kubearmor_policy,
             &registry_config,
             &endpoint_auth,
+            &identity,
             &resolved_backend,
             &resolved_runtime_backend,
             &annotation_key,
@@ -194,10 +223,18 @@ impl KubeConfigStore {
             kubearmor_policy,
             registry_config,
             endpoint_auth,
+            identity,
             resolved_backend,
             resolved_runtime_backend,
             namespace_view,
         })
+    }
+
+    /// The `Arc` the `identity` reconcile loops read, per RFC 0011. `None` until (and unless)
+    /// `spec.features.identity` is present on the singleton — which is what keeps provisioning
+    /// off in a cluster that never asked for it.
+    pub fn identity_config(&self) -> Arc<RwLock<Option<IdentityConfig>>> {
+        Arc::clone(&self.identity)
     }
 
     /// The `Arc` `weebo-si-dwoc-pin`'s `DwocPin::new` should be constructed with. `None` until
@@ -347,6 +384,7 @@ impl Metrics {
 )]
 fn sync_from_store_initial(
     store: &Store<WeeboSiConfig>,
+    team_store: &Store<WeeboSiTeam>,
     teams: &Arc<RwLock<Vec<Team>>>,
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
@@ -355,6 +393,7 @@ fn sync_from_store_initial(
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
+    identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -368,8 +407,10 @@ fn sync_from_store_initial(
     else {
         return;
     };
+    let (declared, spec) = resolve(&config, team_store);
     apply_config(
-        &config,
+        &spec,
+        &declared,
         teams,
         dwoc_pin,
         network_profiles,
@@ -378,6 +419,7 @@ fn sync_from_store_initial(
         kubearmor_policy,
         registry_config,
         endpoint_auth,
+        identity,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -392,6 +434,7 @@ fn sync_from_store_initial(
 )]
 fn sync_from_store(
     store: &Store<WeeboSiConfig>,
+    team_store: &Store<WeeboSiTeam>,
     teams: &Arc<RwLock<Vec<Team>>>,
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
@@ -400,6 +443,7 @@ fn sync_from_store(
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
+    identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -415,8 +459,10 @@ fn sync_from_store(
     else {
         return;
     };
+    let (declared, spec) = resolve(&config, team_store);
     apply_config(
-        &config,
+        &spec,
+        &declared,
         teams,
         dwoc_pin,
         network_profiles,
@@ -425,6 +471,7 @@ fn sync_from_store(
         kubearmor_policy,
         registry_config,
         endpoint_auth,
+        identity,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -436,7 +483,7 @@ fn sync_from_store(
         .observed_generation
         .set(config.metadata.generation.unwrap_or(0));
 
-    let dwoc_pin_config = config.spec.features.dwoc_pin.as_ref();
+    let dwoc_pin_config = spec.features.dwoc_pin.as_ref();
     metrics
         .feature_mode
         .with_label_values(&["dwoc-pin"])
@@ -445,9 +492,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["network-profiles"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .network_profiles
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -457,9 +502,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["policy-guard"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .policy_guard
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -499,9 +542,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["image-policy"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .image_policy
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -512,9 +553,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["kubearmor-policy"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .kubearmor_policy
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -525,9 +564,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["registry-config"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .registry_config
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -538,9 +575,7 @@ fn sync_from_store(
         .feature_mode
         .with_label_values(&["endpoint-auth"])
         .set(
-            config
-                .spec
-                .features
+            spec.features
                 .endpoint_auth
                 .as_ref()
                 .map(|c| mode_value(c.mode))
@@ -550,7 +585,7 @@ fn sync_from_store(
     // Set from a full recount rather than incremented, same as the gauge below: an entry whose
     // pattern was fixed must drop out of `invalid`, not keep reporting a fault that is gone.
     let (mut valid, mut invalid) = (0i64, 0i64);
-    if let Some(cfg) = config.spec.features.image_policy.as_ref() {
+    if let Some(cfg) = spec.features.image_policy.as_ref() {
         for entry in cfg.catalog.entries() {
             // An entry is valid only if *every* pattern parses — a half-applied entry is an
             // allow-list whose contents differ from what an admin reads, so the domain refuses
@@ -578,7 +613,7 @@ fn sync_from_store(
     // Recomputed from scratch, never incremented: a profile that gained a variant (or left the
     // catalogue) must drop back to 0 rather than keep reporting a degradation that was fixed.
     metrics.network_profile_unsupported.reset();
-    if let Some(cfg) = config.spec.features.network_profiles.as_ref() {
+    if let Some(cfg) = spec.features.network_profiles.as_ref() {
         for entry in cfg.catalog.entries() {
             metrics
                 .network_profile_unsupported
@@ -588,12 +623,32 @@ fn sync_from_store(
     }
 }
 
+/// The declared teams, and the configuration the features actually evaluate: the singleton
+/// merged with every `WeeboSiTeam`, per RFC 0011.
+///
+/// Conflict messages are dropped here on purpose — this is a cache, and the `WeeboSiConfig`
+/// reconcile loop is the one place that reports them, as `Degraded` conditions on the object.
+fn resolve(
+    config: &WeeboSiConfig,
+    team_store: &Store<WeeboSiTeam>,
+) -> (Vec<WeeboSiTeam>, WeeboSiConfigSpec) {
+    let declared: Vec<WeeboSiTeam> = team_store
+        .state()
+        .iter()
+        .map(|team| (**team).clone())
+        .collect();
+    let mut spec = config.spec.clone();
+    let _conflicts = spec.resolve_teams(&declared);
+    (declared, spec)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "internal sync helper, not a public API"
 )]
 fn apply_config(
-    config: &WeeboSiConfig,
+    spec: &WeeboSiConfigSpec,
+    declared: &[WeeboSiTeam],
     teams: &Arc<RwLock<Vec<Team>>>,
     dwoc_pin: &Arc<RwLock<Option<DwocPinConfig>>>,
     network_profiles: &Arc<RwLock<Option<NetworkProfilesConfig>>>,
@@ -602,6 +657,7 @@ fn apply_config(
     kubearmor_policy: &Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<RegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<EndpointAuthConfig>>>,
+    identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -609,32 +665,34 @@ fn apply_config(
     runtime_capabilities: &dyn RuntimeCapabilities,
 ) {
     if let Ok(mut guard) = teams.write() {
-        *guard = config.spec.teams.clone();
+        *guard = team_views(declared);
     }
     if let Ok(mut guard) = dwoc_pin.write() {
-        *guard = config.spec.features.dwoc_pin.clone();
+        *guard = spec.features.dwoc_pin.clone();
     }
     if let Ok(mut guard) = network_profiles.write() {
-        *guard = config.spec.features.network_profiles.clone();
+        *guard = spec.features.network_profiles.clone();
     }
     if let Ok(mut guard) = policy_guard.write() {
-        *guard = config.spec.features.policy_guard.clone();
+        *guard = spec.features.policy_guard.clone();
     }
     if let Ok(mut guard) = image_policy.write() {
-        *guard = config.spec.features.image_policy.clone();
+        *guard = spec.features.image_policy.clone();
     }
     if let Ok(mut guard) = kubearmor_policy.write() {
-        *guard = config.spec.features.kubearmor_policy.clone();
+        *guard = spec.features.kubearmor_policy.clone();
     }
     if let Ok(mut guard) = registry_config.write() {
-        *guard = config.spec.features.registry_config.clone();
+        *guard = spec.features.registry_config.clone();
     }
     if let Ok(mut guard) = endpoint_auth.write() {
-        *guard = config.spec.features.endpoint_auth.clone();
+        *guard = spec.features.endpoint_auth.clone();
+    }
+    if let Ok(mut guard) = identity.write() {
+        *guard = spec.features.identity.clone();
     }
     if let Ok(mut guard) = resolved_runtime_backend.write() {
-        let preference = config
-            .spec
+        let preference = spec
             .features
             .kubearmor_policy
             .as_ref()
@@ -650,8 +708,7 @@ fn apply_config(
         }
     }
     if let Ok(mut guard) = resolved_backend.write() {
-        let preference = config
-            .spec
+        let preference = spec
             .features
             .network_profiles
             .as_ref()
@@ -666,8 +723,7 @@ fn apply_config(
         }
     }
     if let Ok(mut guard) = annotation_key.write() {
-        *guard = config
-            .spec
+        *guard = spec
             .features
             .dwoc_pin
             .as_ref()

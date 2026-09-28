@@ -34,7 +34,7 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, LabelSelectorRequirement};
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::{CustomResourceExt, ResourceExt};
-use weebo_si_crd::WeeboSiConfig;
+use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam};
 use weebo_si_envtest_support::{EnvTest, free_port, generate_webhook_tls};
 use weebo_si_runtime::{
     KubeArmorCapabilities, KubeCapabilities, KubeConfigStore, KubeDwocStore, KubeNsStore,
@@ -76,11 +76,6 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams:
-    - name: team-1
-      namespaceSelector:
-        matchLabels:
-          hardening.weebo.io/team: "1"
   features:
     endpointAuth:
       mode: Enforce
@@ -100,13 +95,31 @@ spec:
         exclude: [che.weebo.si, auth.weebo.si]
       catalog:
         - {{ key: private, delegation: [] }}
-        - {{ key: team, delegation: [Team] }}
-        - {{ key: shared, delegation: [Team, UsersAndGroups] }}
       default: private
-      grants:
-        team-1: {{ allowed: [private, team, shared], default: team }}
 "#
     )
+}
+
+/// The team half of the same configuration, per RFC 0011: the catalogue entries beyond the
+/// cluster's own `private`, and the key this team's endpoints resolve to when they name none.
+fn team_yaml() -> String {
+    r#"
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels:
+      hardening.weebo.io/team: "1"
+  features:
+    endpointAuth:
+      catalog:
+        - { key: team, delegation: [Team] }
+        - { key: shared, delegation: [Team, UsersAndGroups] }
+      default: team
+"#
+    .to_string()
 }
 
 /// The `DevWorkspaceOperatorConfig` CRD, from the sibling suite's fixture.
@@ -124,7 +137,7 @@ async fn install_crd(client: kube::Client) {
     let dwoc: CustomResourceDefinition = serde_yaml_bw::from_str(DEVWORKSPACE_OPERATOR_CONFIG_CRD)
         .expect("the fixture should parse");
 
-    for crd in [WeeboSiConfig::crd(), dwoc] {
+    for crd in [WeeboSiConfig::crd(), WeeboSiTeam::crd(), dwoc] {
         let name = crd.name_any();
         crds.patch(
             &name,
@@ -372,6 +385,14 @@ async fn the_gate_is_attached_pinned_and_refused_the_way_rfc_0009_says() {
         .create(&PostParams::default(), &config)
         .await
         .expect("the WeeboSiConfig should be accepted by the real schema");
+
+    let teams: Api<WeeboSiTeam> = Api::all(admin.clone());
+    let team: WeeboSiTeam =
+        serde_yaml_bw::from_str(&team_yaml()).expect("the fixture team should parse");
+    teams
+        .create(&PostParams::default(), &team)
+        .await
+        .expect("the WeeboSiTeam should be accepted by the real schema");
 
     create_namespace(admin.clone(), "user-alice", "alice", true).await;
     create_namespace(admin.clone(), "user-bob", "bob", true).await;

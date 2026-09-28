@@ -10,10 +10,12 @@ mod images_cmd;
 mod kubearmor_cmd;
 mod observability;
 mod registry_cmd;
+mod teams_cmd;
 mod webhook_cmd;
 
 use std::process::ExitCode;
 
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt;
 
 /// Exit codes are the RFC's *Contract* — changing one needs a new RFC.
@@ -28,14 +30,16 @@ mod exit {
 const USAGE: &str = "\
 weebo-si-operator — admission webhook and controller for weebo-si-hardening
 
-usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images|registry>
+usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images|registry|teams>
 
   webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/certs]
               [--metrics-addr :8080] [--health-addr :8081]
               --operator-identity <system:serviceaccount:ns:name>
   controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
               [--canary-image <ref>]
-  crd         print the generated CRD YAML
+  crd         [weebosiconfigs|weebositeams|weebosiusers]
+              print the generated CRD YAML — every kind as a multi-document
+              stream, or the one named
   features    print the registry: id, originating RFC, target resource
   backends    print which network-profiles backends are compiled in and which
               this cluster actually offers
@@ -60,6 +64,12 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
                 validate every catalogue entry against its template: exists,
                 automountable, does not shadow a home path; non-zero on any
                 violation, so it works as a pipeline pre-flight
+  teams       export [--from <file>] [--check]
+                RFC 0011's migration: read the old singleton's spec.teams and
+                grants maps and print one WeeboSiTeam per team. --from reads a
+                manifest instead of the live cluster; --check diffs what is
+                applied against what the singleton says, non-zero if they
+                disagree. Writes nothing to the cluster, ever
 ";
 
 fn main() -> ExitCode {
@@ -74,10 +84,13 @@ fn main() -> ExitCode {
             print_features();
             ExitCode::from(exit::OK)
         }
-        Some("crd") => {
-            print_crd();
-            ExitCode::from(exit::OK)
-        }
+        Some("crd") => match print_crd(args.get(2).map(String::as_str)) {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("weebo-si-operator: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        },
         Some("webhook") => run_async(webhook_cmd::run(&args[2..])),
         Some("controller") => run_async(controller_cmd::run(&args[2..])),
         // `backends` with no argument keeps its RFC 0004 meaning — the network backends —
@@ -98,6 +111,7 @@ fn main() -> ExitCode {
         Some("canary") => run_async(canary_cmd::run(&args[2..])),
         Some("images") => run_async(images_cmd::run(&args[2..])),
         Some("registry") => run_async(registry_cmd::run(&args[2..])),
+        Some("teams") => run_async(teams_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::from(exit::OK)
@@ -141,10 +155,43 @@ fn print_features() {
     }
 }
 
-fn print_crd() {
-    let crd = weebo_si_crd::WeeboSiConfig::crd();
-    match serde_yaml_bw::to_string(&crd) {
-        Ok(yaml) => print!("{yaml}"),
-        Err(err) => eprintln!("weebo-si-operator: could not render the CRD: {err}"),
+/// Every CRD this operator owns, in the order they are installed: the singleton first, then the
+/// two RFC 0011 kinds it resolves against.
+///
+/// Printed as one document per kind, and as a `---`-separated stream when no kind is named, so
+/// `kubectl apply -f -` takes all three and the chart's `crds/` can still carry one file each.
+fn print_crd(kind: Option<&str>) -> Result<(), String> {
+    let documents: Vec<(&str, CustomResourceDefinition)> = vec![
+        ("weebosiconfigs", weebo_si_crd::WeeboSiConfig::crd()),
+        ("weebositeams", weebo_si_crd::WeeboSiTeam::crd()),
+        ("weebosiusers", weebo_si_crd::WeeboSiUser::crd()),
+    ];
+
+    let selected: Vec<&(&str, CustomResourceDefinition)> = match kind {
+        None => documents.iter().collect(),
+        Some(name) => {
+            let found: Vec<&(&str, CustomResourceDefinition)> = documents
+                .iter()
+                .filter(|(plural, _)| *plural == name)
+                .collect();
+            if found.is_empty() {
+                return Err(format!(
+                    "unrecognized CRD '{name}' (expected weebosiconfigs, weebositeams or \
+                     weebosiusers)"
+                ));
+            }
+            found
+        }
+    };
+
+    for (index, (_, crd)) in selected.iter().enumerate() {
+        let yaml = serde_yaml_bw::to_string(crd)
+            .map_err(|err| format!("could not render the CRD: {err}"))?;
+        if index > 0 {
+            println!("---");
+        }
+        print!("{yaml}");
     }
+
+    Ok(())
 }

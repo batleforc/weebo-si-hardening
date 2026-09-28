@@ -32,7 +32,7 @@ use kube::api::{
     PostParams,
 };
 use kube::{CustomResourceExt, ResourceExt};
-use weebo_si_crd::WeeboSiConfig;
+use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam, WeeboSiUser};
 use weebo_si_envtest_support::EnvTest;
 
 const RELEASE_NAMESPACE: &str = "weebo-si-hardening";
@@ -227,7 +227,13 @@ async fn install_crds(client: kube::Client) {
         .expect("the fixture should parse");
     let devworkspace: CustomResourceDefinition =
         serde_yaml_bw::from_str(DEVWORKSPACE_CRD).expect("the fixture should parse");
-    for crd in [dwoc, devworkspace, WeeboSiConfig::crd()] {
+    for crd in [
+        dwoc,
+        devworkspace,
+        WeeboSiConfig::crd(),
+        WeeboSiTeam::crd(),
+        WeeboSiUser::crd(),
+    ] {
         let name = crd.name_any();
         crds.patch(
             &name,
@@ -377,6 +383,54 @@ async fn rbac_fixture() -> Option<(EnvTest, kube::Client, kube::Client, kube::Cl
         .client_as(CONTROLLER_TOKEN)
         .expect("client should build");
     Some((env_test, admin, webhook, controller))
+}
+
+/// RFC 0011's two kinds: both roles read them, neither writes them.
+///
+/// The read is what makes a resolved configuration possible at all — a webhook that cannot list
+/// `weebositeams` answers with the cluster default for every namespace. The absent write is the
+/// point of the rule: nothing in this operator invents a team or a person.
+#[tokio::test]
+async fn neither_role_may_write_the_team_or_user_objects() {
+    let Some((_env_test, _admin, webhook, controller)) = rbac_fixture().await else {
+        return;
+    };
+
+    for (label, client) in [("webhook", webhook), ("controller", controller)] {
+        assert!(
+            Api::<WeeboSiTeam>::all(client.clone())
+                .list(&ListParams::default())
+                .await
+                .is_ok(),
+            "the {label} role should be able to list weebositeams"
+        );
+        assert!(
+            Api::<WeeboSiUser>::all(client.clone())
+                .list(&ListParams::default())
+                .await
+                .is_ok(),
+            "the {label} role should be able to list weebosiusers"
+        );
+
+        let team = WeeboSiTeam::new(
+            "rbac-probe",
+            weebo_si_crd::WeeboSiTeamSpec {
+                display_name: None,
+                priority: 1000,
+                namespace_selector: Default::default(),
+                features: Default::default(),
+                identity: Default::default(),
+                workspace: Default::default(),
+            },
+        );
+        assert!(
+            Api::<WeeboSiTeam>::all(client.clone())
+                .create(&PostParams::default(), &team)
+                .await
+                .is_err(),
+            "the {label} role must not be able to create a weebositeam"
+        );
+    }
 }
 
 /// The webhook role's documented grant: `get`/`list`/`watch` on `weebosiconfigs`,

@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use weebo_si_endpoint_auth::bearer::{BearerRules, RulesError};
 use weebo_si_endpoint_auth::compile::{CompileSettings, UnknownKey};
 use weebo_si_endpoint_auth::host::{HostScope, ScopeError};
 use weebo_si_endpoint_auth::policy::BearerMode;
@@ -81,6 +82,40 @@ pub struct GatewayConfig {
     /// What gets logged — RFC 0009's *What gets logged, because 200 assets is 200 decisions*.
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// The login surface's per-address limit.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+}
+
+/// How often one address may reach the endpoints that do cryptography per call.
+///
+/// RFC 0009's *The login surface is a surface*: `/oidc/start`, `/oidc/callback`, `/host-session`
+/// and `/oidc/backchannel-logout` are reachable by anyone who can resolve this gateway's host, and
+/// three of them do public-key or symmetric work per request. `/auth` is exempt — the ingress
+/// controller is its only caller, and the peer check protects it instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Calls per minute per address, with a burst of the same size. `0` turns the limiter off.
+    ///
+    /// Generous on purpose. The key is the address the controller stated, and **where it states
+    /// none, every caller shares one bucket** — so a number tuned to one browser would become a
+    /// cluster-wide sign-in cap the day the client-address header goes missing. This is far above
+    /// any real person's rate and still bounds the cost of a flood.
+    #[serde(default = "default_login_rate")]
+    pub login_per_address_per_minute: u32,
+}
+
+const fn default_login_rate() -> u32 {
+    300
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            login_per_address_per_minute: default_login_rate(),
+        }
+    }
 }
 
 /// Log the exception, count the norm.
@@ -266,13 +301,33 @@ impl Default for SessionConfig {
     }
 }
 
-/// What happens to a foreign `Authorization` header.
+/// What happens to a foreign `Authorization` header — and, first, what makes one *ours*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BearerConfig {
     /// A token from `issuer` is verified and authorised like a cookie.
     #[serde(default = "yes")]
     pub verify_own_issuer: bool,
+    /// Which audience makes a token ours.
+    ///
+    /// **Required when `verify_own_issuer` is on**, and empty is a refusal to start rather than a
+    /// default: on a realm with more than one client, "this issuer minted it" accepts every token
+    /// that realm has ever minted, for every client — see RFC 0009's *Which tokens are ours*.
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    /// Accept on `azp` / `client_id` where the realm's client cannot be given an audience mapper.
+    ///
+    /// A named compatibility mode, one party at a time, and its cost is that the gate then
+    /// accepts a credential minted for somebody else's audience. An admin who turns it on is told
+    /// three times — a startup `WARN` naming the party, a `Degraded` condition on the feature, and
+    /// its own metric label — because "we meant to add the mapper next sprint" is how a
+    /// compatibility mode becomes the configuration.
+    #[serde(default)]
+    pub authorized_parties: Vec<String>,
+    /// Asking the issuer about a token that carries no claims of its own — every Che on
+    /// OpenShift, whose access tokens are opaque `sha256~…` strings.
+    #[serde(default)]
+    pub introspection: IntrospectionConfig,
     /// A Kubernetes service-account token is resolved with a `TokenReview`.
     #[serde(default = "yes")]
     pub service_account_token: bool,
@@ -285,8 +340,57 @@ impl Default for BearerConfig {
     fn default() -> Self {
         Self {
             verify_own_issuer: true,
+            audiences: Vec::new(),
+            authorized_parties: Vec::new(),
+            introspection: IntrospectionConfig::default(),
             service_account_token: true,
             foreign: Foreign::Reject,
+        }
+    }
+}
+
+/// RFC 7662 token introspection, for issuers whose access tokens carry no claims.
+///
+/// Off by default, and the reason is stated rather than implied: introspection cannot have the
+/// property the JWKS cache has. An opaque token carries no assertion, so there is nothing to check
+/// while the identity provider is down — and pretending otherwise with a long cache would mean
+/// honouring a token the issuer has already revoked. Where the issuer can be asked for JWT access
+/// tokens (RFC 9068), that is the shape to ask for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntrospectionConfig {
+    /// Whether an opaque bearer is resolved by asking the issuer.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where to ask. Empty means the discovery document's `introspection_endpoint`, and a
+    /// discovery document that advertises none while this is on is a refusal to start.
+    #[serde(default)]
+    pub endpoint: String,
+    /// How long `inactive` is remembered, so a flood of invented tokens costs one call per token
+    /// rather than one per request.
+    #[serde(default = "default_negative_ttl")]
+    pub negative_ttl_secs: u64,
+    /// Introspections per minute per forwarded address, with a burst of the same size. The
+    /// limiter is in front of the round trip rather than behind it.
+    #[serde(default = "default_introspection_rate")]
+    pub per_address_per_minute: u32,
+}
+
+const fn default_negative_ttl() -> u64 {
+    30
+}
+
+const fn default_introspection_rate() -> u32 {
+    60
+}
+
+impl Default for IntrospectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            negative_ttl_secs: default_negative_ttl(),
+            per_address_per_minute: default_introspection_rate(),
         }
     }
 }
@@ -569,7 +673,28 @@ impl GatewayConfig {
                     .into(),
             ));
         }
+        // The one that cannot be a warning. A gateway that accepts every token in the realm while
+        // looking healthy is worse than one that will not come up, so an empty audience list is
+        // the same answer as a suffix this gateway cannot govern.
+        self.bearer_rules()
+            .map_err(|err| ConfigError::Invalid(err.to_string()))?;
         Ok(())
+    }
+
+    /// What makes a bearer ours, or why nothing could.
+    ///
+    /// `None` where `verify_own_issuer` is off: the branch does not exist, so there is no list to
+    /// require. Everything else is RFC 0009's *Which tokens are ours*.
+    pub fn bearer_rules(&self) -> Result<Option<BearerRules>, RulesError> {
+        if !self.bearer.verify_own_issuer {
+            return Ok(None);
+        }
+        BearerRules::new(
+            self.issuer.clone(),
+            self.bearer.audiences.iter().cloned(),
+            self.bearer.authorized_parties.iter().cloned(),
+        )
+        .map(Some)
     }
 
     /// Where a browser is sent — the gateway's own external origin, derived from the one
@@ -619,6 +744,8 @@ claims:
 hosts:
   suffix: ".weebo.si"
   exclude: ["che.weebo.si"]
+bearer:
+  audiences: ["endpoint-gateway"]
 "#;
 
     fn write(contents: &str) -> tempfile::NamedTempFile {
@@ -637,6 +764,9 @@ hosts:
         assert_eq!(config.bearer.foreign, Foreign::Reject);
         assert_eq!(config.cache.identity_max_entries, 20_000);
         assert_eq!(config.enforcement, Enforcement::Enforce);
+        // Generous rather than tuned to one browser: where the controller states no client
+        // address, every caller shares one bucket.
+        assert_eq!(config.rate_limit.login_per_address_per_minute, 300);
     }
 
     #[test]
@@ -657,6 +787,51 @@ hosts:
             GatewayConfig::load(file.path()),
             Err(ConfigError::Invalid(_))
         ));
+    }
+
+    /// The refusal RFC 0009 asks for by name. `verify_own_issuer: true` with nothing naming an
+    /// audience means *every token this realm has ever minted, for every client* — a gateway
+    /// that accepts that while looking healthy is worse than one that will not come up.
+    #[test]
+    fn verifying_our_own_issuer_with_no_audience_at_all_refuses_to_start() {
+        let file = write(&MINIMAL.replace("  audiences: [\"endpoint-gateway\"]\n", ""));
+        let Err(ConfigError::Invalid(why)) = GatewayConfig::load(file.path()) else {
+            panic!("a gateway with no audience must not start");
+        };
+        // And the message names the fix, not the field.
+        assert!(why.contains("audience mapper"), "{why}");
+    }
+
+    #[test]
+    fn the_compatibility_mode_is_an_audience_of_its_own_kind() {
+        // An admin who cannot edit the realm's client names the party instead — allowed, and
+        // warned about at startup and in its own metric label.
+        let file = write(&MINIMAL.replace(
+            "  audiences: [\"endpoint-gateway\"]",
+            "  authorized_parties: [\"che-client\"]",
+        ));
+        let config = GatewayConfig::load(file.path()).unwrap();
+        let rules = config.bearer_rules().unwrap().unwrap();
+        assert!(rules.in_compatibility_mode());
+        assert_eq!(rules.audiences().count(), 0);
+
+        // With the branch off there is no list to require: every bearer is foreign, and only a
+        // `bearer: Passthrough` rule reaches the application with one.
+        let file = write(&format!(
+            "{}\n  verify_own_issuer: false\n",
+            MINIMAL.replace("  audiences: [\"endpoint-gateway\"]\n", "")
+        ));
+        let config = GatewayConfig::load(file.path()).unwrap();
+        assert_eq!(config.bearer_rules().unwrap(), None);
+    }
+
+    #[test]
+    fn introspection_is_off_by_default_and_remembers_a_refusal_for_half_a_minute() {
+        let file = write(MINIMAL);
+        let config = GatewayConfig::load(file.path()).unwrap();
+        assert!(!config.bearer.introspection.enabled);
+        assert_eq!(config.bearer.introspection.negative_ttl_secs, 30);
+        assert!(config.bearer.introspection.endpoint.is_empty());
     }
 
     #[test]

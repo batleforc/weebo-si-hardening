@@ -1,0 +1,48 @@
+# The `AuthentikUser` CRD, trimmed to what RFC 0011's mapping writes.
+#
+# A local copy rather than a fetch: the real one lives in batleforc/weebo-authentik, and a test
+# that downloads its dependency is a test that fails when GitHub does. Kept faithful where it
+# matters — cluster-scoped, `authentik.weebo.io/v1alpha1`, and the five spec fields this
+# operator fills — so a drift in any of those shows up here as a rejected create.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: authentikusers.authentik.weebo.io
+spec:
+  group: authentik.weebo.io
+  names:
+    kind: AuthentikUser
+    plural: authentikusers
+    singular: authentikuser
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["username", "name", "email"]
+              properties:
+                username:
+                  type: string
+                name:
+                  type: string
+                email:
+                  type: string
+                isActive:
+                  type: boolean
+                  default: true
+                groupRefs:
+                  type: array
+                  default: []
+                  items:
+                    type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

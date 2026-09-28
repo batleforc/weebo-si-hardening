@@ -12,6 +12,7 @@ on:
     branches: ["main"]
     paths:
       - "crates/**"
+      - "bins/endpoint-gateway/**"
       - "charts/weebo-si-operator/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
@@ -21,6 +22,7 @@ on:
     branches: ["main"]
     paths:
       - "crates/**"
+      - "bins/endpoint-gateway/**"
       - "charts/weebo-si-operator/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
@@ -38,6 +40,10 @@ jobs:
     timeout-minutes: 35
     env:
       ENVTEST_K8S_VERSION: "1.32.0"
+      # RFC 0009's conformance suite drives a real Traefik. Pinned here and floating in
+      # mise.toml, which is the usual trade: CI wants a reproducible run, a developer wants
+      # whatever `mise` last installed, and the suite asserts behaviour stable across both.
+      TRAEFIK_VERSION: "3.7.13"
       KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
       REQUIRE_ENVTEST: "1"
     steps:
@@ -59,17 +65,36 @@ jobs:
           curl -sSL -o /tmp/envtest.tar.gz \
             "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
           tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
+      # RFC 0009's dialect conformance suite needs a router, and the point of that suite is that
+      # it is the real one. ~30 MB, one curl, same shape as the envtest binaries above.
+      - name: Fetch Traefik
+        run: |
+          curl -sSL -o /tmp/traefik.tar.gz \
+            "https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_amd64.tar.gz"
+          tar xzf /tmp/traefik.tar.gz -C /usr/local/bin traefik
+          traefik version
       # **Every suite, not just `envtest`.** This step listed one target while
       # `.tasks/envtest.yaml` listed four, so three suites — RFC 0006's, RFC 0007's and RFC
       # 0009's — ran locally and never in CI. A suite CI does not run is a suite that is already
       # broken and nobody knows it, which is worse than not having written it.
       #
+      # The list is five now (RFC 0009's `OpenShiftRoute` admission tier joined it), and it is
+      # still two lists that have to be edited together — see docs/ci.md, which says so about
+      # the last time they drifted.
+      #
       # Serialised: each test owns an apiserver, and running several at once only multiplies the
       # memory footprint for no wall-clock gain.
       - name: Run the envtest suites
         run: |
-          for suite in envtest kubearmor_envtest registry_envtest endpoint_auth_envtest; do
+          for suite in envtest kubearmor_envtest registry_envtest endpoint_auth_envtest openshift_envtest; do
             echo "::group::$suite"
             cargo test --workspace --features envtest --test "$suite" --locked -- --test-threads=1
             echo "::endgroup::"
           done
+      # Its own step and its own feature: this one is not an envtest suite, it is the gateway
+      # binary behind a real Traefik, and it would skip itself silently if either tool were
+      # missing — which is exactly the failure `REQUIRE_ENVTEST` exists to prevent for the rest.
+      - name: Run the dialect conformance suite
+        run: |
+          cargo test -p endpoint-gateway --features conformance --test conformance --locked \
+            -- --test-threads=1

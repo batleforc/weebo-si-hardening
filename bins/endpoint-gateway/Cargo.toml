@@ -44,7 +44,19 @@ rustls = { workspace = true }
 [dev-dependencies]
 weebo-si-endpoint-auth = { version = "0.1.0", path = "../../crates/weebo-si-endpoint-auth", features = ["testing"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Minting a signed token for the bearer table, so "our issuer, somebody else's audience" is
+# refused against real cryptography rather than against a fake verifier.
+ring = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
+# RFC 0009's dialect conformance suite, behind the `conformance` feature: it needs a real
+# apiserver for the gateway's own informers, and a real Traefik in front of it.
+weebo-si-envtest-support = { version = "0.1.0", path = "../../crates/weebo-si-envtest-support" }
+
+[features]
+# The dialect conformance suite — a real Traefik and a real kube-apiserver, neither of which a
+# plain `cargo test` should be assumed to have. Off by default for the same reason the envtest
+# suites are: `task test` must pass on a laptop with nothing installed.
+conformance = []
 
 [lints]
 workspace = true

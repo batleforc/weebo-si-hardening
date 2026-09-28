@@ -7,6 +7,7 @@
 //! `weebo-si-policy-guard`) depends on the decision's vocabulary, and would otherwise link
 //! `reqwest`, `aes-gcm`, `jsonwebtoken` and a Kubernetes client to read a type.
 
+pub mod introspection;
 pub mod kube_catalog;
 pub mod kube_revocations;
 pub mod kube_workload;

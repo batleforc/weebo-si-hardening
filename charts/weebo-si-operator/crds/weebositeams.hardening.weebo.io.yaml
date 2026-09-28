@@ -1,0 +1,576 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: weebositeams.hardening.weebo.io
+spec:
+  group: hardening.weebo.io
+  names:
+    kind: WeeboSiTeam
+    plural: weebositeams
+    shortNames:
+    - wsteam
+    singular: weebositeam
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.priority
+      name: Priority
+      type: integer
+    - jsonPath: .status.namespaces
+      name: Namespaces
+      type: integer
+    - jsonPath: .status.members
+      name: Members
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for WeeboSiTeamSpec via `CustomResource`
+        properties:
+          spec:
+            description: '`spec` of the `WeeboSiTeam` CRD.'
+            properties:
+              displayName:
+                description: A human label. Nothing branches on it — the team's identity is `metadata.name`.
+                nullable: true
+                type: string
+              features:
+                default: {}
+                description: What this team is entitled to, per feature.
+                properties:
+                  dwocPin:
+                    description: This team's `dwoc-pin` catalogue and default, per RFC 0002.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's catalogue entries, merged into the cluster catalogue at resolution.
+                        items:
+                          description: |-
+                            One entry of `spec.features.dwocPin.catalog`. Serializes flat, as `{key, name, namespace}`
+                            per the RFC's own examples — not `{key, target: {name, namespace}}`.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an annotation, or a resolved decision names.
+                              type: string
+                            name:
+                              description: The `DevWorkspaceOperatorConfig`'s name.
+                              type: string
+                            namespace:
+                              description: The namespace it lives in.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          - namespace
+                          type: object
+                        type: array
+                      default:
+                        description: The entry a namespace of this team gets when it names none.
+                        type: string
+                    required:
+                    - default
+                    type: object
+                  endpointAuth:
+                    description: This team's `endpoint-auth` catalogue and default, per RFC 0009.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's access profiles, merged into the cluster catalogue at resolution.
+                        items:
+                          description: 'One catalogue entry: what a key means.'
+                          properties:
+                            anonymous:
+                              default: false
+                              description: No authentication at all. `delegation` is rejected on an anonymous entry.
+                              type: boolean
+                            delegation:
+                              default: []
+                              description: Who else, besides the owner, this profile lets in.
+                              items:
+                                description: |-
+                                  Who, besides the owner, a profile may let in. A list rather than a mode, per RFC 0009: `[]`
+                                  says "the owner and nobody else" where an unquoted `Off` is YAML 1.1's boolean `false`.
+                                enum:
+                                - Team
+                                - UsersAndGroups
+                                type: string
+                              type: array
+                            key:
+                              description: The key a grant, an annotation or a path rule names.
+                              type: string
+                          required:
+                          - key
+                          type: object
+                        type: array
+                      default:
+                        description: |-
+                          The key an endpoint of this team resolves to when it names none. Singular: an endpoint
+                          resolves to exactly one profile.
+                        type: string
+                    required:
+                    - default
+                    type: object
+                  imagePolicy:
+                    description: This team's `image-policy` catalogue and defaults, per RFC 0005.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's catalogue entries, merged into the cluster catalogue at resolution.
+                        items:
+                          description: |-
+                            One entry of `spec.features.imagePolicy.catalog`: a key, and the image patterns it permits.
+
+                            **Carries no scope, no exception and no negation**, per RFC 0005's *A pattern set is a
+                            union*: selecting more entries can only ever permit more, so an `except` field would be a
+                            rule whose meaning depends on which other entries happen to be selected.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an attribute, or the top-level `default` names.
+                              type: string
+                            patterns:
+                              description: |-
+                                The image patterns this entry permits. Non-empty; parsed by `weebo-si-image-policy`, and
+                                held here as the text an admin wrote so the CRD stays readable by `kubectl` and GitOps.
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - patterns
+                          type: object
+                        type: array
+                      default:
+                        default: []
+                        description: The entries a workspace of this team gets when it names none. May be empty, which means the platform set and this team's cluster-level default and nothing else.
+                        items:
+                          description: |-
+                            A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
+                            `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
+                            `{name, namespace}` pair, and never a bare `String` a team name could be passed as.
+                          type: string
+                        type: array
+                    type: object
+                  kubearmorPolicy:
+                    description: This team's `kubearmor-policy` catalogue and defaults, per RFC 0006.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's catalogue entries, merged into the cluster catalogue at resolution.
+                        items:
+                          description: |-
+                            One entry of `spec.features.kubearmorPolicy.catalog`.
+
+                            Carries one [`TemplateRef`] directly rather than a `variants` list, unlike
+                            [`crate::network_profiles::Profile`]: there is exactly one backend today, and the
+                            variant-per-backend shape is deferred until a second one actually exists rather than
+                            speculatively built now — RFC 0006's *Alternatives considered*.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an attribute, or a resolved decision names.
+                              type: string
+                            templateRef:
+                              description: The `KubeArmorPolicy` object this entry copies its rule content from.
+                              properties:
+                                name:
+                                  description: The template object's name.
+                                  type: string
+                                namespace:
+                                  description: The namespace it lives in.
+                                  type: string
+                              required:
+                              - name
+                              - namespace
+                              type: object
+                          required:
+                          - key
+                          - templateRef
+                          type: object
+                        type: array
+                      default:
+                        default: []
+                        description: 'The runtime profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way.'
+                        items:
+                          description: |-
+                            A short identifier for a runtime profile catalogue entry, unique within the catalogue. Never
+                            a `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin` and `ProfileKey` in
+                            `network_profiles`.
+                          type: string
+                        type: array
+                    type: object
+                  networkProfiles:
+                    description: This team's `network-profiles` catalogue and defaults, per RFC 0004.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's catalogue entries, merged into the cluster catalogue at resolution.
+                        items:
+                          description: One entry of `spec.features.networkProfiles.catalog`.
+                          properties:
+                            key:
+                              description: The short identifier a grant, an attribute, or a resolved decision names.
+                              type: string
+                            variants:
+                              description: This profile's variants, at most one per [`Backend`].
+                              items:
+                                description: One backend's rendering of a profile. A profile carries at most one variant per backend.
+                                properties:
+                                  backend:
+                                    description: Which dialect this variant is written in.
+                                    enum:
+                                    - NetworkPolicy
+                                    - Cilium
+                                    type: string
+                                  templateRef:
+                                    description: The template object this variant copies `policyTypes`/`ingress`/`egress` from.
+                                    properties:
+                                      name:
+                                        description: The template object's name.
+                                        type: string
+                                      namespace:
+                                        description: The namespace it lives in.
+                                        type: string
+                                    required:
+                                    - name
+                                    - namespace
+                                    type: object
+                                required:
+                                - backend
+                                - templateRef
+                                type: object
+                              type: array
+                          required:
+                          - key
+                          - variants
+                          type: object
+                        type: array
+                      default:
+                        default: []
+                        description: 'The profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way.'
+                        items:
+                          description: |-
+                            A short identifier for a catalogue entry, unique within the catalogue. Never a
+                            `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
+                          type: string
+                        type: array
+                    type: object
+                  registryConfig:
+                    description: This team's `registry-config` catalogue and defaults, per RFC 0007.
+                    nullable: true
+                    properties:
+                      catalog:
+                        default: []
+                        description: This team's catalogue entries, merged into the cluster catalogue at resolution.
+                        items:
+                          description: One entry of `spec.features.registryConfig.catalog`.
+                          properties:
+                            ecosystem:
+                              default: Other
+                              description: Metric label and CLI grouping only — never a branch.
+                              enum:
+                              - Npm
+                              - Pypi
+                              - Cargo
+                              - Go
+                              - Maven
+                              - RubyGems
+                              - Composer
+                              - Conda
+                              - Terraform
+                              - OpenVsx
+                              - Other
+                              type: string
+                            key:
+                              description: The short identifier a grant or a namespace annotation names.
+                              type: string
+                            sources:
+                              description: |-
+                                The objects this entry expands into: at least one, at most one per
+                                `{kind, name, namespace}` triple.
+                              items:
+                                description: |-
+                                  One object a catalogue entry expands into.
+
+                                  A catalogue entry holds a *list* of these rather than a single reference because one ecosystem
+                                  routinely needs two objects with different confidentiality: the `ConfigMap` holding the
+                                  registry URL, and the `Secret` holding the token it authenticates with.
+                                properties:
+                                  kind:
+                                    description: Which kind of object `template_ref` names.
+                                    enum:
+                                    - ConfigMap
+                                    - Secret
+                                    type: string
+                                  templateRef:
+                                    description: The object an admin authored, copied verbatim into each granted namespace.
+                                    properties:
+                                      name:
+                                        description: The template object's name.
+                                        type: string
+                                      namespace:
+                                        description: The namespace it lives in.
+                                        type: string
+                                    required:
+                                    - name
+                                    - namespace
+                                    type: object
+                                required:
+                                - kind
+                                - templateRef
+                                type: object
+                              type: array
+                          required:
+                          - key
+                          - sources
+                          type: object
+                        type: array
+                      default:
+                        default: []
+                        description: The entries a namespace of this team gets when it names none. May be empty, which means this team mounts nothing by default.
+                        items:
+                          description: |-
+                            A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
+                            namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
+                            registry key must never typecheck where a network profile key is expected.
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              identity:
+                description: What this team's members are outside Kubernetes.
+                properties:
+                  authentik:
+                    description: The identity provider half.
+                    properties:
+                      groupRefs:
+                        description: |-
+                          Authentik group **names** — `AuthentikGroup.spec.name`, resolved by the upstream operator
+                          against its own API, never against Kubernetes. Each is checked against
+                          `spec.features.identity.authentik.allowedGroupRefs` before anything is created.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              namespaceSelector:
+                description: The namespaces that belong to this team.
+                properties:
+                  matchExpressions:
+                    description: Every expression must hold.
+                    items:
+                      description: One `matchExpressions` entry.
+                      properties:
+                        key:
+                          description: The label key this expression tests.
+                          type: string
+                        operator:
+                          description: How `values` is compared against the label's value, if any.
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          default: []
+                          description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: Every key must be present with exactly this value.
+                    type: object
+                type: object
+              priority:
+                default: 1000
+                description: 'Precedence when a namespace matches more than one team: lowest wins, ties break on name.'
+                format: int32
+                type: integer
+              workspace:
+                description: What each member gets deployed for them.
+                properties:
+                  che:
+                    description: The Eclipse Che workspace application, as an Argo CD template rendered per person.
+                    nullable: true
+                    properties:
+                      destination:
+                        description: Where it is deployed.
+                        properties:
+                          name:
+                            description: The cluster's registered name in Argo CD. Exactly one of `server` and `name` is required.
+                            nullable: true
+                            type: string
+                          namespace:
+                            description: |-
+                              The namespace, templated. Its rendered value is what `{USER_NAMESPACE}` binds to
+                              everywhere else, so it is resolved first and cannot name that variable itself.
+                            type: string
+                          server:
+                            description: The cluster API URL. Exactly one of `server` and `name` is required.
+                            nullable: true
+                            type: string
+                        required:
+                        - namespace
+                        type: object
+                      mode:
+                        description: |-
+                          Required when the block is present, per the chassis rule that a behaviour nobody wrote
+                          down does not run: `Off` keeps the template without acting on it, which is how a team
+                          stops provisioning for everybody without losing what it configured.
+                        enum:
+                        - Off
+                        - Ensure
+                        type: string
+                      name:
+                        description: The `Application`'s own name, templated. Defaults to `{OBJECT_NAME}`.
+                        nullable: true
+                        type: string
+                      project:
+                        description: |-
+                          The Argo CD project, which is the outer fence this operator relies on rather than
+                          reimplements. Checked against `spec.features.identity.che.allowedProjects`.
+                        type: string
+                      source:
+                        description: Where the chart comes from.
+                        properties:
+                          chart:
+                            description: A Helm chart name. Exactly one of `chart` and `path` is required.
+                            nullable: true
+                            type: string
+                          path:
+                            description: A path inside a git repository. Exactly one of `chart` and `path` is required.
+                            nullable: true
+                            type: string
+                          repoUrl:
+                            description: |-
+                              The chart repository or the git repository. Prefix-checked against
+                              `spec.features.identity.che.allowedRepoUrls`.
+                            type: string
+                          targetRevision:
+                            description: Chart version, git revision, or branch.
+                            type: string
+                          values:
+                            description: |-
+                              The base Helm values every member of this team gets, templated. A person's own
+                              `spec.che.values` is deep-merged over this.
+
+                              Free-form, and the only free-form field in this crate — see [`crate::free_form`].
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        required:
+                        - repoUrl
+                        - targetRevision
+                        type: object
+                      syncPolicy:
+                        description: Passed through verbatim — this operator has no opinion on how Argo syncs.
+                        nullable: true
+                        properties:
+                          automated:
+                            description: Automated sync, absent for manual.
+                            nullable: true
+                            properties:
+                              prune:
+                                default: false
+                                description: Delete resources no longer in the chart.
+                                type: boolean
+                              selfHeal:
+                                default: false
+                                description: Revert drift written by hand.
+                                type: boolean
+                            type: object
+                          options:
+                            default: []
+                            description: Sync options, e.g. `CreateNamespace=true`.
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                    required:
+                    - destination
+                    - mode
+                    - project
+                    - source
+                    type: object
+                type: object
+            required:
+            - namespaceSelector
+            type: object
+          status:
+            description: '`status` of the `WeeboSiTeam` CRD. Entirely derived: deleting it costs one reconcile.'
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                description: 'Standard `metav1.Condition` list: `Ready`, `Degraded`.'
+                items:
+                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human readable message indicating details about the transition. This may be an empty string.
+                      type: string
+                    observedGeneration:
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              members:
+                default: 0
+                description: How many `WeeboSiUser` objects name this team.
+                format: int64
+                type: integer
+              namespaces:
+                default: 0
+                description: How many namespaces this team's selector currently claims.
+                format: int64
+                type: integer
+              observedGeneration:
+                default: 0
+                description: The `metadata.generation` this status reflects.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        title: WeeboSiTeam
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

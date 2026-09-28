@@ -4,7 +4,7 @@ title: registry-config
 status: Implemented
 authors: [batleforc]
 created: 2026-08-25
-updated: 2026-08-25
+updated: 2026-09-25
 decided: 2026-08-25
 brick: crates/weebo-si-registry-config
 supersedes: []
@@ -98,8 +98,9 @@ keeps deciding how a mounted object reaches a container.
 
 ## Guide-level explanation
 
-`registry-config` starts `Off`, per the chassis. It needs a catalogue, grants against
-`spec.teams`, and — unlike every prior brick — **no baseline**, for a reason worth stating
+`registry-config` starts `Off`, per the chassis. It needs a catalogue, a `WeeboSiTeam` saying
+what that team reaches, and — unlike every prior brick — **no baseline**, for a reason worth
+stating
 loudly: there is no universally correct `.npmrc`. A cluster with one mirror for everyone
 expresses that as a grant every team has, not as a mandatory entry, because "mandatory" here
 would mean writing a file into a container whose image may not even have the tool it configures.
@@ -110,13 +111,21 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams:
-    - name: team-1
-      namespaceSelector:
-        matchLabels: { weebo.io/team: team-1 }
   features:
     registryConfig:
       mode: DryRun
+      catalog: []                         # nothing every namespace gets: there is no baseline
+      onNotGranted: Default
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels: { weebo.io/team: team-1 }
+  features:
+    registryConfig:                       # this team's own entries, and its default
       catalog:
         - key: internal-npm
           ecosystem: Npm
@@ -130,12 +139,13 @@ spec:
           sources:
             - kind: ConfigMap
               templateRef: { name: weebo-pip-conf, namespace: weebo-si-hardening }
-      grants:
-        team-1:
-          allowed: [internal-npm, internal-pypi]
-          default: [internal-npm]
-      onNotGranted: Default
+      default: [internal-npm]
 ```
+
+**This is the one feature whose cluster catalogue is normally empty.** No baseline means nothing
+is handed to everybody, so every entry belongs to the team that mounts it — which is exactly the
+shape [RFC 0011](./0011-teams-and-users.md) gives a team, and why the move cost this brick
+nothing.
 
 `weebo-npmrc` is an ordinary `ConfigMap` an admin writes and applies to the
 `weebo-si-hardening` namespace, carrying DevWorkspace Operator's own automount annotations —
@@ -212,12 +222,14 @@ silent, total, and looks like a broken image rather than a broken config.
       ref because one ecosystem routinely needs two objects with different confidentiality: the
       `ConfigMap` holding the registry URL, and the `Secret` holding the token it authenticates
       with.
-  - `grants: BTreeMap<String, RegistryGrant>` — `{allowed: [...], default: [...]}`, the same
-    shape and the same validation rules as `ProfileGrant` (`GrantAllowedUnknownKey`,
-    `GrantDefaultOutsideAllowed`, `GrantNamesUndeclaredTeam`), reused rather than redeclared.
+  - per-team entries and a default — `{catalog, default}` on each `WeeboSiTeam` since
+    [RFC 0011](./0011-teams-and-users.md), a `grants: BTreeMap<String, RegistryGrant>` on this
+    block before it. The same shape and the same validation rules as `network-profiles`'
+    (`GrantAllowedUnknownKey`, `GrantDefaultOutsideAllowed`, and `CatalogKeyConflict` in place of
+    the `GrantNamesUndeclaredTeam` the new shape cannot produce), reused rather than redeclared.
   - `namespaceSelection: RegistryNamespaceSelection` — the namespace annotation naming a
     comma-separated key list, defaulting to `hardening.weebo.io/registry-config`, read when it
-    is present and falling back to the team grant's `default` when it is not.
+    is present and falling back to the team's own `default` when it is not.
   - `onNotGranted: OnNotGranted` — `Default | Deny`, the same enum `network-profiles` defines.
   - **No `baseline`**, per *Guide-level explanation*: a mandatory entry would write a file into
     workspaces whose image has no tool to read it, and the "everyone gets the mirror" case is
@@ -394,7 +406,7 @@ the exposure.
   controller only ever touches objects carrying its own managed-by label, enforced in the
   adapter and reviewed as code, plus the `namespaceSelector` bounding which namespaces it
   reconciles at all.
-- **Trust boundary.** The catalogue, the grants and the templates are admin-authored. The
+- **Trust boundary.** The catalogue, the team objects and the templates are admin-authored. The
   attacker-controlled input is the namespace annotation naming keys — bounded by the team's
   grant exactly as `network-profiles`' is, dropping to `default` or denying per `onNotGranted`.
   A second, subtler one: a workspace *user* can annotate their own namespace where RBAC allows
@@ -606,7 +618,8 @@ Blocking, in the sense that acceptance should settle it:
 
 - [x] `weebo-si-crd`: `RegistryKey`, `Ecosystem`, `RegistrySource`, `RegistryCatalog`,
       `RegistryGrant`, `RegistryNamespaceSelection`, `RegistryConfig` (`mode`,
-      `namespaceSelector`, `catalog`, `grants`, `namespaceSelection`, `onNotGranted`), reusing
+      `namespaceSelector`, `catalog`, `grants` — the last since moved onto `WeeboSiTeam` by
+      RFC 0011 —, `namespaceSelection`, `onNotGranted`), reusing
       `OnNotGranted` and `TemplateRef` from `network_profiles.rs` rather than redeclaring them,
       plus `validate()` and its `RegistryConfigViolation` set
 - [x] Promote the managed-object diff machinery from `weebo-si-network-profiles` to
@@ -652,7 +665,9 @@ Blocking, in the sense that acceptance should settle it:
 - [npm: `.npmrc` precedence](https://docs.npmjs.com/cli/v10/configuring-npm/npmrc) and
   [`npm config`](https://docs.npmjs.com/cli/v10/using-npm/config) — the project-beats-user
   ordering behind *this brick steers, it does not enforce*.
-- [RFC 0002](./0002-weebo-si-operator.md) — the chassis, `spec.teams`, `ReconcileFeature<S>`.
+- [RFC 0002](./0002-weebo-si-operator.md) — the chassis, chassis-level teams,
+  `ReconcileFeature<S>`.
+- [RFC 0011](./0011-teams-and-users.md) — where a team's entries and default live now.
 - [RFC 0003](./0003-preauth-proxy.md) — the credential-holding proxy this brick's *Future work*
   points at.
 - [RFC 0004](./0004-network-profiles.md) — the egress baseline that makes this brick necessary,
@@ -673,4 +688,5 @@ Blocking, in the sense that acceptance should settle it:
 | 2026-08-25 | `kubectl.kubernetes.io/last-applied-configuration` is stripped from both sides of the diff. For any object it guarantees a rewrite whenever an admin re-applies an unchanged template; for a `Secret` it is a second, stale copy of the credential that would otherwise be copied into the workspace namespace in an annotation. |
 | 2026-08-25 | `ObjectBody` has no `Debug` derive, no borrowing accessor, and a consuming `into_bytes` — stricter than `PolicyBody` and `RuleBody`, which are opaque only because nothing needs their contents. Here the requirement is that nothing *can* reach them: a `{:?}` of a diff line is a realistic call site, and "the domain never sees credential material in a form it could log" had to be a property of the type rather than a review convention. Two tests assert the redaction directly, one on the body and one on a `ManagedObject` containing it. |
 | 2026-08-25 | `validate()` gained `DuplicateCopyName`, which the *Contract* did not list. `weebo-si-<key>-<source-name>` is not injective: `a` + `b-c` and `a-b` + `c` both render `weebo-si-a-b-c`, and the second entry would silently overwrite the first in every granted namespace — a supply-chain failure with this operator as the delivery mechanism, and the exact blast radius *Drawbacks and risks* describes. The *Unresolved questions* entry on copy naming should be read as answered: the scheme stays, and the collision is now a `Degraded` condition rather than a surprise. |
+| 2026-09-25 | Amended for [RFC 0011](./0011-teams-and-users.md): **what a team mounts moved onto the team's own object.** The `grants` map is gone from the wire, replaced by `spec.features.registryConfig.{catalog,default}` on each `WeeboSiTeam`. This brick absorbed the move more cleanly than any other, and the reason is its own *no baseline* decision: with nothing handed to every namespace, the cluster catalogue is normally empty and every entry already belonged to exactly one team. The copy mechanics, the ownership label, the `DuplicateCopyName` check and the `onNotGranted` fallback are unchanged. |
 | 2026-08-25 | `Ecosystem` earns its place, per the non-blocking question: it is the `weebo_si_registry_managed_objects` label and the `registry check` grouping, and the closed enum is what keeps that label bounded. `#[serde(default)]` to `Other`, so an entry that omits it is under-labelled rather than rejected — refusing a whole catalogue over a dashboard dimension would be the wrong trade. |

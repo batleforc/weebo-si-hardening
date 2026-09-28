@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -272,14 +272,19 @@ async fn auth(
         return redeem(&state, &host, grant, &forwarded.uri);
     }
 
-    // The one piece of I/O on this path, and it is deliberately *outside* the decision: a
-    // service-account token that is not cached yet costs one `TokenReview`, here, where a reader
-    // can see it — never inside `decide()`.
-    state
-        .prewarm_service_account(bearer(&headers).as_deref())
-        .await;
-
     let presented = presented_from(&state, &headers, None);
+
+    // The only I/O on this path, and it is deliberately *outside* the decision: a service-account
+    // token that is not cached yet costs one `TokenReview`, and an opaque one costs one
+    // introspection — both here, where a reader can see them, never inside `decide()`. Each is
+    // once per token rather than once per request, which is what makes a page load of two hundred
+    // assets pay for neither.
+    state
+        .prewarm_bearer(
+            presented.bearer.as_deref(),
+            Some(&state.limit_key(&headers, None)),
+        )
+        .await;
 
     // A key rotation invalidates every cached bearer: the claims in the cache were verified
     // against keys this issuer no longer publishes, and a cache is not allowed to be the reason
@@ -313,7 +318,9 @@ async fn auth(
             response
         }
         Verdict::Deny => deny_response(&state, &request, outcome.decision.reason),
-        Verdict::Challenge(challenge) => challenge_response(&state, &request, challenge),
+        Verdict::Challenge(challenge) => {
+            challenge_response(&state, &request, challenge, &presented)
+        }
     }
 }
 
@@ -366,6 +373,7 @@ pub fn challenge_response(
     state: &GatewayState,
     request: &AuthRequest,
     challenge: Challenge,
+    presented: &Presented,
 ) -> Response {
     let target = format!(
         "{}/host-session?rd={}",
@@ -386,22 +394,48 @@ pub fn challenge_response(
             ),
         )
             .into_response(),
-        Challenge::Unauthorized => (
-            StatusCode::UNAUTHORIZED,
-            [
-                (
-                    header::WWW_AUTHENTICATE,
-                    format!(
-                        "Bearer realm=\"weebo\", authorization_uri=\"{}\"",
-                        state.config.redirect_base()
-                    ),
-                ),
-                (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
-            ],
-            "Not signed in. Open this URL in a browser to sign in, or present a bearer token \
-             this cluster's identity provider minted.\n",
-        )
-            .into_response(),
+        Challenge::Unauthorized => {
+            // Naming which check refused the token is the difference between a five-second fix
+            // and an afternoon of reading one's own `fetch` wrapper — and the two answers a
+            // client has to tell apart are exactly these: `invalid_token` means renew and retry,
+            // while a token belonging to somebody not allowed here is the `403` above. Worth one
+            // signature check because it is on the *denial* path, which is rare when the feature
+            // is working and is itself the signal when it is not.
+            let refused = presented
+                .bearer
+                .as_deref()
+                .map(|token| state.verifier.examine(token, state.now()).result);
+            let mut authenticate = format!(
+                "Bearer realm=\"weebo\", authorization_uri=\"{}\"",
+                state.config.redirect_base()
+            );
+            let mut body = "Not signed in. Open this URL in a browser to sign in, or present a \
+                            bearer token this cluster's identity provider minted for this \
+                            gateway's audience.\n"
+                .to_owned();
+            if let Some(refused) = refused {
+                authenticate = format!(
+                    "Bearer realm=\"weebo\", error=\"invalid_token\", error_description=\"{}\", \
+                     authorization_uri=\"{}\"",
+                    // No quote can reach a header value that is quoted-string syntax.
+                    refused.advice().replace('"', "'"),
+                    state.config.redirect_base()
+                );
+                body = format!(
+                    "The token you presented was refused: {refused}.\n{}\n",
+                    refused.advice()
+                );
+            }
+            (
+                StatusCode::UNAUTHORIZED,
+                [
+                    (header::WWW_AUTHENTICATE, authenticate),
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
+                ],
+                body,
+            )
+                .into_response()
+        }
     }
 }
 
@@ -466,12 +500,49 @@ fn redeem(state: &GatewayState, host: &Host, grant: &str, uri: &str) -> Response
         .into_response()
 }
 
+/// The per-address limit in front of the login surface — RFC 0009's *The login surface is a
+/// surface*.
+///
+/// `/oidc/start`, `/oidc/callback`, `/host-session` and `/oidc/backchannel-logout` are reachable
+/// by anyone who can resolve this gateway's host, and three of them do public-key or symmetric
+/// cryptography per call. This runs **before** any of it, which is the whole point: a limiter
+/// behind the signature check has already paid for the attack it exists to stop.
+///
+/// `/auth` is exempt. It is the hot path, the ingress controller is its only caller, and the peer
+/// check of *Checking that assumption* is what protects it instead — a per-address limit there
+/// would rate-limit the controller.
+fn over_the_login_limit(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> Option<Response> {
+    if state.config.rate_limit.login_per_address_per_minute == 0
+        || state
+            .login_limiter
+            .allow(&state.limit_key(headers, peer), state.now())
+    {
+        return None;
+    }
+    Some(
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "60")],
+            "too many sign-in attempts from this address; try again in a minute\n",
+        )
+            .into_response(),
+    )
+}
+
 /// `/host-session` — exchange the SSO cookie for a one-time grant on the target host.
 async fn host_session(
     State(state): State<Arc<GatewayState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
+        return limited;
+    }
     let Some(target) = query.get("rd") else {
         return (StatusCode::BAD_REQUEST, "no target").into_response();
     };
@@ -561,8 +632,13 @@ async fn host_session(
 /// `/oidc/start` — begin the authorization-code exchange.
 async fn oidc_start(
     State(state): State<Arc<GatewayState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
+    if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
+        return limited;
+    }
     let Some(oidc) = state.oidc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -609,9 +685,13 @@ async fn oidc_start(
 /// `/oidc/callback` — the only registered redirect URI.
 async fn oidc_callback(
     State(state): State<Arc<GatewayState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
+        return limited;
+    }
     let Some(oidc) = state.oidc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -732,7 +812,15 @@ async fn sign_out_form() -> Response {
 }
 
 /// `POST /oidc/backchannel-logout` — the identity provider telling us a session ended.
-async fn backchannel_logout(State(state): State<Arc<GatewayState>>, body: String) -> Response {
+async fn backchannel_logout(
+    State(state): State<Arc<GatewayState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
+        return limited;
+    }
     let Some(token) = body
         .split('&')
         .filter_map(|pair| pair.split_once('='))

@@ -210,6 +210,7 @@ impl SessionCodec for FakeSessions {
 #[derive(Default)]
 pub struct FakeTokens {
     known: HashMap<String, TokenOutcome>,
+    extra: Mutex<HashMap<String, TokenOutcome>>,
     calls: Mutex<u32>,
 }
 
@@ -220,7 +221,16 @@ impl FakeTokens {
         known.insert(token.to_owned(), outcome);
         Self {
             known,
+            extra: Mutex::new(HashMap::new()),
             calls: Mutex::new(0),
+        }
+    }
+
+    /// Teach it a second token. A table that needs two — one from a browser session, one from a
+    /// client-credentials grant — should not need two verifiers.
+    pub fn put(&self, token: &str, outcome: TokenOutcome) {
+        if let Ok(mut known) = self.extra.lock() {
+            known.insert(token.to_owned(), outcome);
         }
     }
 
@@ -239,6 +249,12 @@ impl TokenVerifier for FakeTokens {
         self.known
             .get(token)
             .cloned()
+            .or_else(|| {
+                self.extra
+                    .lock()
+                    .ok()
+                    .and_then(|known| known.get(token).cloned())
+            })
             .unwrap_or(TokenOutcome::Foreign)
     }
 }
@@ -298,6 +314,16 @@ pub struct FakeRevocations {
 }
 
 impl FakeRevocations {
+    /// A store that already knows about these ended sessions — the shape a table wants, where
+    /// the interesting fact is the state rather than the event that produced it.
+    pub fn revoked<'a>(sessions: impl IntoIterator<Item = &'a str>) -> Self {
+        let store = Self::default();
+        for session in sessions {
+            store.revoke(session);
+        }
+        store
+    }
+
     /// Revoke one session, the way a back-channel logout does.
     pub fn revoke(&self, session: &str) {
         if let Ok(mut revoked) = self.revoked.lock() {

@@ -82,6 +82,30 @@ config:
     maxGroups: 64
   bearer:
     verifyOwnIssuer: true
+    # **Required, and empty refuses to start.** "This issuer minted it" is not a specification:
+    # on a realm with more than one client it accepts every token that realm has ever minted, for
+    # every client, which is a confused deputy rather than a shortcut. Add an audience mapper for
+    # this value to the Che OIDC client before rolling the feature out, and confirm it with
+    # `endpoint-gateway --check --explain-token` on a real token.
+    audiences:
+      - endpoint-gateway
+    # The compatibility mode for a cluster whose realm client cannot be edited: a token whose
+    # `aud` names nobody we know is accepted when its `azp` is on this list. Every entry is a
+    # startup WARNING and its own metric label
+    # (weebo_si_endpoint_auth_bearer_total{result="accepted_authorized_party"}), because it
+    # accepts a credential minted for somebody else's audience. Prefer the mapper.
+    authorizedParties: []
+    # For issuers whose access tokens are opaque — Che on OpenShift, whose OAuth server mints
+    # `sha256~…` strings with no signature and no claims. Off by default and worth leaving off
+    # where the issuer can mint JWT access tokens instead (RFC 9068): introspection cannot verify
+    # offline, so an identity-provider outage stops a caller holding a valid opaque token.
+    introspection:
+      enabled: false
+      # Empty means the discovery document's `introspection_endpoint`. On with neither is a
+      # refusal to start, not a warning.
+      endpoint: ""
+      negativeTtlSecs: 30
+      perAddressPerMinute: 60
     serviceAccountToken: true
     foreign: Reject
   selfOrigin:
@@ -124,6 +148,13 @@ config:
   # unauthenticated for a year *before* the probe breaks.
   enforcement: Enforce
   revealOwner: true
+  # The login surface's per-address limit — `/oidc/start`, `/oidc/callback`, `/host-session` and
+  # `/oidc/backchannel-logout`, in front of the cryptography rather than behind it. `/auth` is
+  # exempt: the ingress controller is its only caller. Deliberately generous — where the
+  # controller states no client address every caller shares one bucket, so a number tuned to one
+  # browser would become a cluster-wide sign-in cap. `0` turns it off.
+  rateLimit:
+    loginPerAddressPerMinute: 300
   backchannelLogout:
     enabled: true
     configmap: endpoint-auth-revocations
@@ -132,8 +163,10 @@ config:
 # a chart value ends up in `helm get values`, in a CI log, and in whatever holds the release
 # state.
 secrets:
-  # 32 random bytes, base64, newest first, comma-separated, under the key `keys`. Rotation is
-  # "prepend the new one, drop the old one twelve hours later" and costs nobody a login.
+  # 32 random bytes, base64, newest first, comma-separated, under the key `keys` —
+  # `openssl rand -base64 32` is the whole recipe, and standard or url-safe, padded or not, are
+  # all accepted. Rotation is "prepend the new one, drop the old one twelve hours later" and
+  # costs nobody a login.
   sessionKeys:
     existingSecret: endpoint-gateway-session-keys
     key: keys

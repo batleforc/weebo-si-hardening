@@ -261,7 +261,10 @@ async fn start_proxy(dir: &tempfile::TempDir, document: &str) -> Result<Proxy, i
 /// this child is talking to lives on the calling test's current-thread runtime, so blocking that
 /// thread would stop the origin from ever answering — and the child would wait forever for the
 /// acquisition it is supposed to fail.
-#[allow(clippy::zombie_processes, reason = "reaped by try_wait, or by the kill below")]
+#[allow(
+    clippy::zombie_processes,
+    reason = "reaped by try_wait, or by the kill below"
+)]
 async fn exit_code(dir: &tempfile::TempDir, document: &str) -> i32 {
     let path = dir.path().join("config.yaml");
     std::fs::write(&path, document).unwrap();

@@ -3,10 +3,12 @@
 
 pub mod config_store;
 pub mod dwoc_store;
+pub mod identity_metrics;
 pub mod image_metrics;
 pub mod kube_canary;
 pub mod kube_capabilities;
 pub mod kube_policy_store;
+pub mod kube_provisioner;
 pub mod kube_template_store;
 pub mod kubearmor_capabilities;
 pub mod kubearmor_metrics;
@@ -22,10 +24,12 @@ pub mod registry_template_store;
 
 pub use config_store::KubeConfigStore;
 pub use dwoc_store::KubeDwocStore;
+pub use identity_metrics::IdentityMetrics;
 pub use image_metrics::ImageMetrics;
 pub use kube_canary::{CLIENT_POD, DEFAULT_CANARY_IMAGE, DENY_POLICY, KubeCanary, SERVER_POD};
 pub use kube_capabilities::KubeCapabilities;
 pub use kube_policy_store::KubePolicyStore;
+pub use kube_provisioner::{ARGO_GROUP, AUTHENTIK_GROUP, KubeProvisioner, OWNER_API_VERSION};
 pub use kube_template_store::KubeTemplateStore;
 pub use kubearmor_capabilities::KubeArmorCapabilities;
 pub use kubearmor_metrics::KubeArmorMetrics;

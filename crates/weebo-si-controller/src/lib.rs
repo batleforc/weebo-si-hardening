@@ -2,6 +2,7 @@
 //! the `network-profiles` `Namespace`/`DevWorkspace` reconcile loops.
 
 pub mod endpoint_auth;
+pub mod identity;
 pub mod kubearmor_policy;
 pub mod network_profiles;
 pub mod reconcile;
@@ -19,6 +20,7 @@ use kube_leader_election::{LeaseLock, LeaseLockParams, LeaseLockResult};
 use weebo_si_crd::WeeboSiConfig;
 
 pub use endpoint_auth::EndpointAuthDeps;
+pub use identity::{IdentityDeps, reconcile_team, reconcile_user};
 pub use kubearmor_policy::KubeArmorPolicyDeps;
 pub use network_profiles::NetworkProfilesDeps;
 pub use reconcile::{Ctx, Error, error_policy, reconcile as reconcile_fn};
@@ -50,6 +52,7 @@ pub async fn run(
     kubearmor_policy: Option<KubeArmorPolicyDeps>,
     registry_config: Option<RegistryConfigDeps>,
     endpoint_auth: Option<EndpointAuthDeps>,
+    identity: Option<IdentityDeps>,
 ) {
     let is_leader = Arc::new(AtomicBool::new(leader_election.is_none()));
     let ctx = Arc::new(Ctx {
@@ -71,6 +74,10 @@ pub async fn run(
 
     if let Some(deps) = endpoint_auth {
         endpoint_auth::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
+    }
+
+    if let Some(deps) = identity {
+        identity::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
     }
 
     let api: Api<WeeboSiConfig> = Api::all(client.clone());

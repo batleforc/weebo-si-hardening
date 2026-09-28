@@ -121,9 +121,32 @@ impl std::fmt::Display for KeyError {
             Self::NotThirtyTwoBytes(len) => {
                 write!(f, "a session key is {len} bytes; AES-256-GCM needs 32")
             }
-            Self::NotBase64 => f.write_str("a session key is not base64"),
+            Self::NotBase64 => f.write_str(
+                "a session key is not base64 (standard or url-safe, padded or not) — 32 random \
+                 bytes, e.g. `openssl rand -base64 32`",
+            ),
         }
     }
+}
+
+/// Decode one key, in whichever base64 the admin's `openssl`/`head -c32 | base64` happened to
+/// produce.
+///
+/// **Four alphabets, not one.** The cookie payload is url-safe and unpadded because it travels in
+/// a header; a *key* travels in a `Secret` and never appears on the wire, so insisting it share
+/// that encoding buys nothing and costs a refusal to start. `openssl rand -base64 32` — the
+/// command the documentation all but names — emits standard, padded base64, and a gateway that
+/// answers "a session key is not base64" to its own documented recipe is a bug in the gateway
+/// rather than in the recipe.
+fn decode_key(raw: &str) -> Result<Vec<u8>, KeyError> {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE};
+
+    let raw = raw.trim();
+    B64.decode(raw)
+        .or_else(|_| URL_SAFE.decode(raw))
+        .or_else(|_| STANDARD.decode(raw))
+        .or_else(|_| STANDARD_NO_PAD.decode(raw))
+        .map_err(|_| KeyError::NotBase64)
 }
 
 impl SealedCodec {
@@ -135,7 +158,7 @@ impl SealedCodec {
         let ciphers = keys
             .iter()
             .map(|raw| {
-                let bytes = B64.decode(raw.trim()).map_err(|_| KeyError::NotBase64)?;
+                let bytes = decode_key(raw)?;
                 if bytes.len() != 32 {
                     return Err(KeyError::NotThirtyTwoBytes(bytes.len()));
                 }
@@ -384,6 +407,39 @@ mod tests {
             SealedCodec::new(&["not base64 at all!!".to_owned()]).err(),
             Some(KeyError::NotBase64)
         );
+    }
+
+    /// The gateway used to refuse the key its own documentation tells an admin to generate.
+    ///
+    /// `openssl rand -base64 32` emits *standard, padded* base64; the decoder accepted only the
+    /// url-safe unpadded alphabet the cookie payload uses, and answered "a session key is not
+    /// base64" to the recipe. A key never travels on the wire, so there is nothing for the strict
+    /// alphabet to buy — and RFC 0009's *Failure mode* is about a gateway that will not come up.
+    #[test]
+    fn a_key_is_accepted_in_whichever_base64_the_admin_generated_it() {
+        use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE};
+
+        let raw = [7_u8; 32];
+        for encoded in [
+            B64.encode(raw),
+            URL_SAFE.encode(raw),
+            STANDARD.encode(raw),
+            STANDARD_NO_PAD.encode(raw),
+            format!("  {}  ", STANDARD.encode(raw)),
+        ] {
+            let codec = SealedCodec::new(std::slice::from_ref(&encoded))
+                .unwrap_or_else(|err| panic!("{encoded:?} should be a usable key: {err}"));
+            // The same 32 bytes whichever way they were spelled, so a rotation that switches
+            // alphabet does not silently become a rotation that invalidates every session.
+            let sealed = codec.seal(&payload(), Binding::Sso).unwrap();
+            assert!(
+                SealedCodec::new(&[B64.encode(raw)])
+                    .unwrap()
+                    .open(&sealed, Binding::Sso, Timestamp::from_secs(0))
+                    .is_some(),
+                "{encoded:?}"
+            );
+        }
     }
 
     #[test]

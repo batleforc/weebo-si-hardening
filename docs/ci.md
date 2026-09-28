@@ -17,7 +17,7 @@ supply-chain gate.
 | [`build-weebo-si-operator`](../.github/workflows/build-weebo-si-operator.yaml) | any of the 7 `weebo-si-*` library crates its binary links, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`build-endpoint-gateway`](../.github/workflows/build-endpoint-gateway.yaml) | `bins/endpoint-gateway/**`, `crates/weebo-si-endpoint-auth/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, the deferred OpenShift tier, RFC 0009's decision budget, a release build |
-| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, manifests | all four envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip |
+| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, `bins/endpoint-gateway/**`, manifests | all five envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip — plus RFC 0009's dialect conformance suite, which drives a real Traefik |
 | [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for all three charts, every certificate-provider variant and both endpoint-auth dialect shapes |
 | [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, configs | a malformed RFC, a stale RFC index, shellcheck, markdownlint, cspell |
 | [`dep-audit`](../.github/workflows/dep-audit.yaml) | manifests, `deny.toml` · daily | `cargo deny check advisories bans licenses sources` |
@@ -38,7 +38,21 @@ about 130 ns, and a budget nobody measures is a wish.
 `--test envtest` while `.tasks/envtest.yaml` listed four targets, so RFC 0006's,
 RFC 0007's and RFC 0009's suites ran locally and never in CI. If you add a suite,
 add it in both places — or better, notice that this is exactly the drift the two
-lists invite.
+lists invite. There are five as of 2026-09-23: RFC 0009's `openshift_envtest`
+covers the `OpenShiftRoute` dialect's **admission** half against a `Route` CRD,
+which is a different fact from the deferred tier above — that one is about a
+router nobody has run this against, and this one needed no router at all.
+
+**The conformance suite skips itself when its tools are missing, so CI installs them.**
+`bins/endpoint-gateway/tests/conformance.rs` needs both the envtest binaries and
+`traefik` on `PATH`, and answers a missing one by returning rather than
+failing — which is right on a laptop and would be a silently green CI. The
+`envtest` workflow therefore downloads Traefik next to the apiserver, runs the
+suite in its own step, and `REQUIRE_ENVTEST=1` turns *both* missing tools into a
+failure rather than a green skip — the apiserver by the envtest harness's own
+rule, and Traefik by the same check written into the suite. It is the only place in this repo where a test drives
+somebody else's proxy, and it is there because two of RFC 0009's security
+properties are claims about what Traefik does rather than about what we do.
 
 **The daily schedules are the point, not padding.** A CVE disclosed against a
 base image or a dependency *after* the last commit has to trip something, and a

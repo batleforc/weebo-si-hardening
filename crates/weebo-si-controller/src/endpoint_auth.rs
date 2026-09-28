@@ -599,6 +599,7 @@ mod tests {
                 enforcement: GateEnforcement::Enforce,
                 allowed_middlewares: Vec::new(),
                 custom: None,
+                haproxy_prerequisite: false,
             },
             break_glass_identities: Vec::new(),
             owner: OwnerConfig {

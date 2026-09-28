@@ -32,7 +32,7 @@ use kube::api::{
 };
 use kube::{CustomResourceExt, ResourceExt};
 use weebo_si_chassis::Registry;
-use weebo_si_crd::WeeboSiConfig;
+use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam};
 use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_envtest_support::{EnvTest, free_port, generate_webhook_tls};
 use weebo_si_runtime::{
@@ -64,7 +64,12 @@ async fn install_crds(client: kube::Client) {
             .expect("the fixture should parse");
     let weebosiconfig = WeeboSiConfig::crd();
 
-    for crd in [devworkspace, devworkspace_operator_config, weebosiconfig] {
+    for crd in [
+        devworkspace,
+        devworkspace_operator_config,
+        weebosiconfig,
+        WeeboSiTeam::crd(),
+    ] {
         let name = crd.name_any();
         crds.patch(
             &name,
@@ -281,6 +286,25 @@ async fn create_config(client: kube::Client, spec: serde_json::Value) {
         )
         .await
         .expect("config should be accepted");
+}
+
+/// Creates one `WeeboSiTeam`. Since RFC 0011 the per-team half of every feature lives here, so a
+/// suite proving a grant has to write two objects rather than one.
+async fn create_team(client: kube::Client, name: &str, spec: serde_json::Value) {
+    let teams: Api<WeeboSiTeam> = Api::all(client);
+    let value = serde_json::json!({
+        "apiVersion": "hardening.weebo.io/v1alpha1",
+        "kind": "WeeboSiTeam",
+        "metadata": { "name": name },
+        "spec": spec,
+    });
+    teams
+        .create(
+            &PostParams::default(),
+            &serde_json::from_value(value).expect("the team should deserialize"),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("the team {name} should be accepted: {err}"));
 }
 
 /// Creates a namespace, waits for it to be visible to the watch-backed namespace cache, and
@@ -712,23 +736,34 @@ async fn team_grants_drive_allowed_override_and_replaced_live() {
     create_config(
         client.clone(),
         serde_json::json!({
-            "teams": [
-                {"name": "team-1", "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-1"}}},
-            ],
             "features": {
                 "dwocPin": {
                     "mode": "Enforce",
                     "catalog": [
                         {"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"},
-                        {"key": "gpu", "name": "gpu-config", "namespace": "eclipse-che"},
+                        // Catalogued cluster-wide, reached by nobody: the "outside the grant"
+                        // case needs a key that exists and is not this team's.
                         {"key": "amd", "name": "amd-config", "namespace": "eclipse-che"},
                     ],
                     "default": "baseline",
-                    "grants": {
-                        "team-1": {"allowed": ["baseline", "gpu"], "default": "baseline"},
-                    },
                 }
             }
+        }),
+    )
+    .await;
+    create_team(
+        client.clone(),
+        "team-1",
+        serde_json::json!({
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-1"}},
+            "features": {
+                "dwocPin": {
+                    "catalog": [
+                        {"key": "gpu", "name": "gpu-config", "namespace": "eclipse-che"},
+                    ],
+                    "default": "baseline",
+                }
+            },
         }),
     )
     .await;
@@ -793,10 +828,11 @@ async fn team_grants_drive_allowed_override_and_replaced_live() {
         .await;
 }
 
-/// `spec.teams` is ordered and first-match-wins — proven live against two teams whose selectors
-/// both match the same namespace.
+/// Team precedence is `priority`, lowest first — proven live against two teams whose selectors
+/// both match the same namespace. RFC 0011 replaced `spec.teams`' declaration order with this
+/// field, because separate objects have no order to read.
 #[tokio::test]
-async fn two_teams_matching_the_same_namespace_the_first_declared_wins_live() {
+async fn two_teams_matching_the_same_namespace_the_lower_priority_wins_live() {
     let env_test = envtest_or_skip!();
     let client = env_test.client().expect("client should build");
     install_crds(client.clone()).await;
@@ -806,25 +842,51 @@ async fn two_teams_matching_the_same_namespace_the_first_declared_wins_live() {
     create_config(
         client.clone(),
         serde_json::json!({
-            "teams": [
-                {"name": "team-1", "namespaceSelector": {"matchLabels": {"weebo.io/team": "shared"}}},
-                {"name": "team-2", "namespaceSelector": {"matchLabels": {"weebo.io/team": "shared"}}},
-            ],
             "features": {
                 "dwocPin": {
                     "mode": "Enforce",
                     "catalog": [
                         {"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"},
-                        {"key": "gpu", "name": "gpu-config", "namespace": "eclipse-che"},
-                        {"key": "amd", "name": "amd-config", "namespace": "eclipse-che"},
                     ],
                     "default": "baseline",
-                    "grants": {
-                        "team-1": {"allowed": ["gpu"], "default": "gpu"},
-                        "team-2": {"allowed": ["amd"], "default": "amd"},
-                    },
                 }
             }
+        }),
+    )
+    .await;
+    // Both teams claim the same namespace; RFC 0011 decides by `priority`, lowest first, where
+    // RFC 0002 decided by declaration order in `spec.teams`.
+    create_team(
+        client.clone(),
+        "team-1",
+        serde_json::json!({
+            "priority": 100,
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "shared"}},
+            "features": {
+                "dwocPin": {
+                    "catalog": [
+                        {"key": "gpu", "name": "gpu-config", "namespace": "eclipse-che"},
+                    ],
+                    "default": "gpu",
+                }
+            },
+        }),
+    )
+    .await;
+    create_team(
+        client.clone(),
+        "team-2",
+        serde_json::json!({
+            "priority": 200,
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "shared"}},
+            "features": {
+                "dwocPin": {
+                    "catalog": [
+                        {"key": "amd", "name": "amd-config", "namespace": "eclipse-che"},
+                    ],
+                    "default": "amd",
+                }
+            },
         }),
     )
     .await;
@@ -849,7 +911,7 @@ async fn two_teams_matching_the_same_namespace_the_first_declared_wins_live() {
         created.data["spec"]["template"]["attributes"]
             [weebo_si_webhook::extract::CONFIG_REF_ATTRIBUTE]["name"],
         serde_json::json!("gpu-config"),
-        "team-1, declared first, should have won: {:#?}",
+        "team-1, the lower priority, should have won: {:#?}",
         created.data
     );
 
@@ -871,22 +933,31 @@ async fn a_namespace_annotation_inside_the_allowed_set_is_honoured_live() {
     create_config(
         client.clone(),
         serde_json::json!({
-            "teams": [
-                {"name": "team-2", "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-2"}}},
-            ],
             "features": {
                 "dwocPin": {
                     "mode": "Enforce",
                     "catalog": [
                         {"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"},
+                    ],
+                    "default": "baseline",
+                }
+            }
+        }),
+    )
+    .await;
+    create_team(
+        client.clone(),
+        "team-2",
+        serde_json::json!({
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-2"}},
+            "features": {
+                "dwocPin": {
+                    "catalog": [
                         {"key": "amd", "name": "amd-config", "namespace": "eclipse-che"},
                     ],
                     "default": "baseline",
-                    "grants": {
-                        "team-2": {"allowed": ["baseline", "amd"], "default": "baseline"},
-                    },
                 }
-            }
+            },
         }),
     )
     .await;
@@ -936,9 +1007,6 @@ async fn on_unknown_key_deny_refuses_admission_live() {
     create_config(
         client.clone(),
         serde_json::json!({
-            "teams": [
-                {"name": "team-2", "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-2"}}},
-            ],
             "features": {
                 "dwocPin": {
                     "mode": "Enforce",
@@ -946,12 +1014,20 @@ async fn on_unknown_key_deny_refuses_admission_live() {
                         {"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"},
                     ],
                     "default": "baseline",
-                    "grants": {
-                        "team-2": {"allowed": ["baseline"], "default": "baseline"},
-                    },
                     "namespaceSelection": {"onUnknownKey": "Deny"},
                 }
             }
+        }),
+    )
+    .await;
+    create_team(
+        client.clone(),
+        "team-2",
+        serde_json::json!({
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "team-2"}},
+            "features": {
+                "dwocPin": { "default": "baseline" }
+            },
         }),
     )
     .await;
@@ -2105,35 +2181,44 @@ const TEAM_LABEL: &str = "weebo.io/team";
 /// rejected create rather than as a silently-dropped field.
 fn rfc5_config_spec(mode: &str) -> serde_json::Value {
     serde_json::json!({
-        "teams": [
-            {
-                "name": "team-1",
-                "namespaceSelector": {"matchLabels": {TEAM_LABEL: "team-1"}},
-            },
-            {
-                "name": "team-2",
-                "namespaceSelector": {"matchLabels": {TEAM_LABEL: "team-2"}},
-            },
-        ],
         "features": {
             "imagePolicy": {
                 "mode": mode,
                 "catalog": [
                     {"key": "internal", "patterns": ["registry.internal/shared/**"]},
-                    // The entry the whole per-team-path argument exists for.
-                    {"key": "team-registry", "patterns": ["registry.internal/teams/{TEAM_NAME}/**"]},
                 ],
                 "default": ["internal"],
-                "grants": {
-                    "team-1": {
-                        "allowed": ["internal", "team-registry"],
-                        "default": ["internal", "team-registry"],
-                    },
-                    "team-2": {"allowed": ["internal"], "default": ["internal"]},
-                },
             }
         },
     })
+}
+
+/// The two teams the same suite needs, per RFC 0011: `team-registry` — the entry the whole
+/// per-team-path argument exists for — is `team-1`'s own, and `team-2` declares nothing and so
+/// reaches the cluster answer alone.
+fn rfc5_teams() -> [(&'static str, serde_json::Value); 2] {
+    [
+        (
+            "team-1",
+            serde_json::json!({
+                "namespaceSelector": {"matchLabels": {TEAM_LABEL: "team-1"}},
+                "features": {
+                    "imagePolicy": {
+                        "catalog": [
+                            {"key": "team-registry", "patterns": ["registry.internal/teams/{TEAM_NAME}/**"]},
+                        ],
+                        "default": ["internal", "team-registry"],
+                    }
+                },
+            }),
+        ),
+        (
+            "team-2",
+            serde_json::json!({
+                "namespaceSelector": {"matchLabels": {TEAM_LABEL: "team-2"}},
+            }),
+        ),
+    ]
 }
 
 /// Boot `image-policy`'s router against `env_test` and register both
@@ -2355,6 +2440,9 @@ async fn rfc5_stack(env_test: &EnvTest, cert_dir: &std::path::Path, mode: &str) 
     install_crds(client.clone()).await;
     start_image_policy_webhook(env_test, cert_dir).await;
     create_config(client.clone(), rfc5_config_spec(mode)).await;
+    for (name, spec) in rfc5_teams() {
+        create_team(client.clone(), name, spec).await;
+    }
     create_rfc5_namespace(client.clone(), TEAM_1_NAMESPACE, "team-1").await;
     create_rfc5_namespace(client.clone(), TEAM_2_NAMESPACE, "team-2").await;
     // The config cache is watch-backed; give the first sync a moment to land before the first

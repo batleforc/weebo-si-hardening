@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::OnUnknownKey;
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// A short identifier for a catalogue entry, unique within the catalogue. Same rationale as
 /// `CatalogKey` in `dwoc_pin` and `ProfileKey` in `network_profiles`: a key is never a
@@ -105,6 +106,22 @@ pub struct ImageGrant {
     #[serde(default)]
     pub allowed: Vec<EntryKey>,
     /// The subset of `allowed` applied when a workspace names nothing more specific.
+    #[serde(default)]
+    pub default: Vec<EntryKey>,
+}
+
+/// `spec.features.image_policy` on a `WeeboSiTeam` — this team's own catalogue entries and its
+/// defaults, per RFC 0005 and RFC 0011.
+///
+/// No `allowed` list, for the reason [`crate::dwoc_pin::TeamDwocPin`] spells out: a team's
+/// reachable set is the catalogue it declares, widened only by what the cluster hands everybody.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamImagePolicy {
+    /// This team's catalogue entries, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: ImageCatalog,
+    /// The entries a workspace of this team gets when it names none. May be empty, which means the platform set and this team's cluster-level default and nothing else.
     #[serde(default)]
     pub default: Vec<EntryKey>,
 }
@@ -213,7 +230,11 @@ pub struct ImagePolicyConfig {
     /// be empty, which means the platform set and nothing else.
     pub default: Vec<EntryKey>,
     /// What each team may reach, keyed by team name.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`ImagePolicyConfig::resolve`] fills this in from them, and a configuration nobody
+    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<String, ImageGrant>,
     /// The namespace annotation naming an entry key list.
     #[serde(default)]
@@ -238,6 +259,61 @@ impl ImagePolicyConfig {
     /// This team's grant, if `grants` has one.
     pub fn grant_for(&self, team: &TeamName) -> Option<&ImageGrant> {
         self.grants.get(team.as_str())
+    }
+
+    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`ImagePolicyConfig::validate`], which now runs over the resolved shape and therefore over
+    /// exactly what the feature will evaluate.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<ImagePolicyConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<Entry>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .image_policy
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.entries().to_vec()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
+        self.catalog = ImageCatalog::new(entries);
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.image_policy.as_ref()?;
+                let mut allowed: Vec<EntryKey> = block
+                    .catalog
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                for key in self.default.clone() {
+                    if !allowed.contains(&key) {
+                        allowed.push(key);
+                    }
+                }
+                Some((
+                    team.team_name().to_string(),
+                    ImageGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(|conflict| ImagePolicyConfigViolation::CatalogKeyConflict {
+                team: conflict.team,
+                key: conflict.key,
+            })
+            .collect()
     }
 }
 
@@ -327,8 +403,18 @@ pub enum ImagePolicyConfigViolation {
         /// The default key that is outside `allowed`.
         key: EntryKey,
     },
-    /// `grants` names a team `spec.teams` never declared.
+    /// `grants` names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept so a resolution bug
+    /// producing one is reported rather than silently dropped.
     GrantNamesUndeclaredTeam(TeamName),
+    /// A team redefined a image catalogue entry key somebody already defined, differently. The first definition
+    /// stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: EntryKey,
+    },
 }
 
 impl fmt::Display for ImagePolicyConfigViolation {
@@ -388,9 +474,12 @@ impl fmt::Display for ImagePolicyConfigViolation {
                 f,
                 "grant for team {team} defaults to {key}, which is outside its own allowed set"
             ),
-            Self::GrantNamesUndeclaredTeam(team) => write!(
+            Self::GrantNamesUndeclaredTeam(team) => {
+                write!(f, "grant names team {team}, which no WeeboSiTeam declares")
+            }
+            Self::CatalogKeyConflict { team, key } => write!(
                 f,
-                "grant names team {team}, which spec.teams never declared"
+                "team {team} redefines catalogue key {key}, which is already defined differently"
             ),
         }
     }

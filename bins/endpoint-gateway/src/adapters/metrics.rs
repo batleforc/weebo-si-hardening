@@ -3,6 +3,7 @@
 //! id**, and every label's value set is a Rust enum rendered by a `&'static str`.
 
 use prometheus::{Histogram, HistogramOpts, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry};
+use weebo_si_endpoint_auth::bearer::{BearerResult, TokenShape};
 use weebo_si_endpoint_auth::cache::{CacheKind, CacheOutcome};
 use weebo_si_endpoint_auth::decide::Decision;
 
@@ -13,6 +14,7 @@ pub struct GatewayMetrics {
     decision_seconds: Histogram,
     identity_cache: IntCounterVec,
     logins: IntCounterVec,
+    bearers: IntCounterVec,
     cache_synced: IntGauge,
     indexed_endpoints: IntGauge,
     host_conflicts: IntGauge,
@@ -48,6 +50,13 @@ impl GatewayMetrics {
         let logins = IntCounterVec::new(
             Opts::new("weebo_si_endpoint_auth_logins_total", "Sign-ins, by result"),
             &["result"],
+        )?;
+        let bearers = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_endpoint_auth_bearer_total",
+                "Bearer verifications, by token shape and which check answered",
+            ),
+            &["shape", "result"],
         )?;
         let cache_synced = IntGauge::new(
             "weebo_si_endpoint_auth_cache_synced",
@@ -101,6 +110,7 @@ impl GatewayMetrics {
             Box::new(decision_seconds.clone()),
             Box::new(identity_cache.clone()),
             Box::new(logins.clone()),
+            Box::new(bearers.clone()),
             Box::new(cache_synced.clone()),
             Box::new(indexed_endpoints.clone()),
             Box::new(host_conflicts.clone()),
@@ -119,6 +129,7 @@ impl GatewayMetrics {
             decision_seconds,
             identity_cache,
             logins,
+            bearers,
             cache_synced,
             indexed_endpoints,
             host_conflicts,
@@ -168,6 +179,18 @@ impl GatewayMetrics {
     /// Record a sign-in.
     pub fn login(&self, result: &'static str) {
         self.logins.with_label_values(&[result]).inc();
+    }
+
+    /// Record one bearer verification — which shape arrived, and which check answered.
+    ///
+    /// The decision's own `reason` enum does not grow for any of this: every one of these is a
+    /// deny, they are already indistinguishable to the caller, and what an admin wants is "which
+    /// check, how often". `result="accepted_authorized_party"` is the series to alert on — it
+    /// counts the traffic that only works because the realm's client has no audience mapper yet.
+    pub fn bearer(&self, shape: TokenShape, result: BearerResult) {
+        self.bearers
+            .with_label_values(&[shape.label(), result.label()])
+            .inc();
     }
 
     /// Record a self-origin resolution that found nothing — the diagnosis, not an alert: this
@@ -235,6 +258,8 @@ mod tests {
             0.0001,
         );
         metrics.cache_delta(CacheKind::Session, 199, 1, 0);
+        metrics.bearer(TokenShape::Jwt, BearerResult::WrongAudience);
+        metrics.bearer(TokenShape::Opaque, BearerResult::AcceptedAuthorizedParty);
         metrics.indexed(3, 0, 0, 0.002);
         metrics.synced(true);
 
@@ -242,6 +267,7 @@ mod tests {
         let names: Vec<&str> = families.iter().map(|family| family.name()).collect();
         assert!(names.contains(&"weebo_si_endpoint_auth_decisions_total"));
         assert!(names.contains(&"weebo_si_endpoint_auth_identity_cache_total"));
+        assert!(names.contains(&"weebo_si_endpoint_auth_bearer_total"));
 
         // The project-wide rule, asserted rather than reviewed: no series carries a namespace, a
         // host or a workspace id.

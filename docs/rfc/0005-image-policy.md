@@ -4,7 +4,7 @@ title: image-policy
 status: Implemented
 authors: [batleforc]
 created: 2026-08-24
-updated: 2026-08-25
+updated: 2026-09-25
 decided: 2026-08-24
 brick: crates/weebo-si-image-policy
 supersedes: []
@@ -64,7 +64,7 @@ same reason a cluster-wide network policy is: a data team needing one vendor ima
 team needing none are one decision under it. Granting the cluster what the data team needs
 grants it to everyone, which is the whole problem restated one level up.
 
-**And the catalogue must not become a second copy of `spec.teams`.** The layout an internal
+**And the catalogue must not become a second copy of the team list.** The layout an internal
 registry actually has is a path per team — `registry.internal/teams/team-1/...` — and writing that
 as one catalogue entry per team means the catalogue restates a list the chassis already holds.
 [RFC 0002](./0002-weebo-si-operator.md) hoisted teams to the chassis precisely to stop that: two
@@ -92,7 +92,8 @@ running in this cluster and what would this configuration do to it" before switc
 ## Guide-level explanation
 
 The feature starts `Off`, per the chassis. It needs a catalogue, a default for namespaces with
-no team, and grants against the teams `spec.teams` already declares.
+no team, and — on each `WeeboSiTeam`, the object the chassis already declares a team in — what
+that team reaches.
 
 ```yaml
 apiVersion: hardening.weebo.io/v1alpha1
@@ -100,10 +101,6 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams:                                  # chassis-level, shared with dwoc-pin and network-profiles
-    - name: team-1
-      namespaceSelector:
-        matchLabels: {weebo.io/team: team-1}
   features:
     imagePolicy:
       mode: DryRun
@@ -127,13 +124,32 @@ spec:
           patterns:
             - "docker.io/library/**"
       default: [internal]                 # a namespace belonging to no team
-      grants:
-        team-1:
-          allowed: [internal, team-registry, devfile-udi]
-          default: [internal, team-registry]
       platform:
         builtin: true                     # the images Che and DWO inject — always allowed
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam                         # chassis-level, shared with every other feature
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels: {weebo.io/team: team-1}
+  features:
+    imagePolicy:                          # this team's own entries, and its defaults
+      catalog:
+        - key: team-registry              # one entry, every team, no copy per team
+          patterns:
+            - "registry.internal/teams/{TEAM_NAME}/**"
+        - key: devfile-udi
+          patterns:
+            - "quay.io/devfile/universal-developer-image:ubi9-*"
+      default: [internal, team-registry]
 ```
+
+`team-registry` is still **one entry written once**, even though it now lives on a team: the
+pattern interpolates `{TEAM_NAME}`, so a second team declaring the same entry declares the same
+text — identical, therefore not a conflict — and reaches its own path. Writing one entry per team
+is the shape this RFC's *Motivation* rejects, and RFC 0011 does not bring it back.
 
 Nobody writes the platform images down. They are compiled in, they are allowed for every team,
 and no grant can withhold them — the same non-negotiable position
@@ -234,7 +250,7 @@ regardless of team, and it is the only one no grant can withhold.
 | `catalog` | list of entries | — | required, non-empty. Each is `{key, patterns}`. |
 | `variables` | map, name → `{fromNamespaceAnnotation}` | empty | Additional pattern variables, beyond the two built in. Declaring one is the opt-in to an annotation-sourced value; see *Variables in a pattern*. |
 | `default` | list of entry keys | — | required. Applied to a namespace belonging to no team. May be empty, which means the platform set and nothing else. |
-| `grants` | map, team name → `{allowed, default}` | empty | `allowed` is the set of keys a team may reach; `default` is the subset applied when a workspace asks for nothing. Both may be empty. |
+| per-team catalogue and default | on `WeeboSiTeam` | absent | What a team reaches beyond `default` and the platform set, and what it gets when a workspace asks for nothing. A `grants` map here until [RFC 0011](./0011-teams-and-users.md); `spec.features.imagePolicy.{catalog,default}` on the team's own object since. |
 | `namespaceSelection.annotation` | string | `hardening.weebo.io/image-policy` | Namespace annotation carrying a comma-separated key list, overriding the team default for that namespace. Empty string disables it. |
 | `workspaceSelection.attribute` | string | `hardening.weebo.io/image-policy` | DevWorkspace attribute carrying the same, overriding the namespace. Empty string disables it. |
 | `onNotGranted` | `Default` \| `Deny` | `Default` | What to do when a workspace names a key its team lacks. |
@@ -331,7 +347,7 @@ resolved for the subject. Two are built in, and an admin may declare more:
 
 | Variable | Value | Written by | In host | In path | In tag |
 | --- | --- | --- | :-: | :-: | :-: |
-| `{TEAM_NAME}` | the resolved chassis team's name | the admin, in `spec.teams` | yes | yes | yes |
+| `{TEAM_NAME}` | the resolved chassis team's name | the admin, on a `WeeboSiTeam` | yes | yes | yes |
 | `{NAMESPACE}` | the subject's namespace | the platform — Che creates workspace namespaces | no | yes | yes |
 | declared | a namespace annotation's value | whoever may annotate the namespace — see below | no | yes | yes |
 
@@ -364,7 +380,7 @@ importances — and it gets the same treatment. Declaring `variables` at all is 
 workspace user annotate their namespace" is a line on the install checklist with a command next to
 it, and *Operational considerations* carries the detection for the day the answer changes.
 
-The two built-ins are not affected by any of that: `{TEAM_NAME}` comes from `spec.teams` and
+The two built-ins are not affected by any of that: `{TEAM_NAME}` comes from a `WeeboSiTeam` and
 `{NAMESPACE}` from the apiserver's own naming, and neither is reachable by a workspace user under
 any RBAC.
 
@@ -382,7 +398,7 @@ Three rules follow, each fail-closed:
   `__` or `-`, with no `/`, no `*`, and no brace. `{NAMESPACE}` satisfies this by construction,
   since a DNS-1123 label is a strict subset and the apiserver already enforced it. The other two
   do not, and **they fail differently on purpose**:
-  - `spec.teams[].name` is free text, so a team name that is not a legal path component is a
+  - A team's name is free text, so a team name that is not a legal path component is a
     `Degraded` condition naming that team, raised as soon as any pattern uses `{TEAM_NAME}`. It
     is statically checkable, it is the admin's own file, and a team name is not going to become
     legal at admission time — so the controller catches it at reconcile.
@@ -405,8 +421,8 @@ Three rules follow, each fail-closed:
 - **Only `{TEAM_NAME}` is permitted in the host.** The host is the trust anchor of the whole
   allow-list, and a variable there means the set of registries depends on data resolved per
   request. `{TEAM_NAME}` is permitted — `{TEAM_NAME}.registry.internal` is a real registry layout
-  — because its value comes from `spec.teams`, which is the admin's own file and is validated
-  once. There is no comparable statement about a namespace name, and emphatically none about an
+  — because its value comes from a `WeeboSiTeam`, which is the admin's own object and is
+  validated once. There is no comparable statement about a namespace name, and emphatically none about an
   annotation.
 
 **Braces need no escaping and there is no ambiguity**, because `{` and `}` are not legal in a
@@ -440,7 +456,7 @@ which is a configuration nobody can review.
 For one subject, in this order — the same three scopes, same order, as `dwoc-pin` and
 `network-profiles`:
 
-1. **The team, and its grant.** Per the chassis: the first `spec.teams` entry whose selector
+1. **The team, and its grant.** Per the chassis: the first team in resolution order whose selector
    matches the namespace. No team means `allowed` and `default` both come from the top-level
    `default`. A team with no grant here is the same case.
 2. **The workspace attribute**, if set — the complete list, not an addition. A project may ask
@@ -801,7 +817,7 @@ review target:
 
 **Interpolation is a second input to the matcher, and it is the one that is easy to get wrong.**
 The reference is obviously attacker-controlled and gets treated as such; a variable's *value* is
-not, and that is exactly why it deserves saying. `{TEAM_NAME}` comes from `spec.teams`, so its
+not, and that is exactly why it deserves saying. `{TEAM_NAME}` comes from a `WeeboSiTeam`, so its
 trust level is the admin's file — but "admin-written" is not "safe to substitute", because an
 admin who names a team `a/**` has widened every pattern using it without doing anything that looks
 like a security change. `{NAMESPACE}` comes from the apiserver's own DNS-1123 validation, which is
@@ -925,7 +941,7 @@ any other feature in this repo and it is the most valuable one.
    `weebo_si_image_policy_total{result="denied"}` — every one is a workspace that will stop
    starting. `platform_total` is the second number: if it is large, the platform list is doing
    more work than expected and deserves a look before it is depended on.
-3. **Add `spec.teams` and the grants, still in `DryRun`.** `result` broken down by `team` is how
+3. **Add the `WeeboSiTeam` objects, still in `DryRun`.** `result` broken down by `team` is how
    an admin confirms the routing, exactly as in [RFC 0002](./0002-weebo-si-operator.md)'s step 3.
    A namespace routed to the wrong team is invisible in aggregate and obvious per team.
 4. `mode: Enforce` with a `namespaceSelector` on a pilot label. One namespace, real denials.
@@ -1003,9 +1019,10 @@ For a cluster that already runs Kyverno, "add a policy" is a smaller change than
 an operator".
 
 Three things decide against it here, in order of weight. **The routing.** This feature's value is
-per-team entitlement resolved through `spec.teams`, which the other two features already use; in
-Kyverno that becomes one policy per team, each carrying its own copy of a namespace selector, with
-nothing reporting the day they diverge from `spec.teams` — the exact failure
+per-team entitlement resolved through the chassis's own teams, which the other two features
+already use; in Kyverno that becomes one policy per team, each carrying its own copy of a
+namespace selector, with nothing reporting the day they diverge from the team objects — the exact
+failure
 [RFC 0002](./0002-weebo-si-operator.md) rejected per-feature team lists to avoid. **The
 workspace scope.** The per-workspace attribute has no Kyverno equivalent that does not amount to
 writing our resolution chain in JMESPath. **The second engine.** A cluster that does not already
@@ -1094,7 +1111,7 @@ checklist, and it is the most likely way for this control to be believed while d
 **A pattern that interpolates is not reviewable by reading the CRD.** `registry.internal/teams/{TEAM_NAME}/**`
 means something different in every namespace, so "what may this team run" stops being a property
 of the configuration and becomes a question with a namespace-shaped argument. That is the cost of
-not restating `spec.teams` in the catalogue, and it is paid in tooling rather than absorbed:
+not restating the team list in the catalogue, and it is paid in tooling rather than absorbed:
 `images check` prints the interpolated pattern, `images audit` reports per namespace whenever
 verdicts differ, and the *Future work* item on rendering effective permission exists mostly
 because of this. An admin who does not want the trade writes literal entries and nothing forces
@@ -1335,8 +1352,10 @@ now load-bearing in the chart and neither is obvious from reading it:
 
 ## References
 
-- [RFC 0002 — weebo-si-operator](./0002-weebo-si-operator.md) — the chassis, `spec.teams`, the
-  catalogue-and-grants shape, and the *Future work* item this RFC answers.
+- [RFC 0002 — weebo-si-operator](./0002-weebo-si-operator.md) — the chassis, chassis-level teams,
+  the catalogue-and-grants shape, and the *Future work* item this RFC answers.
+- [RFC 0011 — teams and users as objects](./0011-teams-and-users.md) — where a team's entries and
+  defaults live now.
 - [RFC 0004 — network-profiles](./0004-network-profiles.md) — the non-negotiable baseline, the
   union semantics, the positive-label `namespaceSelector`, and the `audit`-before-enforce pattern.
 - [Hexagonal layering](../architecture/hexagonal.md) — the three criteria.
@@ -1356,4 +1375,5 @@ now load-bearing in the chart and neither is obvious from reading it:
 | Date | Change |
 | --- | --- |
 | 2026-08-24 | Implemented in one pass, and flipped from `Draft` to `Implemented`. Both *blocking* unresolved questions were answered before any code was written, and both took RFC 0004's shape rather than inventing one: the `pods` webhook's `failurePolicy` is a `values.yaml` switch defaulting to `Fail` (the `DevWorkspace` one is hard-coded, since RFC 0002 already settled that argument), and the workspace-namespace label is `hardening.weebo.io/workspace-namespace` — the same string `policy-guard` already requires, so one checklist line covers both. **Four things surfaced that the design could not have known, and each is recorded in the *Implementation plan* rather than silently absorbed.** (1) `validate()` had to split across two crates: `weebo-si-crd` cannot call `Pattern::parse`, because it is the *domain crate's dependency* and not the reverse, so the CRD proves everything structural and `weebo_si_image_policy::validate` appends the parse-dependent half, both producing the one violation enum. (2) The declared-variable resolver moved from `weebo-si-runtime` (where the plan sketched it) into the domain crate: it needs only ports the domain already knows, and an adapter-side copy per route would have made "variables resolve identically at both layers" a promise about two implementations rather than a property of one. (3) This feature needed an outbound port of its own, which neither `dwoc-pin` nor `policy-guard` does — the chassis' `Observer` records one outcome per `evaluate()`, and this contract needs `resource`, a per-image counter and a per-variable counter; `ImagePolicyObserver` sits where `network-profiles` puts `ReconcileObserver`, and carries no method that could tell a feature its own mode. (4) **Writing `pattern.rs`'s tests found two real bugs before any of this ran anywhere**, both of the "looks like a working control" class this RFC is shaped against: `*/**` parsed into `docker.io/*/**` rather than being refused, so an admin writing "any registry" got a very large Docker Hub allow-list instead of the error *Contract* promises; and `registry.internal/-dev` parsed while being structurally unable to match anything, so a pattern that could never work was invisible rather than `Degraded` — and "never matches" is indistinguishable from "correctly restrictive" from the outside, which is the same argument this RFC already makes for undeclared variables. Both are now parse-time refusals. Verified with 141 pure tests in the domain crate, the full workspace suite green, and 10 new envtests against a real apiserver calling back into a real running webhook through both real `ValidatingWebhookConfiguration`s — including the per-team `{TEAM_NAME}` case at both layers, which is the one thing no single-namespace test can show. |
+| 2026-09-25 | Amended for [RFC 0011](./0011-teams-and-users.md): **what a team reaches moved onto the team's own object.** The `grants` map is gone from the wire; a `WeeboSiTeam` carries that team's own catalogue entries and its `default`, while the cluster keeps `default` (what a namespace with no team gets) and `platform` (what nobody can withhold). The argument this RFC's *Motivation* makes about `{TEAM_NAME}` survives intact and is worth restating, because it looks threatened and is not: `registry.internal/teams/{TEAM_NAME}/**` is still **one entry written once**, and two teams declaring it declare identical text — identical entries are not a conflict, and each still resolves to its own path. Writing one entry per team remains the shape this RFC rejects. `variables`, the pattern grammar, the host rule and both enforcement points are unchanged. |
 | 2026-08-25 | `weebo_si_admission_requests_total{feature="image-policy"}` now actually separates the two enforcement points. It did not: the Prometheus adapter wrote a literal `"DevWorkspace"` into the `resource` label, so this RFC's whole *Two enforcement points* argument — that the Pod layer catches what the DevWorkspace layer cannot see — was unobservable in the one metric that should have shown it. Fixed in [RFC 0008](./0008-policy-guard-coverage.md) by moving the label's value onto the chassis' `Subject` trait; `WorkspaceImages` and `PodImages` now answer with `Resource::DevWorkspace.kind()` and `Resource::Pod.kind()`, the same `Resource` enum `weebo_si_image_policy_total`'s own `resource` label already came from. |

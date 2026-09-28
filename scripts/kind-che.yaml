@@ -1,0 +1,86 @@
+# A kind cluster that can host Eclipse Che, for RFC 0009's ground-truth spike.
+#
+#   scripts/spike-0009-che.sh up     creates the cluster from this file, then installs the rest
+#
+# Three things make this different from an ordinary kind config, and all three exist because Che
+# on Kubernetes authenticates *its users against the cluster itself*:
+#
+#  1. **The apiserver is an OIDC relying party.** Che does not hold its own user database on
+#     Kubernetes: it signs a person in against an identity provider and then talks to the
+#     apiserver as that person, so the apiserver has to accept the provider's tokens. Those are
+#     the `oidc-*` flags below. Without them Che deploys and then refuses every login, which
+#     looks like a Che bug and is not one.
+#
+#  2. **The provider's CA has to be on the node before the cluster exists.** The issuer must be
+#     `https`, the provider here is one we run ourselves with a self-signed certificate, and
+#     `--oidc-ca-file` is read from the control-plane's filesystem — so the CA is generated first
+#     and mounted, which is the reason this file names an absolute path it does not create.
+#     `scripts/spike-0009-che.sh` writes it there before calling kind.
+#
+#  3. **Nothing binds a host port, and that is a fix rather than an omission.** The usual way to
+#     reach an ingress on kind — publish the node's 80/443, give the controller a `hostPort` — is
+#     what breaks this cluster under rootless podman. A `hostPort` of 443 makes the CNI's portmap
+#     rules claim port 443 *inside the node*, so a pod's connection to `kubernetes.default` (a
+#     ClusterIP on 443) is refused and everything holding an in-cluster API client dies at startup
+#     with no error of its own: ingress-nginx stops at "Creating API client", local-path-provisioner
+#     reports `dial tcp 10.96.0.1:443: connect: connection refused`. Measured both ways — `200`
+#     from that same pod within fifteen seconds of scaling the ingress controller to zero.
+#
+#     So the ingress controller is an ordinary ClusterIP Service, the apiserver reaches the issuer
+#     through one `/etc/hosts` entry on the node pointing at that ClusterIP, and pods reach it
+#     through a CoreDNS rewrite. `scripts/spike-0009-che.sh` writes both. Reaching Che from a
+#     browser on the host is `kubectl port-forward`, which is the cost of this arrangement and the
+#     reason it is written down here rather than discovered.
+#
+# **One host prerequisite, and it is the thing that actually fails.** kind needs more inotify
+# instances than a desktop default provides, and the failure is nothing like its cause: the node
+# boots, containerd never finishes starting, and kind reports "could not find a log line that
+# matches 'Reached target Multi-User System'". Under it, in the kubelet journal, is
+# `error creating fsnotify watcher: too many open files`. Either raise the limit —
+#
+#   sudo sysctl -w fs.inotify.max_user_instances=512
+#
+# — or run one cluster at a time; 128 instances (the default here) was enough for one kind
+# cluster and not for two. `podman stop <other>-control-plane` frees them without destroying
+# anything, and `podman start` brings it back.
+#
+# The domain is fixed at `127.0.0.1.nip.io` rather than parameterised, because it appears in the
+# apiserver flags here, in the identity provider's issuer, in Che's CheCluster and in every
+# redirect URI — five places that must agree exactly, and a template is how they stop agreeing.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: weebo-che
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      # ingress-nginx's kind manifest schedules on this label and claims the node's 80/443.
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+      # The apiserver as an OIDC relying party. `username-claim: email` matches what the realm
+      # `spike-0009-che.sh` imports puts in its tokens, and it is also what Che derives a user
+      # namespace name from — so changing it here changes the namespaces the spike then reads.
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            oidc-issuer-url: "https://sso.127.0.0.1.nip.io/realms/che"
+            oidc-client-id: "kubernetes"
+            oidc-username-claim: "email"
+            oidc-username-prefix: "-"
+            oidc-groups-claim: "groups"
+            oidc-ca-file: "/etc/kubernetes/pki/sso-ca.crt"
+          extraVolumes:
+            - name: sso-ca
+              hostPath: /etc/kubernetes/pki/sso-ca.crt
+              mountPath: /etc/kubernetes/pki/sso-ca.crt
+              readOnly: true
+              pathType: File
+    extraMounts:
+      # Written by scripts/spike-0009-che.sh before the cluster is created. kind does not expand
+      # environment variables in this file, so the path is literal on both sides.
+      - hostPath: /tmp/weebo-si-che/sso-ca.crt
+        containerPath: /etc/kubernetes/pki/sso-ca.crt
+        readOnly: true

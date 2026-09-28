@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::dwoc_pin::DwocPinConfig;
 use crate::endpoint_auth::EndpointAuthConfig;
+use crate::identity::IdentityConfig;
 use crate::image_policy::ImagePolicyConfig;
 use crate::kubearmor_policy::KubeArmorPolicyConfig;
 use crate::network_profiles::NetworkProfilesConfig;
 use crate::policy_guard::PolicyGuardConfig;
 use crate::registry_config::RegistryConfig;
-use crate::team::Team;
+use crate::team::{TeamName, WeeboSiTeam};
 
 /// One optional field per registered feature, typed — a feature the binary does not know about
 /// cannot be written into the resource at all, per RFC 0002's *Contract*.
@@ -41,6 +42,10 @@ pub struct Features {
     /// `spec.features.endpointAuth`, per RFC 0009.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_auth: Option<EndpointAuthConfig>,
+    /// `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems
+    /// other than this cluster's own, and the only one with allow-lists of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -59,12 +64,119 @@ pub const SINGLETON_NAME: &str = "cluster";
 )]
 #[serde(rename_all = "camelCase")]
 pub struct WeeboSiConfigSpec {
-    /// Chassis-level, ordered, first match wins.
-    #[serde(default)]
-    pub teams: Vec<Team>,
     /// One optional field per registered feature.
+    ///
+    /// `spec.teams` used to sit beside this and does not any more: RFC 0011 moved teams to their
+    /// own `WeeboSiTeam` objects, and removed the field rather than deprecating it. A manifest
+    /// still carrying it is pruned by the API server, which reads as "my teams vanished" — the
+    /// loud failure a hard cut should have.
     #[serde(default)]
     pub features: Features,
+}
+
+/// One conflict the resolution found, and whose fault it is.
+///
+/// The `team` is what lets a `WeeboSiTeam`'s own `status` carry its own mistakes and nobody
+/// else's — the singleton reports every conflict, each team reports the ones it caused. It is an
+/// `Option` because the type has to outlive today's single source of conflicts: every one of them
+/// is a team redefining a catalogue key, and a future conflict between two cluster-level entries
+/// would belong to nobody.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveConflict {
+    /// The team responsible, if one is.
+    pub team: Option<TeamName>,
+    /// The violation, rendered.
+    pub message: String,
+}
+
+impl WeeboSiConfigSpec {
+    /// Merge the `WeeboSiTeam` objects into every feature's catalogue and grants, per RFC 0011.
+    ///
+    /// Returns one entry per conflict found, for the reconcile loops' `Degraded` conditions.
+    /// **Every loader has to call this**: a configuration nobody resolved grants nothing, so the
+    /// cost of forgetting is every namespace falling to the cluster default — safe, visible in
+    /// the feature metrics, and never the opposite.
+    pub fn resolve_teams(&mut self, teams: &[WeeboSiTeam]) -> Vec<ResolveConflict> {
+        let mut conflicts = Vec::new();
+
+        if let Some(feature) = self.features.dwoc_pin.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::dwoc_pin::ConfigViolation::CatalogKeyConflict { team, .. } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+        if let Some(feature) = self.features.network_profiles.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::network_profiles::NetworkProfilesConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+        if let Some(feature) = self.features.image_policy.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::image_policy::ImagePolicyConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+        if let Some(feature) = self.features.kubearmor_policy.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::kubearmor_policy::KubeArmorPolicyConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+        if let Some(feature) = self.features.registry_config.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::registry_config::RegistryConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+        if let Some(feature) = self.features.endpoint_auth.as_mut() {
+            for violation in feature.resolve(teams) {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::endpoint_auth::EndpointAuthConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+        }
+
+        conflicts
+    }
 }
 
 /// The reported state of one feature, mirroring its [`crate::feature_mode::FeatureMode`] plus

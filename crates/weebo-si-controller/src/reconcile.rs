@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kube::api::{Patch, PatchParams};
+use kube::api::{ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     FeatureMode, FeatureState, FeatureStatus, SINGLETON_NAME, WeeboSiConfig, WeeboSiConfigStatus,
+    WeeboSiTeam, WeeboSiUser, team_views,
 };
 
 /// Shared reconcile context.
@@ -68,8 +69,32 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     let mut features = Vec::new();
     let mut violation_messages = Vec::new();
 
-    if let Some(dwoc_pin) = &config.spec.features.dwoc_pin {
-        let violations = dwoc_pin.validate(&config.spec.teams);
+    // RFC 0011: the configuration this loop validates is the singleton merged with every
+    // `WeeboSiTeam`, because that is what the features evaluate. Listing rather than watching:
+    // this pass already runs on every change to the singleton, and a team change requeues it
+    // through the team loop — one list per reconcile is cheaper than a second reflector here.
+    let teams: Vec<WeeboSiTeam> = match Api::<WeeboSiTeam>::all(ctx.client.clone())
+        .list(&ListParams::default())
+        .await
+    {
+        Ok(list) => list.items,
+        Err(err) => {
+            // No teams rather than no reconcile: every namespace falls to the cluster default,
+            // which is the narrow answer, and the condition says why.
+            violation_messages.push(format!("listing WeeboSiTeam objects: {err}"));
+            Vec::new()
+        }
+    };
+    let declared_teams = team_views(&teams);
+    let mut spec = config.spec.clone();
+    violation_messages.extend(
+        spec.resolve_teams(&teams)
+            .into_iter()
+            .map(|conflict| conflict.message),
+    );
+
+    if let Some(dwoc_pin) = &spec.features.dwoc_pin {
+        let violations = dwoc_pin.validate(&declared_teams);
         let state = if violations.is_empty() {
             match dwoc_pin.mode {
                 FeatureMode::Off => FeatureState::Disabled,
@@ -106,8 +131,8 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     // whose two entries collide on one copy name means one template's contents silently
     // overwrite another's in every granted namespace — so a bad configuration is reported on the
     // object rather than discovered from a metric.
-    if let Some(registry_config) = &config.spec.features.registry_config {
-        let violations = registry_config.validate(&config.spec.teams);
+    if let Some(registry_config) = &spec.features.registry_config {
+        let violations = registry_config.validate(&declared_teams);
         let state = if violations.is_empty() {
             match registry_config.mode {
                 FeatureMode::Off => FeatureState::Disabled,
@@ -133,6 +158,93 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
         features.push(FeatureStatus {
             name: "registry-config".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
+    // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
+    // configuration this repo already knew how to reject was reported nowhere — including the one
+    // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the
+    // ingress controller carries a prerequisite no object here can write, own or read back, so
+    // `gateway.haproxyPrerequisite` is an admin's assertion and this condition is the only place
+    // its absence is ever said out loud.
+    //
+    // A violation here does **not** stop the gate attaching, and that asymmetry is deliberate: a
+    // gate a knowing attacker can bypass still refuses everybody who is not attacking, and an
+    // unattached gate refuses nobody at all.
+    if let Some(endpoint_auth) = &spec.features.endpoint_auth {
+        let violations = endpoint_auth.validate(&declared_teams);
+        let state = if violations.is_empty() {
+            match endpoint_auth.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} catalogue entries, {} grants, dialect {:?}",
+                endpoint_auth.catalog.len(),
+                endpoint_auth.grants.len(),
+                endpoint_auth.gateway.dialect,
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "endpoint-auth".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
+    // RFC 0011's `identity`. The only feature here that would create objects in systems other
+    // than this cluster's own, so its whole validation — allow-lists, templates, duplicate
+    // identities — runs before anything is provisioned, and reports on the object rather than
+    // failing one person's onboarding later.
+    if let Some(identity) = &spec.features.identity {
+        let users: Vec<WeeboSiUser> = match Api::<WeeboSiUser>::all(ctx.client.clone())
+            .list(&ListParams::default())
+            .await
+        {
+            Ok(list) => list.items,
+            Err(err) => {
+                violation_messages.push(format!("listing WeeboSiUser objects: {err}"));
+                Vec::new()
+            }
+        };
+        let violations = identity.validate(&teams, &users);
+        let state = if violations.is_empty() {
+            match identity.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!("{} teams, {} users", teams.len(), users.len())
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "identity".to_string(),
             state,
             message,
             observed_generation: generation,

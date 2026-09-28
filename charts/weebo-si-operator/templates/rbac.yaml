@@ -15,6 +15,14 @@ rules:
   - apiGroups: ["hardening.weebo.io"]
     resources: ["weebosiconfigs"]
     verbs: ["get", "list", "watch"]
+  # RFC 0011. Read-only, and shared by both roles: teams carry the catalogues and the grants both
+  # halves resolve against, so a webhook that cannot read them answers with the cluster default
+  # for every namespace. Users are read by the controller (provisioning) and by the endpoint
+  # gateway (declared team membership); neither role may write either kind, because nothing in
+  # this operator is supposed to invent a team or a person.
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebositeams", "weebosiusers"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["controller.devfile.io"]
     resources: ["devworkspaceoperatorconfigs"]
     verbs: ["get", "list", "watch"]
@@ -129,6 +137,11 @@ rules:
   - apiGroups: ["hardening.weebo.io"]
     resources: ["weebosiconfigs/status"]
     verbs: ["update", "patch"]
+  # RFC 0011: the two kinds report their own readiness, and a status patch is the only write this
+  # operator makes to either.
+  - apiGroups: ["hardening.weebo.io"]
+    resources: ["weebositeams/status", "weebosiusers/status"]
+    verbs: ["update", "patch"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
@@ -223,6 +236,19 @@ rules:
     resources: ["configmaps", "secrets"]
     verbs: ["create", "update", "patch", "delete"]
   {{- end }}
+  {{- if .Values.identity.rbac.enabled }}
+  # RFC 0011's provisioning half, and the point where this operator stops only constraining
+  # other people's workloads and starts creating objects in other people's systems. Read that
+  # RFC's *Security considerations → Blast radius* before granting it.
+  #
+  # `authentikusers` cluster-wide, because the upstream CRD is cluster-scoped. **No `delete`**,
+  # here or below: everything this operator creates carries an `ownerReference` to the
+  # `WeeboSiUser` it was created for, so removal happens through garbage collection and this
+  # ServiceAccount has no verb with which to remove somebody else's object.
+  - apiGroups: ["authentik.weebo.io"]
+    resources: ["authentikusers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -238,6 +264,42 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.identity.rbac.enabled }}
+---
+# RFC 0011's Argo CD half — a `Role`, not a `ClusterRole`, and that is the whole point.
+# `spec.features.identity.che.applicationNamespace` is a cluster-level field precisely so this
+# grant can be one namespace: an operator that could write an `Application` anywhere is an
+# operator that could deploy anything anywhere Argo's projects allow. Keep this namespace and
+# that field in step — a mismatch reads as "nothing is ever provisioned", with a `Degraded`
+# condition naming the refused write.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-applications
+  namespace: {{ .Values.identity.argoNamespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-applications
+  namespace: {{ .Values.identity.argoNamespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-applications
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.controller.leaderElection }}
 ---
 # The leader-election lease — namespaced, not part of RFC 0002's original three-row RBAC table

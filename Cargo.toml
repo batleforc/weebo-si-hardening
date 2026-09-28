@@ -121,7 +121,18 @@ base64 = "0.22"
 # memory. `jsonwebtoken` rather than a full OIDC client for the verification half: the decision
 # path must not be able to reach the network, and a crate whose `validate` can only take keys it
 # is handed is the shape that guarantees it.
-jsonwebtoken = "10"
+#
+# `rust_crypto` is not optional here and the default feature set does not include it: with
+# neither `rust_crypto` nor `aws_lc_rs` enabled, jsonwebtoken 10 resolves a `CryptoProvider` that
+# **panics on the first signature it is asked about** — which in this workspace means the first
+# bearer token any endpoint ever sees. Pure Rust rather than `aws_lc_rs` for the same reason
+# rustls is on `tls-rustls-no-provider` below: no C toolchain in the build.
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+# Test-only, and only in `endpoint-gateway`: minting a real ES256 keypair so the bearer branch can
+# be asserted at the wire level — a token another client of the same realm holds, signed by the
+# same key, must still not be an identity. Already in the tree as rustls's crypto provider, so it
+# costs the build nothing new.
+ring = "0.17"
 
 # `hosts.ownership` regexes in RFC 0009's endpoint-auth configuration: an admin-written pattern
 # with a named `user` capture, compiled once at config load. Hand-rolling anchored matching with

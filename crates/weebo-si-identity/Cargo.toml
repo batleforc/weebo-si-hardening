@@ -1,0 +1,24 @@
+[package]
+name = "weebo-si-identity"
+version = "0.1.0"
+description = "The identity feature: the AuthentikUser and the Argo CD Application one WeeboSiUser maps to"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+serde_json = { workspace = true }
+
+[features]
+# In-memory fakes for this crate's own port, otherwise only built under `cfg(test)` — the same
+# pattern every other feature crate here uses.
+testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

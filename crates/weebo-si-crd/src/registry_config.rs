@@ -23,9 +23,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::network_profiles::{OnNotGranted, TemplateRef};
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// A short identifier for a catalogue entry, unique within the catalogue — the name a grant or a
 /// namespace annotation uses. A newtype for the same reason [`crate::ProfileKey`] is one: a
@@ -252,6 +253,22 @@ pub struct RegistryGrant {
     pub default: Vec<RegistryKey>,
 }
 
+/// `spec.features.registry_config` on a `WeeboSiTeam` — this team's own catalogue entries and its
+/// defaults, per RFC 0007 and RFC 0011.
+///
+/// No `allowed` list, for the reason [`crate::dwoc_pin::TeamDwocPin`] spells out: a team's
+/// reachable set is the catalogue it declares, widened only by what the cluster hands everybody.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRegistryConfig {
+    /// This team's catalogue entries, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: RegistryCatalog,
+    /// The entries a namespace of this team gets when it names none. May be empty, which means this team mounts nothing by default.
+    #[serde(default)]
+    pub default: Vec<RegistryKey>,
+}
+
 /// `spec.features.registryConfig.namespaceSelection` — the namespace annotation naming a
 /// comma-separated key list.
 ///
@@ -291,7 +308,11 @@ pub struct RegistryConfig {
     /// Every entry a namespace may be granted.
     pub catalog: RegistryCatalog,
     /// What each team may reach, keyed by team name.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`RegistryConfig::resolve`] fills this in from them, and a configuration nobody
+    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<String, RegistryGrant>,
     /// The namespace annotation naming a registry key list.
     #[serde(default)]
@@ -305,6 +326,61 @@ impl RegistryConfig {
     /// This team's grant, if `grants` has one.
     pub fn grant_for(&self, team: &TeamName) -> Option<&RegistryGrant> {
         self.grants.get(team.as_str())
+    }
+
+    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`RegistryConfig::validate`], which now runs over the resolved shape and therefore over
+    /// exactly what the feature will evaluate.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<RegistryConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<RegistryEntry>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .registry_config
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.entries().to_vec()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
+        self.catalog = RegistryCatalog::new(entries);
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.registry_config.as_ref()?;
+                let mut allowed: Vec<RegistryKey> = block
+                    .catalog
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                for key in Vec::new() {
+                    if !allowed.contains(&key) {
+                        allowed.push(key);
+                    }
+                }
+                Some((
+                    team.team_name().to_string(),
+                    RegistryGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(|conflict| RegistryConfigViolation::CatalogKeyConflict {
+                team: conflict.team,
+                key: conflict.key,
+            })
+            .collect()
     }
 }
 
@@ -350,8 +426,18 @@ pub enum RegistryConfigViolation {
         /// The uncatalogued key.
         key: RegistryKey,
     },
-    /// `grants` names a team `spec.teams` never declared.
+    /// `grants` names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept so a resolution bug
+    /// producing one is reported rather than silently dropped.
     GrantNamesUndeclaredTeam(TeamName),
+    /// A team redefined a registry catalogue entry key somebody already defined, differently. The first definition
+    /// stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: RegistryKey,
+    },
 }
 
 impl fmt::Display for RegistryConfigViolation {
@@ -375,9 +461,12 @@ impl fmt::Display for RegistryConfigViolation {
             Self::GrantAllowedUnknownKey { team, key } => {
                 write!(f, "grant for team {team} allows uncatalogued key {key}")
             }
-            Self::GrantNamesUndeclaredTeam(team) => write!(
+            Self::GrantNamesUndeclaredTeam(team) => {
+                write!(f, "grant names team {team}, which no WeeboSiTeam declares")
+            }
+            Self::CatalogKeyConflict { team, key } => write!(
                 f,
-                "grant names team {team}, which spec.teams never declared"
+                "team {team} redefines catalogue key {key}, which is already defined differently"
             ),
         }
     }

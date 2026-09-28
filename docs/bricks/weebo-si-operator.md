@@ -18,6 +18,13 @@ and stay the reference when the two disagree.
 Each feature has its own section below with its own install checklist, rollout and rollback.
 Everything above those sections is `dwoc-pin`'s and applies to all of them.
 
+**Teams and people live on their own objects and have their own page.** Since
+[RFC 0011](../rfc/0011-teams-and-users.md), every `grants` map below has moved onto a
+`WeeboSiTeam`, and a `WeeboSiUser` declares who is in one — including the optional provisioning of
+an Authentik account and an Argo CD workspace application. See
+[`teams-and-users.md`](./teams-and-users.md) for those two kinds, and for migrating a
+`spec.teams` off the singleton.
+
 > **`failurePolicy: Fail`.** The webhook fails closed: while it is unavailable, no DevWorkspace can
 > be created or started, cluster-wide. That is deliberate — see RFC 0002's *Operational
 > considerations* — but it means the manifests in `crates/weebo-si-operator/deploy/` are not
@@ -79,11 +86,12 @@ Two things belong on the checklist, not in code — the operator cannot verify e
   granted to — a team-authored entry granted to itself recreates the DWOC-override hole this
   operator exists to close, one layer up.
 
-And two more, specific to `spec.teams` and `spec.features.dwocPin.namespaceSelection.annotation`:
+And two more, specific to the `WeeboSiTeam` objects and
+`spec.features.dwocPin.namespaceSelection.annotation`:
 
 - **Namespace labels are load-bearing.** A team matches on labels, so labelling a namespace moves
   it onto that team's configuration for *every* feature at once. Confirm who can label a namespace
-  in this cluster before writing `spec.teams` — in a Che cluster this is already an admin-only
+  in this cluster before writing a `WeeboSiTeam` — in a Che cluster this is already an admin-only
   operation, the same privilege `hardening.weebo.io/exclude` already relies on.
 - **Who may annotate a namespace** decides who can choose within a team's grant. In a Che cluster,
   user namespaces are created by Che and their users hold rights *inside* them, not on the
@@ -144,10 +152,10 @@ restart:
 1. **`spec.features: {}`.** Nothing changes; watch `weebo_si_admission_duration_seconds` to see
    the cost of the round trip alone, and confirm `failurePolicy: Fail` is survivable before
    anything depends on it.
-2. **`mode: DryRun`**, catalogue and `default` written, **no `spec.teams` yet**. Watch
+2. **`mode: DryRun`**, catalogue and `default` written, **no `WeeboSiTeam` yet**. Watch
    `weebo_si_dwoc_pin_total` and the decision log lines (see *Reading the logs*, below) —
    `result="replaced"` is every workspace that will change behaviour once `Enforce` is flipped.
-3. **Add `spec.teams` and the grants, still in `DryRun`.** Read `result` broken down by `team`:
+3. **Add the `WeeboSiTeam` objects, still in `DryRun`.** Read `result` broken down by `team`:
    a namespace routed to the wrong team is invisible in aggregate and obvious per team.
 4. **`mode: Enforce`** with a `namespaceSelector` naming a pilot label. One namespace, real pins.
 5. **Remove the selector.** Full rollout.
@@ -174,8 +182,25 @@ spec:
           name: gpu-config
           namespace: eclipse-che
       default: baseline
-      grants:
-        team-1: { allowed: [baseline, gpu], default: gpu }
+```
+
+The per-team half is a `WeeboSiTeam`, per [RFC 0011](../rfc/0011-teams-and-users.md):
+
+```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels: { weebo.io/team: team-1 }
+  features:
+    dwocPin:
+      catalog:
+        - key: gpu
+          name: gpu-config
+          namespace: eclipse-che
+      default: gpu
 ```
 
 ## Rollback
@@ -327,10 +352,11 @@ Six steps, and the order between the two features is not interchangeable — see
 
 1. Install with both features absent from `spec.features`. Run `weebo-si-operator backends`
    against the target cluster.
-2. `networkProfiles: {mode: DryRun, ...}`, catalogue and `baseline` written, no `grants`. Every
+2. `networkProfiles: {mode: DryRun, ...}`, catalogue and `baseline` written, no teams yet. Every
    namespace's reconcile log line (`weebo-si-controller: network-profiles namespace=... diffs=...
    applied=None`) should show one `Diff::Create` — the baseline — and nothing else.
-3. Add `grants`, still `DryRun`. Read the diff per namespace/team before trusting it.
+3. Add the `WeeboSiTeam` objects, still `DryRun`. Read the diff per namespace/team before
+   trusting it.
 4. `mode: Enforce` with a `namespaceSelector` naming a pilot label — one namespace — **then start
    a workspace in it**. The objects existing is not the test; the workspace working is.
 5. Remove the selector. Do this during working hours: it is the step that touches running pods.
@@ -516,7 +542,7 @@ And one more, **only if you declare `spec.features.imagePolicy.variables`**:
   registry" — and
   `rate(weebo_si_image_policy_variable_changed_total[15m])` is the alert that tells you the day
   the answer changes. The two built-in variables carry none of this: `{TEAM_NAME}` comes from
-  `spec.teams` and `{NAMESPACE}` from the apiserver's own naming, and neither is reachable by a
+  a `WeeboSiTeam` and `{NAMESPACE}` from the apiserver's own naming, and neither is reachable by a
   workspace user under any RBAC.
 
 ### Usage
@@ -547,10 +573,6 @@ spec:
         - key: devfile-udi
           patterns: ["quay.io/devfile/universal-developer-image:ubi9-*"]
       default: [internal]               # a namespace belonging to no team
-      grants:
-        team-1:
-          allowed: [internal, team-registry, devfile-udi]
-          default: [internal, team-registry]
       platform:
         builtin: true                   # the images Che and DWO inject — always allowed
 ```
@@ -606,7 +628,7 @@ Six steps. Step 0 is the valuable one.
    `weebo_si_image_policy_total{result="denied"}` — every one is a workspace that will stop
    starting. `platform_total` is the second: if it is large, the platform list is doing more work
    than expected and deserves a look before it is depended on.
-3. Add `spec.teams` and the `grants`, still `DryRun`. `result` broken down by `team` is how you
+3. Add the `WeeboSiTeam` objects, still `DryRun`. `result` broken down by `team` is how you
    confirm the routing — a namespace routed to the wrong team is invisible in aggregate and
    obvious per team.
 4. `mode: Enforce` with a `namespaceSelector` on a pilot label. One namespace, real denials, and
@@ -723,7 +745,7 @@ Worth reading before quoting this feature in a compliance answer:
   closes "run something nobody catalogued", not "run something that changed under you".
 - **The per-workspace attribute is least privilege, not an authorization boundary.** A user whose
   team is granted an entry can give any of their workspaces that entry, by editing a devfile. The
-  boundary is the *grant*, and only a cluster admin writes grants.
+  boundary is the team's own catalogue, and only a cluster admin writes a `WeeboSiTeam`.
 - **The Pod half enforces the team boundary, not the per-workspace selection.** A workspace
   running an image its team allows but its own selection excluded is not caught at the pod. That
   is a policy nicety, not a security boundary — and it is what buys the feature its zero-RBAC,
@@ -807,10 +829,6 @@ rules do not block. This operator does not override that — it makes it visible
          - key: git-write
            templateRef: { name: weebo-git-write-runtime, namespace: weebo-si-hardening }
        baseline: base
-       grants:
-         team-1:
-           allowed: [git-write]
-           default: [git-write]
        onNotGranted: Default
        enforcement:
          backend: Auto
@@ -1033,10 +1051,6 @@ the baseline is real, `npm install` stops working and nothing in the container k
                templateRef: { name: weebo-npmrc, namespace: weebo-si-hardening }
              - kind: Secret
                templateRef: { name: weebo-npm-token, namespace: weebo-si-hardening }
-       grants:
-         team-1:
-           allowed: [internal-npm]
-           default: [internal-npm]
        onNotGranted: Default
    ```
 

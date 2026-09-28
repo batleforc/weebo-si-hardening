@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::{Api, Client};
 use weebo_si_crd::{
-    ImagePolicyConfig, NamespaceName, SINGLETON_NAME, Team, TeamName, WeeboSiConfig,
+    ImagePolicyConfig, NamespaceName, SINGLETON_NAME, Team, TeamName, WeeboSiConfig, WeeboSiTeam,
+    team_views,
 };
 use weebo_si_image_policy::port::{ImagePolicyObserver, Resource};
 use weebo_si_image_policy::variable::resolve_declared;
@@ -106,19 +107,34 @@ impl weebo_si_chassis::port::namespace_view::NamespaceView for ListedNamespaces 
     }
 }
 
-/// The live `WeeboSiConfig`'s `imagePolicy` block and `spec.teams`, or a clear refusal.
+/// The live `WeeboSiConfig`'s `imagePolicy` block resolved against every `WeeboSiTeam`, and
+/// those teams as the features see them, or a clear refusal.
+///
+/// The resolution is not optional: RFC 0011 keeps each team's catalogue on its own object, so a
+/// CLI reading only the singleton would report what the cluster would do if no team existed.
 async fn load_config(client: &Client) -> Result<(ImagePolicyConfig, Vec<Team>), String> {
     let api: Api<WeeboSiConfig> = Api::all(client.clone());
     let config = api
         .get(SINGLETON_NAME)
         .await
         .map_err(|err| format!("could not read WeeboSiConfig/{SINGLETON_NAME}: {err}"))?;
-    let image_policy = config.spec.features.image_policy.clone().ok_or_else(|| {
+    let mut image_policy = config.spec.features.image_policy.clone().ok_or_else(|| {
         "WeeboSiConfig/cluster carries no spec.features.imagePolicy — there is nothing to judge \
          against yet. Write the catalogue first (mode: Off is fine), then re-run."
             .to_string()
     })?;
-    Ok((image_policy, config.spec.teams.clone()))
+    let teams = load_teams(client).await?;
+    image_policy.resolve(&teams);
+    Ok((image_policy, team_views(&teams)))
+}
+
+/// Every `WeeboSiTeam` in the cluster, or a message naming why not.
+async fn load_teams(client: &Client) -> Result<Vec<WeeboSiTeam>, String> {
+    let api: Api<WeeboSiTeam> = Api::all(client.clone());
+    api.list(&Default::default())
+        .await
+        .map(|list| list.items)
+        .map_err(|err| format!("could not list WeeboSiTeam objects: {err}"))
 }
 
 /// Every namespace, keyed by name — one list call, reused by both `check` and `audit`.

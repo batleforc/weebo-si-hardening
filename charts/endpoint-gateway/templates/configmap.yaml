@@ -35,6 +35,15 @@ data:
       max_groups: {{ .Values.config.session.maxGroups }}
     bearer:
       verify_own_issuer: {{ .Values.config.bearer.verifyOwnIssuer }}
+      {{/* toJson rather than a `range`: an empty list must render as `[]`, and a `range` over
+           one renders a bare key, which is YAML null and not a sequence. */}}
+      audiences: {{ toJson .Values.config.bearer.audiences }}
+      authorized_parties: {{ toJson .Values.config.bearer.authorizedParties }}
+      introspection:
+        enabled: {{ .Values.config.bearer.introspection.enabled }}
+        endpoint: {{ .Values.config.bearer.introspection.endpoint | quote }}
+        negative_ttl_secs: {{ .Values.config.bearer.introspection.negativeTtlSecs }}
+        per_address_per_minute: {{ .Values.config.bearer.introspection.perAddressPerMinute }}
       service_account_token: {{ .Values.config.bearer.serviceAccountToken }}
       foreign: {{ .Values.config.bearer.foreign }}
     reverse_proxy: {{ .Values.config.reverseProxy }}
@@ -65,6 +74,8 @@ data:
       on_unknown_key: {{ .Values.config.rules.onUnknownKey }}
     enforcement: {{ .Values.config.enforcement }}
     reveal_owner: {{ .Values.config.revealOwner }}
+    rate_limit:
+      login_per_address_per_minute: {{ .Values.config.rateLimit.loginPerAddressPerMinute }}
     backchannel_logout:
       enabled: {{ .Values.config.backchannelLogout.enabled }}
       configmap: {{ .Values.config.backchannelLogout.configmap | quote }}

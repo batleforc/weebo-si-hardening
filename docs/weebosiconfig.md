@@ -5,15 +5,17 @@ Every hardening feature in this repo is configured by one object: a cluster-scop
 it is required, what it defaults to, and what happens when it is wrong.
 
 This is the *reference*. Each feature's **why** is its RFC and each feature's **how to roll it
-out** is [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md); when this page and an
-RFC disagree, the RFC is right and this page is a bug.
+out** is [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) — or, for the two kinds
+below and the `identity` feature, [`bricks/teams-and-users.md`](./bricks/teams-and-users.md).
+When this page and an RFC disagree, the RFC is right and this page is a bug.
 
 The schema itself is generated from the Rust types in `crates/weebo-si-crd/` and checked in twice
-(`crates/weebo-si-operator/deploy/crd.yaml` and `charts/weebo-si-operator/crds/`). Print it from
-the binary that enforces it:
+(`crates/weebo-si-operator/deploy/crd.yaml`, which carries all three kinds, and
+`charts/weebo-si-operator/crds/`, one file each). Print it from the binary that enforces it:
 
 ```bash
-weebo-si-operator crd          # the generated CRD YAML
+weebo-si-operator crd          # every generated CRD, as one document stream
+weebo-si-operator crd weebositeams   # or just one kind
 weebo-si-operator features     # which features this build actually contains
 kubectl explain weebosiconfig.spec.features --recursive
 ```
@@ -26,7 +28,6 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams: []
   features: {}
 ```
 
@@ -42,8 +43,13 @@ silently obeyed — per RFC 0002. There is one configuration for the cluster; a 
 mistake, and a mistake that reads as "my settings are not taking effect" unless something says
 so.
 
-`spec.teams` and `spec.features` both default to empty. An empty `spec.features` means every
-feature is `Off`: a behaviour nobody wrote down does not run.
+`spec.features` defaults to empty, and an empty `spec.features` means every feature is `Off`: a
+behaviour nobody wrote down does not run.
+
+`spec.teams` used to live here and does not any more. Since
+[RFC 0011](./rfc/0011-teams-and-users.md) a team is its own cluster-scoped object,
+[`WeeboSiTeam`](#teams-and-people), carrying its own catalogue entries and its own defaults; a
+manifest still carrying `spec.teams` has that field pruned by the API server.
 
 ## Shared vocabulary
 
@@ -88,25 +94,38 @@ per upstream `LabelSelector` semantics. `values` is unused by `Exists`/`DoesNotE
 
 ### Catalogue and grants
 
-Four of the five features share one shape: an admin writes a **catalogue** of named entries, and
-**grants** name which entries each team may reach.
+Four of the five features share one shape: a **catalogue** of named entries, and a per-team answer
+saying which of them that team reaches. Since [RFC 0011](./rfc/0011-teams-and-users.md) the two
+halves live in two objects:
 
 ```yaml
+# WeeboSiConfig — the platform's own entries, and what a namespace with no team gets
 catalog:
   - key: base            # the short identifier everything else names
     # ...entry payload, different per feature
-grants:
-  team-1:
-    allowed: [git-write, net-raw]   # what this team MAY reach
-    default: [git-write]            # what it gets when nothing more specific is asked for
+default: [base]          # or `baseline:`, depending on the feature
+```
+
+```yaml
+# WeeboSiTeam — this team's own entries, and what its namespaces get
+features:
+  <feature>:
+    catalog:
+      - key: git-write
+        # ...same entry payload
+    default: [git-write]
 ```
 
 - A key is a short identifier, never a `{name, namespace}` pair — so a grant reads as a
   permission rather than as a pointer.
-- `default` must be a subset of `allowed`; a team's own `allowed` must be catalogued.
-- A team with no grant, and a namespace matching no team, reach the feature's own fallback
-  (`default` at the top level for `dwoc-pin` and `image-policy`, the baseline alone for
-  `network-profiles` and `kubearmor-policy`).
+- **A key means one thing cluster-wide.** The evaluated catalogue is the cluster's entries plus
+  every team's; two teams may declare one key only if the entries are identical, and a
+  redefinition is reported on the offending team while the first definition stands.
+- **A team never writes an `allowed` list.** What it reaches is the catalogue it declares, plus
+  whatever the cluster hands everybody (`default`, or `baseline`).
+- A team with no block for a feature, and a namespace matching no team, both reach the feature's
+  own fallback (`default` at the top level for `dwoc-pin` and `image-policy`, the baseline alone
+  for `network-profiles` and `kubearmor-policy`).
 
 ### The selection chain
 
@@ -117,16 +136,16 @@ stops at the first source that applies:
    Present-but-empty means "explicitly nothing beyond the baseline", and does **not** fall
    through.
 2. **The namespace annotation** (`namespaceSelection.annotation`), when the attribute is absent.
-3. **The grant's `default`**.
+3. **The team's `default`**, or the cluster's for a namespace with no team.
 
 Both are comma-separated lists; whitespace is trimmed, empty segments dropped, duplicates removed
 keeping first-seen order. Setting either key to the empty string disables that step.
 
-A requested key outside the team's `allowed` is handled by `onNotGranted` / `onUnknownKey`:
+A requested key outside what the team reaches is handled by `onNotGranted` / `onUnknownKey`:
 
 | Value | Meaning |
 | --- | --- |
-| `Default` | Drop the whole request, apply the grant's `default`, and flag what was dropped. |
+| `Default` | Drop the whole request, apply the team's `default`, and flag what was dropped. |
 | `Deny` | Refuse the request, naming the ungranted keys. |
 
 `Default` is the default.
@@ -145,31 +164,160 @@ templateRef:
 The operator copies the template's rule fields verbatim and rewrites the selector to scope the
 copy. A template's own selector is ignored — scoping belongs to the operator.
 
-## `spec.teams`
+## Teams and people
+
+Two cluster-scoped kinds, added by [RFC 0011](./rfc/0011-teams-and-users.md) and installed by the
+same chart: `WeeboSiTeam` (`wsteam`) and `WeeboSiUser` (`wsuser`). **Both are security objects**:
+whoever may write a `WeeboSiTeam` decides which DevWorkspace Operator configs, image patterns and
+registries that team reaches.
+
+**They are admin-only, and that is a decision rather than a default.** A team lead does not get
+`edit` on their own team's object — not by `resourceNames`, not by moving it into a namespace they
+own. The set of people who may write a `WeeboSiTeam` is exactly the set who may already write the
+singleton, and the per-team catalogue ships with no ceiling over its contents *because* of that.
+Granting a team write access to its own object without adding that ceiling first would let it
+catalogue anything it likes.
+
+### `WeeboSiTeam`
 
 ```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: platform
 spec:
-  teams:
-    - name: team-1
-      namespaceSelector:
-        matchLabels: { weebo.io/team: team-1 }
-    - name: team-2
-      namespaceSelector:
-        matchExpressions:
-          - { key: weebo.io/team, operator: In, values: [team-2, team-2-sandbox] }
+  displayName: Platform
+  priority: 100
+  namespaceSelector:
+    matchLabels: { weebo.io/team: platform }
+  features:
+    dwocPin:
+      catalog:
+        - key: platform-gpu
+          name: dwoc-gpu
+          namespace: eclipse-che
+      default: platform-gpu
+  identity:
+    authentik:
+      groupRefs: [platform]
+  workspace:
+    che:
+      mode: Ensure
+      project: weebo-dev
+      source:
+        repoUrl: https://charts.weebo.io
+        chart: che-user
+        targetRevision: 1.4.2
+        values:
+          username: "{USERNAME}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{USERNAME}-che"
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        options: ["CreateNamespace=true"]
 ```
 
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `name` | string | yes | The team's identity — what every feature's `grants` keys on. |
-| `namespaceSelector` | [Selector](#namespaceselector) | yes | Which namespaces belong to this team. |
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `metadata.name` | string | yes | — | **Is** the team name — what a `WeeboSiUser` references. |
+| `displayName` | string | no | the name | Human label. Nothing branches on it. |
+| `priority` | int32 | no | `1000` | Precedence when a namespace matches two teams: lowest wins, ties break on name. |
+| `namespaceSelector` | [Selector](#namespaceselector) | yes | — | Which namespaces belong to this team. |
+| `features.<feature>` | object | no | absent | This team's `catalog` and `default` for one feature. Absent means the cluster answer applies unchanged. |
+| `identity.authentik.groupRefs` | `[string]` | no | `[]` | Authentik group names every member receives, each checked against the cluster allow-list. |
+| `workspace.che` | object | no | absent | The Argo CD `Application` template each member instantiates — `mode`, `project`, `source`, `destination`, `syncPolicy`, rendered per person. |
 
-**The list is ordered and the first match wins.** A namespace matching two teams belongs to the
-first one declared; that is a defined outcome rather than an error, so overlapping selectors are
-a readability problem and not an outage.
+**Ordering is explicit.** `spec.teams` was a list, and reading order decided who owned an
+overlapping namespace; separate objects have no order, so `priority` replaces it.
 
-A team named by a feature's `grants` but absent from `spec.teams` is a configuration violation,
-reported as `Degraded`.
+### `WeeboSiUser`
+
+```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiUser
+metadata:
+  name: max
+spec:
+  username: max
+  displayName: Max Leriche
+  email: max@weebo.io
+  team: platform
+  authentik:
+    mode: Ensure
+    groupRefs: [oncall-eu]
+  che:
+    mode: Ensure
+    values:
+      storage: { size: 30Gi }
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `username` | string | yes | — | The Kubernetes identity. Two objects claiming one username is a violation on both. |
+| `displayName` | string | no | `username` | Passed to Authentik as `name`. |
+| `email` | string | when provisioning | — | Required unless `authentik.mode` is `Off`. |
+| `team` | string | no | — | A `WeeboSiTeam` name. Empty is legal and reported: no entitlement, no workspace. |
+| `active` | bool | no | `true` | `false` suspends provisioning without deleting anything. |
+| `authentik.mode` | `Off`/`Ensure` | when the block is present | — | `Ensure` creates the `AuthentikUser` when missing and references it when somebody else owns it. |
+| `authentik.name` | string | no | `metadata.name` | The `AuthentikUser` this person maps to. |
+| `authentik.groupRefs` | `[string]` | no | `[]` | Groups **in addition** to the team's. |
+| `che.mode` | `Off`/`Ensure` | when the block is present | — | Instantiate the team's workspace template. |
+| `che.namespace` | string | no | the rendered template | Overrides the destination namespace, and with it `{USER_NAMESPACE}`. |
+| `che.values` | object | no | — | Helm values deep-merged **over** the team's. |
+
+Membership declared here wins over the one `endpoint-auth` derives from namespace ownership; the
+derivation stays as the answer for somebody with no object.
+
+### Migrating from `spec.teams`
+
+`weebo-si-operator teams export` reads the old singleton — `spec.teams` plus every `grants` map,
+the two shapes the current schema no longer has a type for — and prints one `WeeboSiTeam` per
+team. It writes nothing to the cluster, ever: the objects go to a file you keep, because the
+rollback for the last step of this migration is the old manifest and nothing else.
+
+```bash
+# from the live cluster, or from the manifest you still have in git
+weebo-si-operator teams export > teams.yaml
+weebo-si-operator teams export --from weebosiconfig.yaml > teams.yaml
+
+kubectl apply -f teams.yaml
+weebo-si-operator teams export --check     # non-zero until the cluster matches
+```
+
+What the conversion does, and what it refuses to guess:
+
+- **Document order becomes `priority`** — the first team gets `100`, the second `200`, and so on,
+  so first-match-wins keeps meaning what it meant with room to insert a team later.
+- **A grant becomes the team's own catalogue**, minus whatever the cluster already hands
+  everybody: an entry the cluster `default` or `baseline` names stays reachable without being
+  redeclared.
+- **A grant that named only the cluster floor is dropped.** It granted nothing, and a team with
+  no block for a feature already gets exactly that.
+- **A grant naming a team `spec.teams` never declared, or a key the catalogue never declared, is
+  reported on stderr and dropped** — the two mistakes the old schema could hold and the new one
+  cannot.
+- `identity` and `workspace` are left empty. Nothing in the old schema describes an Authentik
+  group or a workspace template, and inventing one is not a migration.
+
+Only when `--check` is clean: remove `spec.teams` and every `grants` map from the singleton and
+upgrade the deployment. Doing that first means every namespace falls to the cluster default until
+the teams land — safe, and visible in the feature metrics as a step change.
+
+### Template variables
+
+`workspace.che` is rendered per person with RFC 0005's `{VARIABLE}` notation. An unknown name is a
+violation, never a literal; `{{ ... }}` is copied through verbatim, so a Helm template inside
+`values` survives.
+
+| Variable | Value |
+| --- | --- |
+| `{USERNAME}` | `spec.username` |
+| `{OBJECT_NAME}` | the `WeeboSiUser`'s `metadata.name` |
+| `{TEAM_NAME}` | `spec.team`, empty when they have none |
+| `{EMAIL}` | `spec.email`, empty when unset |
+| `{DISPLAY_NAME}` | `spec.displayName`, defaulted to the username |
+| `{USER_NAMESPACE}` | the rendered `destination.namespace` — resolved first, so the namespace template cannot name it |
 
 ## `spec.features`
 
@@ -203,10 +351,6 @@ dwocPin:
       name: dwoc-gpu
       namespace: eclipse-che
   default: standard
-  grants:
-    team-1:
-      allowed: [standard, gpu]
-      default: gpu
   namespaceSelection:
     annotation: hardening.weebo.io/dwoc
     onUnknownKey: Default
@@ -222,9 +366,7 @@ dwocPin:
 | `catalog[].name` | string | yes | — | The `DevWorkspaceOperatorConfig`'s name. |
 | `catalog[].namespace` | string | yes | — | The namespace it lives in. |
 | `default` | key | yes | — | The entry a namespace belonging to no team gets. |
-| `grants` | map team → grant | no | `{}` | |
-| `grants.<team>.allowed` | list of keys | yes | — | Must be non-empty. |
-| `grants.<team>.default` | **one** key | yes | — | Singular here, unlike every other feature: a workspace runs with exactly one DWOC. |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.dwocPin.{catalog,default}`. The team's `default` is **one** key here, unlike every other feature: a workspace runs with exactly one DWOC. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/dwoc` | Empty string disables namespace selection. |
 | `namespaceSelection.onUnknownKey` | `Default`/`Deny` | no | `Default` | An uncatalogued or ungranted key in that annotation. |
 | `onMissingTarget` | `Skip`/`Deny` | no | `Skip` | The resolved entry does not point at a live DWOC. |
@@ -253,8 +395,6 @@ networkProfiles:
         - backend: Cilium
           templateRef: { name: weebo-git-cilium, namespace: weebo-si-hardening }
   baseline: base
-  grants:
-    team-1: { allowed: [git], default: [git] }
   namespaceSelection: { annotation: hardening.weebo.io/network-profiles }
   workspaceSelection: { attribute: hardening.weebo.io/network-profiles }
   onNotGranted: Default
@@ -271,7 +411,7 @@ networkProfiles:
 | `catalog[].variants[].backend` | `NetworkPolicy`/`Cilium` | yes | — | Which dialect this variant is written in. |
 | `catalog[].variants[].templateRef` | `{name, namespace}` | yes | — | The object whose rules are copied. |
 | `baseline` | key | yes | — | Applied to every namespace in scope; **no grant can withhold it**. |
-| `grants` | map team → `{allowed, default}` | no | `{}` | Both lists, both may be empty. |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.networkProfiles.{catalog,default}`. The baseline applies either way. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/network-profiles` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/network-profiles` | |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
@@ -352,8 +492,6 @@ imagePolicy:
   variables:
     COST_CENTRE: { fromNamespaceAnnotation: weebo.io/cost-centre }
   default: [devfile-udi]
-  grants:
-    team-1: { allowed: [internal, devfile-udi], default: [internal] }
   namespaceSelection: { annotation: hardening.weebo.io/image-policy }
   workspaceSelection: { attribute: hardening.weebo.io/image-policy }
   onNotGranted: Default
@@ -371,7 +509,7 @@ imagePolicy:
 | `variables` | map name → binding | no | `{}` | Declaring one opts into an annotation-sourced pattern value. |
 | `variables.<NAME>.fromNamespaceAnnotation` | string | yes | — | The only binding form that ships. |
 | `default` | list of keys | yes | — | Applied to a namespace with no team, or a team with no grant. May be empty (platform set only). |
-| `grants` | map team → `{allowed, default}` | no | `{}` | |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.imagePolicy.{catalog,default}`. The platform set applies either way. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/image-policy` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/image-policy` | |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
@@ -400,8 +538,6 @@ kubearmorPolicy:
     - key: git-write
       templateRef: { name: weebo-git-write-runtime, namespace: weebo-si-hardening }
   baseline: base
-  grants:
-    team-1: { allowed: [git-write], default: [git-write] }
   namespaceSelection: { annotation: hardening.weebo.io/kubearmor-policy }
   workspaceSelection: { attribute: hardening.weebo.io/kubearmor-policy }
   onNotGranted: Default
@@ -420,7 +556,7 @@ kubearmorPolicy:
 | `catalog[].key` | string | yes | — | |
 | `catalog[].templateRef` | `{name, namespace}` | yes | — | One ref, not a `variants` list: there is one engine today. |
 | `baseline` | key | yes | — | Applied to every workspace pod in scope; no grant can withhold it. |
-| `grants` | map team → `{allowed, default}` | no | `{}` | |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.kubearmorPolicy.{catalog,default}`. The baseline applies either way. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/kubearmor-policy` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/kubearmor-policy` | |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
@@ -461,8 +597,6 @@ registryConfig:
       sources:
         - kind: ConfigMap
           templateRef: { name: weebo-pip-conf, namespace: weebo-si-hardening }
-  grants:
-    team-1: { allowed: [internal-npm, internal-pypi], default: [internal-npm] }
   namespaceSelection: { annotation: hardening.weebo.io/registry-config }
   onNotGranted: Default
 ```
@@ -475,7 +609,7 @@ registryConfig:
 | `catalog[].ecosystem` | closed enum | no | `Other` | `Npm`/`Pypi`/`Cargo`/`Go`/`Maven`/`RubyGems`/`Composer`/`Conda`/`Terraform`/`OpenVsx`/`Other`. **A metric label and a CLI grouping — nothing branches on it.** |
 | `catalog[].sources[].kind` | `ConfigMap`/`Secret` | yes | — | |
 | `catalog[].sources[].templateRef` | `{name, namespace}` | yes | — | The object copied verbatim. At least one source per entry; at most one per `{kind, name, namespace}`. |
-| `grants` | map team → `{allowed, default}` | no | `{}` | Both lists, both may be empty. |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.registryConfig.{catalog,default}`. A team with no block mounts nothing. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/registry-config` | |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
 
@@ -556,6 +690,7 @@ endpointAuth:
     dialect: Traefik # Traefik | Nginx | HaproxyIngress | OpenShiftRoute | Custom
     enforcement: Enforce # Observe | Enforce — the gate's own verdict, not the feature's mode
     allowedMiddlewares: [] # Traefik only: entries an Ingress may name *after* ours
+    haproxyPrerequisite: false # HaproxyIngress only, and required there — see below
   breakGlassIdentities: []
   owner:
     namespaceAnnotation: che.eclipse.org/username
@@ -579,8 +714,6 @@ endpointAuth:
       delegation: []
   endpointSelection: { annotation: hardening.weebo.io/access, onUnknownKey: Default }
   selfOrigin: { podNetwork: Auto, serviceAccountToken: true }
-  grants:
-    team-1: { allowed: [private, team, shared], default: team }
 ```
 
 | Field | Type | Required | Default | Meaning |
@@ -589,11 +722,12 @@ endpointAuth:
 | `namespaceSelector` | selector | no | everything | Narrows within the webhook's own scope. |
 | `gateway.externalUrl` | URL | yes | — | Where a browser is sent to sign in. Must be `https`. |
 | `gateway.service` | `{name,namespace,port}` | yes | — | The gateway's in-cluster `Service`. |
-| `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik`, `Nginx`, `HaproxyIngress` and `Custom` attach by annotation; `OpenShiftRoute` is **deferred** — written, never run against a real router. |
+| `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik` is the one with no caveat. `Nginx` is **partial** (a refused caller gets a bare `401`, and `auth-signin` redirects everybody — RFC 0009's *Future work*). `HaproxyIngress` needs the prerequisite below. `OpenShiftRoute` is **deferred** to [RFC 0010](./rfc/0010-endpoint-auth-openshift.md) — written, never run against a router. |
 | `gateway.enforcement` | `Observe`/`Enforce` | no | `Enforce` | `Observe` computes and counts every decision and answers `200` — the rollout step that finds the unauthenticated probe before it breaks. |
 | `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Entries an `Ingress` may carry **after** ours; anything else is denied, because the chain runs before `forwardAuth`. |
+| `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
-| `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Must match `claims.username` in the gateway's own config. |
+| `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2. Wrong here means every workspace endpoint stops being created. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |
 | `hosts.ownership` | `[{template}\|{regex}]` | yes | — | How a host names its owner. First match wins; a host no pattern describes is refused at admission. |
@@ -607,7 +741,7 @@ endpointAuth:
 | `endpointSelection.onUnknownKey` | `Default`/`Deny` | no | `Default` | |
 | `selfOrigin.podNetwork` | `Auto`/`On`/`Off` | no | `Auto` | `Auto` trusts the client address only while the gateway's own probe says it can. |
 | `selfOrigin.serviceAccountToken` | bool | no | `true` | The answer where the cluster SNATs. |
-| `grants.<team>` | `{allowed, default}` | no | — | A team with no grant gets `default` and nothing else. |
+| per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.endpointAuth.{catalog,default}`. A team with no block gets `default` and nothing else. |
 
 What a **developer** writes is four annotations, on the devfile endpoint or on their own routing
 object — and usually none of them:
@@ -623,10 +757,102 @@ Two write paths, and the difference is worth telling people once: `kubectl annot
 the devfile is durable, and **the devfile wins at the next workspace start**. Share now with
 `kubectl`, share for good in the devfile.
 
+**On `HaproxyIngress`, the dialect needs six lines you install yourself.** That controller builds
+its auth request by copying the *caller's* own headers onto a fixed path, so on a default install
+the gate is handed no host and no path, a caller can state the `X-Forwarded-Host` they are judged
+against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the gate
+does not put a name on. Put these in the haproxy-ingress controller's own ConfigMap, under
+`config-frontend`:
+
+```text
+http-request del-header X-Auth-Request-User
+http-request del-header X-Auth-Request-Groups
+http-request del-header X-Auth-Request-Email
+http-request set-header X-Forwarded-Host %[req.hdr(host)]
+http-request set-header X-Forwarded-Uri %[pathq]
+http-request set-header X-Forwarded-Method %[method]
+```
+
+Then set `gateway.haproxyPrerequisite: true`. **The field is an assertion, not a check**: the
+header a controller sets and the header a caller sends are the same header, so nothing downstream
+can tell them apart, and an annotation cannot do the job either — a per-ingress `config-backend`
+snippet is emitted *after* the auth call, so it rewrites what the application is handed rather
+than what the gate was asked. Leaving the field `false` raises `Degraded` with the reason and
+still attaches the gate, because a gate a knowing attacker can bypass refuses everybody who is not
+attacking, and an unattached gate refuses nobody. All of this was read off a cluster rather than a
+manual — `task spike:live`, and the record is in
+[`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md).
+
 The gateway reads this block through its own watch on the `WeeboSiConfig`, so a grant edit takes
 effect at informer lag rather than at a redeploy. Its *own* configuration — the issuer, the
 claims, the cookie lifetimes, the caches — is a file the `endpoint-gateway` chart renders; see
 [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md).
+
+### `features.identity`
+
+Creates the objects a person needs outside this cluster: an `AuthentikUser` in the identity
+provider, and the Argo CD `Application` their team describes. Per
+[RFC 0011](./rfc/0011-teams-and-users.md), and the only feature here that writes into somebody
+else's system — so it is `Off` unless written down, and every target is allow-listed.
+
+```yaml
+identity:
+  mode: Enforce
+  authentik:
+    allowedGroupRefs: ["platform", "research", "oncall-*"]
+  che:
+    applicationNamespace: argocd
+    allowedProjects: ["weebo-dev"]
+    allowedRepoUrls: ["https://charts.weebo.io*"]
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `DryRun` plans everything and writes nothing. |
+| `authentik.allowedGroupRefs` | `[string]` | no | `[]` | Groups a team or a person may request. A trailing `*` matches by prefix. |
+| `che.applicationNamespace` | string | no | `argocd` | The one namespace `Application` objects are created in — and the only one this operator holds RBAC for. |
+| `che.allowedProjects` | `[string]` | no | `[]` | Argo CD projects a team template may name. |
+| `che.allowedRepoUrls` | `[string]` | no | `[]` | Repositories a team template may name. Trailing `*` matches by prefix. |
+
+**An empty allow-list allows nothing.** Turning this feature on with no list provisions people
+with no group rather than people with every group, and refuses every workspace template rather
+than accepting every chart.
+
+A request outside an allow-list refuses the **whole** object rather than trimming the offending
+entry — a partially honoured provisioning request is the failure nobody notices. What was created
+is reported per person, in `WeeboSiUser.status.{authentik,che}.state`:
+
+| State | Meaning |
+| --- | --- |
+| `Off` | The block is absent or `Off`. Nothing was looked for. |
+| `Created` | This operator created it and owns it: deleting the person deletes it. |
+| `Adopted` | It already existed, owned by somebody else. Referenced, **never written**. |
+| `Absent` | The target CRD is not installed, or the reference names nothing. |
+| `Conflict` | Another `WeeboSiUser` claims the same target. |
+
+#### Turning provisioning on
+
+Two switches, in this order, and neither alone does anything:
+
+1. `identity.rbac.enabled=true` in the chart — it grants `authentikusers` cluster-wide and
+   `applications` **in one namespace**, `identity.argoNamespace`, which must match
+   `che.applicationNamespace` below. No `delete` on either: what this operator creates carries an
+   `ownerReference` to the person it was created for, so removal happens through garbage
+   collection.
+2. `spec.features.identity` on the singleton, starting at `mode: DryRun`. Every decision is
+   taken, every template rendered, and each person's `status` says `would create …` — the step
+   that finds a bad allow-list before it finds a bad object.
+
+What to watch while it rolls out:
+
+| Metric | Reads |
+| --- | --- |
+| `weebo_si_identity_users_total{kind,state}` | Provisioned objects by outcome — `state="conflict"` and `state="absent"` are the two that need somebody. |
+| `weebo_si_identity_errors_total{kind}` | Calls the apiserver refused. Non-zero for longer than a reconcile period is the alert worth writing. |
+| `weebo_si_identity_teams_total{result}` | Team passes, by whether the team reported violations. |
+
+No metric here carries a username or a namespace, per the project-wide rule in RFC 0004: which
+person is `Conflict` is a `kubectl get weebosiusers` away.
 
 ## `status`
 
@@ -671,9 +897,9 @@ Every feature with a catalogue reports the same family of violations:
 | --- | --- |
 | Duplicate key | The same `catalog[].key` appears twice. |
 | Baseline / default not in catalogue | `baseline` (or top-level `default`) names a key nothing declares. |
-| Grant allows an uncatalogued key | A team's `allowed` names a key nothing declares. |
-| Grant default outside its own allowed | A team's `default` is not a subset of its `allowed`. |
-| Grant names an undeclared team | `grants` keys on a name absent from `spec.teams`. |
+| Grant allows an uncatalogued key | A team reaches a key nothing declares. |
+| Grant default outside its own allowed | A team's `default` is not among the keys it reaches. |
+| Catalogue key conflict | A `WeeboSiTeam` redefines a key somebody already defined, differently. The first definition stands. |
 
 Plus, per feature: `dwoc-pin` reports an empty `allowed`; `network-profiles` reports a profile
 with no variants, or two variants for one backend; `image-policy` reports an unparseable pattern,
@@ -696,5 +922,5 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `kubearmor.io/enforcer` | Node | **KubeArmor** | Which LSM that node can enforce with. Read-only for us. |
 
 A selection key naming something the team was not granted is not an escalation: it is a
-*request*, bounded by the grant, resolved by `onNotGranted`. The boundary is the grant, and only
-a cluster admin writes grants.
+*request*, bounded by what the team reaches, resolved by `onNotGranted`. The boundary is the
+`WeeboSiTeam` object, and only a cluster admin writes one.

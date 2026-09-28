@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }

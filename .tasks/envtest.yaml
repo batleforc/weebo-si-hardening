@@ -33,6 +33,21 @@ tasks:
       - tar xzf /tmp/envtest.tar.gz -C "{{ .ENVTEST_DIR }}" --strip-components=2
       - rm -f /tmp/envtest.tar.gz
       - echo "envtest binaries installed in {{ .ENVTEST_DIR }}"
+  conformance:
+    desc: "RFC 0009's dialect conformance suite — the gateway behind a real Traefik, over a real apiserver"
+    silent: true
+    deps:
+      - setup
+    env:
+      KUBEBUILDER_ASSETS: "{{ .ENVTEST_DIR }}"
+    cmds:
+      # Needs `traefik` on PATH (mise provides it) *and* the envtest binaries above. The suite
+      # skips itself rather than failing when either is missing, which is what lets
+      # `cargo test --workspace --all-features` stay green on a machine with neither — but a
+      # suite that only ever skips is a suite nobody runs, so this task exists to run it on
+      # purpose.
+      - cargo test -p endpoint-gateway --features conformance --test conformance -- --test-threads=1
+
   clean:
     desc: "Remove the downloaded envtest binaries"
     silent: true
@@ -60,3 +75,10 @@ tasks:
       # RFC 0009's suite is its own target for the same reason: it registers two admission rules
       # over `ingresses`, a core resource every other suite's apiserver is assumed to be free of.
       - cargo test --workspace --features envtest --test endpoint_auth_envtest -- --test-threads=1
+      # RFC 0009's `OpenShiftRoute` dialect, which installs a `Route` CRD and puts its admission
+      # rules on `route.openshift.io/v1` instead. It proves the *admission* half — the retarget,
+      # the pin on `spec.to`, and the reattach after DevWorkspace Operator regenerates the object
+      # — and nothing whatever about an OpenShift router, which is a separate line in that RFC's
+      # plan and stays open. Run here rather than in `task test:openshift`: that tier is the
+      # deferred, unvalidated one, and these assertions are neither.
+      - cargo test --workspace --features envtest --test openshift_envtest -- --test-threads=1

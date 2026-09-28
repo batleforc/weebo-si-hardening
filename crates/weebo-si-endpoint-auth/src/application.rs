@@ -172,21 +172,35 @@ impl<'a> Gateway<'a> {
 
     fn resolve_bearer(&self, token: &str, now: Timestamp) -> Credential {
         let key = Fingerprint::of(token);
-        if let Some(claims) = self.bearer_cache.get(&key, now) {
-            return self.as_person(claims);
-        }
-        match self.tokens.verify(token, now) {
-            TokenOutcome::Ours { claims, expires_at } => {
-                // Cached without the team: team membership is authorisation input, and
-                // authorisation input is recomputed per request. See `as_person`.
-                self.bearer_cache
-                    .insert(key, claims.clone(), expires_at, now);
-                self.as_person(claims)
+        let claims = if let Some(claims) = self.bearer_cache.get(&key, now) {
+            claims
+        } else {
+            match self.tokens.verify(token, now) {
+                TokenOutcome::Ours { claims, expires_at } => {
+                    // Cached without the team: team membership is authorisation input, and
+                    // authorisation input is recomputed per request. See `as_person`.
+                    self.bearer_cache
+                        .insert(key, claims.clone(), expires_at, now);
+                    claims
+                }
+                TokenOutcome::Foreign | TokenOutcome::Invalid => {
+                    return self.resolve_service_account(token, now);
+                }
             }
-            TokenOutcome::Foreign | TokenOutcome::Invalid => {
-                self.resolve_service_account(token, now)
-            }
+        };
+        // *Revocation* said a bearer lives by its `exp` and nothing else, and that was a gap: a
+        // token a developer fetches is minted from exactly the session a back-channel logout
+        // ends, so checking its `sid` against the set already in memory for the cookie makes the
+        // logout kill access tokens too. Outside the cache entry and on the cached path as well,
+        // for the same reason `resolve_session` does it there — a cache is not allowed to be the
+        // reason a revoked credential still passes.
+        if let Some(session) = claims.session.as_ref()
+            && self.revocations.is_revoked(session)
+        {
+            self.bearer_cache.forget(&key);
+            return Credential::RevokedSession;
         }
+        self.as_person(claims)
     }
 
     /// A service-account token is the answer where a pod's address does not survive the network
@@ -482,6 +496,47 @@ mod tests {
         // The cache entry is dropped rather than left to expire, so the revocation costs one
         // lookup rather than one per request for the rest of the cookie's life.
         assert_eq!(harness.session_cache.stats().entries, 0);
+    }
+
+    /// The gap *Revocation* owed this feature until the bearer branch grew an audience: a token
+    /// a developer fetches carries the `sid` of the session it was minted from, so a back-channel
+    /// logout ends the access tokens too — and on the cached path, not only on the first use.
+    #[test]
+    fn a_back_channel_logout_cuts_off_a_bearer_minted_from_that_session() {
+        let harness = Harness::new(shared_endpoint(Some("bob")));
+        harness.tokens.put(
+            "token-from-a-session",
+            TokenOutcome::Ours {
+                claims: Claims {
+                    session: Some(SessionId::new("sid-1")),
+                    ..Claims::user("bob")
+                },
+                expires_at: Timestamp::from_secs(3_600),
+            },
+        );
+        let gateway = harness.gateway(Enforcement::Enforce);
+        let presented = with_bearer("token-from-a-session");
+        assert!(
+            gateway
+                .authorize(&request("/"), &presented)
+                .decision
+                .is_allow()
+        );
+
+        harness.revocations.revoke("sid-1");
+
+        let after = gateway.authorize(&request("/"), &presented);
+        assert_eq!(after.decision.reason, Reason::Revoked);
+        // The cached entry goes with it, so the revocation costs one lookup rather than one per
+        // request for the rest of the token's life.
+        assert_eq!(harness.bearer_cache.stats().entries, 0);
+        // A token from no session at all is untouched: it lives by its own `exp`, as it did.
+        assert!(
+            gateway
+                .authorize(&request("/"), &with_bearer(TOKEN))
+                .decision
+                .is_allow()
+        );
     }
 
     #[test]

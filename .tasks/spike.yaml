@@ -1,0 +1,56 @@
+version: "3"
+
+# RFC 0009's ground-truth spike. The RFC asserts a set of facts about Eclipse Che, DevWorkspace
+# Operator and three ingress controllers from documentation; these tasks read them back from a
+# cluster instead, and `docs/bricks/endpoint-gateway.md` records the answers with the command that
+# established each one.
+#
+# `run` works against whatever kubectl points at, which is the point: the rows a laptop cannot
+# answer — the Che namespace label, the OIDC client, the shape of a token, OpenShift — skip
+# themselves here and answer on a real Che cluster without the script changing.
+
+tasks:
+  up:
+    desc: "Stand up the local kind cluster the spike's controller rows run against (podman + kind)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-rig.sh up"
+
+  run:
+    desc: "Run RFC 0009's ground-truth spike, read-only, against the current kube context"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009.sh {{.CLI_ARGS}}"
+
+  live:
+    desc: "Run the spike including the router rows, which create a namespace and one Ingress per controller"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009.sh --live {{.CLI_ARGS}}"
+
+  record:
+    desc: "Print the spike's results as the markdown table docs/bricks/endpoint-gateway.md records (non-zero while any row differs)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009.sh --live --markdown {{.CLI_ARGS}}"
+
+  che:up:
+    desc: "Build a local Eclipse Che on kind — the cluster the spike's Che rows need (slow: several GB)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-che.sh up"
+
+  che:rows:
+    desc: "Run the three spike rows only a Che cluster can answer (namespace label, OIDC client, token shape)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-che.sh rows"
+
+  che:token:
+    desc: "Print an access token for the Che rig's test user, for poking at the gateway by hand"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-che.sh token"
+
+  che:down:
+    desc: "Delete the local Eclipse Che cluster"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-che.sh down"
+
+  down:
+    desc: "Delete the local kind cluster (the ingress-controller rig, not the Che one)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/spike-0009-rig.sh down"

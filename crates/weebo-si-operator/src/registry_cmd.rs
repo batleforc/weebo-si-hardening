@@ -21,7 +21,7 @@ use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret};
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     RegistryConfig, RegistryEntry, SINGLETON_NAME, SourceKind, Team, TemplateRef, WeeboSiConfig,
-    copy_name,
+    WeeboSiTeam, copy_name, team_views,
 };
 use weebo_si_registry_config::model::mount;
 use weebo_si_registry_config::{ResolutionStep, resolve};
@@ -40,16 +40,24 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// The `WeeboSiConfig` singleton's `registryConfig` block plus `spec.teams`, or a message naming
-/// which of the two is missing.
+/// The `WeeboSiConfig` singleton's `registryConfig` block resolved against every `WeeboSiTeam`,
+/// and those teams as the features see them, or a message naming what is missing.
+///
+/// The resolution is not optional: RFC 0011 keeps each team's catalogue on its own object, so a
+/// CLI reading only the singleton would report what the cluster would do if no team existed.
 async fn load(client: &Client) -> Result<(RegistryConfig, Vec<Team>), String> {
     let api: Api<WeeboSiConfig> = Api::all(client.clone());
     let config = api
         .get(SINGLETON_NAME)
         .await
         .map_err(|err| format!("could not read the WeeboSiConfig named {SINGLETON_NAME}: {err}"))?;
-    let teams = config.spec.teams.clone();
-    let registry = config
+    let teams_api: Api<WeeboSiTeam> = Api::all(client.clone());
+    let teams = teams_api
+        .list(&Default::default())
+        .await
+        .map(|list| list.items)
+        .map_err(|err| format!("could not list WeeboSiTeam objects: {err}"))?;
+    let mut registry = config
         .spec
         .features
         .registry_config
@@ -57,7 +65,8 @@ async fn load(client: &Client) -> Result<(RegistryConfig, Vec<Team>), String> {
         .ok_or_else(|| {
             "this cluster's WeeboSiConfig has no spec.features.registryConfig block".to_string()
         })?;
-    Ok((registry, teams))
+    registry.resolve(&teams);
+    Ok((registry, team_views(&teams)))
 }
 
 /// `registry resolve --namespace <ns>` — the keys that namespace resolves to, the source objects

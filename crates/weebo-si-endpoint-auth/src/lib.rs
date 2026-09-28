@@ -29,12 +29,15 @@
 //!    boundary rather than a tidiness rule.
 //! 4. [`path`] — path normalisation, which is where forward-auth gates are bypassed.
 //! 5. [`decide`] — the pure function every other module exists to serve.
-//! 6. [`application`] — resolving what a request presented into an identity, through the ports,
+//! 6. [`bearer`] — which tokens are *ours*: the five checks that turn "this issuer minted it"
+//!    into an identity, written in the domain so the table runs without an identity provider.
+//! 7. [`application`] — resolving what a request presented into an identity, through the ports,
 //!    and running the decision under the feature's own enforcement mode.
-//! 7. [`cache`] — the identity caches, bounded and keyed by hash, which make the burst of 200
+//! 8. [`cache`] — the identity caches, bounded and keyed by hash, which make the burst of 200
 //!    assets on one page load cost one AEAD open and 199 map reads.
 
 pub mod application;
+pub mod bearer;
 pub mod cache;
 pub mod compile;
 pub mod decide;
@@ -49,6 +52,7 @@ pub mod testing;
 pub mod time;
 
 pub use application::{Enforcement, Gateway, GatewayPorts, Outcome, Presented};
+pub use bearer::{BearerResult, BearerRules, PresentedToken, RulesError, TokenShape};
 pub use cache::{CacheKind, CacheOutcome, Fingerprint, IdentityCache};
 pub use compile::{Catalogue, CompileError, Grant, Override, RawEndpoint, compile};
 pub use decide::{AuthRequest, Challenge, Decision, Reason, RequestShape, Scheme, Verdict, decide};

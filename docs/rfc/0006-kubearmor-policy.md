@@ -4,7 +4,7 @@ title: kubearmor-policy
 status: Implemented
 authors: [batleforc]
 created: 2026-08-24
-updated: 2026-08-25
+updated: 2026-09-25
 decided: 2026-08-25
 brick: crates/weebo-si-kubearmor-policy
 supersedes: []
@@ -75,7 +75,8 @@ objects, never a DSL this project invented.
 ## Guide-level explanation
 
 `kubearmor-policy` starts `Off`, per the chassis. It needs the same three things
-`network-profiles` needs — a catalogue, a baseline, and grants against `spec.teams` — plus one
+`network-profiles` needs — a catalogue, a baseline, and what each `WeeboSiTeam` reaches — plus
+one
 KubeArmor is opinionated about that `NetworkPolicy` never was: a default posture per rule domain
 for what happens when nothing in a policy matches.
 
@@ -85,26 +86,30 @@ kind: WeeboSiConfig
 metadata:
   name: cluster
 spec:
-  teams:
-    - name: team-1
-      namespaceSelector:
-        matchLabels: { weebo.io/team: team-1 }
   features:
     kubearmorPolicy:
       mode: DryRun
-      catalog:
+      catalog:                            # the platform's own entries; a team brings its own
         - key: base
           templateRef: { name: weebo-base-runtime, namespace: weebo-si-hardening }
-        - key: git-write
-          templateRef: { name: weebo-git-write-runtime, namespace: weebo-si-hardening }
       baseline: base
-      grants:
-        team-1:
-          allowed: [git-write]
-          default: [git-write]
       onNotGranted: Default
       enforcement:
         backend: KubeArmor
+---
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: team-1
+spec:
+  namespaceSelector:
+    matchLabels: { weebo.io/team: team-1 }
+  features:
+    kubearmorPolicy:                      # this team's own entries, and its defaults
+      catalog:
+        - key: git-write
+          templateRef: { name: weebo-git-write-runtime, namespace: weebo-si-hardening }
+      default: [git-write]
 ```
 
 `weebo-base-runtime` and `weebo-git-write-runtime` are ordinary `KubeArmorPolicy` objects an
@@ -152,9 +157,11 @@ this ("not applied, not approximated"), just off a node label instead of a pod a
     is deferred until a second backend actually exists (see *Alternatives considered*), not
     speculatively built now.
   - `baseline: RuntimeProfileKey` — applied to every workspace pod in scope, never negotiable.
-  - `grants: BTreeMap<String, RuntimeProfileGrant>` — `{allowed: [...], default: [...]}`, same
-    shape and same validation rules as `ProfileGrant` (`GrantAllowedUnknownKey`,
-    `GrantDefaultOutsideAllowed`, `GrantNamesUndeclaredTeam`).
+  - per-team entries and defaults — `{catalog, default}` on each `WeeboSiTeam` since
+    [RFC 0011](./0011-teams-and-users.md), a `grants: BTreeMap<String, RuntimeProfileGrant>` on
+    this block before it. Same shape and same validation rules as `network-profiles`'
+    (`GrantAllowedUnknownKey`, `GrantDefaultOutsideAllowed`, and — in place of
+    `GrantNamesUndeclaredTeam`, which the wire can no longer express — `CatalogKeyConflict`).
   - `onNotGranted: OnNotGranted` — `Default | Deny`, same enum `network-profiles` defines,
     reused rather than redeclared.
   - `workspaceSelection` / `namespaceSelection` — same two-tier selection (devfile attribute,
@@ -279,7 +286,8 @@ again under *Security considerations*.
   this brick never talks to the KubeArmor agent directly, only writes objects KubeArmor's own
   controller watches and reads a label KubeArmor's own operator writes, same trust split as
   `network-profiles` has with the CNI.
-- **Trust boundary.** The catalogue and grants are admin-authored, same boundary as every prior
+- **Trust boundary.** The catalogue and the team objects are admin-authored, same boundary as
+  every prior
   brick — not attacker-controlled. The attacker-controlled input is the devfile attribute /
   namespace annotation selecting *which granted key* to apply, exactly the boundary
   `network-profiles`' `WorkspaceSelection` already defends: an ungranted key is dropped to the
@@ -393,7 +401,7 @@ Resolved since the first draft, kept here as a record rather than deleted silent
   starts, since it is documented behaviour rather than a versioned API guarantee.
 - ~~Where `defaultPosture` belongs.~~ **Resolved: kept local to this feature.** No second brick
   needs a shared "how strict by default" knob today; hoisting it to the chassis is a future
-  amendment if that changes, per the same pattern RFC 0002 used for `spec.teams`.
+  amendment if that changes, per the same pattern RFC 0002 used for chassis-level teams.
 - ~~Whether `KubeArmorHostPolicy` is in scope.~~ **Resolved: explicitly out of scope**, tracked
   under *Future work*. It governs the node, not the workspace — a cluster-operator-facing
   surface with a different trust boundary than this RFC's per-team routing, and nothing today
@@ -446,7 +454,8 @@ Genuinely still open:
 ## Implementation plan
 
 - [x] `weebo-si-crd`: `RuntimeProfileKey`, `RuntimeProfileCatalog`, `RuntimeProfileGrant`,
-      `KubeArmorPolicyConfig` (`mode`, `namespaceSelector`, `catalog`, `baseline`, `grants`,
+      `KubeArmorPolicyConfig` (`mode`, `namespaceSelector`, `catalog`, `baseline`, `grants` —
+      the last since moved onto `WeeboSiTeam` by RFC 0011,
       `onNotGranted`, `namespaceSelection`, `workspaceSelection`, `enforcement`), reusing
       `OnNotGranted` and `TemplateRef` from `network_profiles.rs` rather than redeclaring them
 - [x] Promote `PodSelector` (and any other genuinely backend-agnostic type `network_profiles.rs`
@@ -494,7 +503,9 @@ Genuinely still open:
   confirms `kubearmor-policy` (`enabled`/`audited`/`disabled`) is a desired-state request tied to
   `enableEnforcerPerPod`, not an observed-state report.
 - [Tetragon](https://tetragon.io/) — the alternative engine discussed under *Alternatives*.
-- [RFC 0002](./0002-weebo-si-operator.md) — the chassis, `spec.teams`, `ReconcileFeature<S>`.
+- [RFC 0002](./0002-weebo-si-operator.md) — the chassis, chassis-level teams,
+  `ReconcileFeature<S>`.
+- [RFC 0011](./0011-teams-and-users.md) — where a team's entries and defaults live now.
 - [RFC 0004](./0004-network-profiles.md) — the catalogue/grant/backend pattern this RFC ports.
 - [RFC 0005](./0005-image-policy.md) — the sibling brick narrowing what image runs, as this one
   narrows what that image's process is allowed to do once running.
@@ -507,4 +518,5 @@ Genuinely still open:
 | 2026-08-25 | `weebo_si_kubearmor_enforced` is labelled `{state}` and counts workspaces, not `{namespace,workspace}`. Writing it as first specified would have made this the brick that breaks RFC 0004's project-wide "no metric carries a namespace or a workspace id" rule. Taught us that a per-brick observability contract can contradict a project-wide one without either author noticing. |
 | 2026-08-25 | The `KubeArmorPolicy` store force-applies, where `network-profiles`' store does not. Found by envtest, not by review: one `kubectl edit` makes the editor a field manager, and every later server-side apply fails 409 — the drift this brick exists to correct becoming the drift it can no longer correct. `network-profiles` is safe only because `policy-guard` refuses that edit first, which is why the guard's coverage gap is now an open question rather than an omission. |
 | 2026-08-25 | The baseline's `selector.matchLabels: {}` is recorded in the *Contract* as meaning every pod in the namespace. It was an inference from the CRD schema until confirmed; the alternative reading is silent, and would have left every baseline inert while both gauges read healthy. |
+| 2026-09-25 | Amended for [RFC 0011](./0011-teams-and-users.md): **what a team reaches moved onto the team's own object.** The `grants` map is gone from the wire; a `WeeboSiTeam` carries that team's own catalogue entries and its `default`, and the cluster catalogue keeps the `baseline` — never negotiable, and never a team's property. The two selection tiers, `onNotGranted`, the posture block and the enforcement backend are untouched, and so is the inherited validation, with `CatalogKeyConflict` replacing the `GrantNamesUndeclaredTeam` the new shape cannot produce. |
 | 2026-08-25 | RFC 0008 shipped, closing the `policy-guard` coverage question above: `kubearmorpolicies` are now guarded at admission, and the force-apply asymmetry with `network-profiles`' store is a permanent, documented decision rather than a workaround waiting on the guard. |

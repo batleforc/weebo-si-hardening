@@ -33,6 +33,7 @@ axum = { workspace = true }
 axum-server = { workspace = true }
 prometheus = { workspace = true }
 serde_yaml_bw = { workspace = true }
+serde_json = { workspace = true }
 rustls = { workspace = true }
 
 [features]

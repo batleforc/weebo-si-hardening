@@ -145,6 +145,22 @@ registryConfig:
     enabled: false
   failurePolicy: Ignore
 
+# RFC 0011's `identity` — the feature that creates an `AuthentikUser` and an Argo CD
+# `Application` for each `WeeboSiUser`. Off by default, and off twice: this switch only grants
+# the RBAC, and nothing is created until `spec.features.identity` exists on the singleton with a
+# `mode` and its allow-lists.
+#
+# The two `WeeboSiTeam`/`WeeboSiUser` kinds are read, and their status written, regardless of
+# this switch — reporting who is in which team needs no permission on anybody else's system.
+identity:
+  rbac:
+    enabled: false
+  # Where the `Application` objects are created. **Must match
+  # `spec.features.identity.che.applicationNamespace`**: this value is the namespace the Role is
+  # bound in, that field is the namespace the controller writes to, and a mismatch is a refused
+  # write rather than a silent one.
+  argoNamespace: argocd
+
 # RFC 0009's `endpoint-auth`. Off by default like every other feature that needs a cluster-wide
 # grant: turning it on adds two webhook rules over the routing objects Che generates, and the
 # reconcile sweep that keeps them gated.
@@ -165,6 +181,19 @@ endpointAuth:
   # `OpenShiftRoute` exists and is **deferred**: the code is written and its tests are a tier the
   # base suite skips (`task test:openshift`), but nothing has run it against a real OpenShift
   # router. Do not select it on a cluster you care about yet.
+  #
+  # `Nginx` is **partial** and supported that way: the gate holds, identity is not forgeable and
+  # the sliding session works, but a refused caller sees a bare 401 instead of the gate's
+  # explanation, and a browser is redirected by `auth-signin` rather than by the gate's own
+  # challenge. Fixing either needs `allow-snippet-annotations`, which is a cluster-wide hardening
+  # control ingress-nginx disabled by default in 1.9 — see RFC 0009's *Future work*.
+  #
+  # `HaproxyIngress` needs six lines in the haproxy-ingress controller's *own* ConfigMap before it
+  # is safe: that controller builds its auth request by copying the caller's headers, so without
+  # them a caller states the host they are judged against. The lines, and why an annotation cannot
+  # replace them, are in docs/weebosiconfig.md; set
+  # `spec.features.endpointAuth.gateway.haproxyPrerequisite: true` once they are installed, which
+  # is an assertion nothing here can verify.
   dialect: Traefik
   # How Che labels workspace namespaces. A value rather than a constant because a Che install can
   # be told to label them differently — and because a cluster that gets it wrong should discover

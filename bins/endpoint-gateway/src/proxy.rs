@@ -113,7 +113,10 @@ async fn serve(
     // The same `TokenReview` pre-step the `/auth` handler makes, for the same reason: the
     // decision may not do I/O, so the one call this mechanism needs happens above it.
     state
-        .prewarm_service_account(presented.bearer.as_deref())
+        .prewarm_bearer(
+            presented.bearer.as_deref(),
+            Some(&state.limit_key(&headers, peer)),
+        )
         .await;
 
     state.drop_identities_on_key_rotation();
@@ -125,7 +128,9 @@ async fn serve(
 
     match outcome.answered {
         Verdict::Deny => return deny_response(&state, &auth, outcome.decision.reason),
-        Verdict::Challenge(challenge) => return challenge_response(&state, &auth, challenge),
+        Verdict::Challenge(challenge) => {
+            return challenge_response(&state, &auth, challenge, &presented);
+        }
         Verdict::Allow => {}
     }
 

@@ -22,3 +22,6 @@ tasks:
       # rendered for is a chart value rather than a code path.
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
+      # RFC 0011's provisioning grants: a ClusterRole rule and a namespaced Role/RoleBinding pair
+      # that only exist behind this switch, so the default render never covers them.
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null

@@ -20,7 +20,7 @@
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use kube::{CustomResourceExt, ResourceExt};
-use weebo_si_crd::WeeboSiConfig;
+use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam};
 use weebo_si_envtest_support::EnvTest;
 
 macro_rules! envtest_or_skip {
@@ -33,8 +33,14 @@ macro_rules! envtest_or_skip {
 }
 
 async fn install_crd(client: kube::Client) -> Result<CustomResourceDefinition, kube::Error> {
+    apply_crd(client, WeeboSiConfig::crd()).await
+}
+
+async fn apply_crd(
+    client: kube::Client,
+    crd: CustomResourceDefinition,
+) -> Result<CustomResourceDefinition, kube::Error> {
     let crds: Api<CustomResourceDefinition> = Api::all(client);
-    let crd = WeeboSiConfig::crd();
     let name = crd.name_any();
     crds.patch(
         &name,
@@ -45,9 +51,13 @@ async fn install_crd(client: kube::Client) -> Result<CustomResourceDefinition, k
 }
 
 async fn wait_for_crd(client: kube::Client) {
+    wait_for_named_crd(client, "weebosiconfigs.hardening.weebo.io").await;
+}
+
+async fn wait_for_named_crd(client: kube::Client, name: &str) {
     let crds: Api<CustomResourceDefinition> = Api::all(client);
     for _ in 0..60 {
-        if let Ok(crd) = crds.get("weebosiconfigs.hardening.weebo.io").await {
+        if let Ok(crd) = crds.get(name).await {
             let established = crd
                 .status
                 .and_then(|status| status.conditions)
@@ -80,6 +90,12 @@ type DynamicApi = Api<kube::api::DynamicObject>;
 fn configs(client: kube::Client) -> DynamicApi {
     let gvk = kube::api::GroupVersionKind::gvk("hardening.weebo.io", "v1alpha1", "WeeboSiConfig");
     let resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, "weebosiconfigs");
+    Api::all_with(client, &resource)
+}
+
+fn teams(client: kube::Client) -> DynamicApi {
+    let gvk = kube::api::GroupVersionKind::gvk("hardening.weebo.io", "v1alpha1", "WeeboSiTeam");
+    let resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, "weebositeams");
     Api::all_with(client, &resource)
 }
 
@@ -186,49 +202,55 @@ async fn a_well_formed_dwoc_pin_block_is_accepted() {
     let _ = api.delete("cluster", &DeleteParams::default()).await;
 }
 
-/// `spec.teams`' `namespaceSelector.matchExpressions` round-trips through a real apiserver —
+/// A `WeeboSiTeam`'s `namespaceSelector.matchExpressions` round-trips through a real apiserver —
 /// the wire-compatibility claim `selector::tests::wire_shape_matches_upstream_label_selector`
 /// proves against `serde_json` alone, proven here against the apiserver's own OpenAPI validation
 /// (which would reject an operator it does not recognize as one of the closed set upstream
 /// defines) and its schema defaulting (an omitted `values` on `Exists`).
+///
+/// On the team object since RFC 0011, where the selector now lives.
 #[tokio::test]
 async fn teams_with_match_expressions_round_trip() {
     let env_test = envtest_or_skip!();
     let client = env_test.client().expect("client should build");
-    install_crd(client.clone()).await.expect("CRD install");
-    wait_for_crd(client.clone()).await;
+    apply_crd(client.clone(), WeeboSiTeam::crd())
+        .await
+        .expect("the generated team CRD should be accepted");
+    wait_for_named_crd(client.clone(), "weebositeams.hardening.weebo.io").await;
 
-    let spec = serde_json::json!({
-        "teams": [
-            {
-                "name": "team-1",
-                "namespaceSelector": {
-                    "matchLabels": {"weebo.io/team": "team-1"},
-                    "matchExpressions": [
-                        {"key": "env", "operator": "In", "values": ["prod", "staging"]},
-                        {"key": "weebo.io/legacy", "operator": "DoesNotExist"},
-                    ],
-                },
+    let team = serde_json::json!({
+        "apiVersion": "hardening.weebo.io/v1alpha1",
+        "kind": "WeeboSiTeam",
+        "metadata": { "name": "team-1" },
+        "spec": {
+            "namespaceSelector": {
+                "matchLabels": {"weebo.io/team": "team-1"},
+                "matchExpressions": [
+                    {"key": "env", "operator": "In", "values": ["prod", "staging"]},
+                    {"key": "weebo.io/legacy", "operator": "DoesNotExist"},
+                ],
             },
-        ],
-        "features": {},
+        },
     });
 
-    let api = configs(client);
+    let api = teams(client);
     let created = api
         .create(
             &PostParams::default(),
-            &serde_json::from_value(config("cluster", spec)).expect("resource should deserialize"),
+            &serde_json::from_value(team).expect("resource should deserialize"),
         )
         .await
-        .expect("teams with matchExpressions should be accepted");
+        .expect("a team with matchExpressions should be accepted");
 
-    let expressions = &created.data["spec"]["teams"][0]["namespaceSelector"]["matchExpressions"];
+    let expressions = &created.data["spec"]["namespaceSelector"]["matchExpressions"];
     assert_eq!(expressions[0]["operator"], serde_json::json!("In"));
     assert_eq!(
         expressions[1]["operator"],
         serde_json::json!("DoesNotExist")
     );
+    // `priority` has a default in the schema, so an object that never mentions it comes back
+    // carrying one — the property RFC 0011's ordering rule depends on.
+    assert_eq!(created.data["spec"]["priority"], serde_json::json!(1000));
 
-    let _ = api.delete("cluster", &DeleteParams::default()).await;
+    let _ = api.delete("team-1", &DeleteParams::default()).await;
 }

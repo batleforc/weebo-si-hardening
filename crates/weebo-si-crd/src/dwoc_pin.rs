@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::dwoc::DwocRef;
 use crate::feature_mode::FeatureMode;
+use crate::merge::merge_catalogs;
 use crate::selector::Selector;
-use crate::team::{Team, TeamName};
+use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
 /// A short identifier for a catalogue entry, unique within the catalogue. Never a
 /// `{name, namespace}` pair — see RFC 0002's *Why keys rather than references*.
@@ -101,6 +102,22 @@ pub struct Grant {
     pub default: CatalogKey,
 }
 
+/// `spec.features.dwocPin` on a `WeeboSiTeam` — this team's own catalogue entries, and the one
+/// among them a namespace with no more specific answer gets.
+///
+/// No `allowed` list: a team's reachable set is the catalogue it declares, widened only by the
+/// cluster's own `default`. An entry a team catalogues and may not reach would be a row with no
+/// reading — see RFC 0011's *Contract*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDwocPin {
+    /// This team's catalogue entries, merged into the cluster catalogue at resolution.
+    #[serde(default)]
+    pub catalog: Catalog,
+    /// The entry a namespace of this team gets when it names none.
+    pub default: CatalogKey,
+}
+
 /// What to do when the namespace annotation names a key outside the reachable grant — a key
 /// nobody catalogued, or a key the team is not granted; the two are indistinguishable to
 /// whoever wrote the annotation and are therefore treated identically.
@@ -163,7 +180,11 @@ pub struct DwocPinConfig {
     /// The entry for a namespace belonging to no team.
     pub default: CatalogKey,
     /// What each team may reach, keyed by team name.
-    #[serde(default)]
+    ///
+    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
+    /// [`DwocPinConfig::resolve`] fills this in from them, and a configuration nobody resolved
+    /// grants nothing — which is the cluster default, the fail-closed direction.
+    #[serde(skip)]
     pub grants: BTreeMap<String, Grant>,
     /// The namespace annotation naming a catalogue key.
     #[serde(default)]
@@ -177,6 +198,59 @@ impl DwocPinConfig {
     /// This team's grant, if `grants` has one.
     pub fn grant_for(&self, team: &TeamName) -> Option<&Grant> {
         self.grants.get(team.as_str())
+    }
+
+    /// Merge every team's catalogue and default into this configuration, per RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; the rest of the validation stays in
+    /// [`DwocPinConfig::validate`], which now runs over the resolved shape and therefore over
+    /// exactly what the feature will evaluate.
+    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<ConfigViolation> {
+        let blocks: Vec<(TeamName, Vec<CatalogEntry>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .dwoc_pin
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.entries().to_vec()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
+        self.catalog = Catalog::new(entries);
+
+        self.grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.dwoc_pin.as_ref()?;
+                let mut allowed: Vec<CatalogKey> = block
+                    .catalog
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                if !allowed.contains(&self.default) {
+                    allowed.push(self.default.clone());
+                }
+                Some((
+                    team.team_name().to_string(),
+                    Grant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        conflicts
+            .into_iter()
+            .map(|conflict| ConfigViolation::CatalogKeyConflict {
+                team: conflict.team,
+                key: conflict.key,
+            })
+            .collect()
     }
 }
 
@@ -203,8 +277,18 @@ pub enum ConfigViolation {
         /// The default that is outside `allowed`.
         default: CatalogKey,
     },
-    /// `grants` names a team `spec.teams` never declared.
+    /// `grants` names a team no `WeeboSiTeam` declares. Unreachable through the wire since RFC
+    /// 0011 — grants are built from the objects themselves — and kept because a resolution bug
+    /// producing one should be reported rather than silently dropped.
     GrantNamesUndeclaredTeam(TeamName),
+    /// A team redefined a catalogue key somebody already defined, differently. The first
+    /// definition stands; this team reaches it instead of its own.
+    CatalogKeyConflict {
+        /// The team whose entry lost.
+        team: TeamName,
+        /// The contested key.
+        key: CatalogKey,
+    },
 }
 
 impl fmt::Display for ConfigViolation {
@@ -225,11 +309,12 @@ impl fmt::Display for ConfigViolation {
                 "grant for team {team} defaults to {default}, which is outside its own allowed set"
             ),
             Self::GrantNamesUndeclaredTeam(team) => {
-                write!(
-                    f,
-                    "grant names team {team}, which spec.teams never declared"
-                )
+                write!(f, "grant names team {team}, which no WeeboSiTeam declares")
             }
+            Self::CatalogKeyConflict { team, key } => write!(
+                f,
+                "team {team} redefines catalogue key {key}, which is already defined differently"
+            ),
         }
     }
 }
