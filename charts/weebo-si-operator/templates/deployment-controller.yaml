@@ -20,6 +20,9 @@ spec:
         {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -84,11 +87,22 @@ spec:
               port: http-health
             periodSeconds: 5
             failureThreshold: 3
+          # The initial lists (every namespace, and with KubeArmor every workspace pod and node)
+          # can outlast a liveness probe on a large cluster. `/healthz` is served from the first
+          # instant, so this mostly guards a process that never gets that far.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
               port: http-health
             periodSeconds: 10
+            timeoutSeconds: 2
             failureThreshold: 3
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}

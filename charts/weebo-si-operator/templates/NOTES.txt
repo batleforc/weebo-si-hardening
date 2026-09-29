@@ -31,6 +31,9 @@ Check readiness:
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "weebo-si-operator.fullname" . }}-controller
 
 Break-glass, if the operator itself is the thing that's broken (failurePolicy: Fail means an
-unavailable webhook blocks every DevWorkspace create/start cluster-wide):
+unavailable webhook blocks every write it covers — DevWorkspaces, Pods, policy objects —
+cluster-wide). Every webhook configuration this release rendered carries its instance label, so
+one command removes them all; `helm upgrade` puts them back once the operator is healthy:
 
-  kubectl delete mutatingwebhookconfiguration {{ include "weebo-si-operator.fullname" . }}-devworkspaces
+  kubectl delete mutatingwebhookconfiguration,validatingwebhookconfiguration \
+    -l app.kubernetes.io/instance={{ .Release.Name }}

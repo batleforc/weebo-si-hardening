@@ -36,10 +36,10 @@ use weebo_si_chassis::Context;
 use weebo_si_chassis::NamespaceFacts;
 use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
 use weebo_si_crd::{
-    FeatureMode, KubeArmorPolicyConfig, NamespaceName, OnNotGranted, RuntimeBackend,
-    RuntimeEnforcement, RuntimeEnforcementBackend, RuntimeNamespaceSelection, RuntimeProfile,
-    RuntimeProfileCatalog, RuntimeProfileGrant, RuntimeProfileKey, RuntimeWorkspaceSelection,
-    Selector, Team, TeamName, TemplateRef,
+    FeatureMode, KubeArmorPolicyConfig, NamespaceName, OnNotGranted, Resolved,
+    ResolvedKubeArmorPolicyConfig, RuntimeBackend, RuntimeEnforcement, RuntimeEnforcementBackend,
+    RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog, RuntimeProfileGrant,
+    RuntimeProfileKey, RuntimeWorkspaceSelection, Selector, Team, TeamName, TemplateRef,
 };
 use weebo_si_envtest_support::EnvTest;
 use weebo_si_kubearmor_policy::{
@@ -135,7 +135,7 @@ fn config(
     baseline: &str,
     catalog_keys: &[&str],
     grants: BTreeMap<String, RuntimeProfileGrant>,
-) -> KubeArmorPolicyConfig {
+) -> ResolvedKubeArmorPolicyConfig {
     let catalog = RuntimeProfileCatalog::new(
         catalog_keys
             .iter()
@@ -148,22 +148,22 @@ fn config(
             })
             .collect(),
     );
-    KubeArmorPolicyConfig {
+    Resolved::without_teams(KubeArmorPolicyConfig {
         mode,
         namespace_selector: None,
         catalog,
         baseline: RuntimeProfileKey::new(baseline),
-        grants,
         namespace_selection: RuntimeNamespaceSelection::default(),
         workspace_selection: RuntimeWorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: RuntimeEnforcement::default(),
-    }
+    })
+    .with_grants(grants)
 }
 
 async fn feature_with(
     client: kube::Client,
-    cfg: KubeArmorPolicyConfig,
+    cfg: ResolvedKubeArmorPolicyConfig,
 ) -> (KubeArmorPolicy, KubeArmorPolicyStore) {
     let capabilities = KubeArmorCapabilities::discover(client.clone())
         .await
@@ -315,6 +315,12 @@ async fn a_workspace_object_selects_only_that_workspaces_pods() {
         workspace_id: WORKSPACE_ID.to_string(),
         attribute: None,
         namespace_annotation: None,
+        owner: weebo_si_kubearmor_policy::Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-6b1d-4c3a-9e2f-000000000001".to_string(),
+        },
     };
 
     weebo_si_kubearmor_policy::reconcile(
@@ -332,6 +338,21 @@ async fn a_workspace_object_selects_only_that_workspaces_pods() {
         object.data.pointer("/spec/selector/matchLabels"),
         Some(&json!({"controller.devfile.io/devworkspace_id": WORKSPACE_ID})),
         "a profile object governs one workspace's pods, never the whole namespace"
+    );
+    assert_eq!(
+        object
+            .metadata
+            .owner_references
+            .as_ref()
+            .map(|owners| owners
+                .iter()
+                .map(|owner| (owner.kind.as_str(), owner.uid.as_str()))
+                .collect::<Vec<_>>()),
+        Some(vec![(
+            "DevWorkspace",
+            "8f0c2a4e-6b1d-4c3a-9e2f-000000000001"
+        )]),
+        "a profile object is garbage-collected with its DevWorkspace"
     );
 }
 

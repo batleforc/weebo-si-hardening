@@ -32,7 +32,7 @@ use kube::api::{
 };
 use kube::{CustomResourceExt, ResourceExt};
 use weebo_si_chassis::Registry;
-use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam};
+use weebo_si_crd::{Resolved, ResolvedNetworkProfilesConfig, WeeboSiConfig, WeeboSiTeam};
 use weebo_si_dwoc_pin::{DwocPin, Workspace};
 use weebo_si_envtest_support::{EnvTest, free_port, generate_webhook_tls};
 use weebo_si_runtime::{
@@ -104,7 +104,7 @@ async fn wait_established(crds: &Api<CustomResourceDefinition>, name: &str) {
 }
 
 fn devworkspace_resource() -> kube::api::ApiResource {
-    let gvk = GroupVersionKind::gvk("controller.devfile.io", "v1alpha1", "DevWorkspace");
+    let gvk = GroupVersionKind::gvk("workspace.devfile.io", "v1alpha2", "DevWorkspace");
     kube::api::ApiResource::from_gvk_with_plural(&gvk, "devworkspaces")
 }
 
@@ -210,8 +210,8 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
                 reinvocation_policy: Some("IfNeeded".to_string()),
                 rules: Some(vec![RuleWithOperations {
                     operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
-                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
-                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha2".to_string()]),
                     resources: Some(vec!["devworkspaces".to_string()]),
                     scope: Some("Namespaced".to_string()),
                 }]),
@@ -485,8 +485,8 @@ async fn an_unreachable_webhook_fails_closed() {
                 timeout_seconds: Some(2),
                 rules: Some(vec![RuleWithOperations {
                     operations: Some(vec!["CREATE".to_string()]),
-                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
-                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha2".to_string()]),
                     resources: Some(vec!["devworkspaces".to_string()]),
                     scope: Some("Namespaced".to_string()),
                 }]),
@@ -1438,8 +1438,8 @@ async fn the_real_chart_namespace_selector_excludes_labelled_namespaces_live() {
                 namespace_selector: Some(namespace_selector),
                 rules: Some(vec![RuleWithOperations {
                     operations: Some(vec!["CREATE".to_string()]),
-                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
-                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha2".to_string()]),
                     resources: Some(vec!["devworkspaces".to_string()]),
                     scope: Some("Namespaced".to_string()),
                 }]),
@@ -1567,8 +1567,8 @@ const RFC4_WORKSPACE_NAMESPACE: &str = "user-alice";
 /// from `dwoc-pin`'s opt-out, on purpose — see the RFC's *Design*.
 const WORKSPACE_NAMESPACE_LABEL: &str = "hardening.weebo.io/workspace-namespace";
 
-fn rfc4_config(mode: FeatureMode) -> NetworkProfilesConfig {
-    NetworkProfilesConfig {
+fn rfc4_config(mode: FeatureMode) -> ResolvedNetworkProfilesConfig {
+    Resolved::without_teams(NetworkProfilesConfig {
         mode,
         namespace_selector: None,
         catalog: ProfileCatalog::new(vec![Profile {
@@ -1582,12 +1582,11 @@ fn rfc4_config(mode: FeatureMode) -> NetworkProfilesConfig {
             }],
         }]),
         baseline: ProfileKey::new("base"),
-        grants: BTreeMap::new(),
         namespace_selection: ProfileNamespaceSelection::default(),
         workspace_selection: WorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: Enforcement::default(),
-    }
+    })
 }
 
 /// The `spec` half of the same thing, for the `WeeboSiConfig` the live webhook reads its mode
@@ -2052,8 +2051,8 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
                 timeout_seconds: Some(5),
                 rules: Some(vec![RuleWithOperations {
                     operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
-                    api_groups: Some(vec!["controller.devfile.io".to_string()]),
-                    api_versions: Some(vec!["v1alpha1".to_string()]),
+                    api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha2".to_string()]),
                     resources: Some(vec!["devworkspaces".to_string()]),
                     scope: Some("Namespaced".to_string()),
                 }]),
@@ -2314,8 +2313,8 @@ async fn register_image_policy_webhooks(client: kube::Client, port: u16, ca_bund
             timeout_seconds: Some(5),
             rules: Some(vec![ValidatingRule {
                 operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
-                api_groups: Some(vec!["controller.devfile.io".to_string()]),
-                api_versions: Some(vec!["v1alpha1".to_string()]),
+                api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                api_versions: Some(vec!["v1alpha2".to_string()]),
                 resources: Some(vec!["devworkspaces".to_string()]),
                 scope: Some("Namespaced".to_string()),
             }]),

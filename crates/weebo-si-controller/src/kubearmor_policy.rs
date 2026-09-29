@@ -31,16 +31,16 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, DomainError, FeatureId};
-use weebo_si_crd::{
-    DEVWORKSPACE_ID_LABEL, DefaultPosture, FeatureMode, KubeArmorPolicyConfig, NamespaceName,
-};
+use weebo_si_crd::{DefaultPosture, FeatureMode, NamespaceName, ResolvedKubeArmorPolicyConfig};
 use weebo_si_kubearmor_policy::{
     EnforcementSubjects, KubeArmorPolicy, NamespaceSubject, NodeEnforcerView, PolicyStore,
     ReconcileObserver, ReconcileOutcome, Workspace,
 };
 use weebo_si_network_profiles::is_excluded_namespace;
 
-use crate::network_profiles::devworkspace_resource;
+use crate::network_profiles::{
+    devworkspace_id, devworkspace_owner, devworkspace_resource, warn_held,
+};
 
 /// This feature's identifier, as the gate and the log lines name it.
 const FEATURE: &str = "kubearmor-policy";
@@ -51,8 +51,8 @@ const FEATURE: &str = "kubearmor-policy";
 pub struct KubeArmorPolicyDeps {
     /// The feature, sharing its config `Arc` with `config` below.
     pub feature: Arc<KubeArmorPolicy>,
-    /// The same `Arc<RwLock<Option<KubeArmorPolicyConfig>>>` `feature` was constructed with.
-    pub config: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
+    /// The same `Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>` `feature` was constructed with.
+    pub config: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace.
@@ -163,6 +163,12 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
     }
 
     let name = NamespaceName::new(ns.name_any());
+    // A namespace being deleted is being emptied by the namespace controller; writing its
+    // objects back would be refused (the namespace is terminating) and retried every pass until
+    // it is gone.
+    if ns.metadata.deletion_timestamp.is_some() {
+        return Ok(Action::await_change());
+    }
     if is_excluded_namespace(&name, &ctx.deps.operator_namespace) {
         return Ok(Action::await_change());
     }
@@ -190,6 +196,7 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
     .map_err(|err| Error(err.to_string()))?;
 
     ctx.deps.observer.reconciled(&outcome);
+    warn_held(FEATURE, &outcome.held);
 
     // `posture_to_write` is `None` in `DryRun` — the domain owns that rule, so this call site
     // cannot get it wrong by reading `mode` a second time.
@@ -230,13 +237,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         return Ok(Action::await_change());
     }
 
-    let Some(workspace_id) = obj
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(DEVWORKSPACE_ID_LABEL))
-        .cloned()
-    else {
+    let Some(workspace_id) = devworkspace_id(&obj) else {
         // DevWorkspace Operator has not assigned the id yet — nothing to key a profile object
         // by, and nothing to select on either.
         return Ok(Action::requeue(Duration::from_secs(15)));
@@ -280,12 +281,16 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         .facts(&namespace)
         .unwrap_or_default();
     let context = Context::new(&teams, &facts, ctx.deps.dwoc_catalog.as_ref());
+    let owner = devworkspace_owner(&obj).ok_or_else(|| {
+        Error("DevWorkspace carries no name or uid to own its objects".to_string())
+    })?;
     let subject = Workspace {
         name: obj.name_any(),
         namespace: namespace.clone(),
         workspace_id,
         attribute,
         namespace_annotation,
+        owner,
     };
 
     let outcome = weebo_si_kubearmor_policy::reconcile(
@@ -300,6 +305,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
 
     ctx.deps.observer.reconciled(&outcome);
     warn_not_granted(&outcome, &subject.name);
+    warn_held(FEATURE, &outcome.held);
     println!(
         "weebo-si-controller: {FEATURE} workspace={}/{} mode={mode:?} diffs={} applied={:?}",
         subject.namespace,

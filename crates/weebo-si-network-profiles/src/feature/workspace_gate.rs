@@ -21,7 +21,7 @@
 use std::sync::{Arc, RwLock};
 
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
-use weebo_si_crd::{NamespaceName, NetworkProfilesConfig};
+use weebo_si_crd::{NamespaceName, ResolvedNetworkProfilesConfig};
 
 use crate::exclusion::is_excluded_namespace;
 use crate::port::BaselineView;
@@ -68,7 +68,7 @@ impl Subject for WorkspaceAdmission {
 /// [`crate::NetworkProfiles`] so the two halves of one feature can never disagree about the
 /// catalogue, the grants or `onNotGranted`.
 pub struct WorkspaceGate {
-    config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+    config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
     baselines: Arc<dyn BaselineView>,
     operator_namespace: NamespaceName,
 }
@@ -78,7 +78,7 @@ impl WorkspaceGate {
     /// [`crate::exclusion`] for why the webhook has to apply the identical rule the controller
     /// does.
     pub fn new(
-        config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+        config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
         baselines: Arc<dyn BaselineView>,
         operator_namespace: NamespaceName,
     ) -> Self {
@@ -187,9 +187,9 @@ mod tests {
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
-        Backend, Enforcement, FeatureMode, OnNotGranted, Profile, ProfileCatalog, ProfileGrant,
-        ProfileKey, ProfileNamespaceSelection, Selector, Team, TeamName, TemplateRef, Variant,
-        WorkspaceSelection,
+        Backend, Enforcement, FeatureMode, NetworkProfilesConfig, OnNotGranted, Profile,
+        ProfileCatalog, ProfileGrant, ProfileKey, ProfileNamespaceSelection, Resolved, Selector,
+        Team, TeamName, TemplateRef, Variant, WorkspaceSelection,
     };
 
     use super::*;
@@ -210,7 +210,7 @@ mod tests {
         }
     }
 
-    fn config(on_not_granted: OnNotGranted) -> NetworkProfilesConfig {
+    fn config(on_not_granted: OnNotGranted) -> ResolvedNetworkProfilesConfig {
         let mut grants = BTreeMap::new();
         grants.insert(
             "team-1".to_string(),
@@ -219,17 +219,17 @@ mod tests {
                 default: vec![ProfileKey::new("git")],
             },
         );
-        NetworkProfilesConfig {
+        Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
             catalog: ProfileCatalog::new(vec![profile("base"), profile("git"), profile("vault")]),
             baseline: ProfileKey::new("base"),
-            grants,
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted,
             enforcement: Enforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn gate(on_not_granted: OnNotGranted, namespaces_with_baseline: &[&str]) -> WorkspaceGate {

@@ -23,6 +23,8 @@
 
 pub mod diff;
 pub mod object;
+pub mod scope;
 
 pub use diff::{Applied, Diff, Managed, compute_diff, tally};
-pub use object::{ObjectKey, PodSelector};
+pub use object::{ObjectKey, Owner, PodSelector};
+pub use scope::{OwnedScope, Selected, compute_owned_diff};

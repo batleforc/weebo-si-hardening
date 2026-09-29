@@ -13,6 +13,7 @@ pub mod managed;
 pub mod mutation;
 pub mod namespace_facts;
 pub mod port;
+pub mod teardown;
 
 pub use admit::{AdmitOutcome, admit};
 pub use error::DomainError;

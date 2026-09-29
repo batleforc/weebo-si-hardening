@@ -36,12 +36,22 @@ tasks:
       - postmortem tree . --online --vulns --fail-on-vuln high --max-high 0 --max-sus 0
 
   image:
-    desc: 'Build and Trivy-scan one brick''s image exactly as CI does (usage: task ci:image BRICK=passwd-append)'
+    desc: 'Build and Trivy-scan one brick''s image exactly as CI does (usage: task ci:image BRICK=passwd-append, or BRICK=weebo-si-operator)'
     requires:
       vars: [BRICK]
+    vars:
+      # A brick is either a simple binary under bins/ or a hexagonal crate under crates/ (the
+      # operator) — the same `path` input each build-*.yaml caller hands brick.yaml.
+      BRICK_DIR:
+        sh: |
+          for d in bins/{{.BRICK}} crates/{{.BRICK}}; do
+            if [ -f "$d/Containerfile" ]; then echo "$d"; exit 0; fi
+          done
+          echo "no Containerfile for brick '{{.BRICK}}' under bins/ or crates/" >&2
+          exit 1
     cmds:
       # Needs a container engine, which the Che workspace does not have — this is
       # for a laptop, or for reproducing a CI failure somewhere that does.
-      - podman build -f bins/{{.BRICK}}/Containerfile -t {{.BRICK}}:ci .
+      - podman build -f {{.BRICK_DIR}}/Containerfile -t {{.BRICK}}:ci .
       - trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 {{.BRICK}}:ci
-      - trivy config --severity HIGH,CRITICAL --exit-code 1 bins/{{.BRICK}}/Containerfile
+      - trivy config --severity HIGH,CRITICAL --exit-code 1 {{.BRICK_DIR}}/Containerfile

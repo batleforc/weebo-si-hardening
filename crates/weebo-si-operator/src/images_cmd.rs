@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::{Api, Client};
 use weebo_si_crd::{
-    ImagePolicyConfig, NamespaceName, SINGLETON_NAME, Team, TeamName, WeeboSiConfig, WeeboSiTeam,
-    team_views,
+    NamespaceName, ResolvedImagePolicyConfig, SINGLETON_NAME, Team, TeamName, WeeboSiConfig,
+    WeeboSiTeam, team_views,
 };
 use weebo_si_image_policy::port::{ImagePolicyObserver, Resource};
 use weebo_si_image_policy::variable::resolve_declared;
@@ -112,19 +112,19 @@ impl weebo_si_chassis::port::namespace_view::NamespaceView for ListedNamespaces 
 ///
 /// The resolution is not optional: RFC 0011 keeps each team's catalogue on its own object, so a
 /// CLI reading only the singleton would report what the cluster would do if no team existed.
-async fn load_config(client: &Client) -> Result<(ImagePolicyConfig, Vec<Team>), String> {
+async fn load_config(client: &Client) -> Result<(ResolvedImagePolicyConfig, Vec<Team>), String> {
     let api: Api<WeeboSiConfig> = Api::all(client.clone());
     let config = api
         .get(SINGLETON_NAME)
         .await
         .map_err(|err| format!("could not read WeeboSiConfig/{SINGLETON_NAME}: {err}"))?;
-    let mut image_policy = config.spec.features.image_policy.clone().ok_or_else(|| {
+    let image_policy = config.spec.features.image_policy.as_ref().ok_or_else(|| {
         "WeeboSiConfig/cluster carries no spec.features.imagePolicy — there is nothing to judge \
          against yet. Write the catalogue first (mode: Off is fine), then re-run."
             .to_string()
     })?;
     let teams = load_teams(client).await?;
-    image_policy.resolve(&teams);
+    let (image_policy, _conflicts) = image_policy.resolve(&teams);
     Ok((image_policy, team_views(&teams)))
 }
 
@@ -159,7 +159,7 @@ async fn load_namespaces(client: &Client) -> Result<ListedNamespaces, String> {
 /// DevWorkspace in hand, and reporting a narrower answer than the floor actually enforces would
 /// make `audit` say a running pod is denied when it is not.
 fn judge_in_namespace(
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     teams: &[Team],
     namespace: &NamespaceName,
     namespaces: &ListedNamespaces,

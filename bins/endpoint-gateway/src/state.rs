@@ -84,9 +84,14 @@ pub struct GatewayState {
     /// the JWKS cache's outage tolerance for the ability to serve a platform whose access tokens
     /// carry no claims.
     pub introspector: Option<Introspector>,
-    /// The login path. `None` where discovery failed at boot and the gateway is serving cookies
-    /// it already minted — a sign-in is then unavailable, and every existing session still works.
-    pub oidc: Option<OidcClient>,
+    /// The login path. Empty while discovery has not succeeded yet — at boot it is tried once,
+    /// and on failure retried in the background with backoff until it does (`main.rs`), so an
+    /// identity provider that was down when this replica started costs sign-ins until it is back
+    /// rather than for the life of the pod. Every existing session works throughout.
+    pub oidc: std::sync::OnceLock<OidcClient>,
+    /// Set on SIGTERM: `/readyz` answers `503` from then on, so the replica leaves the rotation
+    /// before its listener closes.
+    pub shutting_down: std::sync::atomic::AtomicBool,
     /// The clock.
     pub clock: SystemClock,
     /// Opened cookies, by hash.
@@ -103,6 +108,9 @@ pub struct GatewayState {
     /// a surface*. `/auth` is exempt: it is the hot path, the ingress controller is its only
     /// caller, and the peer check of *Checking that assumption* is what protects it instead.
     pub login_limiter: crate::ratelimit::RateLimiter,
+    /// `/oidc/backchannel-logout`'s own limiter — every call comes from the identity provider's
+    /// egress address, so it cannot share the sign-in bucket.
+    pub logout_limiter: crate::ratelimit::RateLimiter,
     /// Sessions that have already been logged as reaching a host — the bounded set behind
     /// "one line per user per host per session" rather than one per asset.
     pub logged: IdentityCache<()>,
@@ -114,10 +122,11 @@ pub struct GatewayState {
     pub registry: Registry,
     /// Whether the gate answers its verdict or only records it.
     pub enforcement: Enforcement,
-    /// What `/selftest` requires a caller to present — minted at boot, known only to this
-    /// process and the probe it runs. `/selftest` reports observations, never secrets, and this
-    /// is what keeps even those from being a public endpoint.
-    pub selftest_token: String,
+    /// What `/selftest` requires a caller to present, one per session key, newest first —
+    /// derived from the keys every replica shares, so the probe is answered by whichever replica
+    /// the `Service` picks. `/selftest` reports observations, never secrets, and this is what
+    /// keeps even those from being a public endpoint.
+    pub selftest_tokens: Vec<String>,
     /// The JWKS generation the identity caches were last valid for.
     pub keys_generation: std::sync::atomic::AtomicU64,
     /// The forwarding client the `ReverseProxy` shell uses. Built even in forward-auth mode,
@@ -130,6 +139,23 @@ pub struct GatewayState {
 }
 
 impl GatewayState {
+    /// The login path, once discovery has succeeded.
+    pub fn oidc(&self) -> Option<&OidcClient> {
+        self.oidc.get()
+    }
+
+    /// Whether this replica has been asked to stop.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Mark this replica as draining — `/readyz` fails from now on.
+    pub fn begin_shutdown(&self) {
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// What the catalogue says about a host.
     pub fn catalog_lookup(
         &self,
@@ -149,9 +175,9 @@ impl GatewayState {
             return;
         };
         let now = self.now();
-        if crate::adapters::kube_workload::KubeWorkloadIdentity::looks_like_service_account_token(
-            token,
-        ) {
+        // Shape, claimed issuer and claimed expiry — all unverified, all free — decide whether a
+        // `TokenReview` is worth asking for; the reviewer's own limits bound how many are.
+        if self.workloads.worth_reviewing(token, now) {
             if weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_service_account(
                 self.workloads.as_ref(),
                 token,
@@ -159,7 +185,10 @@ impl GatewayState {
             )
             .is_none()
             {
-                let reviewed = self.workloads.review(token, now).await;
+                let reviewed = self
+                    .workloads
+                    .review(token, address.unwrap_or_default(), now)
+                    .await;
                 self.metrics.bearer(
                     weebo_si_endpoint_auth::bearer::TokenShape::ServiceAccount,
                     if reviewed.is_some() {
@@ -195,27 +224,18 @@ impl GatewayState {
         }
     }
 
-    /// What the per-address limiter keys on.
-    ///
-    /// A hint, never an identity: it is the address the controller stated, and a caller who can
-    /// vary it can vary their source address too. It bounds the cost of a flood; nothing here
-    /// decides who anybody is, which is why it may read a header the identity path refuses to.
+    /// What the per-address limiter keys on — see [`limit_key`].
     pub fn limit_key(
         &self,
         headers: &axum::http::HeaderMap,
         peer: Option<std::net::SocketAddr>,
     ) -> String {
-        headers
-            .get(
-                self.config
-                    .self_origin
-                    .client_ip_header
-                    .to_ascii_lowercase(),
-            )
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .or_else(|| peer.map(|peer| peer.ip().to_string()))
-            .unwrap_or_default()
+        limit_key(
+            &self.config.self_origin.trusted_proxy,
+            &self.config.self_origin.client_ip_header,
+            headers,
+            peer,
+        )
     }
 
     /// Whether the client-address header may be believed for this connection.
@@ -226,21 +246,8 @@ impl GatewayState {
     /// path, where the connection is the controller's by construction — the controller is the
     /// only thing that calls `/auth`.
     pub fn trusts_client_address(&self, peer: Option<std::net::SocketAddr>) -> bool {
-        use crate::config::TrustedProxy;
-
-        if !self.workloads.addresses_trusted() {
-            return false;
-        }
-        match (&self.config.self_origin.trusted_proxy, peer) {
-            (TrustedProxy::Off, _) => false,
-            (TrustedProxy::Any, _) | (_, None) => true,
-            (TrustedProxy::Cidrs(prefixes), Some(peer)) => {
-                let address = peer.ip().to_string();
-                prefixes
-                    .iter()
-                    .any(|prefix| address.starts_with(prefix.as_str()))
-            }
-        }
+        self.workloads.addresses_trusted()
+            && peer_may_state_address(&self.config.self_origin.trusted_proxy, peer)
     }
 
     /// Drop every cached identity when the issuer's keys have rotated.
@@ -303,29 +310,6 @@ impl GatewayState {
         }
     }
 
-    /// The identity a request proved, for the outbound headers. Re-derived rather than carried
-    /// out of the decision, because the decision's answer is a verdict and a reason — not a
-    /// caller — and widening it to return one would put the identity on the path of every denial
-    /// too.
-    pub fn identity_of(&self, request: &AuthRequest, presented: &Presented) -> Option<Claims> {
-        let now = self.now();
-        if let Some(sealed) = presented.cookie.as_deref()
-            && let Some(payload) =
-                self.codec
-                    .open(sealed, Binding::HostBound(request.host.as_str()), now)
-        {
-            return Some(payload.claims());
-        }
-        let token = presented.bearer.as_deref()?;
-        // `examine` rather than the port's `verify`: this runs on the *allow* path of every
-        // request that carried a bearer, and counting it would turn a verification counter into a
-        // request counter.
-        self.verifier
-            .examine(token, now)
-            .identity
-            .map(|(claims, _)| claims)
-    }
-
     /// The claims an ID token carries, verified against the issuer's keys.
     ///
     /// Its own entry point rather than the bearer branch, because the two want opposite things
@@ -343,7 +327,7 @@ impl GatewayState {
     pub async fn revoke_from_logout_token(
         &self,
         logout_token: &str,
-    ) -> Result<Option<String>, kube::Error> {
+    ) -> Result<Option<String>, crate::adapters::kube_revocations::RevokeError> {
         let now = self.now();
         let Some(session) = self
             .verifier
@@ -353,7 +337,11 @@ impl GatewayState {
             return Ok(None);
         };
         self.revocations
-            .revoke(&session, now.plus_secs(self.config.session.sso_ttl_secs))
+            .revoke(
+                &session,
+                now.plus_secs(self.config.session.sso_ttl_secs),
+                now,
+            )
             .await?;
         // Drop it here too rather than waiting for the informer: the replica that received the
         // logout is the one most likely to be asked about that session next.
@@ -378,8 +366,7 @@ impl GatewayState {
         use crate::config::RevalidationMode;
 
         let backchannel = self
-            .oidc
-            .as_ref()
+            .oidc()
             .is_some_and(|oidc| oidc.discovery().backchannel_logout_supported);
         let due_by_mode = match self.config.revalidation.mode {
             RevalidationMode::Never => false,
@@ -400,7 +387,7 @@ impl GatewayState {
         if !overdue && !stale_groups {
             return Ok((sso, None));
         }
-        let (Some(oidc), Some(refresh)) = (self.oidc.as_ref(), sso.refresh.clone()) else {
+        let (Some(oidc), Some(refresh)) = (self.oidc(), sso.refresh.clone()) else {
             // Nothing to re-prove with. Not an error: a session minted before refresh tokens
             // were configured keeps working until it expires, and the startup warning an admin
             // sees is the one that says so. A stale group generation with no way to refresh is
@@ -430,6 +417,7 @@ impl GatewayState {
             grant_id: None,
             proved_at: now.as_secs(),
             refresh: tokens.refresh_token.clone().or(Some(refresh)),
+            session_expires_at: None,
         };
         let sealed = self.codec.seal(&renewed, Binding::Sso).ok_or(())?;
         Ok((renewed, Some(sealed)))
@@ -450,23 +438,18 @@ impl GatewayState {
         let payload = self
             .codec
             .open(sealed, Binding::HostBound(request.host.as_str()), now)?;
-        let ttl = self.config.session.host_ttl_secs;
-        let half_life = Timestamp::from_secs(payload.expires_at)
-            .as_secs()
-            .saturating_sub(ttl / 2);
-        if now.as_secs() < half_life {
+        // A grant is not a session, and is never slid into one.
+        if payload.grant_id.is_some() {
             return None;
         }
-        let renewed = crate::adapters::session::SealedPayload {
-            expires_at: now.plus_secs(ttl).as_secs(),
-            ..payload
-        };
+        let renewed = slid(payload, now.as_secs(), self.config.session.host_ttl_secs)?;
         let value = self
             .codec
             .seal(&renewed, Binding::HostBound(request.host.as_str()))?;
         Some(format!(
-            "{}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={ttl}",
-            crate::http::HOST_COOKIE
+            "{}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
+            crate::http::HOST_COOKIE,
+            renewed.expires_at.saturating_sub(now.as_secs())
         ))
     }
 
@@ -581,5 +564,171 @@ impl GatewayState {
                 config.bearer.introspection.negative_ttl_secs.max(1),
             ),
         }
+    }
+}
+
+/// Whether a connection from `peer` is one allowed to state a caller's address in a header.
+///
+/// `peer` is `None` on the forward-auth path, where the only caller is the ingress controller.
+pub fn peer_may_state_address(
+    trusted: &crate::config::TrustedProxy,
+    peer: Option<std::net::SocketAddr>,
+) -> bool {
+    use crate::config::TrustedProxy;
+
+    match (trusted, peer) {
+        (TrustedProxy::Off, _) => false,
+        (TrustedProxy::Any, _) | (_, None) => true,
+        (TrustedProxy::Cidrs(cidrs), Some(peer)) => {
+            cidrs.iter().any(|cidr| cidr.contains(peer.ip()))
+        }
+    }
+}
+
+/// What the per-address limiter keys on.
+///
+/// A hint, never an identity: it bounds the cost of a flood and decides nothing about who anybody
+/// is. **The client-address header is read only from a peer `trusted_proxy` admits** (second-pass
+/// finding 6): it used to be read from any connection, so a caller that could reach the Service
+/// directly chose its own bucket per request and was never limited at all. Otherwise the key is
+/// the connection's own address.
+pub fn limit_key(
+    trusted: &crate::config::TrustedProxy,
+    header: &str,
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> String {
+    peer_may_state_address(trusted, peer)
+        .then(|| {
+            headers
+                .get(header.to_ascii_lowercase())
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.trim().to_owned())
+        })
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .or_else(|| peer.map(|peer| peer.ip().to_string()))
+        .unwrap_or_default()
+}
+
+/// The host cookie `payload` slides into at `now`, or `None` when it should not be re-minted.
+///
+/// Only past half-life, and **never past the SSO session it came from** (M1): the re-mint used to
+/// be `now + host_ttl` unconditionally, so a host cookie in continuous use outlived the session
+/// that proved it — indefinitely, one half-life at a time. It is capped at
+/// `session_expires_at`, and a cookie that does not carry one (minted before the field existed)
+/// is not slid at all: it lives out its own expiry and the next one is minted through the SSO
+/// cookie, which is where the bound lives.
+pub fn slid(
+    payload: crate::adapters::session::SealedPayload,
+    now: u64,
+    ttl: u64,
+) -> Option<crate::adapters::session::SealedPayload> {
+    let cap = payload.session_expires_at?;
+    let half_life = payload.expires_at.saturating_sub(ttl / 2);
+    if now < half_life {
+        return None;
+    }
+    let expires_at = crate::http::capped_expiry(now, ttl, Some(cap));
+    if expires_at <= payload.expires_at {
+        // Already as far as the session allows: re-minting would set a cookie for nothing.
+        return None;
+    }
+    Some(crate::adapters::session::SealedPayload {
+        expires_at,
+        ..payload
+    })
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use super::*;
+    use crate::adapters::session::SealedPayload;
+
+    fn host_cookie(expires_at: u64, session_expires_at: Option<u64>) -> SealedPayload {
+        SealedPayload {
+            username: "alice".into(),
+            groups: Vec::new(),
+            session: Some("sid-1".into()),
+            expires_at,
+            generation: 1,
+            grant_id: None,
+            proved_at: 0,
+            refresh: None,
+            session_expires_at,
+        }
+    }
+
+    #[test]
+    fn sliding_never_outlives_the_sso_session_it_came_from() {
+        let ttl = 3_600;
+        // Past half-life, session ends in 10 minutes: the re-mint stops at the session's end.
+        let renewed = slid(host_cookie(10_000, Some(10_600)), 9_000, ttl).unwrap();
+        assert_eq!(renewed.expires_at, 10_600);
+        // Past half-life, session far away: a full ttl, as before.
+        let renewed = slid(host_cookie(10_000, Some(100_000)), 9_000, ttl).unwrap();
+        assert_eq!(renewed.expires_at, 12_600);
+        // Continuous use cannot walk past the cap one half-life at a time.
+        let mut cookie = host_cookie(10_000, Some(20_000));
+        let mut now = 9_000;
+        while let Some(next) = slid(cookie.clone(), now, ttl) {
+            cookie = next;
+            now = cookie.expires_at - ttl / 2 + 1;
+        }
+        assert_eq!(cookie.expires_at, 20_000);
+        // Before half-life, nothing.
+        assert!(slid(host_cookie(10_000, Some(100_000)), 7_000, ttl).is_none());
+    }
+
+    /// Second-pass finding 6: the limiter's key came from the client-address header whatever
+    /// connection carried it, so any caller could pick a fresh bucket per request.
+    #[test]
+    fn the_limit_key_believes_the_address_header_only_from_a_trusted_peer() {
+        use crate::config::{Cidr, TrustedProxy};
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-real-ip", "198.51.100.7".parse().unwrap());
+        let controller: std::net::SocketAddr = "10.128.0.5:4000".parse().unwrap();
+        let stranger: std::net::SocketAddr = "10.42.0.9:4000".parse().unwrap();
+        let cidrs = TrustedProxy::Cidrs(vec![Cidr::parse("10.128.0.0/16").unwrap()]);
+
+        assert_eq!(
+            limit_key(&cidrs, "X-Real-Ip", &headers, Some(controller)),
+            "198.51.100.7"
+        );
+        // Not a trusted peer: its own address, whatever header it sent.
+        assert_eq!(
+            limit_key(&cidrs, "X-Real-Ip", &headers, Some(stranger)),
+            "10.42.0.9"
+        );
+        assert_eq!(
+            limit_key(&TrustedProxy::Off, "X-Real-Ip", &headers, Some(controller)),
+            "10.128.0.5"
+        );
+        // `any` is the admin saying every peer may state it.
+        assert_eq!(
+            limit_key(&TrustedProxy::Any, "X-Real-Ip", &headers, Some(stranger)),
+            "198.51.100.7"
+        );
+        // A trusted peer that states nothing is keyed on itself.
+        assert_eq!(
+            limit_key(
+                &cidrs,
+                "X-Real-Ip",
+                &axum::http::HeaderMap::new(),
+                Some(controller)
+            ),
+            "10.128.0.5"
+        );
+    }
+
+    #[test]
+    fn a_host_cookie_without_its_session_bound_is_not_slid() {
+        assert!(slid(host_cookie(10_000, None), 9_900, 3_600).is_none());
     }
 }

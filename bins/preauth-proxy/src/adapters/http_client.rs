@@ -3,6 +3,13 @@
 //! Both sit on one `hyper` client over plain HTTP. Redirects are deliberately **not** followed —
 //! the acquisition response itself carries the credential, and a `3xx` `Location` on a login
 //! exchange typically points at a public host this process has no business calling.
+//!
+//! Every exchange is bounded: the connector by `limits.connect_timeout`, and each request — connect
+//! included — by `limits.response_timeout` until its response head arrives. Without the latter a
+//! stalled upstream would pin a task and its buffered request body for as long as the socket
+//! stayed open.
+
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{HeaderValue, Request, Response, header};
@@ -25,9 +32,23 @@ const MAX_CREDENTIAL_LEN: usize = 8 * 1024;
 /// body: the acquisition body is config, and a forwarded body must stay replayable.
 type HttpClient = Client<HttpConnector, Full<Bytes>>;
 
-/// Build the client both adapters share.
-pub fn client() -> HttpClient {
-    Client::builder(TokioExecutor::new()).build_http()
+/// Build the client both adapters share, with `connect_timeout` on every new connection.
+pub fn client(connect_timeout: Duration) -> HttpClient {
+    let mut connector = HttpConnector::new();
+    connector.set_connect_timeout(Some(connect_timeout));
+    Client::builder(TokioExecutor::new()).build(connector)
+}
+
+/// Send `request`, giving up if no response head arrives within `limit`.
+async fn send(
+    client: &HttpClient,
+    request: Request<Full<Bytes>>,
+    limit: Duration,
+) -> Result<Response<hyper::body::Incoming>, String> {
+    match tokio::time::timeout(limit, client.request(request)).await {
+        Ok(result) => result.map_err(|err| err.to_string()),
+        Err(_) => Err(format!("no response within {}s", limit.as_secs_f32())),
+    }
 }
 
 /// [`CredentialSource`] over the configured HTTP exchange.
@@ -35,14 +56,16 @@ pub fn client() -> HttpClient {
 pub struct HttpCredentialSource {
     client: HttpClient,
     acquisition: Acquisition,
+    timeout: Duration,
 }
 
 impl HttpCredentialSource {
-    /// Wire the adapter to one acquisition config.
-    pub const fn new(client: HttpClient, acquisition: Acquisition) -> Self {
+    /// Wire the adapter to one acquisition config; `timeout` bounds each exchange.
+    pub const fn new(client: HttpClient, acquisition: Acquisition, timeout: Duration) -> Self {
         Self {
             client,
             acquisition,
+            timeout,
         }
     }
 
@@ -83,11 +106,9 @@ impl HttpCredentialSource {
 
 impl CredentialSource for HttpCredentialSource {
     async fn acquire(&self) -> Result<Credential, AcquireError> {
-        let response = self
-            .client
-            .request(self.build()?)
+        let response = send(&self.client, self.build()?, self.timeout)
             .await
-            .map_err(|err| AcquireError::Unreachable(err.to_string()))?;
+            .map_err(AcquireError::Unreachable)?;
 
         let status = response.status();
         if !self.acquisition.accept_status.contains(&status) {
@@ -123,12 +144,17 @@ impl CredentialSource for HttpCredentialSource {
 pub struct HttpUpstream {
     client: HttpClient,
     origin: Origin,
+    timeout: Duration,
 }
 
 impl HttpUpstream {
-    /// Wire the adapter to one upstream origin.
-    pub const fn new(client: HttpClient, origin: Origin) -> Self {
-        Self { client, origin }
+    /// Wire the adapter to one upstream origin; `timeout` bounds each response head.
+    pub const fn new(client: HttpClient, origin: Origin, timeout: Duration) -> Self {
+        Self {
+            client,
+            origin,
+            timeout,
+        }
     }
 }
 
@@ -163,10 +189,9 @@ impl Upstream for HttpUpstream {
             .body(Full::new(body))
             .map_err(|err| GatewayError(err.to_string()))?;
 
-        self.client
-            .request(request)
+        send(&self.client, request, self.timeout)
             .await
-            .map_err(|err| GatewayError(err.to_string()))
+            .map_err(GatewayError)
     }
 }
 
@@ -180,6 +205,61 @@ mod tests {
     use super::*;
     use crate::domain::config::Take;
     use http::{Method, StatusCode};
+    use std::time::Instant;
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    /// A socket that accepts and then never says a word: the stalled-upstream shape.
+    async fn silent_origin() -> (Origin, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        (
+            Origin::parse("upstream", &format!("http://{addr}")).unwrap(),
+            task,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_silent_upstream_is_a_gateway_error_after_the_response_timeout() {
+        let (origin, task) = silent_origin().await;
+        let limit = Duration::from_millis(150);
+        let upstream = HttpUpstream::new(client(SECOND), origin, limit);
+
+        let started = Instant::now();
+        let request = Request::builder()
+            .uri("http://gateway/page")
+            .body(Bytes::new())
+            .unwrap();
+        let err = upstream.forward(request).await.unwrap_err();
+
+        assert!(err.0.contains("no response within"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout did not bound the wait"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_silent_origin_is_an_acquisition_failure_after_the_response_timeout() {
+        let (origin, task) = silent_origin().await;
+        let mut acq = acquisition();
+        acq.origin = origin;
+        let source = HttpCredentialSource::new(client(SECOND), acq, Duration::from_millis(150));
+
+        let err = source.acquire().await.unwrap_err();
+        assert!(
+            matches!(err, AcquireError::Unreachable(ref why) if why.contains("no response within")),
+            "{err}"
+        );
+        task.abort();
+    }
 
     fn acquisition() -> Acquisition {
         Acquisition {
@@ -199,7 +279,7 @@ mod tests {
 
     #[test]
     fn the_acquisition_request_is_built_from_the_config_alone() {
-        let source = HttpCredentialSource::new(client(), acquisition());
+        let source = HttpCredentialSource::new(client(SECOND), acquisition(), SECOND);
         let request = source.build().unwrap();
 
         assert_eq!(request.method(), Method::POST);
@@ -219,7 +299,7 @@ mod tests {
         let mut acq = acquisition();
         // A secret with a newline in it: the classic header-injection shape.
         acq.headers = vec![(header::AUTHORIZATION, "Bearer x\r\nX-Evil: 1".to_owned())];
-        let source = HttpCredentialSource::new(client(), acq);
+        let source = HttpCredentialSource::new(client(SECOND), acq, SECOND);
 
         let err = source.build().unwrap_err();
         let rendered = err.to_string();

@@ -4,7 +4,7 @@ title: kubearmor-policy
 status: Implemented
 authors: [batleforc]
 created: 2026-08-24
-updated: 2026-09-25
+updated: 2026-09-29
 decided: 2026-08-25
 brick: crates/weebo-si-kubearmor-policy
 supersedes: []
@@ -520,3 +520,6 @@ Genuinely still open:
 | 2026-08-25 | The baseline's `selector.matchLabels: {}` is recorded in the *Contract* as meaning every pod in the namespace. It was an inference from the CRD schema until confirmed; the alternative reading is silent, and would have left every baseline inert while both gauges read healthy. |
 | 2026-09-25 | Amended for [RFC 0011](./0011-teams-and-users.md): **what a team reaches moved onto the team's own object.** The `grants` map is gone from the wire; a `WeeboSiTeam` carries that team's own catalogue entries and its `default`, and the cluster catalogue keeps the `baseline` — never negotiable, and never a team's property. The two selection tiers, `onNotGranted`, the posture block and the enforcement backend are untouched, and so is the inherited validation, with `CatalogKeyConflict` replacing the `GrantNamesUndeclaredTeam` the new shape cannot produce. |
 | 2026-08-25 | RFC 0008 shipped, closing the `policy-guard` coverage question above: `kubearmorpolicies` are now guarded at admission, and the force-apply asymmetry with `network-profiles`' store is a permanent, documented decision rather than a workaround waiting on the guard. |
+| 2026-09-29 | Amended after review, same three fixes as RFC 0004's entry of this date. **Reconcile scope (blocker):** each pass now diffs only the objects carrying its own selector (`OwnedScope` / `compute_owned_diff`), so the namespace pass no longer deletes workspaces' profile objects and a workspace pass no longer deletes the baseline or a sibling's. **Unresolved templates fail closed:** the object is *held* rather than deleted; on the namespace pass the default posture still travels, as before. **Contract:** a runtime profile key must be a DNS-1123 label of at most 63 characters, in the CRD schema and in `validate()` (`InvalidProfileKey`), since it is interpolated into object names and the profile label value. |
+| 2026-09-29 | Same fix as RFC 0004's second entry of this date: **profile `KubeArmorPolicy` objects carry an `ownerReference` to their DevWorkspace** (`controller: false`, `blockOwnerDeletion: false` — no extra RBAC), so the apiserver garbage-collects them with the workspace; the baseline carries none. A live profile object missing the owner diffs as an `Update` and is adopted on its next pass. Held objects (template unresolved) are now logged as `WARN ... result=held`, one line per object. |
+| 2026-09-29 | Same second-pass fixes as [RFC 0004](./0004-network-profiles.md) records for the same date: workspace id from `status.devworkspaceId`, `validate()` wired into the `WeeboSiConfig` status (`kubearmor-policy: Degraded`), terminating namespaces skipped. |

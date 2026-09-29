@@ -70,6 +70,85 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
+/// The cookie names an injected credential sets, or `None` when they cannot be told apart.
+///
+/// `None` when:
+///
+/// - the credential is injected through a header other than `Cookie` (`Authorization`, an API
+///   key header…). The upstream then authenticates the request from that header and may well
+///   answer with a session cookie of its own for the **service** identity — whose name the
+///   proxy has no way to know. Every cookie might be the service session;
+/// - it is a `Cookie` injection whose credential has a `;`-separated part with no `=` — a shape
+///   `take: whole` can produce, and one where "which cookie is ours" has no reliable answer.
+///
+/// The caller treats `None` as "every cookie might be ours".
+fn injected_cookie_names<'a>(config: &Config, credential: &'a Credential) -> Option<Vec<&'a str>> {
+    if config.inject.header != http::header::COOKIE {
+        return None;
+    }
+    credential
+        .expose()
+        .split(';')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| pair.split_once('=').map(|(name, _)| name.trim()))
+        .collect()
+}
+
+/// Drop every `Set-Cookie` that would hand the caller the **service** session.
+///
+/// A response to an injected request was produced for the service identity. An upstream that
+/// refreshes its session on the way out (sliding expiry, rotation) would otherwise set that
+/// session in the caller's browser — the service credential escaping the proxy, and, where the
+/// cookie also carries the passthrough marker, turning every later request from that browser into
+/// a *pass-through* that bypasses injection, renewal and this very filter. A `Set-Cookie` is
+/// dropped when:
+///
+/// - the credential was injected as a `Cookie` and the `Set-Cookie` names one of its cookies —
+///   or the credential's cookie names cannot be determined, in which case **every** `Set-Cookie`
+///   is dropped (fail-closed: the caller loses at most an unrelated preference cookie);
+/// - the credential was injected through any header **other than** `Cookie`: then **every**
+///   `Set-Cookie` is dropped, because a session the upstream mints off an `Authorization` (or
+///   similar) header carries a name the proxy cannot predict. There is deliberately no opt-out:
+///   relaying "just the harmless ones" would need the very name the proxy does not have;
+/// - the passthrough marker lives in `Cookie` and the `Set-Cookie`'s `name=value` contains it.
+///
+/// Anything else (a CSRF token, a UI preference) is relayed for a `Cookie` injection, so the
+/// upstream keeps working.
+fn strip_service_cookies(headers: &mut HeaderMap, config: &Config, credential: &Credential) {
+    if !headers.contains_key(http::header::SET_COOKIE) {
+        return;
+    }
+    let ours = injected_cookie_names(config, credential);
+    let marker = (config.passthrough.header == http::header::COOKIE)
+        .then_some(config.passthrough.contains.as_str());
+
+    let kept: Vec<HeaderValue> = headers
+        .get_all(http::header::SET_COOKIE)
+        .iter()
+        .filter(|value| {
+            let Some(names) = &ours else {
+                return false;
+            };
+            // An unreadable value cannot be inspected, so it cannot be shown to be harmless.
+            let Ok(text) = value.to_str() else {
+                return false;
+            };
+            let pair = text.split(';').next().unwrap_or(text).trim();
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name).trim();
+            let sets_ours = names.contains(&name);
+            let sets_marker = marker.is_some_and(|marker| pair.contains(marker));
+            !sets_ours && !sets_marker
+        })
+        .cloned()
+        .collect();
+
+    headers.remove(http::header::SET_COOKIE);
+    for value in kept {
+        headers.append(http::header::SET_COOKIE, value);
+    }
+}
+
 /// Whether the passthrough marker is present in the configured header.
 ///
 /// A coarse substring test, exactly as the contract says. Suppressing injection only ever costs
@@ -217,6 +296,9 @@ where
             AfterResponse::Relay => {
                 let (mut parts, body) = response.into_parts();
                 strip_hop_by_hop(&mut parts.headers);
+                if let Some(credential) = &held {
+                    strip_service_cookies(&mut parts.headers, config, credential);
+                }
                 return Ok(Relayed {
                     response: Response::from_parts(parts, body),
                     renewals: exchange.replays_used(),
@@ -247,7 +329,7 @@ where
 )]
 mod tests {
     use super::*;
-    use crate::domain::config::{Acquisition, Inject, Origin, Passthrough, Renew, Take};
+    use crate::domain::config::{Acquisition, Inject, Limits, Origin, Passthrough, Renew, Take};
     use http::{Method, StatusCode};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -281,6 +363,7 @@ mod tests {
                     .collect(),
                 max_replays,
             },
+            limits: Limits::default(),
         }
     }
 
@@ -308,6 +391,7 @@ mod tests {
     struct Recorder {
         seen: Mutex<Vec<Option<String>>>,
         script: Mutex<Vec<StatusCode>>,
+        set_cookies: Vec<&'static str>,
     }
 
     impl Recorder {
@@ -321,7 +405,13 @@ mod tests {
                         .map(|s| StatusCode::from_u16(*s).unwrap())
                         .collect(),
                 ),
+                set_cookies: Vec::new(),
             }
+        }
+
+        fn setting(mut self, cookies: &[&'static str]) -> Self {
+            self.set_cookies = cookies.to_vec();
+            self
         }
 
         fn injected(&self) -> Vec<Option<String>> {
@@ -355,10 +445,11 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .pop()
                 .unwrap_or(StatusCode::OK);
-            Ok(Response::builder()
-                .status(status)
-                .body(Bytes::from_static(b"body"))
-                .unwrap())
+            let mut builder = Response::builder().status(status);
+            for cookie in &self.set_cookies {
+                builder = builder.header(http::header::SET_COOKIE, *cookie);
+            }
+            Ok(builder.body(Bytes::from_static(b"body")).unwrap())
         }
     }
 
@@ -554,6 +645,154 @@ mod tests {
             1,
             "the caller's 401 was replayed as us"
         );
+    }
+
+    fn set_cookies<B>(relayed: &Relayed<B>) -> Vec<String> {
+        relayed
+            .response
+            .headers()
+            .get_all(http::header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_set_cookie_refreshing_the_injected_session_never_reaches_the_caller() {
+        let cfg = config(InjectMode::Append, &[], 0);
+        let upstream = Recorder::scripted(&[200]).setting(&[
+            "sid=rotated; Path=/; HttpOnly",
+            "theme=dark; Path=/",
+            "csrf=abc",
+        ]);
+
+        let relayed = relay(
+            request(None),
+            &cfg,
+            &Cache::new(),
+            &Minting::default(),
+            &upstream,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            set_cookies(&relayed),
+            vec!["theme=dark; Path=/".to_owned(), "csrf=abc".to_owned()],
+            "the service session was handed to the caller, or an unrelated cookie was lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_set_cookie_carrying_the_passthrough_marker_is_dropped_too() {
+        // Were it relayed, the caller's next request would carry the marker and be passed
+        // through with a service-minted session.
+        let cfg = config(InjectMode::Set, &[], 0);
+        let upstream = Recorder::scripted(&[200]).setting(&["session=svc; Path=/", "lang=fr"]);
+
+        let relayed = relay(
+            request(None),
+            &cfg,
+            &Cache::new(),
+            &Minting::default(),
+            &upstream,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(set_cookies(&relayed), vec!["lang=fr".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_credential_whose_cookie_name_is_unclear_drops_every_set_cookie() {
+        struct Nameless;
+        impl CredentialSource for Nameless {
+            async fn acquire(&self) -> Result<Credential, AcquireError> {
+                Ok(Credential::new("opaque-token"))
+            }
+        }
+
+        let cfg = config(InjectMode::Set, &[], 0);
+        let upstream = Recorder::scripted(&[200]).setting(&["opaque=x", "lang=fr"]);
+
+        let relayed = relay(request(None), &cfg, &Cache::new(), &Nameless, &upstream)
+            .await
+            .unwrap();
+
+        assert!(
+            set_cookies(&relayed).is_empty(),
+            "{:?}",
+            set_cookies(&relayed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_passed_through_response_keeps_its_set_cookie() {
+        // The caller brought its own session; what the upstream sets is theirs.
+        let cfg = config(InjectMode::Set, &[], 0);
+        let upstream = Recorder::scripted(&[200]).setting(&["session=theirs-rotated", "sid=x"]);
+
+        let relayed = relay(
+            request(Some("session=mine")),
+            &cfg,
+            &Cache::new(),
+            &Minting::default(),
+            &upstream,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            set_cookies(&relayed),
+            vec!["session=theirs-rotated".to_owned(), "sid=x".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_cookie_injection_drops_every_set_cookie() {
+        // Injected as `Authorization`: the upstream may mint a session cookie of its own for the
+        // service identity (`grafana_session`, `connect.sid`…) under a name the proxy cannot
+        // know. Every `Set-Cookie` goes, harmless-looking ones included.
+        let mut cfg = config(InjectMode::Set, &[], 0);
+        cfg.inject.header = http::header::AUTHORIZATION;
+        let upstream =
+            Recorder::scripted(&[200]).setting(&["app_session=svc", "lang=fr", "session=svc"]);
+
+        let relayed = relay(
+            request(None),
+            &cfg,
+            &Cache::new(),
+            &Minting::default(),
+            &upstream,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            set_cookies(&relayed).is_empty(),
+            "{:?}",
+            set_cookies(&relayed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_cookie_injection_still_relays_set_cookie_on_passthrough() {
+        // The caller's own session: nothing was injected, so what the upstream sets is theirs.
+        let mut cfg = config(InjectMode::Set, &[], 0);
+        cfg.inject.header = http::header::AUTHORIZATION;
+        let upstream = Recorder::scripted(&[200]).setting(&["lang=fr"]);
+
+        let relayed = relay(
+            request(Some("session=mine")),
+            &cfg,
+            &Cache::new(),
+            &Minting::default(),
+            &upstream,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(set_cookies(&relayed), vec!["lang=fr".to_owned()]);
     }
 
     #[test]

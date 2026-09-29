@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::dwoc_pin::OnUnknownKey;
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
@@ -721,14 +722,11 @@ pub struct EndpointAuthConfig {
     /// Whether, and how, a workspace may prove it is itself.
     #[serde(default)]
     pub self_origin: SelfOriginConfig,
-    /// Per-team grants.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`EndpointAuthConfig::resolve`] fills this in from them, and a configuration nobody
-    /// resolved grants nothing — every namespace falls to `default`, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<TeamName, AccessGrant>,
 }
+
+/// [`EndpointAuthConfig`] resolved against the `WeeboSiTeam` objects — what the feature
+/// evaluates. Keyed by [`TeamName`] rather than a bare string, as the grants always were here.
+pub type ResolvedEndpointAuthConfig = Resolved<EndpointAuthConfig, AccessGrant, TeamName>;
 
 /// How a namespace names its owner, and who DevWorkspace Operator writes as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -873,6 +871,117 @@ impl fmt::Display for EndpointAuthConfigViolation {
 }
 
 impl EndpointAuthConfig {
+    /// What attaching the gate to one object comes to: the annotations to write, the keys to
+    /// drop, and — on a `ReverseProxy` dialect — where the backend goes.
+    ///
+    /// `current` is the object's annotations as submitted; `backend` is its current backend, only
+    /// read by a `ReverseProxy` dialect. An object carrying
+    /// `hardening.weebo.io/endpoint-auth: bypass` gets **nothing**: the mutation honours the
+    /// annotation by attaching nothing and the reconciler leaves it alone, so break-glass
+    /// survives the next DWO pass instead of being quietly undone.
+    pub fn attachment(
+        &self,
+        current: &BTreeMap<String, String>,
+        backend: Option<(&str, u16)>,
+    ) -> Attachment {
+        if current.get(ENDPOINT_AUTH_ANNOTATION).map(String::as_str) == Some(ENDPOINT_AUTH_BYPASS) {
+            return Attachment::default();
+        }
+        let mut annotations = self.gateway.dialect.annotations(&self.gateway);
+        annotations.insert(
+            ENDPOINT_AUTH_ANNOTATION.to_owned(),
+            ENDPOINT_AUTH_MANAGED.to_owned(),
+        );
+        let retarget = match (self.gateway.dialect.mode(), backend) {
+            (AttachmentMode::ReverseProxy, Some((service, port)))
+                if service != COMPANION_SERVICE =>
+            {
+                let upstream = format!("{service}:{port}");
+                annotations.insert(UPSTREAM_ANNOTATION.to_owned(), upstream.clone());
+                Some(Retarget {
+                    service: COMPANION_SERVICE.to_owned(),
+                    port: self.gateway.service.port,
+                    upstream,
+                })
+            }
+            _ => None,
+        };
+        Attachment {
+            annotations,
+            removals: BTreeSet::new(),
+            retarget,
+        }
+    }
+
+    /// What `mode: Off` strips: every key this dialect owns, and the managed marker.
+    pub fn detachment(&self) -> BTreeSet<String> {
+        self.gateway.dialect.managed_keys(&self.gateway)
+    }
+
+    /// The catalogue entry a key names.
+    pub fn entry(&self, key: &AccessKey) -> Option<&AccessEntry> {
+        self.catalog.iter().find(|entry| &entry.key == key)
+    }
+
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
+    ///
+    /// Returns one violation per key a team redefined; everything else stays in
+    /// [`ResolvedEndpointAuthConfig::validate`], which now runs over the resolved shape.
+    pub fn resolve(
+        &self,
+        teams: &[WeeboSiTeam],
+    ) -> (ResolvedEndpointAuthConfig, Vec<EndpointAuthConfigViolation>) {
+        let blocks: Vec<(TeamName, Vec<AccessEntry>)> = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                team.spec
+                    .features
+                    .endpoint_auth
+                    .as_ref()
+                    .map(|block| (team.team_name(), block.catalog.clone()))
+            })
+            .collect();
+
+        let (entries, conflicts) =
+            merge_catalogs(&self.catalog, &blocks, |entry| entry.key.clone());
+        let mut config = self.clone();
+        config.catalog = entries;
+
+        let grants = resolution_order(teams)
+            .into_iter()
+            .filter_map(|team| {
+                let block = team.spec.features.endpoint_auth.as_ref()?;
+                let mut allowed: Vec<AccessKey> = block
+                    .catalog
+                    .iter()
+                    .map(|entry| entry.key.clone())
+                    .collect();
+                if !allowed.contains(&self.default) {
+                    allowed.push(self.default.clone());
+                }
+                Some((
+                    team.team_name(),
+                    AccessGrant {
+                        allowed,
+                        default: block.default.clone(),
+                    },
+                ))
+            })
+            .collect();
+
+        let violations = conflicts
+            .into_iter()
+            .map(|conflict| EndpointAuthConfigViolation::CatalogKeyConflict {
+                team: conflict.team,
+                key: conflict.key,
+            })
+            .collect();
+        (Resolved { config, grants }, violations)
+    }
+}
+
+impl ResolvedEndpointAuthConfig {
     /// Every violation this configuration holds, in one pass.
     pub fn validate(&self, teams: &[Team]) -> Vec<EndpointAuthConfigViolation> {
         let mut violations = Vec::new();
@@ -984,109 +1093,6 @@ impl EndpointAuthConfig {
         violations
     }
 
-    /// What attaching the gate to one object comes to: the annotations to write, the keys to
-    /// drop, and — on a `ReverseProxy` dialect — where the backend goes.
-    ///
-    /// `current` is the object's annotations as submitted; `backend` is its current backend, only
-    /// read by a `ReverseProxy` dialect. An object carrying
-    /// `hardening.weebo.io/endpoint-auth: bypass` gets **nothing**: the mutation honours the
-    /// annotation by attaching nothing and the reconciler leaves it alone, so break-glass
-    /// survives the next DWO pass instead of being quietly undone.
-    pub fn attachment(
-        &self,
-        current: &BTreeMap<String, String>,
-        backend: Option<(&str, u16)>,
-    ) -> Attachment {
-        if current.get(ENDPOINT_AUTH_ANNOTATION).map(String::as_str) == Some(ENDPOINT_AUTH_BYPASS) {
-            return Attachment::default();
-        }
-        let mut annotations = self.gateway.dialect.annotations(&self.gateway);
-        annotations.insert(
-            ENDPOINT_AUTH_ANNOTATION.to_owned(),
-            ENDPOINT_AUTH_MANAGED.to_owned(),
-        );
-        let retarget = match (self.gateway.dialect.mode(), backend) {
-            (AttachmentMode::ReverseProxy, Some((service, port)))
-                if service != COMPANION_SERVICE =>
-            {
-                let upstream = format!("{service}:{port}");
-                annotations.insert(UPSTREAM_ANNOTATION.to_owned(), upstream.clone());
-                Some(Retarget {
-                    service: COMPANION_SERVICE.to_owned(),
-                    port: self.gateway.service.port,
-                    upstream,
-                })
-            }
-            _ => None,
-        };
-        Attachment {
-            annotations,
-            removals: BTreeSet::new(),
-            retarget,
-        }
-    }
-
-    /// What `mode: Off` strips: every key this dialect owns, and the managed marker.
-    pub fn detachment(&self) -> BTreeSet<String> {
-        self.gateway.dialect.managed_keys(&self.gateway)
-    }
-
-    /// The catalogue entry a key names.
-    pub fn entry(&self, key: &AccessKey) -> Option<&AccessEntry> {
-        self.catalog.iter().find(|entry| &entry.key == key)
-    }
-
-    /// Merge every team's catalogue and default into this configuration, per RFC 0011.
-    ///
-    /// Returns one violation per key a team redefined; everything else stays in
-    /// [`EndpointAuthConfig::validate`], which now runs over the resolved shape.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<EndpointAuthConfigViolation> {
-        let blocks: Vec<(TeamName, Vec<AccessEntry>)> = resolution_order(teams)
-            .into_iter()
-            .filter_map(|team| {
-                team.spec
-                    .features
-                    .endpoint_auth
-                    .as_ref()
-                    .map(|block| (team.team_name(), block.catalog.clone()))
-            })
-            .collect();
-
-        let (entries, conflicts) =
-            merge_catalogs(&self.catalog, &blocks, |entry| entry.key.clone());
-        self.catalog = entries;
-
-        self.grants = resolution_order(teams)
-            .into_iter()
-            .filter_map(|team| {
-                let block = team.spec.features.endpoint_auth.as_ref()?;
-                let mut allowed: Vec<AccessKey> = block
-                    .catalog
-                    .iter()
-                    .map(|entry| entry.key.clone())
-                    .collect();
-                if !allowed.contains(&self.default) {
-                    allowed.push(self.default.clone());
-                }
-                Some((
-                    team.team_name(),
-                    AccessGrant {
-                        allowed,
-                        default: block.default.clone(),
-                    },
-                ))
-            })
-            .collect();
-
-        conflicts
-            .into_iter()
-            .map(|conflict| EndpointAuthConfigViolation::CatalogKeyConflict {
-                team: conflict.team,
-                key: conflict.key,
-            })
-            .collect()
-    }
-
     /// The grant that applies to a namespace in `team`, or the cluster default for a namespace in
     /// no team.
     pub fn grant_for(&self, team: Option<&TeamName>) -> AccessGrant {
@@ -1143,8 +1149,8 @@ mod tests {
         }
     }
 
-    fn config(dialect: Dialect) -> EndpointAuthConfig {
-        EndpointAuthConfig {
+    fn config(dialect: Dialect) -> ResolvedEndpointAuthConfig {
+        Resolved::without_teams(EndpointAuthConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
             gateway: gateway(dialect),
@@ -1177,8 +1183,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
-            grants: BTreeMap::new(),
-        }
+        })
     }
 
     #[test]

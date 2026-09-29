@@ -1,11 +1,14 @@
 name: Build endpoint-gateway
 # Fires only when this brick's own code moves, or when a workspace-level change
-# means every binary links something different. RFC 0009 is the design.
+# means every binary links something different. RFC 0009 is the design. The crates listed are the
+# workspace crates the binary links (`cargo tree -p endpoint-gateway -e normal,build`).
+# Build + scan only: publishing happens in release.yaml, after every gate — docs/ci.md *Releases*.
 on:
   push:
     branches: ["main"]
     paths:
       - "bins/endpoint-gateway/**"
+      - "crates/weebo-si-crd/**"
       - "crates/weebo-si-endpoint-auth/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -15,6 +18,7 @@ on:
     branches: ["main"]
     paths:
       - "bins/endpoint-gateway/**"
+      - "crates/weebo-si-crd/**"
       - "crates/weebo-si-endpoint-auth/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -35,7 +39,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      packages: write
     with:
       crate: endpoint-gateway
       path: bins/endpoint-gateway

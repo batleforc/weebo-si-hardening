@@ -19,6 +19,8 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Parsing a JSON login body back, to prove a substituted secret stayed inside its string.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

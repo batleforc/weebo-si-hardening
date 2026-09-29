@@ -1,0 +1,264 @@
+name: Release
+# The only workflow in this repo that publishes anything. A `v*` tag — cut by `cog bump`, see
+# docs/ci.md *Releases* — re-runs every gate against the tagged commit, and only when all of them
+# pass does it push the four images (semver-tagged, SBOM + SLSA provenance attached, cosign-signed
+# keyless), push the three charts to GHCR as OCI artifacts with version/appVersion set from the
+# tag, and cut the GitHub release with cog's changelog for that tag.
+#
+# Gate first, publish second, in one workflow run: `needs:` is the only way GitHub lets a job
+# depend on another's success, and it does not cross workflow boundaries. So the gates are called
+# here as reusable workflows (the same files that run on push/PR, via their `workflow_call`
+# trigger) rather than re-described, and nothing downstream of them can run on a red one.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+# One release per tag at a time, never cancelled half-way: a cancelled run can leave some images
+# pushed and the charts not, and a re-run should finish that, not race it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: tag is a semver version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      # The tag name reaches `helm package --version`, image tags and `gh release`; refuse
+      # anything that is not `v<semver>` before any of them sees it. `v*` in the trigger is a
+      # glob, not a validation.
+      - name: Parse the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' is not v<major>.<minor>.<patch>[-pre] — cog bump produces that shape"
+            exit 1
+          fi
+          version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # --- gates -----------------------------------------------------------------------------------
+  test:
+    name: test
+    needs: verify
+    uses: ./.github/workflows/test.yaml
+    permissions:
+      contents: read
+
+  envtest:
+    name: envtest
+    needs: verify
+    uses: ./.github/workflows/envtest.yaml
+    permissions:
+      contents: read
+
+  helm:
+    name: helm
+    needs: verify
+    uses: ./.github/workflows/helm.yaml
+    permissions:
+      contents: read
+
+  audit:
+    name: dependency audit
+    needs: verify
+    uses: ./.github/workflows/dep-audit.yaml
+    permissions:
+      contents: read
+
+  # Static-binary assertion, CycloneDX SBOM, Trivy image + Containerfile gates — per brick.
+  bricks:
+    name: brick
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: passwd-append, path: bins/passwd-append }
+          - { crate: preauth-proxy, path: bins/preauth-proxy }
+          - { crate: endpoint-gateway, path: bins/endpoint-gateway }
+          - { crate: weebo-si-operator, path: crates/weebo-si-operator }
+    uses: ./.github/workflows/brick.yaml
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      crate: ${{ matrix.crate }}
+      path: ${{ matrix.path }}
+
+  # --- publish ---------------------------------------------------------------------------------
+  images:
+    name: publish
+    needs: [test, envtest, helm, audit, bricks]
+    strategy:
+      # One brick failing to push must not leave the others half-signed: each matrix leg is a
+      # push *and* its signature, so let the rest finish and re-run the red one.
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: passwd-append, path: bins/passwd-append }
+          - { crate: preauth-proxy, path: bins/preauth-proxy }
+          - { crate: endpoint-gateway, path: bins/endpoint-gateway }
+          - { crate: weebo-si-operator, path: crates/weebo-si-operator }
+    uses: ./.github/workflows/publish.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # granted to publish.yaml's `sign` job only — its `push` job does not ask
+    with:
+      crate: ${{ matrix.crate }}
+      path: ${{ matrix.path }}
+
+  # After the images, not beside them: a chart whose appVersion names an image tag that does not
+  # exist yet is exactly the "chart can't pull its image" failure this ordering rules out.
+  charts:
+    name: charts (OCI)
+    needs: [verify, images]
+    runs-on: ubuntu-latest
+    outputs:
+      refs: ${{ steps.push.outputs.refs }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write # push to oci://ghcr.io/<owner>/charts
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0 # same as helm.yaml
+      - name: Log in to ghcr.io
+        env:
+          HELM_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$HELM_REGISTRY_TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+      # version and appVersion both from the tag: the chart is released in lockstep with the
+      # images, and each chart's image helper defaults its tag to appVersion — so
+      # `helm install oci://ghcr.io/<owner>/charts/<chart> --version X` pulls image tag `X`,
+      # which `publish.yaml` just pushed. The committed Chart.yaml carries the same values when
+      # the tag was cut with `cog bump` (cog.toml's pre_bump_hooks); `--version` here makes the
+      # tag authoritative either way.
+      - name: Package and push
+        id: push
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p dist
+          refs=""
+          for chart in weebo-si-operator preauth-proxy endpoint-gateway; do
+            helm package "charts/$chart" --version "$VERSION" --app-version "$VERSION" --destination dist
+            # `helm push` prints `Digest: sha256:…`; the digest is what gets signed below.
+            digest="$(helm push "dist/$chart-$VERSION.tgz" "oci://ghcr.io/$owner/charts" 2>&1 \
+              | tee /dev/stderr | sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p')"
+            if [ -z "$digest" ]; then
+              echo "no digest reported for $chart" >&2
+              exit 1
+            fi
+            refs="$refs ghcr.io/$owner/charts/$chart@$digest"
+          done
+          echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
+
+  # The charts' own signatures, in a job of their own for the reason `publish.yaml` splits its
+  # image signing out: `id-token: write` stays on the one job that signs, not on the one that
+  # builds and pushes. Verified the same way as the images:
+  #
+  #   cosign verify ghcr.io/<owner>/charts/<chart>@sha256:… \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  #     --certificate-identity-regexp '^https://github.com/<owner>/weebo-si-hardening/\.github/workflows/release\.yaml@refs/tags/v'
+  sign-charts:
+    name: cosign charts (keyless)
+    needs: charts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write # the signature is pushed next to the chart, as an OCI artifact
+      id-token: write # the OIDC token Fulcio binds the signing certificate to — this job only
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Sign
+        env:
+          REFS: ${{ needs.charts.outputs.refs }}
+        run: |
+          set -eu
+          for ref in $REFS; do
+            cosign sign --yes "$ref"
+          done
+
+  release:
+    name: GitHub release
+    needs: [verify, charts, sign-charts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      # Full history: cog walks the commits between this tag and the previous one.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      # The same conventional-commit history the commit-msg hook (`cog verify`) enforces, rendered
+      # with cog.toml's own changelog settings, for this tag only.
+      - name: Changelog (cog)
+        id: changelog
+        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
+        with:
+          command: changelog
+          args: --at ${{ github.ref_name }}
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          NOTES: ${{ steps.changelog.outputs.stdout }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -eu
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          # cocogitto-action captures `cog`'s stderr into the same output, so a warning about a
+          # non-conventional commit (the repo's root commit is one) would be published at the top
+          # of the release. Keep only the changelog itself: everything from its first heading.
+          notes="$(printf '%s\n' "$NOTES" | awk '/^## /{p=1} p')"
+          if [ -z "$notes" ]; then
+            notes="See the commit history for $TAG."
+          fi
+          # shellcheck disable=SC2016 # the backticks are Markdown, not command substitution
+          {
+            printf '%s\n\n' "$notes"
+            printf '## Artifacts\n\n'
+            for crate in passwd-append preauth-proxy endpoint-gateway weebo-si-operator; do
+              printf -- '- `ghcr.io/%s/%s:%s` (cosign-signed, SBOM + provenance attached)\n' "$owner" "$crate" "$VERSION"
+            done
+            for chart in weebo-si-operator preauth-proxy endpoint-gateway; do
+              printf -- '- `oci://ghcr.io/%s/charts/%s` version `%s`\n' "$owner" "$chart" "$VERSION"
+            done
+          } > release-notes.md
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
+          # shellcheck disable=SC2086 # $flags is empty or one word, on purpose
+          # Idempotent, so "re-run failed jobs" after a partial failure can finish the release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — leaving it as is"
+            exit 0
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md $flags

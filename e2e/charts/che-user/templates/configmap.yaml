@@ -1,0 +1,17 @@
+{{- /*
+  One object carrying back exactly what the operator rendered, so the suite can read the
+  per-person substitution off the cluster after a real Argo CD sync — the proof that the template
+  variables survived the whole path: WeeboSiTeam → Application → Argo CD → Helm → apiserver.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: che-user
+  labels:
+    app.kubernetes.io/name: che-user
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  username: {{ required "username is rendered by the operator" .Values.username | quote }}
+  email: {{ .Values.email | quote }}
+  team: {{ .Values.team | quote }}
+  storageSize: {{ .Values.storage.size | quote }}

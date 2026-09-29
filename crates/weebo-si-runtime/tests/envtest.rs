@@ -27,8 +27,9 @@ use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
 use weebo_si_chassis::{Context, Decision, Registry};
 use weebo_si_crd::{
     Backend, Enforcement, FeatureMode, NamespaceName, NetworkProfilesConfig, OnNotGranted, Profile,
-    ProfileCatalog, ProfileGrant, ProfileKey, ProfileNamespaceSelection, Selector, Team, TeamName,
-    TemplateRef, Variant, WorkspaceSelection,
+    ProfileCatalog, ProfileGrant, ProfileKey, ProfileNamespaceSelection, Resolved,
+    ResolvedNetworkProfilesConfig, Selector, Team, TeamName, TemplateRef, Variant,
+    WorkspaceSelection,
 };
 use weebo_si_envtest_support::EnvTest;
 use weebo_si_network_profiles::{NamespaceSubject, NetworkProfiles, Workspace};
@@ -77,7 +78,7 @@ fn config(
     baseline: &str,
     catalog_keys: &[&str],
     grants: BTreeMap<String, ProfileGrant>,
-) -> NetworkProfilesConfig {
+) -> ResolvedNetworkProfilesConfig {
     let catalog = ProfileCatalog::new(
         catalog_keys
             .iter()
@@ -93,22 +94,22 @@ fn config(
             })
             .collect(),
     );
-    NetworkProfilesConfig {
+    Resolved::without_teams(NetworkProfilesConfig {
         mode,
         namespace_selector: None,
         catalog,
         baseline: ProfileKey::new(baseline),
-        grants,
         namespace_selection: ProfileNamespaceSelection::default(),
         workspace_selection: WorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: Enforcement::default(),
-    }
+    })
+    .with_grants(grants)
 }
 
 async fn feature_with(
     client: kube::Client,
-    cfg: NetworkProfilesConfig,
+    cfg: ResolvedNetworkProfilesConfig,
 ) -> (NetworkProfiles, KubePolicyStore) {
     let capabilities = KubeCapabilities::discover(client.clone())
         .await
@@ -296,6 +297,12 @@ async fn a_workspace_with_two_granted_profiles_gets_two_real_objects() {
         workspace_id: "workspacede4f56".to_string(),
         attribute: Some("git,vault".to_string()),
         namespace_annotation: None,
+        owner: weebo_si_network_profiles::Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-6b1d-4c3a-9e2f-000000000001".to_string(),
+        },
     };
 
     let outcome = weebo_si_network_profiles::reconcile(
@@ -327,6 +334,16 @@ async fn a_workspace_with_two_granted_profiles_gets_two_real_objects() {
             .get("controller.devfile.io/devworkspace_id"),
         Some(&"workspacede4f56".to_string())
     );
+    let owners = git
+        .metadata
+        .owner_references
+        .as_ref()
+        .expect("a profile object must carry an ownerReference to its DevWorkspace");
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0].kind, "DevWorkspace");
+    assert_eq!(owners[0].uid, "8f0c2a4e-6b1d-4c3a-9e2f-000000000001");
+    assert_eq!(owners[0].controller, Some(false));
+    assert_eq!(owners[0].block_owner_deletion, Some(false));
     api.get("weebo-vault-workspacede4f56")
         .await
         .expect("the vault profile object should exist");

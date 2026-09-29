@@ -277,6 +277,7 @@ mod tests {
             profile: ProfileKey::new("base"),
             pod_selector: selector,
             body: PolicyBody::opaque(b"rules".to_vec()),
+            owner: None,
         }
     }
 
@@ -287,6 +288,7 @@ mod tests {
             team: Some(TeamName::new("team-1")),
             not_granted: Vec::new(),
             unsupported: Vec::new(),
+            held: Vec::new(),
         }
     }
 

@@ -93,7 +93,7 @@ fails if it is stale.
 | [0008](./0008-policy-guard-coverage.md) | policy-guard-coverage | `Implemented` | `crates/weebo-si-policy-guard` |
 | [0009](./0009-endpoint-auth.md) | endpoint-auth | `Accepted` | `crates/weebo-si-endpoint-auth` |
 | [0010](./0010-endpoint-auth-openshift.md) | endpoint-auth on OpenShift | `Draft` | `bins/endpoint-gateway` |
-| [0011](./0011-teams-and-users.md) | teams and users as objects | `Draft` | `crates/weebo-si-crd` |
+| [0011](./0011-teams-and-users.md) | teams and users as objects | `Implemented` | `crates/weebo-si-crd` |
 
 <!-- rfc-index:end -->
 

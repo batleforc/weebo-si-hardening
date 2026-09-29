@@ -2,7 +2,9 @@
 //! it is exhaustively table-tested without a cluster.
 
 use weebo_si_chassis::NamespaceFacts;
-use weebo_si_crd::{CatalogKey, DwocPinConfig, DwocRef, Grant, OnUnknownKey, Team, TeamName};
+use weebo_si_crd::{
+    CatalogKey, DwocRef, Grant, OnUnknownKey, ResolvedDwocPinConfig, Team, TeamName,
+};
 
 /// Which step of the resolution chain produced the answer. Private to this crate — never
 /// crosses into `weebo-si-chassis`, see the RFC amendment's note on `Decision<S>`.
@@ -67,7 +69,7 @@ fn synthetic_grant(default: &CatalogKey) -> Grant {
 /// 4. The grant's `default`.
 pub fn resolve(
     teams: &[Team],
-    config: &DwocPinConfig,
+    config: &ResolvedDwocPinConfig,
     namespace: &NamespaceFacts,
     current_ref: Option<&DwocRef>,
 ) -> Result<Provenance, UnknownKey> {
@@ -153,8 +155,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use weebo_si_crd::{
-        Catalog, CatalogEntry, FeatureMode, NamespaceName, NamespaceSelection, OnMissingTarget,
-        Selector,
+        Catalog, CatalogEntry, DwocPinConfig, FeatureMode, NamespaceName, NamespaceSelection,
+        OnMissingTarget, Resolved, Selector,
     };
 
     use super::*;
@@ -197,19 +199,19 @@ mod tests {
         default: &str,
         grants: BTreeMap<String, Grant>,
         on_unknown_key: OnUnknownKey,
-    ) -> DwocPinConfig {
-        DwocPinConfig {
+    ) -> ResolvedDwocPinConfig {
+        Resolved::without_teams(DwocPinConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: catalog(),
             default: CatalogKey::new(default),
-            grants,
             namespace_selection: NamespaceSelection {
                 annotation: "hardening.weebo.io/dwoc".to_string(),
                 on_unknown_key,
             },
             on_missing_target: OnMissingTarget::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str, label_value: &str) -> Team {

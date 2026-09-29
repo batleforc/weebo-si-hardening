@@ -1,0 +1,195 @@
+name: E2E
+# The end-to-end tier: every feature against a kind cluster running real Eclipse Che, real
+# DevWorkspace Operator and a real identity provider — the one place a workspace actually starts,
+# a NetworkPolicy actually drops a packet, a request actually crosses ingress-nginx and the gate,
+# and a WeeboSiUser actually becomes an Authentik account and an Argo CD sync.
+#
+# Nightly and on demand, never on a pull request: one run stands up four Che clusters and pulls
+# several GB each, which is the wrong price for per-change feedback — test.yaml and envtest.yaml
+# own that. What this buys is the class of bug neither can see: a configuration DevWorkspace
+# Operator ignores, a platform image the pod floor refuses, a CNI that does not enforce, an
+# upstream CRD that rejects what the operator writes.
+#
+# Shape: the four images and the workspace image are built once, the test binaries are built once,
+# then one job per suite brings up its own cluster (`scripts/e2e.sh`) and runs its suite
+# (`crates/weebo-si-e2e/tests/<suite>.rs`). A red suite uploads the rig's diagnostics.
+# docs/ci.md *End to end* describes each suite; `task e2e:run SUITE=<suite>` is the same run on a
+# laptop.
+on:
+  schedule:
+    # 01:10 UTC — ahead of the 02:20 image builds, so a morning reads both.
+    - cron: "10 1 * * *"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which suite to run
+        type: choice
+        default: all
+        options: [all, workspace, kubearmor, endpoint-auth, identity]
+permissions:
+  contents: read
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  KIND_VERSION: "v0.31.0"
+  # Pinned checksum of the kind binary — see the "Install kind" step. Bump with KIND_VERSION, and
+  # bump the node image digest in scripts/kind-e2e.yaml with it.
+  KIND_SHA256: "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa"
+jobs:
+  images:
+    name: image (${{ matrix.brick.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        brick:
+          - { name: weebo-si-operator, path: crates/weebo-si-operator }
+          - { name: endpoint-gateway, path: bins/endpoint-gateway }
+          - { name: preauth-proxy, path: bins/preauth-proxy }
+          - { name: passwd-append, path: bins/passwd-append }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Build image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./${{ matrix.brick.path }}/Containerfile
+          push: false
+          # `localhost/` so the name is the one scripts/e2e.sh and the charts expect under
+          # either runtime.
+          tags: localhost/${{ matrix.brick.name }}:e2e
+          outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.brick.name }}.tar
+          cache-from: type=gha,scope=e2e-${{ matrix.brick.name }}
+          cache-to: type=gha,scope=e2e-${{ matrix.brick.name }},mode=max
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.brick.name }}
+          path: ${{ runner.temp }}/${{ matrix.brick.name }}.tar
+          retention-days: 1
+
+  workspace-image:
+    # Built after passwd-append on purpose: it adopts passwd-append exactly as
+    # docs/bricks/passwd-append.md says to, from the image the job above just built.
+    name: image (e2e-workspace)
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-passwd-append
+          path: ${{ runner.temp }}/images
+      - name: Build the workspace image
+        run: |
+          docker load -i "$RUNNER_TEMP/images/passwd-append.tar"
+          docker build -f e2e/images/workspace/Containerfile -t localhost/e2e-workspace:e2e \
+            --build-arg PASSWD_APPEND_IMAGE=localhost/passwd-append:e2e e2e/images/workspace
+          docker save -o "$RUNNER_TEMP/e2e-workspace.tar" localhost/e2e-workspace:e2e
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-e2e-workspace
+          path: ${{ runner.temp }}/e2e-workspace.tar
+          retention-days: 1
+
+  tests:
+    name: test binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "1.98.1" # = rust-toolchain.toml and the Containerfiles' base image
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Built here once rather than in every suite job, so a suite job needs no Rust toolchain
+      # and spends its disk on Che instead of on a target directory.
+      - name: Build the suites
+        run: |
+          mkdir -p "$RUNNER_TEMP/suites"
+          cargo test --locked -p weebo-si-e2e --features e2e --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null
+                          and .target.kind == ["test"]) | "\(.target.name) \(.executable)"' |
+            while read -r name executable; do cp "$executable" "$RUNNER_TEMP/suites/$name"; done
+          ls -l "$RUNNER_TEMP/suites"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: suites
+          path: ${{ runner.temp }}/suites
+          retention-days: 1
+
+  e2e:
+    name: suite (${{ matrix.suite }})
+    needs: [images, workspace-image, tests]
+    runs-on: ubuntu-latest
+    # Che alone is ~15 minutes cold; the identity suite adds Authentik's first-boot migrations
+    # and an Argo CD install on top.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'all') && '["workspace","kubearmor","endpoint-auth","identity"]' || format('["{0}"]', inputs.suite)) }}
+    env:
+      E2E_RUNTIME: docker
+      E2E_REPO_ROOT: ${{ github.workspace }}
+      E2E_CA_FILE: /tmp/weebo-si-e2e/ca.crt
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # A stock runner has ~14 GB free; Che, Keycloak and a suite's addons pull more than that.
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      # kind needs more inotify instances than the runner's default — scripts/kind-che.yaml.
+      - name: Raise inotify limits
+        run: sudo sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
+      - name: Install kind
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/kind" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0 # same as helm.yaml
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: suites
+          path: ${{ runner.temp }}/suites
+      - name: Load the images
+        run: for tar in "$RUNNER_TEMP"/images/*.tar; do docker load -i "$tar"; done
+      - name: Bring up Che
+        run: scripts/e2e.sh up
+      - name: Addons for ${{ matrix.suite }}
+        run: scripts/e2e.sh addons "${{ matrix.suite }}"
+      - name: Deploy weebo-si-hardening
+        run: scripts/e2e.sh deploy "${{ matrix.suite }}"
+      - name: Run the ${{ matrix.suite }} suite
+        run: |
+          suite="$RUNNER_TEMP/suites/$(echo "${{ matrix.suite }}" | tr - _)"
+          chmod +x "$suite"
+          "$suite" --test-threads=1
+      - name: Diagnostics
+        if: failure()
+        run: scripts/e2e.sh diag "$RUNNER_TEMP/diag"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: diag-${{ matrix.suite }}
+          path: ${{ runner.temp }}/diag
+          retention-days: 7

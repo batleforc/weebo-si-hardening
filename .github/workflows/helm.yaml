@@ -17,6 +17,8 @@ on:
       - ".tasks/helm.yaml"
       - ".github/workflows/helm.yaml"
   workflow_dispatch:
+  # release.yaml runs this whole workflow as a gate before anything is published.
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -28,7 +30,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: latest
+          # Pinned, not `latest`: a new Helm release can change lint/template behaviour, and a
+          # gate whose tool moves under it can go red (or green) with no commit here.
+          # Same version mise.toml resolves locally for `task helm:lint`.
+          version: v4.3.0
       - name: weebo-si-operator
         run: |
           helm lint charts/weebo-si-operator
@@ -39,9 +44,11 @@ jobs:
           # cluster running OpenShift carries `routes` rules and no `ingresses` ones.
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null
       - name: preauth-proxy
         run: |
-          helm lint charts/preauth-proxy
+          # values.schema.json requires credentials.existingSecret; lint with the render's placeholder.
+          helm lint charts/preauth-proxy --set credentials.existingSecret=ci-placeholder
           helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null
       - name: endpoint-gateway
         run: |

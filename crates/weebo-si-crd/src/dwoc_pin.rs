@@ -1,7 +1,6 @@
 //! `spec.features.dwocPin` — the catalogue, the grants, and the reconcile-time validation rules
 //! over them. See RFC 0002's *Feature: `dwoc-pin`*.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -10,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::dwoc::DwocRef;
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
@@ -179,13 +179,6 @@ pub struct DwocPinConfig {
     pub catalog: Catalog,
     /// The entry for a namespace belonging to no team.
     pub default: CatalogKey,
-    /// What each team may reach, keyed by team name.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`DwocPinConfig::resolve`] fills this in from them, and a configuration nobody resolved
-    /// grants nothing — which is the cluster default, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<String, Grant>,
     /// The namespace annotation naming a catalogue key.
     #[serde(default)]
     pub namespace_selection: NamespaceSelection,
@@ -194,18 +187,17 @@ pub struct DwocPinConfig {
     pub on_missing_target: OnMissingTarget,
 }
 
-impl DwocPinConfig {
-    /// This team's grant, if `grants` has one.
-    pub fn grant_for(&self, team: &TeamName) -> Option<&Grant> {
-        self.grants.get(team.as_str())
-    }
+/// [`DwocPinConfig`] resolved against the `WeeboSiTeam` objects — what the feature evaluates.
+pub type ResolvedDwocPinConfig = Resolved<DwocPinConfig, Grant>;
 
-    /// Merge every team's catalogue and default into this configuration, per RFC 0011.
+impl DwocPinConfig {
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
     ///
     /// Returns one violation per key a team redefined; the rest of the validation stays in
-    /// [`DwocPinConfig::validate`], which now runs over the resolved shape and therefore over
+    /// [`ResolvedDwocPinConfig::validate`], which now runs over the resolved shape and therefore over
     /// exactly what the feature will evaluate.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<ConfigViolation> {
+    pub fn resolve(&self, teams: &[WeeboSiTeam]) -> (ResolvedDwocPinConfig, Vec<ConfigViolation>) {
         let blocks: Vec<(TeamName, Vec<CatalogEntry>)> = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
@@ -219,9 +211,10 @@ impl DwocPinConfig {
 
         let (entries, conflicts) =
             merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
-        self.catalog = Catalog::new(entries);
+        let mut config = self.clone();
+        config.catalog = Catalog::new(entries);
 
-        self.grants = resolution_order(teams)
+        let grants = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
                 let block = team.spec.features.dwoc_pin.as_ref()?;
@@ -244,13 +237,14 @@ impl DwocPinConfig {
             })
             .collect();
 
-        conflicts
+        let violations = conflicts
             .into_iter()
             .map(|conflict| ConfigViolation::CatalogKeyConflict {
                 team: conflict.team,
                 key: conflict.key,
             })
-            .collect()
+            .collect();
+        (Resolved { config, grants }, violations)
     }
 }
 
@@ -319,7 +313,12 @@ impl fmt::Display for ConfigViolation {
     }
 }
 
-impl DwocPinConfig {
+impl ResolvedDwocPinConfig {
+    /// This team's grant, if `grants` has one.
+    pub fn grant_for(&self, team: &TeamName) -> Option<&Grant> {
+        self.grants.get(team.as_str())
+    }
+
     /// Every violation this configuration has, if any, per RFC 0002's *Validating the
     /// configuration itself belongs to the controller*. Returns all of them, not just the
     /// first — the reconcile loop reports one `Degraded` condition per violation.
@@ -375,6 +374,8 @@ impl DwocPinConfig {
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::namespace::NamespaceName;
 
@@ -398,16 +399,20 @@ mod tests {
         ])
     }
 
-    fn config(catalog: Catalog, default: &str, grants: BTreeMap<String, Grant>) -> DwocPinConfig {
-        DwocPinConfig {
+    fn config(
+        catalog: Catalog,
+        default: &str,
+        grants: BTreeMap<String, Grant>,
+    ) -> ResolvedDwocPinConfig {
+        Resolved::without_teams(DwocPinConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog,
             default: CatalogKey::new(default),
-            grants,
             namespace_selection: NamespaceSelection::default(),
             on_missing_target: OnMissingTarget::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str) -> Team {

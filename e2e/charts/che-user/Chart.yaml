@@ -1,0 +1,8 @@
+apiVersion: v2
+name: che-user
+description: >-
+  Test fixture for the identity e2e suite — the per-person chart a WeeboSiTeam's workspace.che
+  template points at. Served from an in-cluster Helm repository by scripts/e2e.sh; never published.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

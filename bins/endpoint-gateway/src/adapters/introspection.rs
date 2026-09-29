@@ -103,7 +103,7 @@ impl Introspector {
             groups_claim: ports.groups_claim,
             negative_ttl_secs: ports.negative_ttl_secs,
             identity_ttl_secs: ports.identity_ttl_secs,
-            http: reqwest::Client::new(),
+            http: crate::outbound::client(),
             rules: ports.rules,
             revocations: ports.revocations,
             limiter: ports.limiter,

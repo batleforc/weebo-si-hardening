@@ -60,16 +60,66 @@ would deny every request in the cluster while looking healthy.
 
 ## HTTP surface
 
-| Path | Method | Meaning |
-| --- | --- | --- |
-| `/auth` | any | The forward-auth decision. `200` allow, `302`/`401` sign-in needed, `403` denied. |
-| `/oidc/start` | GET | Begins the authorization-code + PKCE exchange. |
-| `/oidc/callback` | GET | The only registered redirect URI. Mints the SSO cookie. |
-| `/host-session` | GET | Exchanges the SSO cookie for a one-time grant on one endpoint host. |
-| `/sign_out` | POST | Clears the SSO cookie. `GET` renders the form that posts to it. |
-| `/oidc/backchannel-logout` | POST | The IdP's back-channel logout. Revokes a session cluster-wide. |
-| `/selftest` | GET | What the gate observed for this request. Requires the process's own probe token. |
-| `/healthz`, `/readyz`, `/metrics` | GET | Liveness, informer-cache readiness, Prometheus. |
+| Path | Method | Public | Meaning |
+| --- | --- | --- | --- |
+| `/auth` | any | no | The forward-auth decision. `200` allow, `302`/`401` sign-in needed, `403` denied. Called by the ingress controller through the `Service`. |
+| `/oidc/start` | GET | yes | Begins the authorization-code + PKCE exchange. `rd`, when present, must be an `https://` URL on a governed endpoint host, like `/host-session`'s — no `#` fragment, and no explicit port other than `:443`. |
+| `/oidc/callback` | GET | yes | The only registered redirect URI. Mints the SSO cookie and clears the sign-in state cookie — on every answer, the IdP's `error=access_denied` included. |
+| `/host-session` | GET | yes | Exchanges the SSO cookie for a one-time grant on one endpoint host. |
+| `/sign_out` | POST | yes | Clears the SSO cookie and any sign-in in flight. `GET` renders the form that posts to it. Same-origin only: `Sec-Fetch-Site: same-origin`/`none`, or (without it) an `Origin` equal to the gateway's own; anything else is `403`. Host cookies already minted live out their `host_ttl_secs` — see below. |
+| `/oidc/backchannel-logout` | POST | while `backchannel_logout.enabled` | The IdP's back-channel logout. Revokes a session cluster-wide. On its own rate limit (`rate_limit.backchannel_logout_per_minute`), answered `503` when over it; `503` too when the revocation set is full. Disabled: `404`, and not routed. |
+| `/selftest` | GET | while the probe runs | What the gate observed for this request. `404` without a probe token — derived from the shared session keys (HMAC-SHA256, label `weebo selftest`), so any replica answers any replica's probe; compared in constant time. |
+| `/healthz`, `/readyz` | GET | no | Liveness, and readiness: informer caches synced, signing keys loaded, not shutting down. |
+| `/metrics` | GET | no | Prometheus, on `metrics_listen` (chart: port `9090`) when set, otherwise on the main port. |
+
+"Public" is what the chart's `Ingress` routes on the gateway's own host — exact paths only,
+nothing else. The optional `NetworkPolicy` (`networkPolicy.enabled`) narrows who may connect at
+all to the ingress controller's namespace (main port) and the monitoring namespace (metrics port).
+
+**Signing out does not revoke.** The only session id the gateway holds is the identity provider's
+`sid`; recording it as revoked would refuse the very next sign-in, which silently re-uses the same
+provider session and gets the same `sid` back. Host cookies are host-only cookies on other origins,
+so `/sign_out` cannot clear them either: they end at their own expiry (at most `host_ttl_secs`,
+and never later than the SSO session they were minted from). Ending a session everywhere at once is
+back-channel logout's job.
+
+**Shutdown.** On `SIGTERM` the gateway answers `/readyz` with `503`, waits five seconds for the
+endpoint to be removed, stops accepting, and gives in-flight requests up to twenty seconds —
+inside the chart's `terminationGracePeriodSeconds: 30`.
+
+**An identity provider that is down at boot** costs sign-ins, not the replica: discovery is
+retried in the background with backoff (2 s doubling to 5 min) and the JWKS refresh starts once it
+succeeds. `/readyz` stays `503` until signing keys are loaded, and while none are, a failed JWKS
+fetch is retried with backoff (1 s doubling to 1 min) rather than on the ten-minute schedule.
+
+**Self-origin by pod address** (`self_origin.pod_network`). `On` trusts the client-address
+header from the start. `Auto` starts **off** and is turned on only by a conclusive self-origin
+probe — `/selftest` answered and the forged `203.0.113.255` did not come back. An inconclusive
+probe is retried with backoff (5 s doubling to the interval); a trust not re-confirmed for three
+intervals lapses. A forgery seen by any replica is recorded as the
+`endpoint-auth.weebo.si/address-forgery-seen` annotation on the revocation `ConfigMap`, which turns
+pod-address identity off on every replica until an admin removes it. `Auto` with the probe
+disabled is effectively `Off`, and says so at startup.
+
+**Service-account tokens** cost a `TokenReview` only inside limits: the token's unverified `iss`
+must be this cluster's service-account issuer (read from the gateway's own mounted token; skipped
+if unknown) and a claimed `exp` must be in the future; concurrent requests with one token share a
+single call; at most 16 reviews are in flight, 300/min (burst 100) cluster-wide and 30/min
+(burst 10) per client key. Over a limit the token is simply not an identity — nothing is asked
+and nothing is cached. Counted in `weebo_si_endpoint_auth_token_reviews_throttled_total`.
+
+**Rate-limit keys.** The login surface's limiter keys on the client-address header only when the
+connection comes from a peer `trusted_proxy` admits; otherwise on the connection's own address.
+At its capacity it examines at most 16 of the oldest buckets per new key rather than scanning all.
+
+**The revocation `ConfigMap`** is written with a merge patch (it used to be a server-side apply
+under one field manager, which dropped the previous revocation on every write), prunes expired
+entries on every write, and refuses a new entry past 10 000 live ones — loudly: an `ERROR` line,
+`503`, and `weebo_si_endpoint_auth_revocations_refused_total{reason="full"}`.
+
+**Identity headers** (`X-Auth-Request-User`, `-Groups`) are written from the credential the
+decision was made on — never re-derived — so a revoked session, a grant or a second credential in
+the same request can never be what the application is told about.
 
 `/auth` accepts **any** method and never reads the one it was called with: Traefik replays the
 original method while nginx's `auth_request` always sends `GET`, so the method under decision is
@@ -109,7 +159,11 @@ grant edit takes effect at informer lag rather than at a redeploy.
 
 ```yaml
 listen: "[::]:4180"
+metrics_listen: "[::]:9090" # empty: /metrics on `listen` instead
 issuer: "https://sso.weebo.si/realms/weebo"
+# PEM bundle trusted on top of the public roots, for every outbound HTTPS call. Empty: public
+# roots only. Set by the chart from `extraCa.configMap` / `extraCa.secret`.
+extra_ca_file: ""
 client_id: "che-client"
 client_secret_env: ENDPOINT_GATEWAY_CLIENT_SECRET
 redirect_url: "https://auth.weebo.si/oidc/callback"
@@ -138,19 +192,38 @@ self_origin:
   pod_network: Auto # Auto | On | Off
   client_ip_header: X-Real-Ip
   service_account_token: true
+  # Who may state a caller's address: `any`, `off`, or `cidrs:` — real networks
+  # ("10.128.0.0/14", "fd00::/8", a bare address, or a legacy whole-octet prefix like "10.128.").
+  # Matched as networks, IPv4-mapped peers included; anything else refuses to load.
+  trusted_proxy: any
 probe: { enabled: true, interval_seconds: 900, url: "" }
 revalidation: { mode: WhenNoBackchannel, interval_secs: 3600 }
 cache:
   identity_max_entries: 20000 # opened sessions and verified bearers, keyed by hash
   identity_ttl_secs: 300
   token_review_max_entries: 5000
+# reject_unnormalised_path is always enforced; `false` refuses to load.
 rules: { max_per_endpoint: 16, reject_unnormalised_path: true, on_unknown_key: Default }
 enforcement: Enforce # Observe | Enforce
 reveal_owner: true
 # The login surface, in front of the cryptography. `/auth` is exempt — the controller is its only
 # caller. Generous because a missing client-address header makes every caller share one bucket.
-rate_limit: { login_per_address_per_minute: 300 }
+rate_limit: { login_per_address_per_minute: 300, backchannel_logout_per_minute: 6000 }
+# enabled: false → /oidc/backchannel-logout answers 404 and the chart does not route it.
 backchannel_logout: { enabled: true, configmap: endpoint-auth-revocations, namespace: weebo-si-hardening }
+```
+
+**An identity provider behind a private CA** needs its root in `extra_ca_file`, or discovery
+fails at startup with a certificate error. The bundle is **added** to the built-in public roots,
+never substituted for them, and it covers every outbound call: discovery, JWKS, the token and
+introspection endpoints, and the self-origin probe. A path that cannot be read or holds no
+certificate stops the gateway with exit code 2. It never falls back to the public roots
+silently, because that would fail every sign-in while reporting healthy. In the chart:
+
+```yaml
+extraCa:
+  configMap: corporate-root-ca # or `secret:` — one of the two
+  key: ca.crt
 ```
 
 ## Rollout
@@ -201,6 +274,9 @@ the controller), `weebo_si_endpoint_auth_identity_cache_total{kind,result}`,
 `weebo_si_endpoint_auth_self_origin_total{result}`,
 `weebo_si_endpoint_auth_bearer_total{shape,result}`,
 `weebo_si_endpoint_auth_client_ip_trusted`, `weebo_si_endpoint_auth_revocations`,
+`weebo_si_endpoint_auth_revocations_refused_total{reason}`,
+`weebo_si_endpoint_auth_self_origin_probe_total{result}`,
+`weebo_si_endpoint_auth_token_reviews_throttled_total`,
 `weebo_si_endpoint_auth_insecure_hosts`, `weebo_si_endpoint_auth_bypassed`.
 
 Every label's value set is closed, and **no label carries a namespace, a host or a workspace
@@ -208,7 +284,9 @@ id** — which host is in conflict is a `WARN`, not a series.
 
 Alert on `cache_synced == 0`, on `host_conflicts > 0` (always an attack or a bug, never routine),
 on `bypassed > 0` outliving the incident that justified it, and on a `deny` rate that jumps —
-usually a claim-mapping regression rather than an attack. `self_origin_total{result="unknown_address"}`
+usually a claim-mapping regression rather than an attack. Alert on any
+`revocations_refused_total` (each is a logout not in effect) and on
+`self_origin_probe_total{result="forged"}`. `self_origin_total{result="unknown_address"}`
 being the whole series is a diagnosis rather than an alert: the cluster SNATs, and workspaces
 should use the service-account token path.
 

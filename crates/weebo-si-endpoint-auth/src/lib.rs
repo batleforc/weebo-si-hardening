@@ -51,7 +51,7 @@ pub mod port;
 pub mod testing;
 pub mod time;
 
-pub use application::{Enforcement, Gateway, GatewayPorts, Outcome, Presented};
+pub use application::{Authorized, Enforcement, Gateway, GatewayPorts, Outcome, Presented};
 pub use bearer::{BearerResult, BearerRules, PresentedToken, RulesError, TokenShape};
 pub use cache::{CacheKind, CacheOutcome, Fingerprint, IdentityCache};
 pub use compile::{Catalogue, CompileError, Grant, Override, RawEndpoint, compile};

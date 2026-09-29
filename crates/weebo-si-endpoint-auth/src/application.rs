@@ -62,6 +62,29 @@ impl Outcome {
     }
 }
 
+/// A decision together with the credential it was made on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorized {
+    /// What was decided and what is answered.
+    pub outcome: Outcome,
+    /// The credential `decide()` read — [`Credential::None`] where the request was decided before
+    /// any credential could matter (an unknown host, plain HTTP).
+    pub credential: Credential,
+}
+
+impl Authorized {
+    /// The person the decision was made about, for the outbound identity headers: a session or a
+    /// bearer of ours, and nothing else. A workspace, a foreign bearer and a revoked session name
+    /// no person, so no header is set for them — and none is ever re-derived from another
+    /// credential the request happened to carry as well.
+    pub fn person(&self) -> Option<&Claims> {
+        match &self.credential {
+            Credential::Session(claims) | Credential::Bearer(claims) => Some(claims),
+            _ => None,
+        }
+    }
+}
+
 /// The request path, wired.
 ///
 /// Holds borrowed ports rather than owning them: there is one of these per process, built by the
@@ -126,6 +149,17 @@ impl<'a> Gateway<'a> {
 
     /// Decide one request.
     pub fn authorize(&self, request: &AuthRequest, presented: &Presented) -> Outcome {
+        self.authorize_resolved(request, presented).outcome
+    }
+
+    /// Decide one request, and hand back the credential the decision was made on.
+    ///
+    /// What the shells set the outbound identity headers from. They used to re-derive the caller
+    /// after the fact — cookie first, through a path that accepted a one-time grant, ignored
+    /// revocation and re-verified a bearer — so the identity an application was told about could
+    /// differ from the one that was authorised. There is now one resolution per request, and the
+    /// headers are written from exactly it.
+    pub fn authorize_resolved(&self, request: &AuthRequest, presented: &Presented) -> Authorized {
         let now = self.clock.now();
         let lookup = self.catalog.policy_for(&request.host);
         // Resolve a credential only where one can change the answer. An unknown host, a contested
@@ -143,7 +177,10 @@ impl<'a> Gateway<'a> {
             Enforcement::Enforce => decision.verdict,
             Enforcement::Observe => Verdict::Allow,
         };
-        Outcome { decision, answered }
+        Authorized {
+            outcome: Outcome { decision, answered },
+            credential,
+        }
     }
 
     /// Turn headers into a credential, in the flowchart's order: an `Authorization` header first,
@@ -226,7 +263,11 @@ impl<'a> Gateway<'a> {
     }
 
     fn resolve_session(&self, request: &AuthRequest, cookie: &str, now: Timestamp) -> Credential {
-        let key = Fingerprint::of(cookie);
+        // Keyed by host *and* cookie: a hit skips `open_host_session`, and the host is part of
+        // what that call proves. Keyed by the cookie alone, a cookie opened once for host A was
+        // an identity on host B from the cache, which is the cross-host replay the host binding
+        // exists to stop.
+        let key = Fingerprint::scoped(request.host.as_str(), cookie);
         let claims = match self.session_cache.get(&key, now) {
             Some(claims) => claims,
             None => match self.sessions.open_host_session(&request.host, cookie, now) {
@@ -669,6 +710,51 @@ mod tests {
         );
     }
 
+    /// B2: a cached session answered for any host, because the cache key was the cookie alone
+    /// and a hit skipped the host-bound open.
+    #[test]
+    fn a_cookie_cached_for_one_host_is_not_an_identity_on_another() {
+        const OTHER: &str = "carol-ws-api.weebo.si";
+        let policy = shared_endpoint(Some("bob"));
+        let mut harness = Harness::new(policy.clone());
+        harness.catalog = FakeCatalog::with(
+            [HOST, OTHER].map(|host| crate::index::IndexedEndpoint {
+                host: Host::parse(host).unwrap(),
+                object: crate::index::ObjectRef::new(policy.namespace.as_str(), host),
+                policy: std::sync::Arc::new(policy.clone()),
+            }),
+            1,
+        );
+        harness.sessions = FakeSessions::bound(
+            HOST,
+            COOKIE,
+            Claims {
+                session: Some(SessionId::new("sid-1")),
+                ..Claims::user("bob")
+            },
+            Timestamp::from_secs(3_600),
+        );
+        let gateway = harness.gateway(Enforcement::Enforce);
+
+        // Opened, and cached, on the host it was minted for.
+        assert!(
+            gateway
+                .authorize(&request("/"), &with_cookie())
+                .decision
+                .is_allow()
+        );
+        assert_eq!(harness.session_cache.stats().entries, 1);
+
+        // The same cookie replayed on another host: not an identity, cache or no cache.
+        let elsewhere = AuthRequest {
+            host: Host::parse(OTHER).unwrap(),
+            ..request("/")
+        };
+        let outcome = gateway.authorize(&elsewhere, &with_cookie());
+        assert_eq!(outcome.decision.reason, Reason::NoIdentity);
+        assert!(!outcome.decision.is_allow());
+    }
+
     #[test]
     fn a_name_the_owner_never_wrote_is_not_delegated_to() {
         let harness = Harness::new(shared_endpoint(Some("carol")));
@@ -684,5 +770,41 @@ mod tests {
             shared_endpoint(Some("carol")).allow_users,
             BTreeSet::from([Username::new("carol")])
         );
+    }
+
+    /// Second-pass finding 3: the outbound identity headers were re-derived after the decision —
+    /// cookie first, revocation ignored — so the person an application was told about could be
+    /// one the decision never saw. The decision now returns the credential it was made on.
+    #[test]
+    fn the_identity_handed_on_is_the_one_the_decision_was_made_about() {
+        let harness = Harness::new(shared_endpoint(Some("bob")));
+        let gateway = harness.gateway(Enforcement::Enforce);
+
+        // A bearer beats a cookie in the decision, so it is the bearer's caller that is named.
+        let both = Presented {
+            cookie: Some(COOKIE.to_owned()),
+            bearer: Some(TOKEN.to_owned()),
+            ..Presented::default()
+        };
+        let authorized = gateway.authorize_resolved(&request("/"), &both);
+        assert!(authorized.outcome.decision.is_allow());
+        assert!(matches!(authorized.credential, Credential::Bearer(_)));
+        assert_eq!(authorized.person().unwrap().username.as_str(), "bob");
+
+        // A revoked session names nobody, even though its cookie still opens.
+        harness.revocations.revoke("sid-1");
+        let revoked = gateway.authorize_resolved(&request("/"), &with_cookie());
+        assert_eq!(revoked.credential, Credential::RevokedSession);
+        assert!(revoked.person().is_none());
+
+        // A foreign bearer next to a perfectly good cookie: the decision refused the bearer and
+        // never read the cookie, so the cookie's owner is not handed on either.
+        let foreign = Presented {
+            cookie: Some(COOKIE.to_owned()),
+            bearer: Some("somebody-elses-token".to_owned()),
+            ..Presented::default()
+        };
+        let foreign = gateway.authorize_resolved(&request("/"), &foreign);
+        assert!(foreign.person().is_none());
     }
 }

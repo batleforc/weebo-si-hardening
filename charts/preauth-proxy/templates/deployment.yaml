@@ -26,6 +26,9 @@ spec:
       # RFC 0003's Security considerations: "None beyond an unprivileged network listener. No
       # RBAC, no Linux capabilities, no filesystem writes." No ServiceAccount token needed either.
       automountServiceAccountToken: false
+      # preStopSleepSeconds + config.limits.drain_timeout_secs must fit under this — checked at
+      # render time by preauth-proxy.validate.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -60,7 +63,8 @@ spec:
                   key: {{ .Values.credentials.secretKey }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              # Must match `config.listen`'s port — enforced at render by preauth-proxy.validate.
+              containerPort: {{ .Values.containerPort }}
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
@@ -71,10 +75,26 @@ spec:
             - name: config
               mountPath: /etc/preauth-proxy
               readOnly: true
+          {{- if .Values.preStopSleepSeconds }}
+          # Keep serving for a moment after termination starts, so the endpoint is removed from
+          # the Service before the listener closes — the image is `scratch`, so there is no
+          # `sleep` binary for an exec hook; this is the kubelet's own sleep action (GA-enabled
+          # by default since Kubernetes 1.30). Then SIGTERM drains per `drain_timeout_secs`.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          {{- end }}
           # No `/healthz` yet — RFC 0003's Known limitations: "No metrics yet." A TCP probe
           # against the listener is the best available signal without one; startup acquisition
           # happens before the listener binds, so a ready TCP port already implies acquisition
-          # succeeded.
+          # succeeded. The startupProbe holds off liveness while that acquisition runs — up to
+          # connect_timeout_secs + response_timeout_secs, which its budget is checked to cover.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
           readinessProbe:
             tcpSocket:
               port: http

@@ -78,9 +78,9 @@ mod tests {
         let mut obj = DynamicObject::new(
             "python-web",
             &kube::core::ApiResource {
-                group: "controller.devfile.io".to_string(),
-                version: "v1alpha1".to_string(),
-                api_version: "controller.devfile.io/v1alpha1".to_string(),
+                group: "workspace.devfile.io".to_string(),
+                version: "v1alpha2".to_string(),
+                api_version: "workspace.devfile.io/v1alpha2".to_string(),
                 kind: "DevWorkspace".to_string(),
                 plural: "devworkspaces".to_string(),
             },

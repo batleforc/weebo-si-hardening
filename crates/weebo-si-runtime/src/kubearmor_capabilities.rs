@@ -28,13 +28,28 @@ impl KubeArmorCapabilities {
     ///
     /// `Discovery::has_group` is enough: a coarse "this cluster runs KubeArmor's CRDs" is exactly
     /// what [`Capabilities::offers`] promises — not a check of any particular verb or version.
+    ///
+    /// Served *and* watchable by this process, for the reason [`crate::KubeCapabilities`] gives:
+    /// the chart grants `kubearmorpolicies` only behind `kubearmorPolicy.rbac.enabled`, and a
+    /// watch without the grant blocks startup forever instead of failing.
     pub async fn discover(client: Client) -> Result<Self, kube::Error> {
-        let discovery = Discovery::new(client)
+        let discovery = Discovery::new(client.clone())
             .filter(&[KUBEARMOR_GROUP])
             .run()
             .await?;
+        let served = discovery.has_group(KUBEARMOR_GROUP);
+        let granted = served
+            && crate::access::can_watch(&client, KUBEARMOR_GROUP, "kubearmorpolicies", None)
+                .await?;
+        if served && !granted {
+            println!(
+                "weebo-si-operator: the apiserver serves kubearmorpolicies.{KUBEARMOR_GROUP} but \
+                 this ServiceAccount may not watch it — kubearmor-policy is treated as absent \
+                 (set kubearmorPolicy.rbac.enabled in the chart to use it)"
+            );
+        }
         Ok(Self {
-            kubearmor_offered: discovery.has_group(KUBEARMOR_GROUP),
+            kubearmor_offered: granted,
         })
     }
 

@@ -14,7 +14,8 @@
 use std::collections::BTreeMap;
 
 use weebo_si_crd::{
-    KubeArmorPolicyConfig, OnNotGranted, RuntimeProfileGrant, RuntimeProfileKey, Team, TeamName,
+    OnNotGranted, ResolvedKubeArmorPolicyConfig, RuntimeProfileGrant, RuntimeProfileKey, Team,
+    TeamName,
 };
 
 /// Which step of the resolution chain produced the answer.
@@ -84,7 +85,7 @@ fn parse_keys(raw: &str) -> Vec<RuntimeProfileKey> {
 /// dropped); [`OnNotGranted::Deny`] refuses, naming them.
 pub fn resolve(
     teams: &[Team],
-    config: &KubeArmorPolicyConfig,
+    config: &ResolvedKubeArmorPolicyConfig,
     namespace_labels: &BTreeMap<String, String>,
     namespace_annotation: Option<&str>,
     workspace_attribute: Option<&str>,
@@ -153,8 +154,9 @@ pub fn resolve(
 )]
 mod tests {
     use weebo_si_crd::{
-        FeatureMode, NamespaceName, RuntimeEnforcement, RuntimeNamespaceSelection, RuntimeProfile,
-        RuntimeProfileCatalog, RuntimeWorkspaceSelection, Selector, TemplateRef,
+        FeatureMode, KubeArmorPolicyConfig, NamespaceName, Resolved, RuntimeEnforcement,
+        RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog,
+        RuntimeWorkspaceSelection, Selector, TemplateRef,
     };
 
     use super::*;
@@ -172,8 +174,8 @@ mod tests {
     fn config(
         baseline: &str,
         grants: BTreeMap<String, RuntimeProfileGrant>,
-    ) -> KubeArmorPolicyConfig {
-        KubeArmorPolicyConfig {
+    ) -> ResolvedKubeArmorPolicyConfig {
+        Resolved::without_teams(KubeArmorPolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: RuntimeProfileCatalog::new(vec![
@@ -182,12 +184,12 @@ mod tests {
                 entry("net-raw"),
             ]),
             baseline: RuntimeProfileKey::new(baseline),
-            grants,
             namespace_selection: RuntimeNamespaceSelection::default(),
             workspace_selection: RuntimeWorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: RuntimeEnforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str, label_value: &str) -> Team {

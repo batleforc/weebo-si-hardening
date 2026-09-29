@@ -29,11 +29,12 @@ docs/
 it runs in the pre-commit hook where "works on my shell" is not a guarantee we get.
 
 `charts/<name>/` mirrors the brick's own name, not its `bins/`/`crates/` parent directory — a
-chart is installed by name, and duplicating the parent would only be noise. Unlike
-`crates/weebo-si-operator/deploy/`'s raw manifests (kept for anyone who does not want Helm as a
-dependency), a chart is the templated, parameterized form of the same artifacts; where they
-overlap — the generated CRD is the clearest case — `scripts/crd-regen.sh` regenerates both copies
-from the same source so they cannot drift against each other.
+chart is installed by name, and duplicating the parent would only be noise. A chart is the one
+supported install path for its brick; `crates/weebo-si-operator/deploy/` keeps only the generated
+`crd.yaml` (for installing the kinds without the operator), and `scripts/crd-regen.sh` regenerates
+it and the chart's `crds/` copy from the same source so they cannot drift against each other. The
+hand-written raw manifests that used to sit beside it were removed once they had drifted from the
+chart far enough not to start.
 
 ## `bins/` or `crates/`?
 

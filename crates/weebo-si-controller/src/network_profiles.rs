@@ -20,23 +20,94 @@ use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Api, Client, ResourceExt};
+use weebo_si_chassis::managed::{ObjectKey, Owner};
 use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, FeatureId};
-use weebo_si_crd::{DEVWORKSPACE_ID_LABEL, FeatureMode, NamespaceName, NetworkProfilesConfig};
+use weebo_si_crd::{
+    DEVWORKSPACE_ID_LABEL, FeatureMode, NamespaceName, ResolvedNetworkProfilesConfig,
+};
 use weebo_si_network_profiles::{
     CanaryProbe, NamespaceSubject, NetworkProfiles, PolicyStore, ReconcileObserver,
     ReconcileOutcome, Workspace, is_excluded_namespace,
 };
+
+/// The DevWorkspace's id — the value its pods carry as `controller.devfile.io/devworkspace_id`,
+/// which every profile object selects on.
+///
+/// DevWorkspace Operator records it on the `DevWorkspace` itself as `status.devworkspaceId`, and
+/// puts the label on the objects it *creates* (pods, Deployments, Services), not on the
+/// `DevWorkspace`. Status first; the label is still honoured for an object that carries one.
+/// `None` until DWO has assigned it.
+pub(crate) fn devworkspace_id(obj: &DynamicObject) -> Option<String> {
+    obj.data
+        .pointer("/status/devworkspaceId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            obj.metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get(DEVWORKSPACE_ID_LABEL))
+                .filter(|id| !id.is_empty())
+                .cloned()
+        })
+}
 
 /// The `DevWorkspace` GVK, matching this repo's own convention (see
 /// `charts/weebo-si-operator/templates/mutatingwebhookconfiguration.yaml`) rather than upstream
 /// DevWorkspace Operator's actual group — consistent with every other reference to this resource
 /// in this codebase.
 pub fn devworkspace_resource() -> ApiResource {
-    let gvk = GroupVersionKind::gvk("controller.devfile.io", "v1alpha1", "DevWorkspace");
+    let gvk = GroupVersionKind::gvk("workspace.devfile.io", "v1alpha2", "DevWorkspace");
     ApiResource::from_gvk_with_plural(&gvk, "devworkspaces")
+}
+
+/// The DevWorkspace `obj` as the [`Owner`] every profile object written for it is
+/// garbage-collected with — RFC 0004's "Profile objects carry an `ownerReference` to their
+/// DevWorkspace."
+///
+/// `apiVersion` and `kind` come from [`devworkspace_resource`] — the resource this controller
+/// actually watches and read `obj`'s `uid` from — rather than from a second hard-coded string:
+/// the garbage collector resolves an owner through exactly the `apiVersion` written, and one that
+/// named a different resource than the one the `uid` belongs to would read as "owner gone" and
+/// delete the workspace's policies out from under it. `None` when the object carries no name or
+/// uid, which no object read from the apiserver ever lacks.
+pub fn devworkspace_owner(obj: &DynamicObject) -> Option<Owner> {
+    let resource = devworkspace_resource();
+    Some(Owner {
+        api_version: resource.api_version,
+        kind: resource.kind,
+        name: obj.metadata.name.clone()?,
+        uid: obj.metadata.uid.clone()?,
+    })
+}
+
+/// One line per object a pass *held* — its template did not resolve (deleted, or not yet in the
+/// watch cache), so the live copy was neither updated nor deleted. Without this line a template
+/// deleted by mistake is invisible: every metric reads healthy while the enforced policy quietly
+/// stops tracking its template.
+///
+/// Shared with [`crate::kubearmor_policy`], whose `ReconcileOutcome::held` means the same thing.
+pub(crate) fn held_warnings(feature: &str, held: &[ObjectKey]) -> Vec<String> {
+    held.iter()
+        .map(|key| {
+            format!(
+                "WARN weebo-si-controller: feature={feature} object={}/{} result=held — \
+                 template unresolved, live object left untouched",
+                key.namespace, key.name
+            )
+        })
+        .collect()
+}
+
+/// Print [`held_warnings`] to stderr, next to every other `WARN` line.
+pub(crate) fn warn_held(feature: &str, held: &[ObjectKey]) {
+    for line in held_warnings(feature, held) {
+        eprintln!("{line}");
+    }
 }
 
 /// How often the enforcement canary's verdict is refreshed when `enforcement.canary.enabled` is
@@ -52,8 +123,8 @@ pub struct NetworkProfilesDeps {
     /// consumers: `desired()` reads it through `feature`, this module reads the two selection
     /// keys through `config` directly).
     pub feature: Arc<NetworkProfiles>,
-    /// The same `Arc<RwLock<Option<NetworkProfilesConfig>>>` `feature` was constructed with.
-    pub config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+    /// The same `Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>` `feature` was constructed with.
+    pub config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace.
@@ -135,6 +206,12 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
     }
 
     let name = NamespaceName::new(ns.name_any());
+    // A namespace being deleted is being emptied by the namespace controller; writing its
+    // objects back would be refused (the namespace is terminating) and retried every pass until
+    // it is gone.
+    if ns.metadata.deletion_timestamp.is_some() {
+        return Ok(Action::await_change());
+    }
     if is_excluded_namespace(&name, &ctx.deps.operator_namespace) {
         return Ok(Action::await_change());
     }
@@ -166,6 +243,7 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
 
     ctx.deps.observer.reconciled(&outcome);
     warn_unsupported(&outcome, &format!("{:?}", ctx.deps.feature.backend()));
+    warn_held("network-profiles", &outcome.held);
     println!(
         "weebo-si-controller: network-profiles namespace={name} mode={mode:?} diffs={} applied={:?}",
         outcome.diffs.len(),
@@ -192,13 +270,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         return Ok(Action::await_change());
     }
 
-    let Some(workspace_id) = obj
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(DEVWORKSPACE_ID_LABEL))
-        .cloned()
-    else {
+    let Some(workspace_id) = devworkspace_id(&obj) else {
         // DevWorkspace Operator has not assigned the id yet — nothing to key a profile object
         // by. A short requeue rather than `await_change`: the object will change again shortly
         // once the id lands, but this reconcile pass has no watch event to wait for in the
@@ -244,12 +316,16 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         .facts(&namespace)
         .unwrap_or_default();
     let context = Context::new(&teams, &facts, ctx.deps.dwoc_catalog.as_ref());
+    let owner = devworkspace_owner(&obj).ok_or_else(|| {
+        Error("DevWorkspace carries no name or uid to own its objects".to_string())
+    })?;
     let subject = Workspace {
         name: obj.name_any(),
         namespace: namespace.clone(),
         workspace_id,
         attribute,
         namespace_annotation,
+        owner,
     };
 
     let outcome = weebo_si_network_profiles::reconcile(
@@ -265,6 +341,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
     ctx.deps.observer.reconciled(&outcome);
     warn_unsupported(&outcome, &format!("{:?}", ctx.deps.feature.backend()));
     warn_not_granted(&outcome, &subject.name);
+    warn_held("network-profiles", &outcome.held);
     println!(
         "weebo-si-controller: network-profiles workspace={}/{} mode={mode:?} diffs={} applied={:?}",
         subject.namespace,
@@ -378,4 +455,106 @@ pub async fn spawn(client: Client, deps: NetworkProfilesDeps, is_leader: Arc<Ato
 
     tokio::spawn(managed_objects_loop(Arc::clone(&ctx)));
     tokio::spawn(canary_loop(ctx));
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use kube::api::ObjectMeta;
+
+    use super::*;
+
+    fn devworkspace(name: Option<&str>, uid: Option<&str>) -> DynamicObject {
+        DynamicObject {
+            types: None,
+            metadata: ObjectMeta {
+                name: name.map(str::to_string),
+                namespace: Some("user-alice".to_string()),
+                uid: uid.map(str::to_string),
+                ..ObjectMeta::default()
+            },
+            data: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn the_owner_names_the_resource_this_controller_watches() {
+        // The garbage collector resolves an owner through the apiVersion written; it must be the
+        // one the uid was read from.
+        let resource = devworkspace_resource();
+        assert_eq!(
+            devworkspace_owner(&devworkspace(Some("data-pipeline"), Some("uid-1"))),
+            Some(Owner {
+                api_version: resource.api_version,
+                kind: "DevWorkspace".to_string(),
+                name: "data-pipeline".to_string(),
+                uid: "uid-1".to_string(),
+            })
+        );
+    }
+
+    /// DWO keeps the id in `status.devworkspaceId`, not in a label on the DevWorkspace — reading
+    /// only the label meant every workspace pass requeued forever on a real cluster.
+    #[test]
+    fn the_workspace_id_comes_from_status_and_falls_back_to_the_label() {
+        let mut from_status = devworkspace(Some("ws"), Some("uid-1"));
+        from_status.data = serde_json::json!({"status": {"devworkspaceId": "workspace0a1b2c"}});
+        assert_eq!(
+            devworkspace_id(&from_status).as_deref(),
+            Some("workspace0a1b2c")
+        );
+
+        let mut from_label = devworkspace(Some("ws"), Some("uid-1"));
+        from_label.metadata.labels = Some(
+            [(DEVWORKSPACE_ID_LABEL.to_string(), "workspace9f".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(devworkspace_id(&from_label).as_deref(), Some("workspace9f"));
+
+        let mut not_yet = devworkspace(Some("ws"), Some("uid-1"));
+        not_yet.data = serde_json::json!({"status": {"devworkspaceId": ""}});
+        assert_eq!(devworkspace_id(&not_yet), None);
+    }
+
+    #[test]
+    fn a_devworkspace_without_a_uid_has_no_owner_to_offer() {
+        assert_eq!(devworkspace_owner(&devworkspace(Some("x"), None)), None);
+        assert_eq!(devworkspace_owner(&devworkspace(None, Some("uid-1"))), None);
+    }
+
+    #[test]
+    fn one_warning_per_held_object_naming_feature_and_object() {
+        let held = [
+            ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-base".to_string(),
+            },
+            ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-git-ws1".to_string(),
+            },
+        ];
+        let lines = held_warnings("network-profiles", &held);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with(
+            "WARN weebo-si-controller: feature=network-profiles object=user-alice/weebo-base \
+             result=held"
+        ));
+        assert!(lines[1].contains("object=user-alice/weebo-git-ws1"));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.contains("template unresolved"))
+        );
+    }
+
+    #[test]
+    fn nothing_held_means_nothing_logged() {
+        assert!(held_warnings("kubearmor-policy", &[]).is_empty());
+    }
 }

@@ -5,6 +5,7 @@
 //! allow/deny decision over a guarded write is exactly what `Decision::deny(...)` /
 //! `Decision::new(vec![], ...)` already model, with no mutation ever produced.
 
+use weebo_si_chassis::teardown::teardown_may;
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
 use weebo_si_crd::NamespaceName;
 
@@ -91,6 +92,12 @@ impl Feature<GuardedWrite> for PolicyGuard {
     ) -> Result<Decision<GuardedWrite>, DomainError> {
         if subject.actor == self.operator_identity {
             return Ok(Decision::new(Vec::new(), None, None, "operator_allowed"));
+        }
+
+        if subject.operation != WriteOperation::Create
+            && teardown_may(&subject.actor, subject.operation == WriteOperation::Delete)
+        {
+            return Ok(Decision::new(Vec::new(), None, None, "teardown_allowed"));
         }
 
         if subject.target_is_managed {
@@ -241,6 +248,44 @@ mod tests {
                  different resources — the guard has started reading `resource`, which RFC 0008 \
                  forbids: {verdicts:?}"
             );
+        }
+    }
+
+    /// A namespace being deleted must be able to finish: the namespace controller and the
+    /// garbage collector delete managed objects. Only the garbage collector may also update one
+    /// (an orphaning delete drops the `ownerReference`); nobody in the list may create.
+    #[test]
+    fn the_control_plane_may_delete_a_managed_object_and_only_the_gc_may_orphan_it() {
+        let namespace = namespace_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        for actor in weebo_si_chassis::teardown::TEARDOWN_IDENTITIES {
+            for resource in GuardedResource::ALL {
+                let delete = guard()
+                    .evaluate(
+                        &write(actor, WriteOperation::Delete, true, resource),
+                        &ctx(&namespace, &catalog),
+                    )
+                    .unwrap();
+                assert!(delete.denial.is_none(), "{actor} DELETE {resource} refused");
+                let update = guard()
+                    .evaluate(
+                        &write(actor, WriteOperation::Update, true, resource),
+                        &ctx(&namespace, &catalog),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    update.denial.is_none(),
+                    weebo_si_chassis::teardown::teardown_may(actor, false),
+                    "{actor} UPDATE {resource}"
+                );
+                let create = guard()
+                    .evaluate(
+                        &write(actor, WriteOperation::Create, false, resource),
+                        &ctx(&namespace, &catalog),
+                    )
+                    .unwrap();
+                assert!(create.denial.is_some(), "{actor} CREATE {resource} allowed");
+            }
         }
     }
 

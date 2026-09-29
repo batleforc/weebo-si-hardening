@@ -14,10 +14,14 @@
 //! identity provider, so a flood of invented tokens is a flood of calls somebody else's server
 //! has to answer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use weebo_si_endpoint_auth::time::Timestamp;
+
+/// How many buckets one call may examine when the map is full — the bound that keeps a flood of
+/// new keys from costing a full scan each under the one lock every caller shares.
+pub const EVICTION_SWEEP: usize = 16;
 
 /// How many calls, and how fast the allowance comes back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +36,30 @@ pub struct Rate {
 ///
 /// Bounded because the key is a client address and the set of client addresses is whatever an
 /// attacker decides it is: an unbounded map here would turn a rate limiter into the memory
-/// exhaustion it exists to prevent. Past the ceiling the oldest-touched half is dropped, which
-/// costs an attacker nothing and costs a legitimate caller one refilled bucket.
+/// exhaustion it exists to prevent.
+///
+/// **At the ceiling, only buckets that have fully refilled are dropped** — a full bucket and no
+/// bucket are the same answer, so that forgets nothing. If the map is still full after that, a
+/// *new* key is refused (fail closed for newcomers) rather than making room: the limiter used to
+/// clear every bucket at that point, so an attacker cycling ten thousand addresses reset
+/// everybody's limit, their own included.
+///
+/// **And finding a refilled bucket is amortised** (second-pass finding 6): every new key at the
+/// ceiling used to `retain` over the whole map under the global lock, so a flood of new keys was
+/// a flood of full scans. Keys are kept in insertion order and each call examines at most
+/// [`EVICTION_SWEEP`] of the oldest — dropping the refilled ones, sending the rest to the back —
+/// so the work per call is constant and successive calls walk the whole map between them.
 pub struct RateLimiter {
     rate: Rate,
     capacity: usize,
-    buckets: Mutex<HashMap<String, Bucket>>,
+    buckets: Mutex<Buckets>,
+}
+
+#[derive(Default)]
+struct Buckets {
+    by_key: HashMap<String, Bucket>,
+    /// Every key in `by_key`, exactly once, oldest first.
+    order: VecDeque<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -53,7 +75,7 @@ impl RateLimiter {
         Self {
             rate,
             capacity: capacity.max(1),
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(Buckets::default()),
         }
     }
 
@@ -65,31 +87,63 @@ impl RateLimiter {
     pub fn allow(&self, key: &str, now: Timestamp) -> bool {
         let ceiling = u64::from(self.rate.burst) * 1_000;
         let per_second = u64::from(self.rate.per_minute) * 1_000 / 60;
-        let Ok(mut buckets) = self.buckets.lock() else {
+        let Ok(mut guard) = self.buckets.lock() else {
             return true;
         };
-        if buckets.len() >= self.capacity && !buckets.contains_key(key) {
-            let cutoff = now.as_secs().saturating_sub(60);
-            buckets.retain(|_, bucket| bucket.touched >= cutoff);
-            if buckets.len() >= self.capacity {
-                buckets.clear();
+        let buckets = &mut *guard;
+        let now_secs = now.as_secs();
+        if !buckets.by_key.contains_key(key) {
+            if buckets.by_key.len() >= self.capacity {
+                for _ in 0..EVICTION_SWEEP.min(buckets.order.len()) {
+                    let Some(oldest) = buckets.order.pop_front() else {
+                        break;
+                    };
+                    let refilled = buckets.by_key.get(&oldest).is_none_or(|bucket| {
+                        bucket.milli_tokens.saturating_add(
+                            now_secs
+                                .saturating_sub(bucket.touched)
+                                .saturating_mul(per_second),
+                        ) >= ceiling
+                    });
+                    if refilled {
+                        buckets.by_key.remove(&oldest);
+                    } else {
+                        buckets.order.push_back(oldest);
+                    }
+                }
+                if buckets.by_key.len() >= self.capacity {
+                    return false;
+                }
             }
+            buckets.by_key.insert(
+                key.to_owned(),
+                Bucket {
+                    milli_tokens: ceiling,
+                    touched: now_secs,
+                },
+            );
+            buckets.order.push_back(key.to_owned());
         }
-        let bucket = buckets.entry(key.to_owned()).or_insert(Bucket {
-            milli_tokens: ceiling,
-            touched: now.as_secs(),
-        });
-        let elapsed = now.as_secs().saturating_sub(bucket.touched);
+        let Some(bucket) = buckets.by_key.get_mut(key) else {
+            return true;
+        };
+        let elapsed = now_secs.saturating_sub(bucket.touched);
         bucket.milli_tokens = bucket
             .milli_tokens
             .saturating_add(elapsed.saturating_mul(per_second))
             .min(ceiling);
-        bucket.touched = now.as_secs();
+        bucket.touched = now_secs;
         if bucket.milli_tokens < 1_000 {
             return false;
         }
         bucket.milli_tokens -= 1_000;
         true
+    }
+
+    /// How many keys are held, for tests.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.buckets.lock().map(|b| b.by_key.len()).unwrap_or(0)
     }
 }
 
@@ -151,6 +205,68 @@ mod tests {
         for address in 0..1_000 {
             let _ = limiter.allow(&format!("10.0.0.{address}"), now);
         }
-        assert!(limiter.buckets.lock().unwrap().len() <= 8);
+        assert!(limiter.len() <= 8);
+    }
+
+    /// M2: at the ceiling the limiter used to clear *every* bucket, so a flood of fresh
+    /// addresses reset the limit of the caller it was meant to be holding back.
+    #[test]
+    fn a_flood_of_new_addresses_does_not_reset_anybody_elses_limit() {
+        let limiter = RateLimiter::new(
+            Rate {
+                burst: 2,
+                per_minute: 2,
+            },
+            8,
+        );
+        let now = Timestamp::from_secs(1_000);
+        assert!(limiter.allow("attacker", now));
+        assert!(limiter.allow("attacker", now));
+        assert!(!limiter.allow("attacker", now));
+        for address in 0..1_000 {
+            let _ = limiter.allow(&format!("10.0.0.{address}"), now);
+        }
+        assert!(
+            !limiter.allow("attacker", now),
+            "the flood must not have bought a fresh allowance"
+        );
+        assert!(limiter.len() <= 8);
+        // A newcomer while the map is full of drained buckets waits (fail closed)...
+        assert!(!limiter.allow("newcomer", now));
+        // ...until they have refilled, at which point they are forgotten and room is made.
+        assert!(limiter.allow("newcomer", now.plus_secs(120)));
+    }
+
+    /// Second-pass finding 6: at the ceiling each new key did a full scan of the map. The work
+    /// per call is now bounded, and a refilled bucket beyond the first sweep is still found by
+    /// the calls that follow.
+    #[test]
+    fn eviction_at_the_ceiling_is_amortised_and_still_finds_room() {
+        let limiter = RateLimiter::new(
+            Rate {
+                burst: 1,
+                per_minute: 1,
+            },
+            EVICTION_SWEEP * 4,
+        );
+        let start = Timestamp::from_secs(1_000);
+        // Fill the map with drained buckets.
+        for address in 0..EVICTION_SWEEP * 4 {
+            assert!(limiter.allow(&format!("drained-{address}"), start));
+        }
+        assert_eq!(limiter.len(), EVICTION_SWEEP * 4);
+        // Nothing has refilled: newcomers wait, and nobody's bucket was dropped to make room.
+        for newcomer in 0..10 {
+            assert!(!limiter.allow(&format!("new-{newcomer}"), start));
+        }
+        assert_eq!(limiter.len(), EVICTION_SWEEP * 4);
+        // Once they have refilled, one call makes room by sweeping at most EVICTION_SWEEP.
+        let later = start.plus_secs(120);
+        assert!(limiter.allow("new-a", later));
+        assert!(limiter.len() <= EVICTION_SWEEP * 4);
+        assert!(
+            limiter.len() >= EVICTION_SWEEP * 3,
+            "swept more than one batch"
+        );
     }
 }

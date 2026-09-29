@@ -14,7 +14,7 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
 use weebo_si_chassis::{AdmitOutcome, Mutation, Registry, Subject};
-use weebo_si_crd::{DwocRef, NamespaceName, NetworkProfilesConfig};
+use weebo_si_crd::{DwocRef, NamespaceName, ResolvedNetworkProfilesConfig};
 use weebo_si_dwoc_pin::Workspace;
 use weebo_si_network_profiles::WorkspaceAdmission;
 
@@ -95,7 +95,7 @@ pub struct NetworkProfilesAdmission {
     pub registry: Registry<WorkspaceAdmission>,
     /// `spec.features.networkProfiles`, hot-reloaded — read fresh per request for
     /// `workspaceSelection.attribute` and `namespaceSelection.annotation`.
-    pub config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+    pub config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
 }
 
 /// The webhook's router. Also built by the envtest suite, pointed at real

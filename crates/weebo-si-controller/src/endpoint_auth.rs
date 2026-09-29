@@ -29,8 +29,8 @@ use kube::{Api, Client, ResourceExt};
 use serde_json::{Value, json};
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_crd::{
-    AttachmentMode, COMPANION_SERVICE, Dialect, EndpointAuthConfig, FeatureMode, MIDDLEWARE_NAME,
-    NamespaceName,
+    AttachmentMode, COMPANION_SERVICE, Dialect, FeatureMode, MIDDLEWARE_NAME, NamespaceName,
+    ResolvedEndpointAuthConfig,
 };
 
 /// This feature's identifier, as the gate and the log lines name it.
@@ -45,7 +45,7 @@ const REQUEUE: Duration = Duration::from_secs(300);
 pub struct EndpointAuthDeps {
     /// `spec.features.endpointAuth`, hot-reloaded — the dialect and the gateway are read fresh on
     /// every pass, so changing either re-sweeps the cluster without a restart.
-    pub config: Arc<RwLock<Option<EndpointAuthConfig>>>,
+    pub config: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The operator's own namespace — where the shared `Middleware` lives.
@@ -114,7 +114,9 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, is_leader: Arc<Atomic
     });
 }
 
-fn read(config: &Arc<RwLock<Option<EndpointAuthConfig>>>) -> Option<EndpointAuthConfig> {
+fn read(
+    config: &Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+) -> Option<ResolvedEndpointAuthConfig> {
     config
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -139,7 +141,7 @@ pub enum SweepOutcome {
 /// Pure, and the whole decision of this module: the loop below is the watch, the patch and the
 /// requeue around it.
 pub fn sweep(
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
     mode: FeatureMode,
     annotations: &BTreeMap<String, String>,
     backend: Option<(&str, u16)>,
@@ -263,7 +265,7 @@ async fn patch_annotations(
 pub async fn ensure_middleware(
     client: &Client,
     namespace: &NamespaceName,
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
 ) -> Result<(), kube::Error> {
     let gvk = GroupVersionKind::gvk("traefik.io", "v1alpha1", "Middleware");
     let resource = ApiResource::from_gvk(&gvk);
@@ -343,7 +345,10 @@ fn error_policy(_object: Arc<Ingress>, error: &Error, _ctx: Arc<Ctx>) -> Action 
 /// trade against carrying a second typed watch for a kind most clusters do not serve. The
 /// mutating webhook is what makes a *new* `Route` gated immediately; this is what covers the ones
 /// that predate the feature.
-pub async fn sweep_routes(client: &Client, config: &EndpointAuthConfig) -> Result<(), kube::Error> {
+pub async fn sweep_routes(
+    client: &Client,
+    config: &ResolvedEndpointAuthConfig,
+) -> Result<(), kube::Error> {
     let resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("route.openshift.io", "v1", "Route"));
     let routes: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
@@ -436,7 +441,7 @@ pub async fn sweep_routes(client: &Client, config: &EndpointAuthConfig) -> Resul
 pub async fn reconcile_companions(
     client: &Client,
     namespace: &NamespaceName,
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
     gateway_endpoints: &[String],
 ) -> Result<(), kube::Error> {
     let params = PatchParams::apply("weebo-si-operator").force();
@@ -475,7 +480,7 @@ pub async fn reconcile_companions(
 
 /// The companion `Service` a `ReverseProxy` dialect needs in each workspace namespace, since a
 /// `Route`'s `spec.to` is a local reference with no cross-namespace form.
-pub fn companion_service(namespace: &NamespaceName, config: &EndpointAuthConfig) -> Value {
+pub fn companion_service(namespace: &NamespaceName, config: &ResolvedEndpointAuthConfig) -> Value {
     json!({
         "apiVersion": "v1",
         "kind": "Service",
@@ -496,7 +501,7 @@ pub fn companion_service(namespace: &NamespaceName, config: &EndpointAuthConfig)
 /// The `EndpointSlice` that gives the companion `Service` its addresses.
 pub fn companion_slice(
     namespace: &NamespaceName,
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
     addresses: &[String],
 ) -> Value {
     json!({
@@ -522,7 +527,7 @@ pub fn companion_slice(
 }
 
 /// Whether this dialect needs [`companion_service`] at all.
-pub fn needs_companion(config: &EndpointAuthConfig) -> bool {
+pub fn needs_companion(config: &ResolvedEndpointAuthConfig) -> bool {
     config.gateway.dialect.mode() == AttachmentMode::ReverseProxy
 }
 
@@ -530,7 +535,7 @@ pub fn needs_companion(config: &EndpointAuthConfig) -> bool {
 /// namespace — the source the companions above are reconciled from.
 pub async fn gateway_endpoints(
     client: &Client,
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
 ) -> Result<Vec<String>, kube::Error> {
     let api: Api<DynamicObject> = Api::namespaced_with(
         client.clone(),
@@ -576,16 +581,17 @@ pub async fn gateway_endpoints(
 )]
 mod tests {
     use weebo_si_crd::{
-        AccessEntry, AccessKey, ENDPOINT_AUTH_ANNOTATION, EndpointSelection, GateEnforcement,
-        GatewayRef, HostOwnership, HostsConfig, OwnerConfig, SelfOriginConfig, ServiceRef,
+        AccessEntry, AccessKey, ENDPOINT_AUTH_ANNOTATION, EndpointAuthConfig, EndpointSelection,
+        GateEnforcement, GatewayRef, HostOwnership, HostsConfig, OwnerConfig, Resolved,
+        SelfOriginConfig, ServiceRef,
     };
 
     use super::*;
 
     const CHAIN: &str = "traefik.ingress.kubernetes.io/router.middlewares";
 
-    fn config() -> EndpointAuthConfig {
-        EndpointAuthConfig {
+    fn config() -> ResolvedEndpointAuthConfig {
+        Resolved::without_teams(EndpointAuthConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
             gateway: GatewayRef {
@@ -623,8 +629,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
-            grants: Default::default(),
-        }
+        })
     }
 
     fn attached() -> BTreeMap<String, String> {

@@ -145,7 +145,7 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
-  - apiGroups: ["controller.devfile.io"]
+  - apiGroups: ["workspace.devfile.io"]
     resources: ["devworkspaces"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]

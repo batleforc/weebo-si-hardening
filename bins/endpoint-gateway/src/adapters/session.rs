@@ -61,6 +61,39 @@ pub struct SealedPayload {
     /// The refresh token, present on the SSO cookie alone — see [`Binding`].
     #[serde(rename = "r", default, skip_serializing_if = "Option::is_none")]
     pub refresh: Option<String>,
+    /// When the SSO session this value was derived from expires — carried on a grant and on a
+    /// host cookie so that re-minting one (sliding) can never outlive the session that proved
+    /// it. `None` on the SSO cookie itself, whose own `expires_at` is that bound, and on a host
+    /// cookie minted before the field existed, which is then not slid at all (fail closed).
+    #[serde(rename = "se", default, skip_serializing_if = "Option::is_none")]
+    pub session_expires_at: Option<u64>,
+}
+
+/// The sign-in in flight between `/oidc/start` and `/oidc/callback`: where to go afterwards, the
+/// PKCE verifier and the `state` value the identity provider must echo.
+///
+/// **Its own type and its own [`Binding`]**, never a [`SealedPayload`] with fields repurposed.
+/// It used to be exactly that — the return URL in `username`, the verifier in `groups`, sealed
+/// against the SSO binding — which made the state cookie a valid SSO cookie for a "user" named
+/// after whatever `rd` the caller chose: replay `__Host-weebo-state` as `__Host-weebo-sso` and
+/// `/host-session` minted a grant for that name. A separate associated data makes the two values
+/// mutually unopenable, and a separate type means no field can be read as the other's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginState {
+    /// Where to send the browser once signed in — already checked to be an endpoint of this
+    /// cluster, or empty.
+    #[serde(rename = "rd")]
+    pub return_to: String,
+    /// The PKCE verifier.
+    #[serde(rename = "v")]
+    pub verifier: String,
+    /// The `state` parameter the identity provider must echo back.
+    #[serde(rename = "st")]
+    pub state: String,
+    /// Expiry, seconds since the epoch.
+    #[serde(rename = "e")]
+    pub expires_at: u64,
 }
 
 impl SealedPayload {
@@ -82,6 +115,8 @@ impl SealedPayload {
 pub enum Binding<'a> {
     /// The SSO cookie, on the gateway's own host.
     Sso,
+    /// The sign-in state cookie, on the gateway's own host — never openable as [`Self::Sso`].
+    LoginState,
     /// A host cookie or a grant, bound to one endpoint host.
     HostBound(&'a str),
 }
@@ -90,6 +125,9 @@ impl Binding<'_> {
     fn aad(&self) -> &[u8] {
         match self {
             Self::Sso => b"weebo-si/sso",
+            Self::LoginState => b"weebo-si/login-state",
+            // A hostname is `[a-z0-9.-]` only (`Host::parse`), so it can never equal either
+            // constant above, which both contain a `/`.
             Self::HostBound(host) => host.as_bytes(),
         }
     }
@@ -174,25 +212,12 @@ impl SealedCodec {
     /// `None` only if the platform's random source fails, which is the one failure here that is
     /// not a bug: minting no cookie is correct, and minting one with a predictable nonce is not.
     pub fn seal(&self, payload: &SealedPayload, binding: Binding<'_>) -> Option<String> {
-        let cipher = self.ciphers.first()?;
-        let mut nonce_bytes = [0_u8; 12];
-        rand::rngs::OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let plaintext = serde_json::to_vec(payload).ok()?;
-        let sealed = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: &plaintext,
-                    aad: binding.aad(),
-                },
-            )
-            .ok()?;
-        Some(format!(
-            "v1.{}.{}",
-            B64.encode(nonce_bytes),
-            B64.encode(sealed)
-        ))
+        // The login state has its own type and its own entry point; a `SealedPayload` sealed
+        // against its binding is exactly the confusion that binding exists to rule out.
+        if binding == Binding::LoginState {
+            return None;
+        }
+        self.seal_json(&serde_json::to_vec(payload).ok()?, binding)
     }
 
     /// Open a sealed value against `binding`, or `None`.
@@ -207,6 +232,54 @@ impl SealedCodec {
         binding: Binding<'_>,
         now: Timestamp,
     ) -> Option<SealedPayload> {
+        if binding == Binding::LoginState {
+            return None;
+        }
+        let payload: SealedPayload =
+            serde_json::from_slice(&self.open_json(sealed, binding)?).ok()?;
+        if now.is_at_or_after(Timestamp::from_secs(payload.expires_at)) {
+            return None;
+        }
+        Some(payload)
+    }
+
+    /// Seal the sign-in state, against [`Binding::LoginState`] and nothing else.
+    pub fn seal_login_state(&self, state: &LoginState) -> Option<String> {
+        self.seal_json(&serde_json::to_vec(state).ok()?, Binding::LoginState)
+    }
+
+    /// Open the sign-in state, or `None` — including for any SSO cookie, host cookie or grant.
+    pub fn open_login_state(&self, sealed: &str, now: Timestamp) -> Option<LoginState> {
+        let state: LoginState =
+            serde_json::from_slice(&self.open_json(sealed, Binding::LoginState)?).ok()?;
+        if now.is_at_or_after(Timestamp::from_secs(state.expires_at)) {
+            return None;
+        }
+        Some(state)
+    }
+
+    fn seal_json(&self, plaintext: &[u8], binding: Binding<'_>) -> Option<String> {
+        let cipher = self.ciphers.first()?;
+        let mut nonce_bytes = [0_u8; 12];
+        rand::rngs::OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let sealed = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: binding.aad(),
+                },
+            )
+            .ok()?;
+        Some(format!(
+            "v1.{}.{}",
+            B64.encode(nonce_bytes),
+            B64.encode(sealed)
+        ))
+    }
+
+    fn open_json(&self, sealed: &str, binding: Binding<'_>) -> Option<Vec<u8>> {
         let mut parts = sealed.splitn(3, '.');
         if parts.next()? != "v1" {
             return None;
@@ -217,7 +290,7 @@ impl SealedCodec {
             return None;
         }
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let plaintext = self.ciphers.iter().find_map(|cipher| {
+        self.ciphers.iter().find_map(|cipher| {
             cipher
                 .decrypt(
                     nonce,
@@ -227,12 +300,7 @@ impl SealedCodec {
                     },
                 )
                 .ok()
-        })?;
-        let payload: SealedPayload = serde_json::from_slice(&plaintext).ok()?;
-        if now.is_at_or_after(Timestamp::from_secs(payload.expires_at)) {
-            return None;
-        }
-        Some(payload)
+        })
     }
 }
 
@@ -255,6 +323,49 @@ impl SessionCodec for SealedCodec {
             expires_at: Timestamp::from_secs(payload.expires_at),
         })
     }
+}
+
+/// What derives the self-origin probe's token from a session key — a label, so the same key
+/// never yields the same bytes for two purposes.
+const SELFTEST_LABEL: &[u8] = b"weebo selftest";
+
+/// HMAC-SHA256 (RFC 2104), over `sha2` alone: the one MAC this binary needs is not worth a
+/// second crate whose `digest` generation differs from the workspace's `sha2`.
+pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    const BLOCK: usize = 64;
+    let mut block = [0_u8; BLOCK];
+    if key.len() > BLOCK {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.map(|k| k ^ byte);
+    let mut inner = Sha256::new();
+    inner.update(pad(0x36));
+    inner.update(message);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(pad(0x5c));
+    outer.update(inner);
+    outer.finalize().into()
+}
+
+/// The `/selftest` tokens, one per session key, newest first.
+///
+/// **Derived, not random** (second-pass finding 2). A per-process random token meant the probe —
+/// which goes out through the public `Ingress` and back in through the `Service` — landed on a
+/// *different* replica most of the time, was answered `404`, and was inconclusive. Every replica
+/// holds the same session keys, so every replica derives the same token and any of them can
+/// answer the probe; a caller without the keys still cannot.
+pub fn selftest_tokens(keys: &[String]) -> Result<Vec<String>, KeyError> {
+    if keys.is_empty() {
+        return Err(KeyError::Empty);
+    }
+    keys.iter()
+        .map(|raw| decode_key(raw).map(|key| B64.encode(hmac_sha256(&key, SELFTEST_LABEL))))
+        .collect()
 }
 
 /// A random URL-safe id, for a grant, a state or a PKCE verifier.
@@ -287,7 +398,42 @@ mod tests {
             grant_id: None,
             proved_at: 0,
             refresh: None,
+            session_expires_at: None,
         }
+    }
+
+    /// B1: the sign-in state cookie used to be sealed against the SSO binding with the return
+    /// URL in `username`, so replaying `__Host-weebo-state` as `__Host-weebo-sso` was a session
+    /// for any name the caller put in `rd`. Neither value may now open as the other.
+    #[test]
+    fn a_login_state_cookie_is_not_an_sso_cookie_and_an_sso_cookie_is_not_a_login_state() {
+        let codec = SealedCodec::new(&keys(1)).unwrap();
+        let state = LoginState {
+            return_to: "https://alice-ws-api.weebo.si/".into(),
+            verifier: "verifier".into(),
+            state: "state".into(),
+            expires_at: 600,
+        };
+        let sealed_state = codec.seal_login_state(&state).unwrap();
+        let now = Timestamp::from_secs(0);
+        assert_eq!(codec.open_login_state(&sealed_state, now), Some(state));
+        // The attack: the state cookie presented where the SSO cookie is read.
+        assert_eq!(codec.open(&sealed_state, Binding::Sso, now), None);
+        for host in ["alice-ws-api.weebo.si", "weebo-si/sso"] {
+            assert_eq!(
+                codec.open(&sealed_state, Binding::HostBound(host), now),
+                None
+            );
+        }
+        assert_eq!(codec.open(&sealed_state, Binding::LoginState, now), None);
+        // ...and the other way round: an SSO cookie is no sign-in in flight.
+        let sso = codec.seal(&payload(), Binding::Sso).unwrap();
+        assert_eq!(codec.open_login_state(&sso, now), None);
+        // Expiry holds for the state too.
+        assert_eq!(
+            codec.open_login_state(&sealed_state, Timestamp::from_secs(600)),
+            None
+        );
     }
 
     #[test]
@@ -448,5 +594,32 @@ mod tests {
         let first = codec.seal(&payload(), Binding::Sso).unwrap();
         let second = codec.seal(&payload(), Binding::Sso).unwrap();
         assert_ne!(first, second);
+    }
+
+    /// RFC 4231 test case 2 — the MAC the self-test token is derived with is the standard one.
+    #[test]
+    fn hmac_sha256_matches_the_rfc_4231_vector() {
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        let hex: String = mac.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    /// Second-pass finding 2: two replicas with the same keys answer each other's probe, and a
+    /// different key set does not.
+    #[test]
+    fn every_replica_derives_the_same_selftest_token_from_the_same_keys() {
+        let one = selftest_tokens(&keys(2)).unwrap();
+        let other = selftest_tokens(&keys(2)).unwrap();
+        assert_eq!(one, other);
+        assert_eq!(one.len(), 2);
+        assert_ne!(one[0], one[1]);
+        let elsewhere = selftest_tokens(&[B64.encode([42_u8; 32])]).unwrap();
+        assert!(!one.contains(&elsewhere[0]));
+        // Not the key itself, nor anything a cookie is sealed with.
+        assert!(!keys(2).contains(&one[0]));
+        assert!(selftest_tokens(&[]).is_err());
     }
 }

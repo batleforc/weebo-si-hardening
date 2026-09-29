@@ -20,7 +20,7 @@ pub use exclusion::{CHE_NAMESPACE, is_excluded_namespace};
 pub use feature::network_profiles::{NamespaceSubject, NetworkProfiles, Workspace};
 pub use feature::workspace_gate::{WorkspaceAdmission, WorkspaceGate, WorkspaceOperation};
 pub use model::diff::{Applied, DesiredState, Diff, compute_diff, tally};
-pub use model::policy::{ManagedObject, ObjectKey, PodSelector, PolicyBody};
+pub use model::policy::{ManagedObject, ObjectKey, Owner, PodSelector, PolicyBody};
 pub use port::{
     BaselineView, CanaryProbe, Capabilities, PolicyStore, ReconcileObserver, TemplateStore,
 };

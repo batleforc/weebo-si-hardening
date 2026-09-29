@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret};
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
-    RegistryConfig, RegistryEntry, SINGLETON_NAME, SourceKind, Team, TemplateRef, WeeboSiConfig,
-    WeeboSiTeam, copy_name, team_views,
+    RegistryEntry, ResolvedRegistryConfig, SINGLETON_NAME, SourceKind, Team, TemplateRef,
+    WeeboSiConfig, WeeboSiTeam, copy_name, team_views,
 };
 use weebo_si_registry_config::model::mount;
 use weebo_si_registry_config::{ResolutionStep, resolve};
@@ -45,7 +45,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 ///
 /// The resolution is not optional: RFC 0011 keeps each team's catalogue on its own object, so a
 /// CLI reading only the singleton would report what the cluster would do if no team existed.
-async fn load(client: &Client) -> Result<(RegistryConfig, Vec<Team>), String> {
+async fn load(client: &Client) -> Result<(ResolvedRegistryConfig, Vec<Team>), String> {
     let api: Api<WeeboSiConfig> = Api::all(client.clone());
     let config = api
         .get(SINGLETON_NAME)
@@ -57,15 +57,15 @@ async fn load(client: &Client) -> Result<(RegistryConfig, Vec<Team>), String> {
         .await
         .map(|list| list.items)
         .map_err(|err| format!("could not list WeeboSiTeam objects: {err}"))?;
-    let mut registry = config
+    let registry = config
         .spec
         .features
         .registry_config
-        .clone()
+        .as_ref()
         .ok_or_else(|| {
             "this cluster's WeeboSiConfig has no spec.features.registryConfig block".to_string()
         })?;
-    registry.resolve(&teams);
+    let (registry, _conflicts) = registry.resolve(&teams);
     Ok((registry, team_views(&teams)))
 }
 

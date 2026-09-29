@@ -14,7 +14,13 @@ metadata:
 data:
   config.yaml: |
     listen: "[::]:{{ .Values.service.port }}"
+    {{- if .Values.metrics.enabled }}
+    metrics_listen: "[::]:{{ .Values.metrics.port }}"
+    {{- end }}
     issuer: {{ .Values.config.issuer | quote }}
+    {{- if or .Values.extraCa.configMap .Values.extraCa.secret }}
+    extra_ca_file: /etc/endpoint-gateway-ca/{{ .Values.extraCa.key }}
+    {{- end }}
     client_id: {{ .Values.config.clientId | quote }}
     client_secret_env: ENDPOINT_GATEWAY_CLIENT_SECRET
     redirect_url: {{ .Values.config.redirectUrl | quote }}
@@ -70,12 +76,17 @@ data:
       token_review_max_entries: {{ .Values.config.cache.tokenReviewMaxEntries }}
     rules:
       max_per_endpoint: {{ .Values.config.rules.maxPerEndpoint }}
-      reject_unnormalised_path: {{ .Values.config.rules.rejectUnnormalisedPath }}
+      {{- /* Always on in the gateway; `false` is a refusal to start, so it is refused here first. */}}
+      {{- if not .Values.config.rules.rejectUnnormalisedPath }}
+      {{- fail "config.rules.rejectUnnormalisedPath: false is not supported — a path that does not survive normalisation is always denied" }}
+      {{- end }}
+      reject_unnormalised_path: true
       on_unknown_key: {{ .Values.config.rules.onUnknownKey }}
     enforcement: {{ .Values.config.enforcement }}
     reveal_owner: {{ .Values.config.revealOwner }}
     rate_limit:
       login_per_address_per_minute: {{ .Values.config.rateLimit.loginPerAddressPerMinute }}
+      backchannel_logout_per_minute: {{ .Values.config.rateLimit.backchannelLogoutPerMinute }}
     backchannel_logout:
       enabled: {{ .Values.config.backchannelLogout.enabled }}
       configmap: {{ .Values.config.backchannelLogout.configmap | quote }}

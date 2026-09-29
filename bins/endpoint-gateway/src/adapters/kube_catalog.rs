@@ -25,8 +25,8 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, DEVWORKSPACE_ID_LABEL,
-    EndpointAuthConfig, RULES_ANNOTATION, SINGLETON_NAME, Team, UPSTREAM_ANNOTATION, WeeboSiConfig,
-    WeeboSiTeam, team_views,
+    RULES_ANNOTATION, ResolvedEndpointAuthConfig, SINGLETON_NAME, Team, UPSTREAM_ANNOTATION,
+    WeeboSiConfig, WeeboSiTeam, team_views,
 };
 use weebo_si_endpoint_auth::compile::{
     Catalogue, CompileSettings, Grant, Override, OverrideMatch, RawEndpoint,
@@ -229,7 +229,7 @@ impl KubeCatalog {
             .map(|team| (**team).clone())
             .collect();
         let teams = team_views(&declared);
-        let Some(mut feature) = config.spec.features.endpoint_auth.clone() else {
+        let Some(feature) = config.spec.features.endpoint_auth.as_ref() else {
             self.store(Snapshot::default());
             return;
         };
@@ -237,7 +237,7 @@ impl KubeCatalog {
         // conflict is reported by the controller on the `WeeboSiConfig`, not here: this replica's
         // job is to serve the resolved answer, and the resolved answer is the same one the
         // webhook computes from the same two inputs.
-        let _conflicts = feature.resolve(&declared);
+        let (feature, _conflicts) = feature.resolve(&declared);
 
         let (catalogue, overrides) = translate(&feature);
         let owners = owners_of(&stores.namespaces, &feature, &teams);
@@ -378,7 +378,7 @@ fn not_ready(err: impl std::fmt::Display) -> kube::Error {
 /// Which namespaces have an owner, and which team that owner is in.
 fn owners_of(
     namespaces: &Store<Namespace>,
-    feature: &EndpointAuthConfig,
+    feature: &ResolvedEndpointAuthConfig,
     teams: &[Team],
 ) -> HashMap<String, Owner> {
     namespaces
@@ -443,7 +443,7 @@ fn raw_endpoint(ingress: &Ingress, owner: &Owner) -> RawEndpoint {
 /// Two vocabularies rather than one shared type, because the decision crate must stay free of
 /// `kube` and `schemars` — RFC 0009's *Request cost* argues the dependency direction, and this
 /// function is the whole cost of it: a dozen lines, once per rebuild.
-fn translate(feature: &EndpointAuthConfig) -> (Catalogue, Vec<Override>) {
+fn translate(feature: &ResolvedEndpointAuthConfig) -> (Catalogue, Vec<Override>) {
     let entries = feature.catalog.iter().map(|entry| {
         (
             CatalogueKey::new(entry.key.as_str()),
@@ -491,7 +491,7 @@ fn translate(feature: &EndpointAuthConfig) -> (Catalogue, Vec<Override>) {
     (catalogue, overrides)
 }
 
-fn grant_for(feature: &EndpointAuthConfig, team: Option<&weebo_si_crd::TeamName>) -> Grant {
+fn grant_for(feature: &ResolvedEndpointAuthConfig, team: Option<&weebo_si_crd::TeamName>) -> Grant {
     let grant = feature.grant_for(team);
     Grant {
         allowed: grant

@@ -1,4 +1,5 @@
-//! `ObjectKey` and `PodSelector` — see this module's parent for why they live in the chassis.
+//! `ObjectKey`, `PodSelector` and `Owner` — see this module's parent for why they live in the
+//! chassis.
 
 use weebo_si_crd::NamespaceName;
 
@@ -22,6 +23,32 @@ pub enum PodSelector {
     /// `controller.devfile.io/devworkspace_id: <id>` — one workspace's pods. Only ever a
     /// profile object's.
     DevWorkspaceId(String),
+}
+
+/// The object a managed object is garbage-collected with — in practice always the DevWorkspace a
+/// profile object was written for, per RFC 0004's *The objects written*: "Profile objects carry
+/// an `ownerReference` to their DevWorkspace, so the apiserver garbage collects them when the
+/// workspace is deleted." The baseline carries none, because a namespace outliving its
+/// workspaces must keep its floor.
+///
+/// Plain strings rather than a `kube` type, for the reason this crate names no `kube` type at all:
+/// a store adapter turns this into `metadata.ownerReferences` (and reads it back), and the
+/// domain only ever carries it from the subject into the object and compares it.
+///
+/// `api_version` and `kind` are carried rather than implied: the garbage collector resolves the
+/// owner through exactly the `apiVersion` written, so it has to be the one the controller
+/// actually read the owner's `uid` from — something only the adapter building the subject knows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Owner {
+    /// The owner's `apiVersion`, e.g. `group/version`.
+    pub api_version: String,
+    /// The owner's `kind`.
+    pub kind: String,
+    /// The owner's `metadata.name`.
+    pub name: String,
+    /// The owner's `metadata.uid` — what the garbage collector actually matches on, so a
+    /// workspace deleted and recreated under the same name is a *different* owner.
+    pub uid: String,
 }
 
 #[cfg(test)]

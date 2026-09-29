@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{any, get, post};
 use weebo_si_endpoint_auth::cache::Fingerprint;
 use weebo_si_endpoint_auth::decide::{
@@ -33,7 +33,7 @@ use weebo_si_endpoint_auth::policy::Method;
 
 use weebo_si_endpoint_auth::{Gateway, GatewayPorts, Presented};
 
-use crate::adapters::session::{Binding, SealedPayload, random_id};
+use crate::adapters::session::{Binding, LoginState, SealedPayload, random_id};
 use crate::state::GatewayState;
 
 /// The cookie the gateway's own host carries.
@@ -42,10 +42,18 @@ pub const SSO_COOKIE: &str = "__Host-weebo-sso";
 pub const HOST_COOKIE: &str = "__Host-weebo-endpoint";
 /// The query parameter a one-time grant arrives in.
 pub const GRANT_PARAM: &str = "__weebo_grant";
+/// The cookie a sign-in in flight carries between `/oidc/start` and `/oidc/callback`.
+pub const STATE_COOKIE: &str = "__Host-weebo-state";
+/// How long a sign-in may take between `/oidc/start` and `/oidc/callback`.
+const LOGIN_STATE_TTL_SECS: u64 = 600;
 
-/// Every path this binary serves.
+/// Every path this binary serves on its main listener.
+///
+/// `/metrics` is here only when `metrics_listen` is empty; otherwise it is served on its own
+/// listener by [`metrics_router`], so that nothing routed to the main port — and in particular
+/// nothing the public `Ingress` forwards — can reach it.
 pub fn router(state: Arc<GatewayState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/auth", any(auth))
         .route("/oidc/start", get(oidc_start))
         .route("/oidc/callback", get(oidc_callback))
@@ -54,11 +62,23 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         .route("/oidc/backchannel-logout", post(backchannel_logout))
         .route("/selftest", get(selftest))
         .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/metrics", get(metrics))
+        .route("/readyz", get(readyz));
+    let router = if state.config.metrics_listen.is_empty() {
+        router.route("/metrics", get(metrics))
+    } else {
+        router
+    };
+    router
         // Anything else: a `404` on a forward-auth deployment, and the application's own traffic
         // on a `ReverseProxy` one. One router, two shells, one `decide()`.
         .fallback(crate::proxy::fallback)
+        .with_state(state)
+}
+
+/// The metrics listener's paths: `/metrics` and nothing else.
+pub fn metrics_router(state: Arc<GatewayState>) -> Router {
+    Router::new()
+        .route("/metrics", get(metrics))
         .with_state(state)
 }
 
@@ -291,7 +311,8 @@ async fn auth(
     // one of them still passes.
     state.drop_identities_on_key_rotation();
 
-    let outcome = state.gateway().authorize(&request, &presented);
+    let authorized = state.gateway().authorize_resolved(&request, &presented);
+    let outcome = authorized.outcome;
     state
         .metrics
         .decided(outcome.decision, started.elapsed().as_secs_f64());
@@ -303,9 +324,10 @@ async fn auth(
     match outcome.answered {
         Verdict::Allow => {
             let mut response = StatusCode::OK.into_response();
-            // Overwritten rather than merged, so a caller cannot present them itself.
-            if let Some(claims) = state.identity_of(&request, &presented) {
-                set_identity_headers(response.headers_mut(), &claims);
+            // Overwritten rather than merged, so a caller cannot present them itself — and
+            // written from the credential the decision was made on, never re-derived.
+            if let Some(claims) = authorized.person() {
+                set_identity_headers(response.headers_mut(), claims);
             }
             // Sliding re-mint past half-life: an endpoint in continuous use never expires under
             // the person using it, and a submit after a long lunch still fails as a `401` the
@@ -448,8 +470,81 @@ fn redirect(target: &str) -> Response {
         .into_response()
 }
 
+/// `uri` with every `name=` query parameter removed and everything else — path, other
+/// parameters, their order and encoding — left exactly as it was.
+///
+/// Used to drop the grant from the URL a redemption redirects to. It used to drop the whole query
+/// string, which silently discarded whatever the application had in it (a search, a deep link's
+/// id) on the one redirect a developer never sees.
+pub fn strip_query_param(uri: &str, name: &str) -> String {
+    let Some((path, query)) = uri.split_once('?') else {
+        return uri.to_owned();
+    };
+    let kept = query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            !pair.is_empty() && key != name
+        })
+        .collect::<Vec<_>>();
+    if kept.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
+}
+
+/// The endpoint host a return URL names, if it is one this gateway governs — the closed
+/// redirector both `/oidc/start` and `/host-session` apply to `rd`.
+///
+/// An open redirector in front of every workspace endpoint is a phishing primitive; the suffix is
+/// what makes this one closed.
+///
+/// Second pass (finding 10): a `#` anywhere is refused — a fragment has no business in a return
+/// URL this gateway appends a grant to, and `https://a.weebo.si#@evil` is exactly the shape
+/// parser disagreements are made of — and so is any explicit port but `:443`, since no endpoint
+/// of this cluster is served on another one and `Host::parse` would otherwise drop the port
+/// silently and approve a URL that goes somewhere else.
+pub fn endpoint_target(
+    scope: &weebo_si_endpoint_auth::host::HostScope,
+    target: &str,
+) -> Option<Host> {
+    if target.contains('#') {
+        return None;
+    }
+    let authority = target.strip_prefix("https://")?.split(['/', '?']).next()?;
+    if let Some((_, port)) = authority.rsplit_once(':')
+        && port != "443"
+    {
+        return None;
+    }
+    Host::parse(authority)
+        .ok()
+        .filter(|host| scope.governs(host))
+}
+
+/// A host cookie's expiry: `host_ttl` from now, and never past the SSO session it came from.
+pub fn capped_expiry(now: u64, ttl: u64, session_expires_at: Option<u64>) -> u64 {
+    let wanted = now.saturating_add(ttl);
+    session_expires_at.map_or(wanted, |cap| wanted.min(cap))
+}
+
+/// Where a redemption sends the browser: the same URL on the same host, minus the grant — or
+/// `None` when `uri` is not a path, because `https://{host}{uri}` with `uri = "@evil.example/"`
+/// is a URL on somebody else's host.
+pub fn same_host_location(host: &Host, uri: &str) -> Option<String> {
+    uri.starts_with('/')
+        .then(|| format!("https://{host}{}", strip_query_param(uri, GRANT_PARAM)))
+}
+
 /// Redeem a one-time grant into a host cookie.
 fn redeem(state: &GatewayState, host: &Host, grant: &str, uri: &str) -> Response {
+    // The redirect is `https://{host}{uri}`, so a `uri` that is not a path would rewrite the
+    // authority: `@evil.example/` makes it `https://alice.weebo.si@evil.example/`. The controller
+    // always sends a path; anything else is refused before any cryptography.
+    let Some(location) = same_host_location(host, uri) else {
+        return (StatusCode::BAD_REQUEST, "the forwarded URI is not a path").into_response();
+    };
     let now = state.now();
     let Some(payload) = state
         .codec
@@ -466,8 +561,13 @@ fn redeem(state: &GatewayState, host: &Host, grant: &str, uri: &str) -> Response
         // for an identity its holder already had.
         return (StatusCode::FORBIDDEN, "this grant has already been used").into_response();
     }
+    let expires_at = capped_expiry(
+        now.as_secs(),
+        state.config.session.host_ttl_secs,
+        payload.session_expires_at,
+    );
     let session = SealedPayload {
-        expires_at: now.plus_secs(state.config.session.host_ttl_secs).as_secs(),
+        expires_at,
         grant_id: None,
         // A host cookie travels to the endpoint host, so it carries no refresh token: the one
         // credential that could mint new sessions stays on the gateway's own host.
@@ -484,17 +584,13 @@ fn redeem(state: &GatewayState, host: &Host, grant: &str, uri: &str) -> Response
         )
             .into_response();
     };
-    let clean = uri.split('?').next().unwrap_or("/");
     let cookie = format!(
         "{HOST_COOKIE}={sealed}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
-        state.config.session.host_ttl_secs
+        expires_at.saturating_sub(now.as_secs())
     );
     (
         StatusCode::FOUND,
-        [
-            (header::LOCATION, format!("https://{host}{clean}")),
-            (header::SET_COOKIE, cookie),
-        ],
+        [(header::LOCATION, location), (header::SET_COOKIE, cookie)],
         "",
     )
         .into_response()
@@ -546,14 +642,7 @@ async fn host_session(
     let Some(target) = query.get("rd") else {
         return (StatusCode::BAD_REQUEST, "no target").into_response();
     };
-    let Some(host) = target
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|host| Host::parse(host).ok())
-        .filter(|host| state.scope.governs(host))
-    else {
-        // An open redirector in front of every workspace endpoint is a phishing primitive; the
-        // suffix is what makes this one closed.
+    let Some(host) = endpoint_target(&state.scope, target) else {
         return (
             StatusCode::BAD_REQUEST,
             "target is not an endpoint of this cluster",
@@ -600,6 +689,8 @@ async fn host_session(
         expires_at: now.plus_secs(state.config.session.grant_ttl_secs).as_secs(),
         grant_id: Some(id),
         refresh: None,
+        // What every host cookie minted from this grant — and every slide of it — is capped at.
+        session_expires_at: Some(sso.expires_at),
         ..sso
     };
     let Some(sealed) = state.codec.seal(&grant, Binding::HostBound(host.as_str())) else {
@@ -639,7 +730,7 @@ async fn oidc_start(
     if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
         return limited;
     }
-    let Some(oidc) = state.oidc.as_ref() else {
+    let Some(oidc) = state.oidc() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "no identity provider configured",
@@ -647,39 +738,69 @@ async fn oidc_start(
             .into_response();
     };
     let target = query.get("rd").cloned().unwrap_or_default();
-    let (Some(verifier), Some(id)) = (random_id(), random_id()) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "no randomness").into_response();
-    };
-    // State and verifier travel in a sealed, short-lived cookie rather than in server memory:
-    // three replicas behind one Service means the callback can land on a different one than the
-    // start did, and a server-side map would make a sign-in fail two times out of three.
-    let now = state.now();
-    let payload = SealedPayload {
-        username: target.clone(),
-        groups: vec![verifier.clone()],
-        session: None,
-        expires_at: now.plus_secs(600).as_secs(),
-        generation: 0,
-        grant_id: Some(id.clone()),
-        proved_at: now.as_secs(),
-        refresh: None,
-    };
-    let Some(sealed) = state.codec.seal(&payload, Binding::Sso) else {
+    // The same closed redirector `/host-session` applies, here too: the return URL rides through
+    // the identity provider and back, and a sign-in that ends on somebody else's site is the
+    // phishing primitive that check exists to remove. Empty is allowed and means "the gateway's
+    // own page".
+    if !target.is_empty() && endpoint_target(&state.scope, &target).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "target is not an endpoint of this cluster",
+        )
+            .into_response();
+    }
+    let Some((sealed, location)) = start_login(&state.codec, oidc, target, state.now()) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "could not mint state").into_response();
     };
-    let location = oidc.authorization_url(&id, &verifier);
     (
         StatusCode::FOUND,
         [
             (header::LOCATION, location),
             (
                 header::SET_COOKIE,
-                format!("__Host-weebo-state={sealed}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"),
+                format!(
+                    "{STATE_COOKIE}={sealed}; Path=/; Secure; HttpOnly; SameSite=Lax; \
+                     Max-Age={LOGIN_STATE_TTL_SECS}"
+                ),
             ),
         ],
         "",
     )
         .into_response()
+}
+
+/// Mint the sealed sign-in state and the authorization URL it goes with.
+///
+/// State and verifier travel in a sealed, short-lived cookie rather than in server memory: three
+/// replicas behind one Service means the callback can land on a different one than the start did,
+/// and a server-side map would make a sign-in fail two times out of three. Sealed against
+/// [`Binding::LoginState`] as a [`LoginState`] — never as an SSO payload, which is what made the
+/// state cookie replayable as a session (B1).
+fn start_login(
+    codec: &crate::adapters::session::SealedCodec,
+    oidc: &crate::adapters::oidc::OidcClient,
+    return_to: String,
+    now: weebo_si_endpoint_auth::time::Timestamp,
+) -> Option<(String, String)> {
+    let (verifier, id) = (random_id()?, random_id()?);
+    let login = LoginState {
+        return_to,
+        verifier,
+        state: id,
+        expires_at: now.plus_secs(LOGIN_STATE_TTL_SECS).as_secs(),
+    };
+    let sealed = codec.seal_login_state(&login)?;
+    Some((
+        sealed,
+        oidc.authorization_url(&login.state, &login.verifier),
+    ))
+}
+
+/// The `Set-Cookie` that removes the sign-in state — sent by the callback on every answer once
+/// the state has been read, and by `/sign_out`, so a used or abandoned state does not linger for
+/// its ten minutes.
+fn clear_state_cookie() -> String {
+    format!("{STATE_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0")
 }
 
 /// `/oidc/callback` — the only registered redirect URI.
@@ -692,7 +813,7 @@ async fn oidc_callback(
     if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
         return limited;
     }
-    let Some(oidc) = state.oidc.as_ref() else {
+    let Some(oidc) = state.oidc() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "no identity provider configured",
@@ -700,33 +821,43 @@ async fn oidc_callback(
             .into_response();
     };
     let now = state.now();
+    // Every answer from here on clears the state cookie: it is single-use, and one that failed
+    // is one to start again from rather than to retry.
+    let clear = AppendHeaders([(header::SET_COOKIE, clear_state_cookie())]);
     let (Some(code), Some(returned_state)) = (query.get("code"), query.get("state")) else {
+        // The identity provider's `error=access_denied` lands here too, and the sign-in it ends
+        // is over: its state is cleared like every other answer's (second-pass finding 9).
         state.metrics.login("bad_request");
-        return (StatusCode::BAD_REQUEST, "no code").into_response();
+        return (StatusCode::BAD_REQUEST, clear, "no code").into_response();
     };
-    let Some(stored) = cookie(&headers, "__Host-weebo-state")
-        .and_then(|sealed| state.codec.open(&sealed, Binding::Sso, now))
+    let Some(stored) = cookie(&headers, STATE_COOKIE)
+        .and_then(|sealed| state.codec.open_login_state(&sealed, now))
     else {
         state.metrics.login("no_state");
-        return (StatusCode::BAD_REQUEST, "no state cookie; start again").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            clear,
+            "no state cookie; start again",
+        )
+            .into_response();
     };
-    if stored.grant_id.as_deref() != Some(returned_state.as_str()) {
+    if !constant_time_eq(&stored.state, returned_state) {
         state.metrics.login("state_mismatch");
-        return (StatusCode::BAD_REQUEST, "state mismatch").into_response();
+        return (StatusCode::BAD_REQUEST, clear, "state mismatch").into_response();
     }
-    let verifier = stored.groups.first().cloned().unwrap_or_default();
-    let tokens = match oidc.exchange(code, &verifier).await {
+    let tokens = match oidc.exchange(code, &stored.verifier).await {
         Ok(tokens) => tokens,
         Err(err) => {
             state.metrics.login("exchange_failed");
             eprintln!("WARN endpoint-gateway: code exchange failed: {err}");
-            return (StatusCode::BAD_GATEWAY, "sign-in failed").into_response();
+            return (StatusCode::BAD_GATEWAY, clear, "sign-in failed").into_response();
         }
     };
     let Some(claims) = state.claims_of_id_token(&tokens.id_token) else {
         state.metrics.login("unusable_id_token");
         return (
             StatusCode::BAD_GATEWAY,
+            clear,
             "the identity provider's token is unusable",
         )
             .into_response();
@@ -745,52 +876,111 @@ async fn oidc_callback(
         grant_id: None,
         proved_at: now.as_secs(),
         refresh: tokens.refresh_token.clone(),
+        session_expires_at: None,
     };
     let Some(sealed) = state.codec.seal(&sso, Binding::Sso) else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
+            clear,
             "could not mint a session",
         )
             .into_response();
     };
     state.metrics.login("success");
-    let target = if stored.username.is_empty() {
-        state.config.redirect_base().to_owned()
-    } else {
-        stored.username.clone()
-    };
+    // No return URL: the sign-in was started from the gateway's own host, and there is no
+    // endpoint to go on to. Anything else was checked at `/oidc/start` and is checked again by
+    // `/host-session`.
+    if stored.return_to.is_empty() {
+        return (
+            StatusCode::OK,
+            AppendHeaders([
+                (header::SET_COOKIE, clear_state_cookie()),
+                (header::SET_COOKIE, sso_cookie(&state, &sealed)),
+            ]),
+            "Signed in.\n",
+        )
+            .into_response();
+    }
     (
         StatusCode::FOUND,
-        [
-            (
-                header::LOCATION,
-                format!(
-                    "{}/host-session?rd={}",
-                    state.config.redirect_base(),
-                    crate::adapters::oidc::urlencode(&target)
-                ),
+        [(
+            header::LOCATION,
+            format!(
+                "{}/host-session?rd={}",
+                state.config.redirect_base(),
+                crate::adapters::oidc::urlencode(&stored.return_to)
             ),
-            (
-                header::SET_COOKIE,
-                format!(
-                    "{SSO_COOKIE}={sealed}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
-                    state.config.session.sso_ttl_secs
-                ),
-            ),
-        ],
+        )],
+        AppendHeaders([
+            (header::SET_COOKIE, clear_state_cookie()),
+            (header::SET_COOKIE, sso_cookie(&state, &sealed)),
+        ]),
         "",
     )
         .into_response()
 }
 
-/// `POST /sign_out` — clears the SSO cookie.
-async fn sign_out() -> Response {
+fn sso_cookie(state: &GatewayState, sealed: &str) -> String {
+    format!(
+        "{SSO_COOKIE}={sealed}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
+        state.config.session.sso_ttl_secs
+    )
+}
+
+/// `POST /sign_out` — clears the SSO cookie and any sign-in in flight.
+///
+/// **What it does not do**, on purpose: record a revocation. The only session id this gateway
+/// holds is the identity provider's `sid`, and revoking it here would outlive the sign-out — a
+/// sign-in straight after, silently re-using the same provider session, gets the same `sid` back
+/// and would be refused until the revocation expired. Host cookies already minted on endpoint
+/// hosts are therefore not reachable from here (they are host-only cookies on other origins) and
+/// live out their `host_ttl_secs`; ending *those* is back-channel logout's job, which revokes by
+/// `sid` because the identity provider has ended that session. See RFC 0009's changelog.
+///
+/// **Same-origin only** (second-pass finding 8). A cross-site form auto-submitting here signs the
+/// victim out — a nuisance rather than a compromise, and precisely the nuisance that makes
+/// "log in again" phishing believable. The browser's `Sec-Fetch-Site` decides where it is sent;
+/// failing that, an `Origin` equal to this gateway's own; with neither, the request is refused.
+async fn sign_out(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
+    if !same_origin_post(&headers, state.config.redirect_base()) {
+        return (
+            StatusCode::FORBIDDEN,
+            "sign-out is accepted from this gateway's own page only\n",
+        )
+            .into_response();
+    }
+    signed_out()
+}
+
+/// Whether a state-changing `POST` came from the gateway's own origin.
+pub fn same_origin_post(headers: &HeaderMap, redirect_base: &str) -> bool {
+    if let Some(site) = header_str(headers, "sec-fetch-site") {
+        return matches!(site, "same-origin" | "none");
+    }
+    let own = origin_of(redirect_base);
+    header_str(headers, "origin").is_some_and(|origin| origin.eq_ignore_ascii_case(own))
+}
+
+/// `scheme://authority` of a URL, without its path.
+fn origin_of(url: &str) -> &str {
+    let after_scheme = url.find("://").map_or(0, |at| at + 3);
+    match url[after_scheme..].find('/') {
+        Some(slash) => &url[..after_scheme + slash],
+        None => url,
+    }
+}
+
+/// The response that ends a session on this browser.
+fn signed_out() -> Response {
     (
         StatusCode::OK,
-        [(
-            header::SET_COOKIE,
-            format!("{SSO_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"),
-        )],
+        AppendHeaders([
+            (
+                header::SET_COOKIE,
+                format!("{SSO_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"),
+            ),
+            (header::SET_COOKIE, clear_state_cookie()),
+        ]),
         "Signed out.\n",
     )
         .into_response()
@@ -818,8 +1008,25 @@ async fn backchannel_logout(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    if let Some(limited) = over_the_login_limit(&state, &headers, Some(peer)) {
-        return limited;
+    if !state.config.backchannel_logout.enabled {
+        return (StatusCode::NOT_FOUND, "").into_response();
+    }
+    // Its own bucket, not the sign-in one (second-pass finding 5): every call comes from the
+    // identity provider's one egress address, and a realm-wide logout is a burst from it that
+    // the provider will not retry. Over the limit is `503` — "not now", which is what it is —
+    // rather than a `429` that reads as the provider misbehaving.
+    if state.config.rate_limit.backchannel_logout_per_minute > 0
+        && !state
+            .logout_limiter
+            .allow(&state.limit_key(&headers, Some(peer)), state.now())
+    {
+        eprintln!("WARN endpoint-gateway: back-channel logout over its rate limit; answered 503");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "5")],
+            "back-channel logout is over its rate limit\n",
+        )
+            .into_response();
     }
     let Some(token) = body
         .split('&')
@@ -835,7 +1042,22 @@ async fn backchannel_logout(
             StatusCode::OK.into_response()
         }
         Ok(None) => (StatusCode::BAD_REQUEST, "logout token carried no session").into_response(),
+        Err(crate::adapters::kube_revocations::RevokeError::Full) => {
+            // Loud, because the alternative is a logout that silently did not happen.
+            state.metrics.revocation_refused("full");
+            eprintln!(
+                "ERROR endpoint-gateway: revocation NOT recorded: the revocation ConfigMap holds \
+                 {} live sessions; this logout is not in effect",
+                crate::adapters::kube_revocations::MAX_REVOCATIONS
+            );
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the revocation set is full; the session was not revoked",
+            )
+                .into_response()
+        }
         Err(err) => {
+            state.metrics.revocation_refused("write_failed");
             eprintln!("WARN endpoint-gateway: revocation failed: {err}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -849,7 +1071,13 @@ async fn backchannel_logout(
 /// `/selftest` — what the gate observed for this request. Reports observations, never secrets,
 /// and answers nothing at all to a caller that does not hold this process's own probe token.
 async fn selftest(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
-    if header_str(&headers, "x-weebo-selftest") != Some(state.selftest_token.as_str()) {
+    let presented = header_str(&headers, "x-weebo-selftest").unwrap_or_default();
+    // Any key's token, not only the newest: during a key rotation two replicas can disagree
+    // about which key is first, and the probe lands on whichever the Service picks.
+    let known = state.selftest_tokens.iter().fold(false, |known, token| {
+        known | constant_time_eq(presented, token)
+    });
+    if presented.is_empty() || !known {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
     let address = header_str(
@@ -871,6 +1099,7 @@ async fn selftest(State(state): State<Arc<GatewayState>>, headers: HeaderMap) ->
         "address_seen": address.as_ref().map(|address| address.as_str()),
         "resolved_namespace": namespace.as_ref().map(|namespace| namespace.as_str()),
         "addresses_trusted": state.workloads.addresses_trusted(),
+        "address_forgery_recorded": state.revocations.address_forgery_recorded(),
         "indexed_endpoints": state.catalog.len(),
         // How many groups any endpoint in this cluster actually names. One is the common answer,
         // and a large one is the diagnosis behind "why did my session get re-authenticated".
@@ -880,6 +1109,24 @@ async fn selftest(State(state): State<Arc<GatewayState>>, headers: HeaderMap) ->
     (StatusCode::OK, axum::Json(body)).into_response()
 }
 
+/// Compare two secrets in time that depends on neither's contents.
+///
+/// Both sides are hashed first, so the comparison is always over 32 bytes and the length of the
+/// secret leaks no more than its contents do; the fold then touches every byte whatever the first
+/// difference is.
+pub fn constant_time_eq(left: &str, right: &str) -> bool {
+    use sha2::{Digest, Sha256};
+
+    let (left, right) = (
+        Sha256::digest(left.as_bytes()),
+        Sha256::digest(right.as_bytes()),
+    );
+    left.iter()
+        .zip(right.iter())
+        .fold(0_u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
 async fn healthz() -> Response {
     (StatusCode::OK, "ok\n").into_response()
 }
@@ -887,6 +1134,11 @@ async fn healthz() -> Response {
 /// `/readyz` — informer-cache readiness. A cold replica must not answer "allow" from an empty
 /// cache, which is why readiness and not just liveness is wired to it.
 async fn readyz(State(state): State<Arc<GatewayState>>) -> Response {
+    // Draining: out of the rotation first, so the endpoints controller stops sending new
+    // requests here while the in-flight ones finish.
+    if state.is_shutting_down() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "shutting down\n").into_response();
+    }
     // Both halves, because a replica missing either one denies traffic it should allow: no index
     // means every host is unknown, and no keys mean every bearer is unverifiable.
     if !state.verifier.keys_loaded() {
@@ -915,6 +1167,9 @@ async fn metrics(State(state): State<Arc<GatewayState>>) -> Response {
         usize::from(state.enforcement == weebo_si_endpoint_auth::Enforcement::Observe),
     );
     state.metrics.revoked(state.revocations.len());
+    state
+        .metrics
+        .token_reviews_throttled(state.workloads.reviews_throttled());
     state
         .metrics
         .address_trust(state.workloads.addresses_trusted());
@@ -1077,5 +1332,210 @@ mod tests {
             Some("v1.abc.def")
         );
         assert!(query_of("/app").is_empty());
+    }
+
+    fn scope() -> weebo_si_endpoint_auth::host::HostScope {
+        weebo_si_endpoint_auth::host::HostScope::new(".weebo.si", ["che.weebo.si", "auth.weebo.si"])
+            .unwrap()
+    }
+
+    fn codec() -> crate::adapters::session::SealedCodec {
+        crate::adapters::session::SealedCodec::new(&[
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".to_owned(),
+        ])
+        .unwrap()
+    }
+
+    fn oidc() -> crate::adapters::oidc::OidcClient {
+        crate::adapters::oidc::OidcClient::new(
+            crate::adapters::oidc::Discovery {
+                authorization_endpoint: "https://sso.weebo.si/auth".into(),
+                token_endpoint: "https://sso.weebo.si/token".into(),
+                jwks_uri: "https://sso.weebo.si/certs".into(),
+                backchannel_logout_supported: true,
+                backchannel_logout_session_supported: true,
+                introspection_endpoint: None,
+                claims_supported: Vec::new(),
+            },
+            "che-client".into(),
+            String::new(),
+            "https://auth.weebo.si/oidc/callback".into(),
+        )
+    }
+
+    /// B1, end to end through the code `/oidc/start` runs: the state cookie it sets, replayed as
+    /// the SSO cookie `/host-session` reads, used to open as a session for a "user" named after
+    /// the caller's own `rd`. It must not open as an SSO cookie at all.
+    #[test]
+    fn the_login_state_cookie_cannot_be_replayed_as_a_session() {
+        let codec = codec();
+        let now = weebo_si_endpoint_auth::time::Timestamp::from_secs(1_000);
+        let (sealed, location) = start_login(
+            &codec,
+            &oidc(),
+            "https://alice-ws-api.weebo.si/".into(),
+            now,
+        )
+        .unwrap();
+        assert!(location.starts_with("https://sso.weebo.si/auth?"));
+        // The attack: present it where `/host-session` looks for the SSO cookie.
+        assert_eq!(codec.open(&sealed, Binding::Sso, now), None);
+        // It is still the state it was meant to be, for the callback.
+        let state = codec.open_login_state(&sealed, now).unwrap();
+        assert_eq!(state.return_to, "https://alice-ws-api.weebo.si/");
+        assert!(location.contains(&format!("state={}", state.state)));
+    }
+
+    /// B1's second half: `/oidc/start` is the same closed redirector `/host-session` is.
+    #[test]
+    fn a_return_url_must_be_an_endpoint_of_this_cluster() {
+        let scope = scope();
+        assert_eq!(
+            endpoint_target(&scope, "https://alice-ws-api.weebo.si/app?x=1")
+                .unwrap()
+                .as_str(),
+            "alice-ws-api.weebo.si"
+        );
+        for refused in [
+            "https://evil.example/",
+            "http://alice-ws-api.weebo.si/",
+            "https://alice-ws-api.weebo.si.evil.example/",
+            "https://evil.example\\@alice-ws-api.weebo.si/",
+            "https://evil.example@alice-ws-api.weebo.si/",
+            "//evil.example/",
+            "https://auth.weebo.si/",
+            "https://che.weebo.si/",
+            "javascript:alert(1)",
+        ] {
+            assert!(endpoint_target(&scope, refused).is_none(), "{refused}");
+        }
+    }
+
+    /// Second-pass finding 10: `rd` with a fragment or a non-443 port was approved, because the
+    /// host parser drops the port and nothing looked past the authority.
+    #[test]
+    fn a_return_url_with_a_fragment_or_another_port_is_refused() {
+        let scope = scope();
+        for refused in [
+            "https://alice-ws-api.weebo.si/#x",
+            "https://alice-ws-api.weebo.si#@evil.example/",
+            "https://alice-ws-api.weebo.si:8443/",
+            "https://alice-ws-api.weebo.si:80/",
+            "https://alice-ws-api.weebo.si:/",
+        ] {
+            assert!(endpoint_target(&scope, refused).is_none(), "{refused}");
+        }
+        for allowed in [
+            "https://alice-ws-api.weebo.si:443/app",
+            "https://alice-ws-api.weebo.si?x=1",
+            "https://alice-ws-api.weebo.si",
+        ] {
+            assert!(endpoint_target(&scope, allowed).is_some(), "{allowed}");
+        }
+    }
+
+    /// Second-pass finding 10: the redemption redirect concatenated host and forwarded URI.
+    #[test]
+    fn a_redemption_only_redirects_to_a_path_on_the_same_host() {
+        let host = Host::parse("alice-ws-api.weebo.si").unwrap();
+        assert_eq!(
+            same_host_location(&host, "/app?x=1&__weebo_grant=g").as_deref(),
+            Some("https://alice-ws-api.weebo.si/app?x=1")
+        );
+        for refused in ["@evil.example/", ".evil.example/", "", "app"] {
+            assert!(same_host_location(&host, refused).is_none(), "{refused:?}");
+        }
+    }
+
+    /// Second-pass finding 8: `/sign_out` accepted a cross-site `POST`.
+    #[test]
+    fn sign_out_is_accepted_from_the_gateways_own_origin_only() {
+        let base = "https://auth.weebo.si";
+        assert!(same_origin_post(
+            &headers(&[("sec-fetch-site", "same-origin")]),
+            base
+        ));
+        assert!(same_origin_post(
+            &headers(&[("sec-fetch-site", "none")]),
+            base
+        ));
+        for refused in ["cross-site", "same-site"] {
+            // `Sec-Fetch-Site` wins over an `Origin` that happens to match.
+            assert!(!same_origin_post(
+                &headers(&[("sec-fetch-site", refused), ("origin", base)]),
+                base
+            ));
+        }
+        assert!(same_origin_post(
+            &headers(&[("origin", "https://auth.weebo.si")]),
+            base
+        ));
+        assert!(same_origin_post(
+            &headers(&[("origin", "https://auth.weebo.si")]),
+            "https://auth.weebo.si/prefix"
+        ));
+        assert!(!same_origin_post(
+            &headers(&[("origin", "https://alice-ws-api.weebo.si")]),
+            base
+        ));
+        assert!(!same_origin_post(&headers(&[("origin", "null")]), base));
+        assert!(!same_origin_post(&HeaderMap::new(), base));
+    }
+
+    /// L3: redeeming a grant used to drop the whole query string with it.
+    #[test]
+    fn redeeming_a_grant_removes_the_grant_and_nothing_else() {
+        assert_eq!(
+            strip_query_param("/search?q=rust&__weebo_grant=v1.a.b&page=2", GRANT_PARAM),
+            "/search?q=rust&page=2"
+        );
+        assert_eq!(
+            strip_query_param("/app?__weebo_grant=v1.a.b", GRANT_PARAM),
+            "/app"
+        );
+        assert_eq!(strip_query_param("/app", GRANT_PARAM), "/app");
+        // A parameter whose name merely starts the same is somebody else's.
+        assert_eq!(
+            strip_query_param("/app?__weebo_grant_x=1&__weebo_grant=g", GRANT_PARAM),
+            "/app?__weebo_grant_x=1"
+        );
+    }
+
+    /// M1, at redemption: a host cookie never outlives the SSO session its grant came from.
+    #[test]
+    fn a_host_cookie_is_capped_at_its_sessions_expiry() {
+        assert_eq!(capped_expiry(1_000, 3_600, Some(2_000)), 2_000);
+        assert_eq!(capped_expiry(1_000, 3_600, Some(100_000)), 4_600);
+        assert_eq!(capped_expiry(1_000, 3_600, None), 4_600);
+    }
+
+    /// L2: the probe token is compared in constant time, and still compared.
+    #[test]
+    fn the_selftest_token_comparison_is_exact() {
+        assert!(constant_time_eq("secret-token", "secret-token"));
+        assert!(!constant_time_eq("secret-token", "secret-tokeN"));
+        assert!(!constant_time_eq("secret-token", "secret"));
+        assert!(!constant_time_eq("", "secret-token"));
+    }
+
+    /// L1: signing out clears a sign-in in flight as well as the session.
+    #[tokio::test]
+    async fn signing_out_clears_the_session_and_the_login_state() {
+        let response = signed_out();
+        let cleared = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        for name in [SSO_COOKIE, STATE_COOKIE] {
+            assert!(
+                cleared
+                    .iter()
+                    .any(|cookie| cookie.starts_with(&format!("{name}=;"))
+                        && cookie.contains("Max-Age=0")),
+                "{name} not cleared: {cleared:?}"
+            );
+        }
     }
 }

@@ -208,6 +208,13 @@ impl PasswdEntry {
     }
 }
 
+impl PasswdEntry {
+    /// The login name this entry declares.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 impl fmt::Display for PasswdEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

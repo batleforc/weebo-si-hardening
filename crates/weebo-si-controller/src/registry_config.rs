@@ -34,7 +34,7 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, FeatureId};
-use weebo_si_crd::{FeatureMode, NamespaceName, RegistryCatalog, RegistryConfig};
+use weebo_si_crd::{FeatureMode, NamespaceName, RegistryCatalog, ResolvedRegistryConfig};
 use weebo_si_network_profiles::is_excluded_namespace;
 use weebo_si_registry_config::{
     NamespaceSubject, ObjectStore, ReconcileObserver, ReconcileOutcome, RegistryConfigFeature,
@@ -55,9 +55,9 @@ type CatalogSnapshot = Arc<dyn Fn() -> RegistryCatalog + Send + Sync>;
 pub struct RegistryConfigDeps {
     /// The feature, sharing its config `Arc` with `config` below.
     pub feature: Arc<RegistryConfigFeature>,
-    /// The same `Arc<RwLock<Option<RegistryConfig>>>` `feature` was constructed with. Read here
+    /// The same `Arc<RwLock<Option<ResolvedRegistryConfig>>>` `feature` was constructed with. Read here
     /// for `namespaceSelection.annotation` alone.
-    pub config: Arc<RwLock<Option<RegistryConfig>>>,
+    pub config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace.
@@ -142,6 +142,12 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
     }
 
     let name = NamespaceName::new(ns.name_any());
+    // A namespace being deleted is being emptied by the namespace controller; writing its
+    // objects back would be refused (the namespace is terminating) and retried every pass until
+    // it is gone.
+    if ns.metadata.deletion_timestamp.is_some() {
+        return Ok(Action::await_change());
+    }
     if is_excluded_namespace(&name, &ctx.deps.operator_namespace) {
         return Ok(Action::await_change());
     }

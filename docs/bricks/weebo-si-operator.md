@@ -27,51 +27,48 @@ an Authentik account and an Argo CD workspace application. See
 
 > **`failurePolicy: Fail`.** The webhook fails closed: while it is unavailable, no DevWorkspace can
 > be created or started, cluster-wide. That is deliberate — see RFC 0002's *Operational
-> considerations* — but it means the manifests in `crates/weebo-si-operator/deploy/` are not
-> optional extras. Skipping the `PodDisruptionBudget` or the two-replica `Deployment` turns a
-> routine node drain into a Che outage.
+> considerations* — but it means the chart's `PodDisruptionBudget`s and two-replica `Deployment`s
+> are not optional extras. Turning them off turns a routine node drain into a Che outage.
 
 ## Install
 
-Two ways to install, same objects either way — pick one, don't mix them:
+The Helm chart is the one supported install path: `charts/weebo-si-operator/`, published on every
+release as `oci://ghcr.io/batleforc/charts/weebo-si-operator` (see [CI › Releases](../ci.md#releases)).
 
-- **Helm**: `charts/weebo-si-operator/` — set `certificates.provider` to `cert-manager` (default),
-  `openshift`, or `none`, and `image.repository`/`image.tag`. `helm install weebo-si-operator
-  charts/weebo-si-operator -n weebo-si-hardening --create-namespace` renders every object below in
-  the right order and installs the CRD from the chart's `crds/` directory (Helm installs `crds/`
-  once and never manages it after, so a CRD schema change on upgrade still needs `kubectl apply
-  -f charts/weebo-si-operator/crds/` by hand — see [Helm's own docs on
-  `crds/`](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)).
-- **Raw manifests**: `crates/weebo-si-operator/deploy/`, below. Apply in this order — each step is
-  independently reversible, per RFC 0002's *Rollout*:
+```bash
+helm install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
+  --version <x.y.z> -n weebo-si-hardening --create-namespace \
+  --set certificates.provider=cert-manager   # or openshift, or none
+```
 
-1. `crd.yaml` — the `WeeboSiConfig` CRD. Generated from `weebo-si-crd`'s Rust types; never
-   hand-edit it, `task recu` regenerates it whenever `crates/weebo-si-crd` is part of a commit.
-2. `namespace.yaml` — the operator's own namespace, pre-labelled
-   `hardening.weebo.io/exclude: "true"` so it never becomes a target of its own webhook.
-3. `rbac.yaml` — two `ServiceAccount`s (`weebo-si-operator-webhook`,
-   `weebo-si-operator-controller`), never one: the webhook role, the one an untrusted
-   `AdmissionReview` body reaches, never holds the `weebosiconfigs/status` write the controller
-   role needs.
-4. The certificate, one of:
-   - **OpenShift**: nothing to apply yet — `mutatingwebhookconfiguration-openshift.yaml` (step 6)
-     carries the annotation that makes the platform issue it, once `service.yaml` (step 5) is
-     itself annotated. See that file's own comment for the exact `oc annotate` command.
-   - **cert-manager**: `certificate-cert-manager.yaml` — brings its own self-signed `Issuer`; swap
-     `issuerRef` for a cluster CA if one already exists.
+The chart's `appVersion` is the release version, and `image.repository`/`image.tag` default to the
+image that same release pushed (`ghcr.io/batleforc/weebo-si-operator:<x.y.z>`); set
+`image.digest` to pin the exact cosign-signed artifact instead of the tag. The chart renders every
+object in the right order — namespace (pre-labelled `hardening.weebo.io/exclude: "true"` so it is
+never a target of its own webhook), the two `ServiceAccount`s and their RBAC (never one: the
+webhook role, the one an untrusted `AdmissionReview` body reaches, never holds the
+`weebosiconfigs/status` write the controller role needs), the certificate for the chosen provider,
+both `Service`s, both Deployments with their `PodDisruptionBudget`s, and last the
+`MutatingWebhookConfiguration` — the one object that actually puts the webhook in the admission
+path. It installs the CRD from the chart's `crds/` directory; Helm installs `crds/` once and never
+manages it after, so a CRD schema change on upgrade still needs `kubectl apply -f
+charts/weebo-si-operator/crds/` by hand — see [Helm's own docs on
+`crds/`](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/).
 
-   RFC 0002 has no self-signed fallback of its own: one of these two is a prerequisite, not an
-   option to skip.
-5. `service.yaml` — the webhook `Service` (port `443` → `9443`) the `MutatingWebhookConfiguration`
-   calls back into, and a shared `/metrics` `Service` (`8081`) for both roles.
-6. `deployment.yaml` and `pdb.yaml` — both Deployments (two replicas each, pod anti-affinity across
-   nodes) and both `PodDisruptionBudget`s. Replace the `image:` placeholder first; this repo has
-   no registry decision yet.
-7. `mutatingwebhookconfiguration-openshift.yaml` **or** `mutatingwebhookconfiguration-cert-manager.yaml`
-   — never both. This is the step that actually puts the webhook in the admission path; nothing
-   before it changes any DevWorkspace.
+RFC 0002 has no self-signed fallback of its own: `certificates.provider` is a prerequisite
+decision, not an option to skip.
 
-With no `WeeboSiConfig` object created yet, step 7 is still a no-op: `KubeConfigStore` reports
+**There are no raw manifests any more.** `crates/weebo-si-operator/deploy/` used to carry a
+hand-written copy of the same objects; it had drifted to the point of not starting (the webhook
+lacked the required `--operator-identity`, no `POD_NAMESPACE`, RBAC behind the chart's, only one of
+the webhook configurations, a `:latest` image), and a second install path nobody tests is a second
+thing to keep secure. Only `deploy/crd.yaml` remains — the generated CRD, for anyone who wants the
+kinds without the operator (`kubectl apply -f crates/weebo-si-operator/deploy/crd.yaml`). Never
+hand-edit it: `task recu` regenerates it whenever `crates/weebo-si-crd` is part of a commit, and
+`task crd:check` fails on a stale one. For a manifest-only install, render the chart:
+`helm template … > manifests.yaml`.
+
+With no `WeeboSiConfig` object created yet, the webhook configuration is still a no-op: `KubeConfigStore` reports
 `Off` for every feature until one exists, so every DevWorkspace round-trips through the webhook
 unmutated. That is deliberately the state to leave a fresh install in — see *Rollout*, below.
 
@@ -128,14 +125,14 @@ own permission, which is why RFC 0005 adds no RBAC at all.
 
 `--operator-identity` is `policy-guard`'s one exemption — the controller's own
 `system:serviceaccount:<namespace>:<name>` identity. The chart renders it for you from its own
-`ServiceAccount` naming (`deployment-webhook.yaml`); a raw-manifest install must set it by hand
-to match `rbac.yaml`'s controller `ServiceAccount` exactly, or `policy-guard` locks the
-controller out of the objects it is responsible for — see RFC 0004's *Operational
+`ServiceAccount` naming (`deployment-webhook.yaml`); anything that renders the webhook's args
+another way must set it to match the controller `ServiceAccount` exactly, or `policy-guard` locks
+the controller out of the objects it is responsible for — see RFC 0004's *Operational
 considerations*.
 
 `--metrics-addr` is accepted for the CLI contract's sake but not read separately today:
-`/healthz`, `/readyz` and `/metrics` are all served together on `--health-addr` — the manifests in
-this directory reflect that (one container port, `8081`, for both).
+`/healthz`, `/readyz` and `/metrics` are all served together on `--health-addr` — the chart's
+Deployments reflect that (one container port, `8081`, for both).
 
 | Code | Meaning |
 | --- | --- |
@@ -797,7 +794,9 @@ rules do not block. This operator does not override that — it makes it visible
 
 3. **Author the templates.** Ordinary `KubeArmorPolicy` objects in `weebo-si-hardening`, exactly
    as `network-profiles`' templates are ordinary `NetworkPolicy` objects. Their own `selector` is
-   ignored and stripped — scoping belongs to the operator — so write whatever is convenient there.
+   stripped from every copy — scoping belongs to the operator — **but it is live on the template
+   itself**, which KubeArmor enforces in `weebo-si-hardening` like any other policy. Select a
+   label no pod carries, or a `Block` rule meant for workspaces lands on the operator's own pods.
 
    ```yaml
    apiVersion: security.kubearmor.com/v1
@@ -807,7 +806,8 @@ rules do not block. This operator does not override that — it makes it visible
      namespace: weebo-si-hardening
    spec:
      selector:
-       matchLabels: {}          # ignored and stripped; the operator rewrites it
+       # Stripped from every copy, but live on this template: select nothing here.
+       matchLabels: { hardening.weebo.io/template: "never-matches" }
      process:
        matchPaths:
          - path: /usr/bin/git

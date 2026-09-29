@@ -26,8 +26,8 @@ pub trait TemplateStore {
     /// `{name, namespace}` — a `NetworkPolicy` variant and a `Cilium` variant can legitimately
     /// name the same template ref pointing at two different objects. `None` covers both "the
     /// object does not exist" and "it exists but is not yet in this adapter's watch cache" — the
-    /// two are indistinguishable to a caller and treated identically (write nothing for this
-    /// object).
+    /// two are indistinguishable to a caller and treated identically: the object is *held* (its
+    /// live copy neither updated nor deleted) — see [`crate::model::diff::DesiredState::held`].
     fn body(&self, backend: Backend, template_ref: &TemplateRef) -> Option<PolicyBody>;
 }
 

@@ -101,8 +101,8 @@ mod tests {
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
         Ecosystem, NamespaceName, OnNotGranted, RegistryCatalog, RegistryConfig, RegistryEntry,
-        RegistryGrant, RegistryNamespaceSelection, RegistrySource, Selector, SourceKind, Team,
-        TemplateRef,
+        RegistryGrant, RegistryNamespaceSelection, RegistrySource, Resolved,
+        ResolvedRegistryConfig, Selector, SourceKind, Team, TemplateRef,
     };
 
     use super::*;
@@ -117,7 +117,7 @@ mod tests {
         }
     }
 
-    fn config() -> RegistryConfig {
+    fn config() -> ResolvedRegistryConfig {
         let mut grants = BTreeMap::new();
         grants.insert(
             "team-1".to_string(),
@@ -126,7 +126,7 @@ mod tests {
                 default: vec![RegistryKey::new("internal-npm")],
             },
         );
-        RegistryConfig {
+        Resolved::without_teams(RegistryConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: RegistryCatalog::new(vec![RegistryEntry {
@@ -137,10 +137,10 @@ mod tests {
                     template_ref: template_ref(),
                 }],
             }]),
-            grants,
             namespace_selection: RegistryNamespaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn feature() -> RegistryConfigFeature {

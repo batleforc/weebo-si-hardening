@@ -21,6 +21,12 @@ impl Ready {
         self.0.store(true, Ordering::Relaxed);
     }
 
+    /// Fail `/readyz` again — on shutdown, so the Service stops routing here before the
+    /// listener closes.
+    pub fn mark_not_ready(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+
     fn is_ready(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -64,4 +70,26 @@ pub async fn serve(addr: SocketAddr, ready: Ready, registry: Registry) -> std::i
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
+}
+
+/// Resolves on the first SIGTERM or SIGINT. If a handler cannot be installed the corresponding
+/// future never resolves, so the other signal still works.
+pub async fn shutdown_signal() {
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    let interrupt = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        () = terminate => {},
+        () = interrupt => {},
+    }
 }

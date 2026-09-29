@@ -80,6 +80,13 @@ renew:
 | `inject.mode` | yes | `append` (join the existing value) or `set` (replace it). |
 | `renew.on_status` | no | Statuses meaning "stale". Omit or leave empty to disable renewal. |
 | `renew.max_replays` | no (default `1`) | Replays per request after a renewal. |
+| `limits.connect_timeout_secs` | no (default `5`) | Bound on opening a connection to either origin. |
+| `limits.response_timeout_secs` | no (default `60`) | Bound on an origin's response **head**, connect included. Response bodies stream, bounded only by the idle timeout below. |
+| `limits.response_idle_timeout_secs` | no (default `60`) | Longest silence allowed between two frames of a streamed response body; past it the body is cut (the caller sees a truncated response) and its slot freed. Resets on every frame, so a long live download is not cut. |
+| `limits.client_read_timeout_secs` | no (default `30`) | Bound on the caller sending its request head, and separately its body. |
+| `limits.drain_timeout_secs` | no (default `20`) | How long `SIGTERM` waits for in-flight requests. `preStopSleepSeconds` + this must stay under `terminationGracePeriodSeconds` (the chart checks). |
+| `limits.max_in_flight` | no (default `256`) | Requests handled at once — a request counts until its response body has finished streaming or the caller has gone; the next gets `503`. |
+| `limits.max_buffered_mib` | no (default `16`, min `4`) | Request-body MiB buffered across all requests; a request that would exceed it gets `503`. |
 
 `append` joins with a semicolon for `Cookie` and a comma for every other header, because that is
 what each one's grammar is.
@@ -89,6 +96,11 @@ what each one's grammar is.
 `${NAME}` references are resolved from the environment, so credential material comes from a Secret
 and never touches the config file. **An unset variable is a startup failure, not an empty string** —
 `password=` reaching a login form is the failure this rule exists to prevent.
+
+In a `credential.request.body` whose configured `Content-Type` is
+`application/x-www-form-urlencoded`, each substituted value is **percent-encoded**, so a password
+containing `&`, `=`, `+` or `%` stays one form field. Store the secret raw, not pre-encoded. Header
+values, and bodies of any other content type, are substituted verbatim.
 
 `--check` deliberately prints the config *without* substituted values: it reports how many
 references resolved, not what they resolved to, so a `--check` pasted into a ticket carries no
@@ -116,6 +128,28 @@ rollout** rather than surfacing as request-time `502`s an hour later.
    surfaced as-is.
 4. Hop-by-hop headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, … and anything
    `Connection` names) are dropped in both directions. `Host` is rewritten to the upstream.
+5. On a response to an injected request, a `Set-Cookie` naming the injected cookie or carrying the
+   passthrough marker is dropped, so the service session never reaches the caller's browser. If
+   the injected credential's cookie names cannot be told (e.g. `take: whole` of a non-cookie
+   token injected as `Cookie`), every `Set-Cookie` on that response is dropped. When
+   `inject.header` is anything **other than** `Cookie` (`Authorization`, an API-key header),
+   every `Set-Cookie` on an injected response is dropped too: an upstream that mints its own
+   session off that header does so under a cookie name the proxy cannot know. There is no
+   opt-out. With a `Cookie` injection, other cookies (CSRF tokens, preferences) are relayed.
+
+On `SIGTERM` the listener closes, open connections finish the request they are serving, and the
+process exits once they have — or after `limits.drain_timeout_secs`, closing what is left. The
+chart delays `SIGTERM` by `preStopSleepSeconds` (default 5, a kubelet `sleep` action, Kubernetes
+≥ 1.30; `0` disables it) so the Service stops routing here first. The kubelet's
+`terminationGracePeriodSeconds` (chart value, default 30) covers the whole sequence —
+preStop sleep, then up to `drain_timeout_secs` of draining — so the chart refuses to render
+unless `preStopSleepSeconds` < the grace period and `preStopSleepSeconds + drain_timeout_secs` <
+the grace period (defaults: 5 + 20 < 30).
+
+A request holds its `max_in_flight` slot until its response **body** has finished streaming, or
+the caller has gone — not merely until the head is sent — so the limit bounds streams in
+progress. A body that goes silent for `limits.response_idle_timeout_secs` (default 60) is cut
+with a `WARN` line, the caller sees a truncated response, and the slot is freed.
 
 Acquisition is **single-flight**: N concurrent first-requests produce one login, not N.
 
@@ -144,8 +178,11 @@ rejecting every credential as fast as it is minted.
 | --- | --- |
 | Startup acquisition fails | exit `3`, the rollout stops |
 | Acquisition fails at request time | `502`; the caller gets no session, so the upstream challenges them |
-| Upstream unreachable | `502` |
+| Upstream unreachable, or no response head within `response_timeout_secs` | `502` |
+| Response body silent for `response_idle_timeout_secs` mid-stream | body cut (truncated response), slot freed, `WARN` line |
 | Request body over 4 MiB | `413`. Bodies are buffered because a replay cannot re-read a stream. |
+| Request body not received within `client_read_timeout_secs` | `408`; a request head not received in time closes the connection |
+| `max_in_flight` or `max_buffered_mib` reached | `503` at once, with a `WARN` line |
 | Config invalid | exit `2` before anything binds |
 
 Nothing here fails **open**. The only failure that opens anything is losing the gateway, and that
@@ -172,7 +209,7 @@ Raw manifest, equivalent to what the chart renders:
 # nothing is affected; the switch is the cutover and its inverse is the rollback.
 containers:
   - name: preauth-proxy
-    image: preauth-proxy@sha256:...
+    image: ghcr.io/batleforc/preauth-proxy@sha256:...
     args: ["--config", "/etc/preauth-proxy/config.yaml"]
     env:
       - name: CRED_USER
@@ -191,6 +228,39 @@ containers:
 ```
 
 The config is safe in a ConfigMap and in git — it carries `${ENV}` references, never secrets.
+
+**Chart consistency checks.** `values.schema.json` validates the values (a non-empty
+`credentials.existingSecret` included), and the render fails when: `config.listen`'s port differs
+from `containerPort` (default 8080 — the port the probes, the Service's `targetPort` and the
+NetworkPolicy aim at); the shutdown budget above does not fit; or the `startupProbe` budget
+(`periodSeconds` × `failureThreshold`, default 5 × 30 = 150 s) does not exceed the startup
+acquisition's worst case, `connect_timeout_secs + response_timeout_secs` (default 65 s). The
+listener binds only after that acquisition succeeds, so the startupProbe is what keeps liveness
+from killing a pod that is still logging in.
+
+**NetworkPolicy.** Set `networkPolicy.enabled=true` with `networkPolicy.gateway.namespaceSelector`
+and/or `.podSelector` naming your forward-auth gateway's pods, and only they can reach the proxy
+port — closing the "a pod calls the Service directly" bypass at the network layer. Each selector
+is a full Kubernetes LabelSelector, rendered as given (the same shape `charts/endpoint-gateway`
+takes):
+
+```yaml
+networkPolicy:
+  enabled: true
+  gateway:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: traefik
+    podSelector:
+      matchExpressions:
+        - { key: app.kubernetes.io/name, operator: In, values: [traefik] }
+```
+
+It is off by default only because the chart cannot know where the gateway runs; enabling it
+without a selector that carries `matchLabels` or `matchExpressions` fails the render rather than
+admitting the whole namespace. A bare label map (the pre-2026-09-29 shape) is refused by the
+chart's `values.schema.json`. `networkPolicy.metrics.port`/`.from`
+admit scrapers on a metrics port only, once one exists.
 
 ## Known limitations
 

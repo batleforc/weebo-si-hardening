@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use weebo_si_crd::{EntryKey, ImageGrant, ImagePolicyConfig, OnUnknownKey, Team, TeamName};
+use weebo_si_crd::{EntryKey, ImageGrant, OnUnknownKey, ResolvedImagePolicyConfig, Team, TeamName};
 
 use crate::pattern::Pattern;
 use crate::reference::ImageReference;
@@ -91,7 +91,10 @@ fn match_team<'a>(teams: &'a [Team], labels: &BTreeMap<String, String>) -> Optio
 /// floor is the platform set, and a namespace with no team that reached *nothing* would be a
 /// namespace where no workspace can start. RFC 0005 makes `default` required for exactly that
 /// reason: the no-team case is an admin's decision rather than a policy hiding in the chassis.
-fn grant_for(config: &ImagePolicyConfig, team: Option<&Team>) -> (Option<TeamName>, ImageGrant) {
+fn grant_for(
+    config: &ResolvedImagePolicyConfig,
+    team: Option<&Team>,
+) -> (Option<TeamName>, ImageGrant) {
     let fallback = || ImageGrant {
         allowed: config.default.clone(),
         default: config.default.clone(),
@@ -118,7 +121,7 @@ fn grant_for(config: &ImagePolicyConfig, team: Option<&Team>) -> (Option<TeamNam
 /// (flagging what was dropped); [`OnUnknownKey::Deny`] refuses, naming them.
 pub fn resolve(
     teams: &[Team],
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     namespace_labels: &BTreeMap<String, String>,
     namespace_annotation: Option<&str>,
     workspace_attribute: Option<&str>,
@@ -174,7 +177,7 @@ pub fn resolve(
 /// authored.
 pub fn allowed_set(
     teams: &[Team],
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     namespace_labels: &BTreeMap<String, String>,
 ) -> Provenance {
     let (team_name, grant) = grant_for(config, match_team(teams, namespace_labels));
@@ -197,7 +200,7 @@ pub fn allowed_set(
 /// because a half-applied entry is an allow-list whose contents differ from what an admin reads,
 /// which is the failure mode this whole design is shaped against.
 pub fn effective_patterns(
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     resolved: &[EntryKey],
     platform: &[Pattern],
 ) -> Vec<(PermittedBy, Pattern)> {
@@ -260,8 +263,8 @@ pub fn judge(raw: &str, union: &[(PermittedBy, Pattern)], variables: &VariableVa
 )]
 mod tests {
     use weebo_si_crd::{
-        Entry, FeatureMode, ImageCatalog, ImageNamespaceSelection, ImageWorkspaceSelection,
-        PlatformConfig, Selector,
+        Entry, FeatureMode, ImageCatalog, ImageNamespaceSelection, ImagePolicyConfig,
+        ImageWorkspaceSelection, PlatformConfig, Resolved, Selector,
     };
 
     use super::*;
@@ -287,19 +290,19 @@ mod tests {
         ])
     }
 
-    fn config(default: &[&str], grants: BTreeMap<String, ImageGrant>) -> ImagePolicyConfig {
-        ImagePolicyConfig {
+    fn config(default: &[&str], grants: BTreeMap<String, ImageGrant>) -> ResolvedImagePolicyConfig {
+        Resolved::without_teams(ImagePolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: catalog(),
             variables: BTreeMap::new(),
             default: default.iter().map(|k| EntryKey::new(*k)).collect(),
-            grants,
             namespace_selection: ImageNamespaceSelection::default(),
             workspace_selection: ImageWorkspaceSelection::default(),
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str, label_value: &str) -> Team {
@@ -585,7 +588,10 @@ mod tests {
         )])
     }
 
-    fn union_for(cfg: &ImagePolicyConfig, resolved: &[&str]) -> Vec<(PermittedBy, Pattern)> {
+    fn union_for(
+        cfg: &ResolvedImagePolicyConfig,
+        resolved: &[&str],
+    ) -> Vec<(PermittedBy, Pattern)> {
         let platform = platform_patterns(&cfg.platform).unwrap();
         let keys: Vec<EntryKey> = resolved.iter().map(|k| EntryKey::new(*k)).collect();
         effective_patterns(cfg, &keys, &platform)

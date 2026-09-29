@@ -12,11 +12,12 @@
 
 use std::sync::{Arc, RwLock};
 
+use weebo_si_chassis::managed::OwnedScope;
 use weebo_si_chassis::{Context, DomainError, FeatureId, ReconcileFeature, Subject};
-use weebo_si_crd::{KubeArmorPolicyConfig, NamespaceName, RuntimeBackend};
+use weebo_si_crd::{NamespaceName, ResolvedKubeArmorPolicyConfig, RuntimeBackend};
 
 use crate::model::diff::DesiredState;
-use crate::model::policy::{ManagedObject, ObjectKey, PodSelector};
+use crate::model::policy::{ManagedObject, ObjectKey, Owner, PodSelector};
 use crate::port::TemplateStore;
 use crate::resolve;
 
@@ -50,6 +51,14 @@ impl Subject for NamespaceSubject {
     }
 }
 
+/// The namespace pass owns the baseline, and only the baseline — never a workspace's profile
+/// objects, which share its namespace.
+impl OwnedScope for NamespaceSubject {
+    fn owned_selector(&self) -> PodSelector {
+        PodSelector::Empty
+    }
+}
+
 /// The DevWorkspace under reconciliation, in domain vocabulary.
 ///
 /// Carries `namespace_annotation` alongside the workspace's own `attribute` rather than reading
@@ -68,6 +77,11 @@ pub struct Workspace {
     pub attribute: Option<String>,
     /// The raw value of `namespaceSelection.annotation`, if the namespace carries it.
     pub namespace_annotation: Option<String>,
+    /// The DevWorkspace itself, as the owner every profile object this pass writes is
+    /// garbage-collected with — so a deleted workspace's objects go with it, with no reconcile
+    /// path having to notice it is gone (a workspace pass only ever sees its own objects, so a
+    /// deleted workspace has no pass left to clean up after it).
+    pub owner: Owner,
 }
 
 impl Subject for Workspace {
@@ -81,10 +95,18 @@ impl Subject for Workspace {
     }
 }
 
+/// A workspace pass owns its own profile objects, and only those — never the baseline or a
+/// sibling workspace's objects in the same namespace.
+impl OwnedScope for Workspace {
+    fn owned_selector(&self) -> PodSelector {
+        PodSelector::DevWorkspaceId(self.workspace_id.clone())
+    }
+}
+
 /// The `kubearmor-policy` feature. Holds its configuration and resolved backend behind a lock,
 /// same live-reload shape as `network-profiles`.
 pub struct KubeArmorPolicy {
-    config: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
+    config: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     backend: Arc<RwLock<RuntimeBackend>>,
     templates: Arc<dyn TemplateStore + Send + Sync>,
 }
@@ -94,7 +116,7 @@ impl KubeArmorPolicy {
     /// `templates`. The caller keeps the other half of `config`'s and `backend`'s `Arc`s and
     /// hands them to whatever keeps them current.
     pub fn new(
-        config: Arc<RwLock<Option<KubeArmorPolicyConfig>>>,
+        config: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
         backend: Arc<RwLock<RuntimeBackend>>,
         templates: Arc<dyn TemplateStore + Send + Sync>,
     ) -> Self {
@@ -105,7 +127,7 @@ impl KubeArmorPolicy {
         }
     }
 
-    fn current_config(&self) -> Result<KubeArmorPolicyConfig, DomainError> {
+    fn current_config(&self) -> Result<ResolvedKubeArmorPolicyConfig, DomainError> {
         let guard = self
             .config
             .read()
@@ -159,24 +181,30 @@ impl ReconcileFeature<NamespaceSubject> for KubeArmorPolicy {
         // The posture travels even when the baseline object itself cannot be built. It is the
         // namespace's own property, it is what decides what an *unmatched* operation does, and
         // withholding it because a template has not landed yet would leave a namespace at
-        // whatever posture it last carried — which is the one state nobody chose.
+        // whatever posture it last carried — which is the one state nobody chose. The live
+        // baseline object itself is *held* (neither updated nor deleted) until the template
+        // resolves again, rather than deleted because its template is momentarily unreadable.
+        let key = ObjectKey {
+            namespace: subject.namespace.clone(),
+            name: BASELINE_NAME.to_string(),
+        };
         let Some(body) = self.templates.body(backend, &profile.template_ref) else {
             return Ok(DesiredState {
                 posture,
+                held: vec![key],
                 ..DesiredState::default()
             });
         };
 
         Ok(DesiredState {
             objects: vec![ManagedObject {
-                key: ObjectKey {
-                    namespace: subject.namespace.clone(),
-                    name: BASELINE_NAME.to_string(),
-                },
+                key,
                 backend,
                 profile: config.baseline.clone(),
                 pod_selector: PodSelector::Empty,
                 body,
+                // Never owned: a namespace outliving its workspaces must keep its floor.
+                owner: None,
             }],
             posture,
             ..DesiredState::default()
@@ -218,25 +246,30 @@ impl ReconcileFeature<Workspace> for KubeArmorPolicy {
         };
 
         let mut objects = Vec::with_capacity(provenance.resolved.len());
+        let mut held = Vec::new();
         for key in &provenance.resolved {
             let Some(profile) = config.catalog.profile(key) else {
                 continue;
             };
+            // The workspace id is part of the name, not only of the selector: two workspaces
+            // in one namespace granted the same key would otherwise write the same object
+            // twice with different selectors, and the second pass would fight the first.
+            let object_key = ObjectKey {
+                namespace: subject.namespace.clone(),
+                name: format!("weebo-{key}-{}", subject.workspace_id),
+            };
             let Some(body) = self.templates.body(backend, &profile.template_ref) else {
+                // Unresolved template: hold the live object rather than delete it (fail-open).
+                held.push(object_key);
                 continue;
             };
             objects.push(ManagedObject {
-                // The workspace id is part of the name, not only of the selector: two workspaces
-                // in one namespace granted the same key would otherwise write the same object
-                // twice with different selectors, and the second pass would fight the first.
-                key: ObjectKey {
-                    namespace: subject.namespace.clone(),
-                    name: format!("weebo-{key}-{}", subject.workspace_id),
-                },
+                key: object_key,
                 backend,
                 profile: key.clone(),
                 pod_selector: PodSelector::DevWorkspaceId(subject.workspace_id.clone()),
                 body,
+                owner: Some(subject.owner.clone()),
             });
         }
 
@@ -247,6 +280,7 @@ impl ReconcileFeature<Workspace> for KubeArmorPolicy {
             posture: None,
             team: provenance.team,
             not_granted: provenance.dropped_not_granted,
+            held,
         })
     }
 }
@@ -263,9 +297,10 @@ mod tests {
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
-        DefaultPosture, FeatureMode, OnNotGranted, Posture, RuntimeEnforcement,
-        RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog, RuntimeProfileGrant,
-        RuntimeProfileKey, RuntimeWorkspaceSelection, Selector, Team, TeamName, TemplateRef,
+        DefaultPosture, FeatureMode, KubeArmorPolicyConfig, OnNotGranted, Posture, Resolved,
+        RuntimeEnforcement, RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog,
+        RuntimeProfileGrant, RuntimeProfileKey, RuntimeWorkspaceSelection, Selector, Team,
+        TeamName, TemplateRef,
     };
 
     use super::*;
@@ -285,8 +320,8 @@ mod tests {
         }
     }
 
-    fn config(grants: BTreeMap<String, RuntimeProfileGrant>) -> KubeArmorPolicyConfig {
-        KubeArmorPolicyConfig {
+    fn config(grants: BTreeMap<String, RuntimeProfileGrant>) -> ResolvedKubeArmorPolicyConfig {
+        Resolved::without_teams(KubeArmorPolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: RuntimeProfileCatalog::new(vec![
@@ -295,12 +330,12 @@ mod tests {
                 entry("net-raw"),
             ]),
             baseline: RuntimeProfileKey::new("base"),
-            grants,
             namespace_selection: RuntimeNamespaceSelection::default(),
             workspace_selection: RuntimeWorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: RuntimeEnforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn templates() -> FakeTemplateStore {
@@ -317,7 +352,7 @@ mod tests {
         ])
     }
 
-    fn feature(config: KubeArmorPolicyConfig) -> KubeArmorPolicy {
+    fn feature(config: ResolvedKubeArmorPolicyConfig) -> KubeArmorPolicy {
         KubeArmorPolicy::new(
             Arc::new(RwLock::new(Some(config))),
             Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
@@ -357,6 +392,9 @@ mod tests {
         assert_eq!(desired.objects[0].key.name, BASELINE_NAME);
         assert_eq!(desired.objects[0].pod_selector, PodSelector::Empty);
         assert_eq!(desired.objects[0].profile, RuntimeProfileKey::new("base"));
+        // A namespace outliving its workspaces must keep its floor: the baseline is never
+        // garbage-collected with anything.
+        assert_eq!(desired.objects[0].owner, None);
     }
 
     #[test]
@@ -438,6 +476,15 @@ mod tests {
         grants
     }
 
+    fn owner() -> Owner {
+        Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-uid".to_string(),
+        }
+    }
+
     fn workspace(attribute: Option<&str>) -> Workspace {
         Workspace {
             name: "data-pipeline".to_string(),
@@ -445,6 +492,7 @@ mod tests {
             workspace_id: "workspacede4f56".to_string(),
             attribute: attribute.map(str::to_string),
             namespace_annotation: None,
+            owner: owner(),
         }
     }
 
@@ -483,6 +531,13 @@ mod tests {
             desired.objects.iter().all(
                 |o| o.pod_selector == PodSelector::DevWorkspaceId(subject.workspace_id.clone())
             )
+        );
+        // Every profile object is owned by its DevWorkspace, so the apiserver garbage-collects
+        // it with the workspace.
+        assert!(
+            desired.objects.iter().all(|o| o.owner == Some(owner())),
+            "{:?}",
+            desired.objects
         );
     }
 

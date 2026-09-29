@@ -1,6 +1,7 @@
 //! Watch-backed outbound adapters, shared by `weebo-si-webhook` and `weebo-si-controller` —
 //! mirrors `crd_runtime` being depended on by both `api` and `controller` in proxyauthk8s.
 
+pub mod access;
 pub mod config_store;
 pub mod dwoc_store;
 pub mod identity_metrics;
@@ -16,7 +17,9 @@ pub mod kubearmor_policy_store;
 pub mod kubearmor_template_store;
 pub mod network_metrics;
 pub mod node_enforcer;
+mod ns_index;
 pub mod ns_store;
+mod owner_reference;
 pub mod prometheus;
 pub mod registry_metrics;
 pub mod registry_object_store;

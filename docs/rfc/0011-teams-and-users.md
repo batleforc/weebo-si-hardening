@@ -1,11 +1,11 @@
 ---
 rfc: 0011
 title: teams and users as objects
-status: Draft
+status: Implemented
 authors: [batleforc]
 created: 2026-09-25
-updated: 2026-09-25
-decided:
+updated: 2026-09-30
+decided: 2026-09-30
 brick: crates/weebo-si-crd
 supersedes: []
 superseded-by: []
@@ -597,13 +597,16 @@ bookkeeping of our own to get out of step.
 - [x] RBAC for what provisioning writes: `authentikusers` cluster-wide, `applications` in the one
       namespace `che.applicationNamespace` names, no `delete` on either
 - [x] `weebo-si-operator teams export [--from <file>] [--check]`
-- [ ] The migration run against a real cluster, start to finish
-- [ ] The transitional non-wire `grants` field replaced by an explicit resolved type
+- [ ] The migration run against a real cluster, start to finish — **deferred to the first
+      production rollout**, not a code deliverable: `teams export --check` is the tool, and the
+      envtest suites prove each half against a real apiserver
+- [x] The transitional non-wire `grants` field replaced by an explicit resolved type —
+      `Resolved<C, G>` in `weebo-si-crd`, built only by `resolve`/`resolve_teams`
 - [x] RFC 0002 amended: its guide-level example, its contract skeleton, *Teams are chassis-level*
       and the four paragraphs that followed from it, with a changelog line
 - [x] Docs updated: `docs/weebosiconfig.md`, `docs/bricks/teams-and-users.md`, and the security
       note on who may write a `WeeboSiTeam`
-- [ ] RFC flipped to `Implemented`
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -624,3 +627,5 @@ bookkeeping of our own to get out of step.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-30 | The `#[serde(skip)] grants` field left all six wire types. Resolution now returns `Resolved<Config, Grant>` (`ResolvedFeatures` for the whole spec) rather than mutating the wire struct in place, and `validate`/`grant_for` live on the resolved type — so a reader that forgot to resolve against the `WeeboSiTeam` objects is a compile error, not every namespace silently on the cluster default. |
+| 2026-09-30 | Flipped to `Implemented`. The real-cluster migration run stays open and is deferred to the first production rollout; every code item of the plan is done and covered by the envtest suites. |

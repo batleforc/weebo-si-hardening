@@ -14,7 +14,9 @@
 
 use std::collections::BTreeMap;
 
-use weebo_si_crd::{OnNotGranted, RegistryConfig, RegistryGrant, RegistryKey, Team, TeamName};
+use weebo_si_crd::{
+    OnNotGranted, RegistryGrant, RegistryKey, ResolvedRegistryConfig, Team, TeamName,
+};
 
 /// Which step of the resolution chain produced the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,12 +76,12 @@ fn parse_keys(raw: &str) -> Vec<RegistryKey> {
 /// 3. The grant's `default`.
 ///
 /// Whatever list wins is checked against the grant's `allowed`: if every key is inside it, that
-/// list is the answer. If any key is outside it, [`RegistryConfig::on_not_granted`] decides —
+/// list is the answer. If any key is outside it, [`weebo_si_crd::RegistryConfig::on_not_granted`] decides —
 /// [`OnNotGranted::Default`] discards the whole requested list and falls back to the grant's
 /// `default` (flagging which keys were dropped); [`OnNotGranted::Deny`] refuses, naming them.
 pub fn resolve(
     teams: &[Team],
-    config: &RegistryConfig,
+    config: &ResolvedRegistryConfig,
     namespace_labels: &BTreeMap<String, String>,
     namespace_annotation: Option<&str>,
 ) -> Result<Provenance, NotGranted> {
@@ -144,8 +146,8 @@ pub fn resolve(
 )]
 mod tests {
     use weebo_si_crd::{
-        Ecosystem, FeatureMode, NamespaceName, RegistryCatalog, RegistryEntry,
-        RegistryNamespaceSelection, RegistrySource, Selector, SourceKind, TemplateRef,
+        Ecosystem, FeatureMode, NamespaceName, RegistryCatalog, RegistryConfig, RegistryEntry,
+        RegistryNamespaceSelection, RegistrySource, Resolved, Selector, SourceKind, TemplateRef,
     };
 
     use super::*;
@@ -164,8 +166,8 @@ mod tests {
         }
     }
 
-    fn config(grants: BTreeMap<String, RegistryGrant>) -> RegistryConfig {
-        RegistryConfig {
+    fn config(grants: BTreeMap<String, RegistryGrant>) -> ResolvedRegistryConfig {
+        Resolved::without_teams(RegistryConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: RegistryCatalog::new(vec![
@@ -173,10 +175,10 @@ mod tests {
                 entry("internal-pypi"),
                 entry("internal-maven"),
             ]),
-            grants,
             namespace_selection: RegistryNamespaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str, label_value: &str) -> Team {

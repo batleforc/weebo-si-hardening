@@ -18,7 +18,7 @@
 use std::sync::{Arc, RwLock};
 
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
-use weebo_si_crd::ImagePolicyConfig;
+use weebo_si_crd::ResolvedImagePolicyConfig;
 
 use crate::feature::core::{FEATURE_ID, bind_builtins, judge_images, render_note};
 use crate::port::{ImagePolicyObserver, Resource};
@@ -27,7 +27,7 @@ use crate::subject::PodImages;
 
 /// `image-policy`'s `Pod` half.
 pub struct PodImagesFeature {
-    config: Arc<RwLock<Option<ImagePolicyConfig>>>,
+    config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
     observer: Arc<dyn ImagePolicyObserver>,
 }
 
@@ -35,7 +35,7 @@ impl PodImagesFeature {
     /// Build it. Holds the same live configuration `Arc` as
     /// [`crate::WorkspaceImagesFeature`].
     pub fn new(
-        config: Arc<RwLock<Option<ImagePolicyConfig>>>,
+        config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
         observer: Arc<dyn ImagePolicyObserver>,
     ) -> Self {
         Self { config, observer }
@@ -113,8 +113,8 @@ mod tests {
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
         Entry, EntryKey, FeatureMode, ImageCatalog, ImageGrant, ImageNamespaceSelection,
-        ImageWorkspaceSelection, NamespaceName, OnUnknownKey, PlatformConfig, Selector, Team,
-        TeamName,
+        ImagePolicyConfig, ImageWorkspaceSelection, NamespaceName, OnUnknownKey, PlatformConfig,
+        Resolved, ResolvedImagePolicyConfig, Selector, Team, TeamName,
     };
 
     use super::*;
@@ -122,7 +122,7 @@ mod tests {
     use crate::subject::ContainerImage;
     use crate::variable::VariableValues;
 
-    fn config() -> ImagePolicyConfig {
+    fn config() -> ResolvedImagePolicyConfig {
         let mut grants = BTreeMap::new();
         grants.insert(
             "team-1".to_string(),
@@ -133,7 +133,7 @@ mod tests {
             },
         );
         grants.insert("team-2".to_string(), ImageGrant::default());
-        ImagePolicyConfig {
+        Resolved::without_teams(ImagePolicyConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
             catalog: ImageCatalog::new(vec![
@@ -148,12 +148,12 @@ mod tests {
             ]),
             variables: BTreeMap::new(),
             default: vec![EntryKey::new("internal")],
-            grants,
             namespace_selection: ImageNamespaceSelection::default(),
             workspace_selection: ImageWorkspaceSelection::default(),
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn teams() -> Vec<Team> {

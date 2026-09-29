@@ -22,6 +22,9 @@ pub struct GatewayMetrics {
     self_origin: IntCounterVec,
     client_ip_trusted: IntGauge,
     revocations: IntGauge,
+    revocations_refused: IntCounterVec,
+    self_origin_probe: IntCounterVec,
+    token_reviews_throttled: prometheus::IntCounter,
     policy_compile_seconds: Histogram,
     observed_only: IntGaugeVec,
 }
@@ -93,6 +96,25 @@ impl GatewayMetrics {
             "weebo_si_endpoint_auth_revocations",
             "Sessions currently revoked",
         )?;
+        let revocations_refused = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_endpoint_auth_revocations_refused_total",
+                "Back-channel logouts that could not be recorded, by reason — each one is a \
+                 session still alive after its logout",
+            ),
+            &["reason"],
+        )?;
+        let self_origin_probe = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_endpoint_auth_self_origin_probe_total",
+                "Self-origin probe results: forged, clean, inconclusive",
+            ),
+            &["result"],
+        )?;
+        let token_reviews_throttled = prometheus::IntCounter::new(
+            "weebo_si_endpoint_auth_token_reviews_throttled_total",
+            "TokenReviews not asked because a limit refused them (the token failed closed)",
+        )?;
         let policy_compile_seconds = Histogram::with_opts(HistogramOpts::new(
             "weebo_si_endpoint_auth_policy_compile_seconds",
             "Time to rebuild the whole host index — the write-side cost",
@@ -118,6 +140,9 @@ impl GatewayMetrics {
             Box::new(self_origin.clone()),
             Box::new(client_ip_trusted.clone()),
             Box::new(revocations.clone()),
+            Box::new(revocations_refused.clone()),
+            Box::new(self_origin_probe.clone()),
+            Box::new(token_reviews_throttled.clone()),
             Box::new(policy_compile_seconds.clone()),
             Box::new(observed_only.clone()),
         ] {
@@ -137,6 +162,9 @@ impl GatewayMetrics {
             self_origin,
             client_ip_trusted,
             revocations,
+            revocations_refused,
+            self_origin_probe,
+            token_reviews_throttled,
             policy_compile_seconds,
             observed_only,
         })
@@ -225,6 +253,24 @@ impl GatewayMetrics {
     /// How many sessions are revoked.
     pub fn revoked(&self, count: usize) {
         self.revocations.set(count as i64);
+    }
+
+    /// A back-channel logout that could not be recorded.
+    pub fn revocation_refused(&self, reason: &'static str) {
+        self.revocations_refused.with_label_values(&[reason]).inc();
+    }
+
+    /// One self-origin probe result.
+    pub fn probe(&self, result: &'static str) {
+        self.self_origin_probe.with_label_values(&[result]).inc();
+    }
+
+    /// Bring the throttled-review counter up to the reviewer's own running total.
+    pub fn token_reviews_throttled(&self, total: u64) {
+        let seen = self.token_reviews_throttled.get();
+        if total > seen {
+            self.token_reviews_throttled.inc_by(total - seen);
+        }
     }
 
     /// How many endpoints are answered without enforcement — `Observe`, or break-glass.

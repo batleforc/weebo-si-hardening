@@ -11,7 +11,7 @@
 //! `spec.teams` ordered and first-match-wins, justified by "this list is written by one admin in
 //! one file, where reading order is an intuition already available". Separate objects have no
 //! file and no order, so the intuition is gone and something explicit has to replace it:
-//! [`TeamSpec::priority`], lowest first, ties broken by name. Inferring precedence from selector
+//! [`WeeboSiTeamSpec::priority`], lowest first, ties broken by name. Inferring precedence from selector
 //! specificity was rejected for the reason RFC 0002 rejected it.
 
 use std::fmt;

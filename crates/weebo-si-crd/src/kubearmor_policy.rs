@@ -11,7 +11,6 @@
 //! are not interchangeable, and a shared newtype would let a grant for one silently typecheck
 //! against the other's catalogue.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -20,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
 use crate::network_profiles::{OnNotGranted, TemplateRef};
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
@@ -30,12 +30,24 @@ use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(transparent)]
-pub struct RuntimeProfileKey(String);
+pub struct RuntimeProfileKey(
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+    )]
+    String,
+);
 
 impl RuntimeProfileKey {
     /// Wrap a runtime profile key.
     pub fn new(key: impl Into<String>) -> Self {
         Self(key.into())
+    }
+
+    /// Whether this key is a DNS-1123 label, safe to interpolate into an object name and a
+    /// label value — same rule as [`crate::network_profiles::ProfileKey::is_valid`].
+    pub fn is_valid(&self) -> bool {
+        crate::network_profiles::is_valid_profile_key(&self.0)
     }
 
     /// The wrapped value.
@@ -304,13 +316,6 @@ pub struct KubeArmorPolicyConfig {
     pub catalog: RuntimeProfileCatalog,
     /// The profile applied to every workspace pod in scope, never negotiable.
     pub baseline: RuntimeProfileKey,
-    /// What each team may reach, keyed by team name.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`KubeArmorPolicyConfig::resolve`] fills this in from them, and a configuration nobody
-    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<String, RuntimeProfileGrant>,
     /// The namespace annotation naming a runtime profile key list.
     #[serde(default)]
     pub namespace_selection: RuntimeNamespaceSelection,
@@ -325,18 +330,23 @@ pub struct KubeArmorPolicyConfig {
     pub enforcement: RuntimeEnforcement,
 }
 
-impl KubeArmorPolicyConfig {
-    /// This team's grant, if `grants` has one.
-    pub fn grant_for(&self, team: &TeamName) -> Option<&RuntimeProfileGrant> {
-        self.grants.get(team.as_str())
-    }
+/// [`KubeArmorPolicyConfig`] resolved against the `WeeboSiTeam` objects — what the feature evaluates.
+pub type ResolvedKubeArmorPolicyConfig = Resolved<KubeArmorPolicyConfig, RuntimeProfileGrant>;
 
-    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+impl KubeArmorPolicyConfig {
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
     ///
     /// Returns one violation per key a team redefined; everything else stays in
-    /// [`KubeArmorPolicyConfig::validate`], which now runs over the resolved shape and therefore over
+    /// [`ResolvedKubeArmorPolicyConfig::validate`], which now runs over the resolved shape and therefore over
     /// exactly what the feature will evaluate.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<KubeArmorPolicyConfigViolation> {
+    pub fn resolve(
+        &self,
+        teams: &[WeeboSiTeam],
+    ) -> (
+        ResolvedKubeArmorPolicyConfig,
+        Vec<KubeArmorPolicyConfigViolation>,
+    ) {
         let blocks: Vec<(TeamName, Vec<RuntimeProfile>)> = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
@@ -350,9 +360,10 @@ impl KubeArmorPolicyConfig {
 
         let (entries, conflicts) =
             merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
-        self.catalog = RuntimeProfileCatalog::new(entries);
+        let mut config = self.clone();
+        config.catalog = RuntimeProfileCatalog::new(entries);
 
-        self.grants = resolution_order(teams)
+        let grants = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
                 let block = team.spec.features.kubearmor_policy.as_ref()?;
@@ -377,7 +388,7 @@ impl KubeArmorPolicyConfig {
             })
             .collect();
 
-        conflicts
+        let violations = conflicts
             .into_iter()
             .map(
                 |conflict| KubeArmorPolicyConfigViolation::CatalogKeyConflict {
@@ -385,7 +396,8 @@ impl KubeArmorPolicyConfig {
                     key: conflict.key,
                 },
             )
-            .collect()
+            .collect();
+        (Resolved { config, grants }, violations)
     }
 }
 
@@ -393,10 +405,13 @@ impl KubeArmorPolicyConfig {
 ///
 /// Two of `network-profiles`' violations have no counterpart here — `ProfileHasNoVariants` and
 /// `ProfileHasDuplicateBackend` — because a catalogue entry carries exactly one `templateRef`
-/// and the type system already rules both out. The remaining five are the same failures, over
+/// and the type system already rules both out. The remaining six are the same failures, over
 /// this feature's own key type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KubeArmorPolicyConfigViolation {
+    /// A catalogue key is not a DNS-1123 label of at most
+    /// [`crate::network_profiles::PROFILE_KEY_MAX_LEN`] characters.
+    InvalidProfileKey(RuntimeProfileKey),
     /// The same key appears twice in `catalog`.
     DuplicateProfileKey(RuntimeProfileKey),
     /// `baseline` names a key absent from `catalog`.
@@ -432,6 +447,11 @@ pub enum KubeArmorPolicyConfigViolation {
 impl fmt::Display for KubeArmorPolicyConfigViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidProfileKey(key) => write!(
+                f,
+                "runtime profile key \"{key}\" is not a DNS-1123 label of at most {} characters",
+                crate::network_profiles::PROFILE_KEY_MAX_LEN
+            ),
             Self::DuplicateProfileKey(key) => {
                 write!(f, "runtime profile key {key} is declared twice")
             }
@@ -459,15 +479,25 @@ impl fmt::Display for KubeArmorPolicyConfigViolation {
     }
 }
 
-impl KubeArmorPolicyConfig {
+impl ResolvedKubeArmorPolicyConfig {
+    /// This team's grant, if `grants` has one.
+    pub fn grant_for(&self, team: &TeamName) -> Option<&RuntimeProfileGrant> {
+        self.grants.get(team.as_str())
+    }
+
     /// Every violation this configuration has, if any. Returns all of them, not just the first —
     /// the reconcile loop reports one `Degraded` condition per violation, same as
-    /// [`crate::network_profiles::NetworkProfilesConfig::validate`].
+    /// [`crate::network_profiles::ResolvedNetworkProfilesConfig::validate`].
     pub fn validate(&self, teams: &[Team]) -> Vec<KubeArmorPolicyConfigViolation> {
         let mut violations = Vec::new();
 
         let mut seen_keys = std::collections::HashSet::new();
         for entry in self.catalog.entries() {
+            if !entry.key.is_valid() {
+                violations.push(KubeArmorPolicyConfigViolation::InvalidProfileKey(
+                    entry.key.clone(),
+                ));
+            }
             if !seen_keys.insert(&entry.key) {
                 violations.push(KubeArmorPolicyConfigViolation::DuplicateProfileKey(
                     entry.key.clone(),
@@ -520,6 +550,8 @@ impl KubeArmorPolicyConfig {
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::namespace::NamespaceName;
 
@@ -545,18 +577,18 @@ mod tests {
         catalog: RuntimeProfileCatalog,
         baseline: &str,
         grants: BTreeMap<String, RuntimeProfileGrant>,
-    ) -> KubeArmorPolicyConfig {
-        KubeArmorPolicyConfig {
+    ) -> ResolvedKubeArmorPolicyConfig {
+        Resolved::without_teams(KubeArmorPolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog,
             baseline: RuntimeProfileKey::new(baseline),
-            grants,
             namespace_selection: RuntimeNamespaceSelection::default(),
             workspace_selection: RuntimeWorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: RuntimeEnforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str) -> Team {
@@ -591,6 +623,33 @@ mod tests {
         grants.insert("team-2".to_string(), RuntimeProfileGrant::default());
         let cfg = config(clean_catalog(), "base", grants);
         assert!(cfg.validate(&teams).is_empty());
+    }
+
+    #[test]
+    fn an_invalid_runtime_profile_key_is_reported() {
+        let catalog = RuntimeProfileCatalog::new(vec![entry("base"), entry("net_raw")]);
+        let cfg = config(catalog, "base", BTreeMap::new());
+        assert_eq!(
+            cfg.validate(&[]),
+            vec![KubeArmorPolicyConfigViolation::InvalidProfileKey(
+                RuntimeProfileKey::new("net_raw")
+            )]
+        );
+        assert!(!RuntimeProfileKey::new("k".repeat(64)).is_valid());
+        assert!(RuntimeProfileKey::new("k".repeat(63)).is_valid());
+    }
+
+    #[test]
+    fn the_runtime_profile_key_schema_carries_the_dns_1123_pattern_and_length() {
+        let schema = serde_json::to_value(schemars::schema_for!(RuntimeProfileKey)).unwrap();
+        assert_eq!(
+            schema["pattern"],
+            crate::network_profiles::PROFILE_KEY_PATTERN
+        );
+        assert_eq!(
+            schema["maxLength"],
+            crate::network_profiles::PROFILE_KEY_MAX_LEN
+        );
     }
 
     #[test]

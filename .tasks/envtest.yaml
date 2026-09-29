@@ -27,9 +27,20 @@ tasks:
     cmds:
       - echo "Fetching envtest binaries for Kubernetes {{ .ENVTEST_K8S_VERSION }}"
       - mkdir -p "{{ .ENVTEST_DIR }}"
+      # Checksum-verified before extraction. For the default version the SHA-512 is pinned here
+      # (the same value .github/workflows/envtest.yaml pins); for any other ENVTEST_K8S_VERSION it
+      # falls back to the `.sha512` file controller-tools publishes next to each tarball — which
+      # catches a truncated or swapped download, though not a compromised release.
       - |
-        curl -sSL -o /tmp/envtest.tar.gz \
-          "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{{ .ENVTEST_K8S_VERSION }}/envtest-v{{ .ENVTEST_K8S_VERSION }}-linux-amd64.tar.gz"
+        set -eu
+        url="https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{{ .ENVTEST_K8S_VERSION }}/envtest-v{{ .ENVTEST_K8S_VERSION }}-linux-amd64.tar.gz"
+        curl -fsSL -o /tmp/envtest.tar.gz "$url"
+        if [ "{{ .ENVTEST_K8S_VERSION }}" = "1.32.0" ]; then
+          want="3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+        else
+          want="$(curl -fsSL "$url.sha512" | cut -d' ' -f1)"
+        fi
+        echo "$want  /tmp/envtest.tar.gz" | sha512sum -c -
       - tar xzf /tmp/envtest.tar.gz -C "{{ .ENVTEST_DIR }}" --strip-components=2
       - rm -f /tmp/envtest.tar.gz
       - echo "envtest binaries installed in {{ .ENVTEST_DIR }}"

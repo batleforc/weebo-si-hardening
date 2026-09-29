@@ -1,0 +1,54 @@
+# The kind cluster the nightly end-to-end suites run against: real Eclipse Che, real DevWorkspace
+# Operator, and this repo's charts on top.
+#
+#   scripts/e2e.sh up     creates the cluster from this file, then installs the rest
+#
+# Same shape as `scripts/kind-che.yaml` (the RFC 0009 spike rig) and for the same three reasons,
+# which that file explains at length: the apiserver is an OIDC relying party because Che on
+# Kubernetes signs people in against the cluster itself; the identity provider's CA has to be on
+# the node before the cluster exists; and nothing binds a host port, because a `hostPort` of 443
+# breaks `kubernetes.default` for every pod under rootless podman.
+#
+# A separate file rather than a flag on that one because two paths differ and kind does not
+# expand variables here: the cluster name, so the spike rig and this one can coexist on a laptop,
+# and the CA path, so `e2e.sh down` never deletes the spike's certificate authority.
+#
+# `username-claim: preferred_username`, not the spike's `email`: the suites pre-provision each
+# user namespace with `che.eclipse.org/username: <preferred_username>`, and the endpoint gateway
+# compares that annotation with the same claim. One claim everywhere is the configuration a
+# reader can check by eye.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: weebo-e2e
+nodes:
+  - role: control-plane
+    # Pinned by digest: kind v0.31.0's default, and the Kubernetes version every row was
+    # established against. Bumped together with the kind binary in .github/workflows/e2e.yaml.
+    image: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            oidc-issuer-url: "https://sso.127.0.0.1.nip.io/realms/che"
+            oidc-client-id: "kubernetes"
+            oidc-username-claim: "preferred_username"
+            oidc-username-prefix: "-"
+            oidc-groups-claim: "groups"
+            oidc-ca-file: "/etc/kubernetes/pki/sso-ca.crt"
+          extraVolumes:
+            - name: sso-ca
+              hostPath: /etc/kubernetes/pki/sso-ca.crt
+              mountPath: /etc/kubernetes/pki/sso-ca.crt
+              readOnly: true
+              pathType: File
+    extraMounts:
+      # Written by scripts/e2e.sh before the cluster is created.
+      - hostPath: /tmp/weebo-si-e2e/ca.crt
+        containerPath: /etc/kubernetes/pki/sso-ca.crt
+        readOnly: true

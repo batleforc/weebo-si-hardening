@@ -10,7 +10,14 @@ post_bump_hooks = []
 post_package_bump_hooks = []
 tag_prefix = "v"
 
-pre_bump_hooks = []
+# `cog bump` (which cuts the `v*` tag release.yaml publishes from) first stamps the new version
+# into every chart's `version` and `appVersion`, so the committed Chart.yaml matches the tag and a
+# chart installed from a git checkout pulls the image tag that release pushed. release.yaml also
+# passes `--version`/`--app-version` from the tag, so a tag made without `cog bump` still ships
+# consistent charts — this hook keeps the repo honest, it is not what the release depends on.
+pre_bump_hooks = [
+  "sed -i -E -e 's/^version: .*/version: {{version}}/' -e 's/^appVersion: .*/appVersion: \"{{version}}\"/' charts/weebo-si-operator/Chart.yaml charts/preauth-proxy/Chart.yaml charts/endpoint-gateway/Chart.yaml",
+]
 
 
 [git_hooks]

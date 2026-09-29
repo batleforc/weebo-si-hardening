@@ -59,7 +59,7 @@ fn dwoc_resource() -> kube::api::ApiResource {
 }
 
 fn devworkspace_resource() -> kube::api::ApiResource {
-    let gvk = GroupVersionKind::gvk("controller.devfile.io", "v1alpha1", "DevWorkspace");
+    let gvk = GroupVersionKind::gvk("workspace.devfile.io", "v1alpha2", "DevWorkspace");
     kube::api::ApiResource::from_gvk_with_plural(&gvk, "devworkspaces")
 }
 

@@ -8,8 +8,13 @@
 # `system-cluster-critical`.
 
 image:
-  repository: ghcr.io/batleforc/weebo-si-hardening/endpoint-gateway
-  tag: ""
+  # What `.github/workflows/release.yaml` pushes: `ghcr.io/<repository owner>/<crate>`, tagged
+  # `<version>` and `<major>.<minor>` from the `v*` git tag, and cosign-signed by digest.
+  repository: ghcr.io/batleforc/endpoint-gateway
+  tag: ""  # defaults to .Chart.AppVersion — the release workflow sets it from the git tag
+  # Optional `sha256:…`. When set it wins over `tag` (`repository@digest`), pinning the exact
+  # signed artifact rather than a tag that could be re-pushed.
+  digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -38,7 +43,54 @@ service:
   # in a latency graph.
   trafficDistribution: PreferClose
 
-# The gateway's own host — the one place a browser is ever sent to sign in.
+# `/metrics` on a port of its own, which no Ingress routes — scrape it in-cluster. Disabled, it
+# is served on the main port instead (still not routed by the chart's Ingress).
+metrics:
+  enabled: true
+  port: 9090
+
+# Probe timings, explicit rather than the kubelet's defaults. The startup probe covers the
+# informer sync that happens before the listener is bound (up to failureThreshold × periodSeconds
+# = 120s by default); liveness and readiness only start once it has passed.
+probes:
+  startup:
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+# SIGTERM → not ready → 5s → stop accepting → at most 20s draining. Keep this above 25.
+terminationGracePeriodSeconds: 30
+
+# An optional NetworkPolicy admitting only the ingress controller (to `http`) and monitoring (to
+# `metrics`). Off by default because the selectors are the cluster's to know; turn it on with
+# them filled in.
+networkPolicy:
+  enabled: false
+  ingressController:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: traefik
+    podSelector: {}
+  monitoring:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    podSelector: {}
+  # Further `ingress` rules, verbatim (e.g. an `ipBlock` for the node CIDR).
+  extraIngress: []
+
+# The gateway's own host — the one place a browser is ever sent to sign in. Only the login paths
+# are routed (`/oidc/start`, `/oidc/callback`, `/oidc/backchannel-logout`, `/host-session`,
+# `/sign_out`, and `/selftest` while the self-origin probe runs); `/auth`, `/healthz`, `/readyz`
+# and `/metrics` are in-cluster only.
 ingress:
   enabled: true
   className: traefik
@@ -109,6 +161,11 @@ config:
     serviceAccountToken: true
     foreign: Reject
   selfOrigin:
+    # `Auto` starts with pod-address identity OFF and turns it on only once the self-origin probe
+    # has conclusively seen the ingress controller strip or overwrite a forged client-address
+    # header; a forgery seen by any replica turns it off on all of them (recorded as an
+    # annotation on the revocation ConfigMap, removed by an admin). `On` trusts it from the start;
+    # `Off` never does. `Auto` with the probe disabled is effectively `Off`.
     podNetwork: Auto
     clientIpHeader: X-Real-Ip
     serviceAccountToken: true
@@ -118,8 +175,9 @@ config:
     # router's CIDRs instead — the gateway refuses to start on the unsafe combination rather
     # than trusting a header anybody can set.
     trustedProxy: any
+    # Real CIDRs (a bare address, or a legacy whole-octet prefix like "10.128.", also work):
     # trustedProxy:
-    #   cidrs: ["10.128."]
+    #   cidrs: ["10.128.0.0/14"]
   # Carry traffic as well as deciding about it. `true` only on OpenShift, whose router has no
   # external-auth hook: it puts this process on the data path of every WebSocket, upload and
   # streamed response, and makes capacity a bandwidth question rather than a decisions-per-second
@@ -155,7 +213,13 @@ config:
   # browser would become a cluster-wide sign-in cap. `0` turns it off.
   rateLimit:
     loginPerAddressPerMinute: 300
+    # `/oidc/backchannel-logout` on a bucket of its own: every call comes from the identity
+    # provider's one egress address, a realm-wide logout is a burst from it, and the provider does
+    # not retry. Over the limit is answered 503. `0` turns it off.
+    backchannelLogoutPerMinute: 6000
   backchannelLogout:
+    # Off: the endpoint answers 404 and is not routed on the public Ingress. The revocation
+    # ConfigMap is still watched either way.
     enabled: true
     configmap: endpoint-auth-revocations
 
@@ -173,6 +237,16 @@ secrets:
   clientSecret:
     existingSecret: endpoint-gateway-oidc
     key: client-secret
+
+# Extra root certificates for an identity provider behind a private CA. They are trusted **in
+# addition to** the built-in public roots, for every outbound HTTPS call the gateway makes
+# (discovery, JWKS, token, introspection, the self-origin probe). Name one existing ConfigMap
+# *or* Secret holding a PEM bundle under `key`; leave both empty to trust the public roots only.
+# A CA certificate is not a secret, so a ConfigMap is the usual home for it.
+extraCa:
+  configMap: ""
+  secret: ""
+  key: ca.crt
 
 rbac:
   create: true

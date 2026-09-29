@@ -4,12 +4,15 @@
 # The result is a `scratch` image carrying one static binary and nothing else. It is not meant to
 # be run — it is meant to be copied from:
 #
-#   COPY --from=passwd-append / /usr/local/bin/passwd-append
+#   COPY --from=passwd-append /passwd-append /usr/local/bin/passwd-append
 #
 # See docs/bricks/passwd-append.md for the adopting image's side of the recipe.
 
 # --- build ------------------------------------------------------------------------------------
-FROM docker.io/library/rust:1-alpine AS build
+# Pinned by digest (the multi-arch index of rust:1.98.1-alpine3.24, resolved 2026-09-29), so a
+# rebuild of the same commit compiles with the same toolchain on the same base. The tag is kept
+# for readability only; the digest is what is pulled. Bump both together.
+FROM docker.io/library/rust:1.98.1-alpine3.24@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f AS build
 
 # musl-dev for the C runtime the musl target links against; the alpine image is already musl.
 RUN apk add --no-cache musl-dev

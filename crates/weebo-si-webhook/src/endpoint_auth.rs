@@ -35,7 +35,7 @@ use weebo_si_chassis::{
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AttachmentMode,
     DEVELOPER_ANNOTATIONS, DEVWORKSPACE_ID_LABEL, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_MANAGED,
-    EndpointAuthConfig, NamespaceName, RULES_ANNOTATION, RoutingKind,
+    NamespaceName, RULES_ANNOTATION, ResolvedEndpointAuthConfig, RoutingKind,
 };
 use weebo_si_policy_guard::{
     EndpointRoutingGuard, EndpointRoutingWrite, ManagedField, Provenance, WriteOperation,
@@ -61,7 +61,7 @@ pub struct EndpointAuthState {
     /// `spec.features.endpointAuth`, hot-reloaded: the dialect, the gateway and the host
     /// patterns are read fresh per request, so changing any of them takes effect without a
     /// restart.
-    pub config: Arc<RwLock<Option<EndpointAuthConfig>>>,
+    pub config: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace — and the owner annotation.
@@ -114,12 +114,12 @@ impl Subject for RoutingObjectWrite {
 
 /// The mutation: attach the gate, and normalise what the developer wrote.
 pub struct GateMutation {
-    config: EndpointAuthConfig,
+    config: ResolvedEndpointAuthConfig,
 }
 
 impl GateMutation {
     /// Build it around the configuration read for this request.
-    pub fn new(config: EndpointAuthConfig) -> Self {
+    pub fn new(config: ResolvedEndpointAuthConfig) -> Self {
         Self { config }
     }
 }
@@ -359,7 +359,7 @@ async fn mutate(
     Json(response.into_review())
 }
 
-fn read_config(state: &EndpointAuthState) -> Option<EndpointAuthConfig> {
+fn read_config(state: &EndpointAuthState) -> Option<ResolvedEndpointAuthConfig> {
     state
         .config
         .read()
@@ -370,7 +370,7 @@ fn read_config(state: &EndpointAuthState) -> Option<EndpointAuthConfig> {
 fn guard_subject(
     request: &AdmissionRequest<DynamicObject>,
     kind: RoutingKind,
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
     namespace_owner: Option<String>,
 ) -> EndpointRoutingWrite {
     let namespace = NamespaceName::new(request.namespace.clone().unwrap_or_default());
@@ -510,7 +510,7 @@ fn guard_subject(
 /// of that check in the webhook would be a second answer to the same question, which is the
 /// class of bug where admission accepts what the gate then refuses.
 fn compile_error(
-    config: &EndpointAuthConfig,
+    config: &ResolvedEndpointAuthConfig,
     annotations: &BTreeMap<String, String>,
     namespace: &NamespaceName,
     owner: Option<&str>,
@@ -700,14 +700,14 @@ mod tests {
     use serde_json::json;
     use weebo_si_crd::{
         AccessEntry, AccessKey, DelegationKind, Dialect, ENDPOINT_AUTH_ANNOTATION,
-        EndpointSelection, FeatureMode, GateEnforcement, GatewayRef, HostOwnership, HostsConfig,
-        OwnerConfig, SelfOriginConfig, ServiceRef,
+        EndpointAuthConfig, EndpointSelection, FeatureMode, GateEnforcement, GatewayRef,
+        HostOwnership, HostsConfig, OwnerConfig, Resolved, SelfOriginConfig, ServiceRef,
     };
 
     use super::*;
 
-    fn config(dialect: Dialect) -> EndpointAuthConfig {
-        EndpointAuthConfig {
+    fn config(dialect: Dialect) -> ResolvedEndpointAuthConfig {
+        Resolved::without_teams(EndpointAuthConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
             gateway: GatewayRef {
@@ -752,8 +752,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
-            grants: BTreeMap::new(),
-        }
+        })
     }
 
     fn ingress(annotations: serde_json::Value, host: &str) -> DynamicObject {
@@ -766,13 +765,13 @@ mod tests {
         .unwrap()
     }
 
-    fn mutations_for(object: &DynamicObject, config: &EndpointAuthConfig) -> Vec<Mutation> {
+    fn mutations_for(object: &DynamicObject, config: &ResolvedEndpointAuthConfig) -> Vec<Mutation> {
         mutations_on(object, config, WriteOperation::Create)
     }
 
     fn mutations_on(
         object: &DynamicObject,
-        config: &EndpointAuthConfig,
+        config: &ResolvedEndpointAuthConfig,
         operation: WriteOperation,
     ) -> Vec<Mutation> {
         let subject = RoutingObjectWrite {

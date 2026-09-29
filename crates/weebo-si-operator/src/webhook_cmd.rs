@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use weebo_si_chassis::Registry;
 use weebo_si_crd::NamespaceName;
@@ -49,6 +50,16 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         })?
         .to_string();
 
+    // Health first, readiness last — see the controller role for why. Readiness here also waits
+    // for the serving certificate, since a pod that cannot terminate TLS is not one to route to.
+    let prometheus_registry = prometheus::Registry::new();
+    let ready = Ready::default();
+    tokio::spawn(observability::serve(
+        health_addr,
+        ready.clone(),
+        prometheus_registry.clone(),
+    ));
+
     let client = kube::Client::try_default()
         .await
         .map_err(|err| format!("could not build a Kubernetes client: {err}"))?;
@@ -90,8 +101,6 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     // baseline, or it would refuse every workspace in them forever.
     let operator_namespace =
         std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "weebo-si-hardening".to_string());
-
-    let prometheus_registry = prometheus::Registry::new();
 
     let config_store = Arc::new(
         KubeConfigStore::spawn(
@@ -216,34 +225,104 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         metrics,
     });
 
-    let ready = Ready::default();
-    ready.mark_ready();
-    tokio::spawn(observability::serve(
-        health_addr,
-        ready,
-        prometheus_registry,
-    ));
-
     let app = weebo_si_webhook::router(dwoc_pin_state)
         .merge(weebo_si_webhook::policy_guard_router(policy_guard_state))
         .merge(weebo_si_webhook::registry_guard_router(
             registry_guard_state,
         ))
         .merge(weebo_si_webhook::image_policy_router(image_policy_state))
-        .merge(weebo_si_webhook::endpoint_auth_router(endpoint_auth_state));
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        format!("{cert_dir}/tls.crt"),
-        format!("{cert_dir}/tls.key"),
-    )
-    .await
-    .map_err(|err| format!("could not load the serving certificate from {cert_dir}: {err}"))?;
+        .merge(weebo_si_webhook::endpoint_auth_router(endpoint_auth_state))
+        // An UPDATE review carries the object twice (`object` and `oldObject`), and the
+        // apiserver accepts objects up to ~1.5 MiB — axum's 2 MiB default would answer a large
+        // DevWorkspace update with a 413, which a `Fail` webhook turns into a refused write.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REVIEW_BYTES));
+    let cert_path = format!("{cert_dir}/tls.crt");
+    let key_path = format!("{cert_dir}/tls.key");
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+        .await
+        .map_err(|err| format!("could not load the serving certificate from {cert_dir}: {err}"))?;
+    tokio::spawn(reload_certificate(tls_config.clone(), cert_path, key_path));
+
+    let handle = axum_server::Handle::new();
+    tokio::spawn(drain_on_signal(handle.clone(), ready.clone()));
+    ready.mark_ready();
 
     println!(
         "weebo-si-operator webhook listening on {addr}, metrics/health on {metrics_addr}/{health_addr}"
     );
     let _ = metrics_addr; // metrics and health are combined on health_addr; see observability::serve
     axum_server::bind_rustls(addr, tls_config)
+        .handle(handle)
         .serve(app.into_make_service())
         .await
         .map_err(|err| format!("webhook server error: {err}"))
+}
+
+/// The largest AdmissionReview body accepted: two copies of an object at the apiserver's own
+/// ~1.5 MiB limit, plus the review's envelope.
+const MAX_REVIEW_BYTES: usize = 4 * 1024 * 1024;
+
+/// How often the serving certificate is re-read from disk.
+const CERT_RELOAD_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long to keep answering after SIGTERM with `/readyz` already failing, so the endpoint is
+/// removed from the Service before the listener closes.
+const DRAIN_DELAY: Duration = Duration::from_secs(5);
+
+/// How long in-flight reviews get to finish once the listener closes.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Re-read the serving certificate whenever its files change.
+///
+/// cert-manager (and OpenShift's service-ca) rotate the Secret in place, and the kubelet updates
+/// the mounted files — but a TLS config loaded once at boot keeps serving the old certificate
+/// until it expires, at which point every `failurePolicy: Fail` webhook starts refusing writes.
+/// A failed reload keeps the previous certificate and is retried on the next tick.
+async fn reload_certificate(
+    tls_config: axum_server::tls_rustls::RustlsConfig,
+    cert_path: String,
+    key_path: String,
+) {
+    let mut last = fingerprint(&cert_path, &key_path).await;
+    let mut interval = tokio::time::interval(CERT_RELOAD_INTERVAL);
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        let current = fingerprint(&cert_path, &key_path).await;
+        if current.is_none() || current == last {
+            continue;
+        }
+        match tls_config.reload_from_pem_file(&cert_path, &key_path).await {
+            Ok(()) => {
+                println!("weebo-si-operator webhook: serving certificate reloaded");
+                last = current;
+            }
+            Err(err) => {
+                eprintln!(
+                    "ERROR weebo-si-operator webhook: could not reload the serving certificate, \
+                     keeping the previous one: {err}"
+                );
+            }
+        }
+    }
+}
+
+/// The certificate and key contents, compared rather than mtimes: a projected Secret volume
+/// swaps a symlink, and content is what actually matters.
+async fn fingerprint(cert_path: &str, key_path: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    let cert = tokio::fs::read(cert_path).await.ok()?;
+    let key = tokio::fs::read(key_path).await.ok()?;
+    Some((cert, key))
+}
+
+/// On SIGTERM or SIGINT: fail readiness, give the Service time to notice, then stop accepting and
+/// let in-flight reviews finish. The binary is PID 1 in a `scratch` image, where the kernel
+/// ignores a signal with no handler — without this, every rollout waited out the grace period
+/// and was SIGKILLed mid-review.
+async fn drain_on_signal(handle: axum_server::Handle<SocketAddr>, ready: Ready) {
+    crate::observability::shutdown_signal().await;
+    println!("weebo-si-operator webhook: shutting down, draining in-flight reviews");
+    ready.mark_not_ready();
+    tokio::time::sleep(DRAIN_DELAY).await;
+    handle.graceful_shutdown(Some(DRAIN_TIMEOUT));
 }

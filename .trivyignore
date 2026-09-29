@@ -1,6 +1,19 @@
-instant. Plain rule-ID form, not path-scoped: this
+# KSV-0109 ("ConfigMap with secrets") fires on charts/preauth-proxy/values.yaml's default `config`,
+# whose credential body carries the literal `password=${CRED_SECRET}`. That is an unresolved
+# `${ENV}` reference, substituted by the binary from its environment at request time, never a
+# value stored in the ConfigMap (see the inline note on that line and docs/bricks/preauth-proxy.md's
+# *Secrets*) — so the finding is a false positive, and without this entry `task audit` and
+# `trivy fs` fail on it. Plain rule-ID form, not path-scoped: this
 # trivy version's structured `misconfigurations: [{id, paths}]` ignore format did not suppress
 # the finding even when the path matched exactly (tested against the same target `trivy fs`
 # actually scans), so this is repo-wide for this one rule. Revisit if a second ConfigMap or
 # Secret ever legitimately needs KSV-0109 to fire — there is only the one false positive today.
 KSV-0109
+
+# KSV-0056 ("manage networking resources") fires on charts/weebo-si-operator/templates/rbac.yaml's
+# controller ClusterRole, which writes `networkpolicies` (and, behind their own values,
+# `ingresses` patch, `services`/`endpointslices` for the OpenShift dialect). That write is the
+# brick's whole job — RFC 0004's *Security considerations* argues the grant and how it is bounded
+# (ownership label, namespace exclusions, the diff), and the chart comments repeat it inline. Same
+# repo-wide caveat as KSV-0109 above: revisit if any other chart ever grants networking writes.
+KSV-0056

@@ -1,0 +1,8 @@
+# The one Rust toolchain this repo is built and tested with — CI (`toolchain:` in every workflow),
+# the Containerfiles' `rust:1.98.1-alpine` base image and local rustup/mise all resolve to it, so
+# the binary that passed `clippy -D warnings` is the binary that ships, and a new stable lint
+# cannot turn a release gate red on a tag with no code change. Bump all three together.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-unknown-linux-musl"]

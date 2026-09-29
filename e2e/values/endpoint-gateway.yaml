@@ -1,0 +1,35 @@
+# endpoint-gateway on the e2e kind cluster (scripts/e2e.sh deploy endpoint-auth), in front of the
+# rig's Keycloak — which is served under the rig's own CA, so `extraCa` is what makes discovery
+# succeed at all. The image is set on the command line by the script.
+replicaCount: 2
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+priorityClassName: ""
+ingress:
+  className: nginx
+  host: auth.127.0.0.1.nip.io
+  annotations:
+    cert-manager.io/cluster-issuer: e2e-ca
+  tls:
+    enabled: true
+    secretName: endpoint-gateway-tls
+extraCa:
+  configMap: e2e-ca
+  key: ca.crt
+errorPage:
+  # A Traefik middleware; this rig runs ingress-nginx.
+  enabled: false
+config:
+  issuer: https://sso.127.0.0.1.nip.io/realms/che
+  clientId: endpoint-gateway
+  redirectUrl: https://auth.127.0.0.1.nip.io/oidc/callback
+  claims:
+    username: preferred_username
+    groups: groups
+  hosts:
+    suffix: .127.0.0.1.nip.io
+    exclude:
+      - eclipse-che.127.0.0.1.nip.io
+      - auth.127.0.0.1.nip.io
+      - sso.127.0.0.1.nip.io

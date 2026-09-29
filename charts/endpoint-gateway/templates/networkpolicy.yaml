@@ -1,0 +1,51 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+  Who may open a connection to the gateway. Off by default, because the right selectors are the
+  cluster's and not the chart's: the ingress controller's namespace (it calls `/auth` and carries
+  the public login paths), and the monitoring namespace (it scrapes `metrics`). Everything else —
+  in particular every workspace pod — is refused, which is what keeps a pod from calling `/auth`
+  directly with a client-address header of its choosing.
+
+  The kubelet's probes are not affected on the CNIs this project targets (host-originated traffic
+  is allowed); if yours differs, add the node CIDR to `extraIngress`.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "endpoint-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "endpoint-gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "endpoint-gateway.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressController.namespaceSelector | nindent 12 }}
+          {{- with .Values.networkPolicy.ingressController.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.monitoring.namespaceSelector | nindent 12 }}
+          {{- with .Values.networkPolicy.monitoring.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: metrics
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

@@ -39,7 +39,8 @@ use weebo_si_chassis::{Context, Decision, Feature, Registry};
 use weebo_si_crd::{
     Ecosystem, FeatureMode, MANAGED_BY_LABEL, MANAGED_BY_VALUE, NamespaceName, OnNotGranted,
     RegistryCatalog, RegistryConfig, RegistryEntry, RegistryGrant, RegistryKey,
-    RegistryNamespaceSelection, RegistrySource, Selector, SourceKind, Team, TeamName, TemplateRef,
+    RegistryNamespaceSelection, RegistrySource, Resolved, ResolvedRegistryConfig, Selector,
+    SourceKind, Team, TeamName, TemplateRef,
 };
 use weebo_si_envtest_support::EnvTest;
 use weebo_si_registry_config::{
@@ -136,7 +137,7 @@ fn entry(key: &str, ecosystem: Ecosystem, sources: Vec<(SourceKind, &str)>) -> R
     }
 }
 
-fn config(catalog: RegistryCatalog, allowed: Vec<&str>) -> RegistryConfig {
+fn config(catalog: RegistryCatalog, allowed: Vec<&str>) -> ResolvedRegistryConfig {
     let mut grants = BTreeMap::new();
     grants.insert(
         "team-1".to_string(),
@@ -145,14 +146,14 @@ fn config(catalog: RegistryCatalog, allowed: Vec<&str>) -> RegistryConfig {
             default: allowed.iter().map(|key| RegistryKey::new(*key)).collect(),
         },
     );
-    RegistryConfig {
+    Resolved::without_teams(RegistryConfig {
         mode: FeatureMode::DryRun,
         namespace_selector: None,
         catalog,
-        grants,
         namespace_selection: RegistryNamespaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
-    }
+    })
+    .with_grants(grants)
 }
 
 fn teams() -> Vec<Team> {
@@ -181,7 +182,7 @@ fn subject() -> NamespaceSubject {
 
 /// A cluster with both namespaces, both templates, and the two adapters started.
 async fn fixture(
-    config: RegistryConfig,
+    config: ResolvedRegistryConfig,
 ) -> Option<(
     EnvTest,
     kube::Client,

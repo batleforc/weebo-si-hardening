@@ -7,7 +7,7 @@
 //! identically at both layers" is a consequence of there being one implementation rather than a
 //! promise about two.
 
-use weebo_si_crd::{ImagePolicyConfig, NamespaceName, TeamName};
+use weebo_si_crd::{NamespaceName, ResolvedImagePolicyConfig, TeamName};
 
 use crate::port::{ImagePolicyObserver, Resource};
 use crate::resolve::{Provenance, effective_patterns, judge};
@@ -38,7 +38,7 @@ pub fn bind_builtins(
     declared: &VariableValues,
     namespace: &NamespaceName,
     team: Option<&TeamName>,
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     observer: &dyn ImagePolicyObserver,
 ) -> VariableValues {
     let mut values = declared.clone();
@@ -71,7 +71,7 @@ pub fn bind_builtins(
 /// worth more complete, and `DryRun`'s whole job is telling an admin the full list of what would
 /// break rather than the first thing that would.
 pub fn judge_images(
-    config: &ImagePolicyConfig,
+    config: &ResolvedImagePolicyConfig,
     provenance: &Provenance,
     images: &[ContainerImage],
     variables: &VariableValues,
@@ -195,8 +195,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use weebo_si_crd::{
-        Entry, EntryKey, FeatureMode, ImageCatalog, ImageNamespaceSelection,
-        ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, VariableBinding,
+        Entry, EntryKey, FeatureMode, ImageCatalog, ImageNamespaceSelection, ImagePolicyConfig,
+        ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, Resolved, VariableBinding,
     };
 
     use super::*;
@@ -204,8 +204,8 @@ mod tests {
     use crate::resolve::ResolutionStep;
     use crate::variable::{NAMESPACE, PathComponent, TEAM_NAME, VariableResult};
 
-    fn config() -> ImagePolicyConfig {
-        ImagePolicyConfig {
+    fn config() -> ResolvedImagePolicyConfig {
+        Resolved::without_teams(ImagePolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: ImageCatalog::new(vec![Entry {
@@ -214,12 +214,11 @@ mod tests {
             }]),
             variables: BTreeMap::new(),
             default: vec![EntryKey::new("internal")],
-            grants: BTreeMap::new(),
             namespace_selection: ImageNamespaceSelection::default(),
             workspace_selection: ImageWorkspaceSelection::default(),
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
-        }
+        })
     }
 
     fn provenance(resolved: &[&str], dropped: &[&str]) -> Provenance {

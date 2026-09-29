@@ -29,6 +29,8 @@ on:
       - ".tasks/envtest.yaml"
       - ".github/workflows/envtest.yaml"
   workflow_dispatch:
+  # release.yaml runs this whole workflow as a gate before anything is published.
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -44,33 +46,45 @@ jobs:
       # mise.toml, which is the usual trade: CI wants a reproducible run, a developer wants
       # whatever `mise` last installed, and the suite asserts behaviour stable across both.
       TRAEFIK_VERSION: "3.7.13"
+      # Pinned checksums of the two tarballs below — see the "Fetch" steps.
+      ENVTEST_SHA512: "3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+      TRAEFIK_SHA256: "52cd039a34258dd61c617a95d69252bc6bcae27c520f338186c31c7fef8f6394"
       KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
       REQUIRE_ENVTEST: "1"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: stable
+          toolchain: "1.98.1" # = rust-toolchain.toml and the Containerfiles' base image
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # Same action + pin as helm.yaml — the namespaceSelector and RBAC envtest suites `helm
       # template` charts/weebo-si-operator for real, so this job needs `helm` on PATH too.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: latest
+          version: v4.3.0 # same as helm.yaml
       # Downloading the ~50 MB envtest binaries every run is a few seconds and keeps this
       # workflow free of an actions/cache entry to invalidate when ENVTEST_K8S_VERSION changes.
+      #
+      # Checksums are pinned here rather than fetched: a `.sha512` downloaded from the same release
+      # only proves the download is intact, not that the release is the one this repo audited.
+      # Both values were computed on 2026-09-29 and matched upstream's published checksum files
+      # (`envtest-v1.32.0-linux-amd64.tar.gz.sha512`, `traefik_v3.7.13_checksums.txt`). Bumping
+      # ENVTEST_K8S_VERSION or TRAEFIK_VERSION means bumping the matching *_SHA* too — the step
+      # fails closed until you do.
       - name: Fetch the envtest binaries
         run: |
           mkdir -p "$KUBEBUILDER_ASSETS"
-          curl -sSL -o /tmp/envtest.tar.gz \
+          curl -fsSL -o /tmp/envtest.tar.gz \
             "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
+          echo "${ENVTEST_SHA512}  /tmp/envtest.tar.gz" | sha512sum -c -
           tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
       # RFC 0009's dialect conformance suite needs a router, and the point of that suite is that
       # it is the real one. ~30 MB, one curl, same shape as the envtest binaries above.
       - name: Fetch Traefik
         run: |
-          curl -sSL -o /tmp/traefik.tar.gz \
+          curl -fsSL -o /tmp/traefik.tar.gz \
             "https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_amd64.tar.gz"
+          echo "${TRAEFIK_SHA256}  /tmp/traefik.tar.gz" | sha256sum -c -
           tar xzf /tmp/traefik.tar.gz -C /usr/local/bin traefik
           traefik version
       # **Every suite, not just `envtest`.** This step listed one target while

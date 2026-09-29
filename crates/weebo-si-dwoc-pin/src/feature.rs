@@ -5,7 +5,7 @@
 use std::sync::{Arc, RwLock};
 
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Mutation};
-use weebo_si_crd::{CatalogKey, DwocPinConfig, DwocRef, OnMissingTarget, TeamName};
+use weebo_si_crd::{CatalogKey, DwocRef, OnMissingTarget, ResolvedDwocPinConfig, TeamName};
 
 use crate::resolve::{self, ResolutionStep};
 use crate::workspace::Workspace;
@@ -28,13 +28,13 @@ const AUDIT_ANNOTATION: &str = "hardening.weebo.io/dwoc-pin";
 /// which (per `weebo-si-runtime`'s `FeatureGate` impl) cannot happen while this is `None` — the
 /// `InvalidConfiguration` branch below is defensive, not a path production traffic can reach.
 pub struct DwocPin {
-    config: Arc<RwLock<Option<DwocPinConfig>>>,
+    config: Arc<RwLock<Option<ResolvedDwocPinConfig>>>,
 }
 
 impl DwocPin {
     /// Build a feature reading from `config`. The caller (the composition root) keeps the other
     /// half of the `Arc` and hands it to the outbound adapter that keeps `config` current.
-    pub fn new(config: Arc<RwLock<Option<DwocPinConfig>>>) -> Self {
+    pub fn new(config: Arc<RwLock<Option<ResolvedDwocPinConfig>>>) -> Self {
         Self { config }
     }
 }
@@ -140,7 +140,7 @@ fn decide(
     target: &DwocRef,
     step: ResolutionStep,
     team: Option<&TeamName>,
-    config: &DwocPinConfig,
+    config: &ResolvedDwocPinConfig,
 ) -> (&'static str, Vec<Mutation>) {
     let Some(current_ref) = current else {
         return (
@@ -199,8 +199,8 @@ mod tests {
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
-        Catalog, CatalogEntry, FeatureMode, Grant, NamespaceName, NamespaceSelection, OnUnknownKey,
-        Selector, Team,
+        Catalog, CatalogEntry, DwocPinConfig, FeatureMode, Grant, NamespaceName,
+        NamespaceSelection, OnUnknownKey, Resolved, Selector, Team,
     };
 
     use super::*;
@@ -229,22 +229,22 @@ mod tests {
         ])
     }
 
-    fn base_config(grants: BTreeMap<String, Grant>) -> DwocPinConfig {
-        DwocPinConfig {
+    fn base_config(grants: BTreeMap<String, Grant>) -> ResolvedDwocPinConfig {
+        Resolved::without_teams(DwocPinConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: catalog(),
             default: CatalogKey::new("baseline"),
-            grants,
             namespace_selection: NamespaceSelection {
                 annotation: "hardening.weebo.io/dwoc".to_string(),
                 on_unknown_key: OnUnknownKey::Default,
             },
             on_missing_target: OnMissingTarget::Skip,
-        }
+        })
+        .with_grants(grants)
     }
 
-    fn feature(config: DwocPinConfig) -> DwocPin {
+    fn feature(config: ResolvedDwocPinConfig) -> DwocPin {
         DwocPin::new(Arc::new(RwLock::new(Some(config))))
     }
 

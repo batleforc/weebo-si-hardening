@@ -14,7 +14,9 @@
 
 use std::collections::BTreeMap;
 
-use weebo_si_crd::{NetworkProfilesConfig, OnNotGranted, ProfileGrant, ProfileKey, Team, TeamName};
+use weebo_si_crd::{
+    OnNotGranted, ProfileGrant, ProfileKey, ResolvedNetworkProfilesConfig, Team, TeamName,
+};
 
 /// Which step of the resolution chain produced the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +88,7 @@ fn parse_keys(raw: &str) -> Vec<ProfileKey> {
 /// naming them.
 pub fn resolve(
     teams: &[Team],
-    config: &NetworkProfilesConfig,
+    config: &ResolvedNetworkProfilesConfig,
     namespace_labels: &BTreeMap<String, String>,
     namespace_annotation: Option<&str>,
     workspace_attribute: Option<&str>,
@@ -155,8 +157,8 @@ pub fn resolve(
 )]
 mod tests {
     use weebo_si_crd::{
-        Enforcement, FeatureMode, Profile, ProfileCatalog, ProfileNamespaceSelection, Selector,
-        Variant, WorkspaceSelection,
+        Enforcement, FeatureMode, NetworkProfilesConfig, Profile, ProfileCatalog,
+        ProfileNamespaceSelection, Resolved, Selector, Variant, WorkspaceSelection,
     };
 
     use super::*;
@@ -178,18 +180,21 @@ mod tests {
         ProfileCatalog::new(vec![profile("base"), profile("git"), profile("vault")])
     }
 
-    fn config(baseline: &str, grants: BTreeMap<String, ProfileGrant>) -> NetworkProfilesConfig {
-        NetworkProfilesConfig {
+    fn config(
+        baseline: &str,
+        grants: BTreeMap<String, ProfileGrant>,
+    ) -> ResolvedNetworkProfilesConfig {
+        Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: catalog(),
             baseline: ProfileKey::new(baseline),
-            grants,
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str, label_value: &str) -> Team {

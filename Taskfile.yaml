@@ -10,6 +10,7 @@ includes:
   crd: ./.tasks/crd.yaml
   helm: ./.tasks/helm.yaml
   spike: ./.tasks/spike.yaml
+  e2e: ./.tasks/e2e.yaml
 
 tasks:
   init:

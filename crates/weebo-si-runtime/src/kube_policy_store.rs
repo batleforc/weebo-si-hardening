@@ -21,6 +21,8 @@ use weebo_si_network_profiles::{
 };
 
 use crate::kube_template_store::{cilium_network_policy_resource, selector_field};
+use crate::ns_index::NsIndex;
+use crate::owner_reference::{owner_from_references, owner_references_json};
 
 /// Every write from this adapter goes through server-side apply under this one manager, per the
 /// RFC's *Operational considerations*: "a rolling update never produces two managers fighting."
@@ -64,12 +66,34 @@ fn labels_json(profile: &ProfileKey, backend: Backend) -> Value {
     })
 }
 
+/// `metadata` for an apply of `obj`: identity, the managed labels, and — for a profile object
+/// only — the `ownerReferences` entry that lets the apiserver garbage-collect it with its
+/// DevWorkspace (see [`crate::owner_reference`]).
+fn metadata_json(obj: &ManagedObject) -> Value {
+    let mut metadata = json!({
+        "name": obj.key.name,
+        "namespace": obj.key.namespace.as_str(),
+        "labels": labels_json(&obj.profile, obj.backend),
+    });
+    if let (Value::Object(map), Some(references)) =
+        (&mut metadata, owner_references_json(obj.owner.as_ref()))
+    {
+        map.insert("ownerReferences".to_string(), references);
+    }
+    metadata
+}
+
 /// Watch-backed `PolicyStore`: both backends, cluster-wide, filtered server-side to this
 /// operator's own managed objects.
+///
+/// Each store is paired with a [`NsIndex`] fed from the same watch, so the per-namespace reads
+/// (`managed_in`, and `has_baseline` on every DevWorkspace admission) touch only that namespace's
+/// objects instead of scanning the whole cluster-wide cache.
 pub struct KubePolicyStore {
     client: Client,
     network_policy: Store<NetworkPolicy>,
-    cilium: Option<Store<DynamicObject>>,
+    network_policy_index: NsIndex<NetworkPolicy>,
+    cilium: Option<(Store<DynamicObject>, NsIndex<DynamicObject>)>,
 }
 
 impl KubePolicyStore {
@@ -81,8 +105,17 @@ impl KubePolicyStore {
 
         let api: Api<NetworkPolicy> = Api::all(client.clone());
         let (reader, writer) = reflector::store();
+        let network_policy_index = NsIndex::<NetworkPolicy>::new(());
         let watcher_config = watcher::Config::default().labels(&label_selector);
-        let stream = reflector::reflector(writer, watcher(api, watcher_config)).default_backoff();
+        let indexed = {
+            use futures_util::TryStreamExt;
+            let index = network_policy_index.clone();
+            watcher(api, watcher_config).map_ok(move |event| {
+                index.observe(&event);
+                event
+            })
+        };
+        let stream = reflector::reflector(writer, indexed).default_backoff();
         tokio::spawn(async move {
             use futures_util::StreamExt;
             let mut stream = std::pin::pin!(stream);
@@ -99,9 +132,17 @@ impl KubePolicyStore {
             let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
             let writer = reflector::store::Writer::<DynamicObject>::new(resource.clone());
             let cilium_reader = writer.as_reader();
+            let cilium_index = NsIndex::<DynamicObject>::new(resource.clone());
             let watcher_config = watcher::Config::default().labels(&label_selector);
-            let stream =
-                reflector::reflector(writer, watcher(api, watcher_config)).default_backoff();
+            let indexed = {
+                use futures_util::TryStreamExt;
+                let index = cilium_index.clone();
+                watcher(api, watcher_config).map_ok(move |event| {
+                    index.observe(&event);
+                    event
+                })
+            };
+            let stream = reflector::reflector(writer, indexed).default_backoff();
             tokio::spawn(async move {
                 use futures_util::StreamExt;
                 let mut stream = std::pin::pin!(stream);
@@ -112,7 +153,7 @@ impl KubePolicyStore {
                     err.to_string(),
                 ))
             })?;
-            Some(cilium_reader)
+            Some((cilium_reader, cilium_index))
         } else {
             None
         };
@@ -120,6 +161,7 @@ impl KubePolicyStore {
         Ok(Self {
             client,
             network_policy: reader,
+            network_policy_index,
             cilium,
         })
     }
@@ -141,6 +183,7 @@ impl KubePolicyStore {
             profile,
             pod_selector,
             body: PolicyBody::opaque(serde_json::to_vec(&spec).ok()?),
+            owner: owner_from_references(obj.metadata.owner_references.as_deref()),
         })
     }
 
@@ -161,6 +204,7 @@ impl KubePolicyStore {
             profile,
             pod_selector,
             body: PolicyBody::opaque(serde_json::to_vec(&spec).ok()?),
+            owner: owner_from_references(obj.metadata.owner_references.as_deref()),
         })
     }
 
@@ -176,11 +220,7 @@ impl KubePolicyStore {
         let apply = json!({
             "apiVersion": "networking.k8s.io/v1",
             "kind": "NetworkPolicy",
-            "metadata": {
-                "name": obj.key.name,
-                "namespace": obj.key.namespace.as_str(),
-                "labels": labels_json(&obj.profile, obj.backend),
-            },
+            "metadata": metadata_json(obj),
             "spec": spec,
         });
         let api: Api<NetworkPolicy> =
@@ -207,11 +247,7 @@ impl KubePolicyStore {
         let apply = json!({
             "apiVersion": "cilium.io/v2",
             "kind": "CiliumNetworkPolicy",
-            "metadata": {
-                "name": obj.key.name,
-                "namespace": obj.key.namespace.as_str(),
-                "labels": labels_json(&obj.profile, obj.backend),
-            },
+            "metadata": metadata_json(obj),
             "spec": spec,
         });
         let resource = cilium_network_policy_resource();
@@ -269,19 +305,17 @@ impl BaselineView for KubePolicyStore {
 impl PolicyStore for KubePolicyStore {
     fn managed_in(&self, ns: &NamespaceName) -> Vec<ManagedObject> {
         let mut objects: Vec<ManagedObject> = self
-            .network_policy
-            .state()
+            .network_policy_index
+            .objects_in(&self.network_policy, ns.as_str())
             .iter()
-            .filter(|np| np.metadata.namespace.as_deref() == Some(ns.as_str()))
             .filter_map(|np| Self::from_network_policy(np))
             .collect();
 
-        if let Some(store) = &self.cilium {
+        if let Some((store, index)) = &self.cilium {
             objects.extend(
-                store
-                    .state()
+                index
+                    .objects_in(store, ns.as_str())
                     .iter()
-                    .filter(|obj| obj.metadata.namespace.as_deref() == Some(ns.as_str()))
                     .filter_map(|obj| Self::from_cilium(obj)),
             );
         }
@@ -299,7 +333,7 @@ impl PolicyStore for KubePolicyStore {
             .iter()
             .filter_map(|np| Self::from_network_policy(np))
             .collect();
-        if let Some(store) = &self.cilium {
+        if let Some((store, _)) = &self.cilium {
             objects.extend(
                 store
                     .state()
@@ -327,5 +361,71 @@ impl PolicyStore for KubePolicyStore {
             }
             Ok(weebo_si_network_profiles::tally(diffs))
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use weebo_si_network_profiles::Owner;
+
+    use super::*;
+
+    fn profile_object(owner: Option<Owner>) -> ManagedObject {
+        ManagedObject {
+            key: ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-git-workspacede4f56".to_string(),
+            },
+            backend: Backend::NetworkPolicy,
+            profile: ProfileKey::new("git"),
+            pod_selector: PodSelector::DevWorkspaceId("workspacede4f56".to_string()),
+            body: PolicyBody::opaque(br#"{"policyTypes":["Egress"]}"#.to_vec()),
+            owner,
+        }
+    }
+
+    /// The document `apply_network_policy` sends, minus the apiserver round trip.
+    fn written(obj: &ManagedObject) -> NetworkPolicy {
+        let mut spec: Value = serde_json::from_slice(obj.body.as_bytes()).unwrap();
+        spec.as_object_mut().unwrap().insert(
+            "podSelector".to_string(),
+            pod_selector_json(&obj.pod_selector),
+        );
+        serde_json::from_value(json!({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": metadata_json(obj),
+            "spec": spec,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_profile_object_round_trips_its_owner_through_what_this_adapter_writes() {
+        // `content_eq` compares owners: an object read back with a different owner than it was
+        // written with would be rewritten on every pass.
+        let obj = profile_object(Some(Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-uid".to_string(),
+        }));
+        assert_eq!(
+            KubePolicyStore::from_network_policy(&written(&obj)),
+            Some(obj)
+        );
+    }
+
+    #[test]
+    fn an_unowned_object_is_written_without_owner_references_and_reads_back_unowned() {
+        let obj = profile_object(None);
+        let policy = written(&obj);
+        assert_eq!(policy.metadata.owner_references, None);
+        assert_eq!(KubePolicyStore::from_network_policy(&policy), Some(obj));
     }
 }

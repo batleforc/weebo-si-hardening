@@ -6,7 +6,7 @@
 //! same identity and the same two selector shapes. They are re-exported under their original
 //! paths so every call site in this crate and its adapters keeps naming them where it always did.
 
-pub use weebo_si_chassis::managed::{ObjectKey, PodSelector};
+pub use weebo_si_chassis::managed::{ObjectKey, Owner, PodSelector};
 use weebo_si_crd::{Backend, ProfileKey};
 
 /// A template's `policyTypes`/`ingress`/`egress` (or the Cilium equivalent), copied verbatim and
@@ -52,6 +52,10 @@ pub struct ManagedObject {
     pub pod_selector: PodSelector,
     /// The rule content, copied verbatim from the resolved template.
     pub body: PolicyBody,
+    /// The DevWorkspace this object is garbage-collected with — `Some` for every profile object,
+    /// `None` for the baseline, which must outlive any one workspace. Written as a
+    /// `metadata.ownerReferences` entry by the store adapter and read back from it.
+    pub owner: Option<Owner>,
 }
 
 #[cfg(test)]

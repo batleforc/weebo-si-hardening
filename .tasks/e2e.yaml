@@ -1,0 +1,56 @@
+version: "3"
+
+# The nightly end-to-end tier: a kind cluster running real Eclipse Che, with this repo's images and
+# charts on top. `scripts/e2e.sh` builds the rig; `crates/weebo-si-e2e/tests/<suite>.rs` asserts
+# against it. .github/workflows/e2e.yaml runs every suite nightly, one cluster per suite.
+#
+# Locally: `task e2e:build`, then `task e2e:run SUITE=workspace` (it brings the cluster up if it is
+# not there). Needs kind, kubectl, helm, jq, openssl and podman or docker, and a host whose
+# `fs.inotify.max_user_instances` is at least 512 — see scripts/kind-che.yaml for why.
+
+vars:
+  SUITE: '{{ .SUITE | default "workspace" }}'
+  # The Rust test target for a suite: the file name, with the dash a filename cannot carry.
+  TARGET: '{{ .SUITE | default "workspace" | replace "-" "_" }}'
+
+tasks:
+  build:
+    desc: "Build every image the e2e suites need, tagged localhost/<name>:e2e"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/e2e.sh build"
+
+  up:
+    desc: "Create the e2e kind cluster with real Eclipse Che, Keycloak, cert-manager and DevWorkspace Operator (slow: several GB)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/e2e.sh up"
+
+  deploy:
+    desc: 'Install one suite''s addons and this repo''s charts on the e2e cluster (usage: task e2e:deploy SUITE=identity)'
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/e2e.sh addons {{.SUITE}}"
+      - "{{.ROOT_DIR}}/scripts/e2e.sh deploy {{.SUITE}}"
+
+  test:
+    desc: 'Run one suite against an already deployed e2e cluster (usage: task e2e:test SUITE=workspace)'
+    cmds:
+      # Serialised: every test in a suite shares the cluster's one WeeboSiConfig singleton.
+      - cargo test -p weebo-si-e2e --features e2e --test {{.TARGET}} -- --test-threads=1 {{.CLI_ARGS}}
+
+  run:
+    desc: 'Bring the cluster up if needed, deploy one suite and run it (usage: task e2e:run SUITE=endpoint-auth)'
+    cmds:
+      - task: up
+      - task: deploy
+        vars: { SUITE: "{{.SUITE}}" }
+      - task: test
+        vars: { SUITE: "{{.SUITE}}" }
+
+  diag:
+    desc: "Dump pods, events, operator objects and logs from the e2e cluster into /tmp/weebo-si-e2e/diag"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/e2e.sh diag"
+
+  down:
+    desc: "Delete the e2e kind cluster and its certificate authority"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/e2e.sh down"

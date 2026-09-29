@@ -180,14 +180,28 @@ impl EndpointCatalog for FakeCatalog {
 /// Cookies this fake knows how to open, by their sealed value.
 #[derive(Default)]
 pub struct FakeSessions {
-    opened: HashMap<String, OpenedSession>,
+    /// Each cookie, the host it opens on (`None`: any host), and what it opens into.
+    opened: HashMap<String, (Option<String>, OpenedSession)>,
 }
 
 impl FakeSessions {
-    /// A codec that opens `cookie` into `claims`, valid until `expires_at`.
+    /// A codec that opens `cookie` into `claims`, valid until `expires_at`, on any host.
     pub fn with(cookie: &str, claims: Claims, expires_at: Timestamp) -> Self {
         let mut opened = HashMap::new();
-        opened.insert(cookie.to_owned(), OpenedSession { claims, expires_at });
+        opened.insert(
+            cookie.to_owned(),
+            (None, OpenedSession { claims, expires_at }),
+        );
+        Self { opened }
+    }
+
+    /// A codec that opens `cookie` on `host` only — what the real, AEAD-bound codec does.
+    pub fn bound(host: &str, cookie: &str, claims: Claims, expires_at: Timestamp) -> Self {
+        let mut opened = HashMap::new();
+        opened.insert(
+            cookie.to_owned(),
+            (Some(host.to_owned()), OpenedSession { claims, expires_at }),
+        );
         Self { opened }
     }
 }
@@ -195,12 +209,14 @@ impl FakeSessions {
 impl SessionCodec for FakeSessions {
     fn open_host_session(
         &self,
-        _host: &Host,
+        host: &Host,
         sealed: &str,
         now: Timestamp,
     ) -> Option<OpenedSession> {
         self.opened
             .get(sealed)
+            .filter(|(bound, _)| bound.as_deref().is_none_or(|bound| bound == host.as_str()))
+            .map(|(_, session)| session)
             .filter(|session| !now.is_at_or_after(session.expires_at))
             .cloned()
     }

@@ -24,6 +24,12 @@ spec:
         {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "weebo-si-operator.webhookServiceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # Drain budget: 5s of failing readiness, then up to 20s for in-flight reviews — see
+      # `drain_on_signal` in crates/weebo-si-operator/src/webhook_cmd.rs.
+      terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -102,11 +108,22 @@ spec:
               port: http-health
             periodSeconds: 5
             failureThreshold: 3
+          # The initial lists (every namespace, and with KubeArmor every workspace pod and node)
+          # can outlast a liveness probe on a large cluster. `/healthz` is served from the first
+          # instant, so this mostly guards a process that never gets that far.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
               port: http-health
             periodSeconds: 10
+            timeoutSeconds: 2
             failureThreshold: 3
           resources:
             {{- toYaml .Values.webhook.resources | nindent 12 }}

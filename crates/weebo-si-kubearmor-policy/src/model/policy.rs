@@ -13,7 +13,7 @@
 //! compares bodies inside the feature that owns them. Sharing the type would buy a rename across
 //! two adapter crates and cost the doc comment that tells a reader what the bytes actually are.
 
-pub use weebo_si_chassis::managed::{ObjectKey, PodSelector};
+pub use weebo_si_chassis::managed::{ObjectKey, Owner, PodSelector};
 use weebo_si_crd::{RuntimeBackend, RuntimeProfileKey};
 
 /// A template's `spec.process`, `spec.file`, `spec.network`, `spec.capabilities` and
@@ -62,6 +62,10 @@ pub struct ManagedObject {
     pub pod_selector: PodSelector,
     /// The rule content, copied verbatim from the resolved template.
     pub body: RuleBody,
+    /// The DevWorkspace this object is garbage-collected with — `Some` for every profile object,
+    /// `None` for the baseline, which must outlive any one workspace. Written as a
+    /// `metadata.ownerReferences` entry by the store adapter and read back from it.
+    pub owner: Option<Owner>,
 }
 
 #[cfg(test)]

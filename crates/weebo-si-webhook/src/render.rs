@@ -23,8 +23,11 @@ use crate::extract::CONFIG_REF_ATTRIBUTE;
 /// onto an object carrying none would leave one. That is why the three flags below are mutable
 /// and why `created` exists.
 pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
-    let mut has_attributes = object.pointer("/spec/template/attributes").is_some();
-    let mut has_annotations = object.pointer("/metadata/annotations").is_some();
+    // "Exists" means "exists and is not `null`": a key present with `null` (which a client may
+    // send) cannot take a child, so it is replaced with a map exactly like an absent one — `add`
+    // over an existing key replaces it.
+    let mut has_attributes = is_map(object, "/spec/template/attributes");
+    let mut has_annotations = is_map(object, "/metadata/annotations");
     // Parents this patch has already created, so two `SetString`s under one missing parent do not
     // each reset it — the same failure as the annotations one, in the shape the `Route` dialect
     // reaches for when it writes `spec.port.targetPort`.
@@ -56,7 +59,7 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
                     let parent = &path[..depth];
                     let pointer = PointerBuf::from_tokens(parent.iter().map(String::as_str));
                     let path = pointer.to_string();
-                    if object.pointer(pointer.as_str()).is_none() && created.insert(path) {
+                    if !is_map(object, pointer.as_str()) && created.insert(path) {
                         ops.push(add(
                             parent.iter().map(String::as_str),
                             Value::Object(serde_json::Map::new()),
@@ -87,6 +90,15 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
         }
     }
     Patch(ops)
+}
+
+/// Whether `pointer` names something other than nothing inside `object` — absent and `null` both
+/// count as nothing. Anything else is left as it is, so a patch against a malformed object fails
+/// at the apiserver rather than silently replacing a value with a map.
+fn is_map(object: &Value, pointer: &str) -> bool {
+    object
+        .pointer(pointer)
+        .is_some_and(|value| !value.is_null())
 }
 
 fn add<'t>(tokens: impl IntoIterator<Item = &'t str>, value: Value) -> PatchOperation {
@@ -183,6 +195,46 @@ mod tests {
             Value::String("managed".into())
         );
         assert!(annotations.contains_key("traefik.ingress.kubernetes.io/router.middlewares"));
+    }
+
+    /// A parent present as `null` is as good as absent: `add` under it would fail, so it is
+    /// replaced with a map — for annotations, attributes and a `SetString` parent alike.
+    #[test]
+    fn a_null_parent_is_replaced_rather_than_written_under() {
+        let object = serde_json::json!({
+            "metadata": {"name": "api", "annotations": null},
+            "spec": {"port": null, "template": {"attributes": null}},
+        });
+        let mutations = vec![
+            Mutation::Annotate {
+                key: "hardening.weebo.io/endpoint-auth".into(),
+                value: "managed".into(),
+            },
+            Mutation::SetString {
+                path: vec!["spec".into(), "port".into(), "targetPort".into()],
+                value: "http".into(),
+            },
+            Mutation::SetConfigRef(weebo_si_crd::DwocRef {
+                name: "gpu".into(),
+                namespace: weebo_si_crd::NamespaceName::new("che"),
+            }),
+        ];
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &render_patch(&object, &mutations).0)
+            .expect("the patch must apply");
+        assert_eq!(
+            patched.pointer("/metadata/annotations/hardening.weebo.io~1endpoint-auth"),
+            Some(&Value::String("managed".into()))
+        );
+        assert_eq!(
+            patched.pointer("/spec/port/targetPort"),
+            Some(&Value::String("http".into()))
+        );
+        assert!(
+            patched
+                .pointer("/spec/template/attributes")
+                .is_some_and(Value::is_object)
+        );
     }
 
     /// The same failure in the shape `SetString` can reach: two writes under one missing parent.

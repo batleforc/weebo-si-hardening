@@ -46,6 +46,7 @@
 //! `allowedIdentities` govern every guard rule in this operator, which is what makes "turn the
 //! guard off" a single edit rather than a hunt.
 
+use weebo_si_chassis::teardown::is_teardown_identity;
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
 use weebo_si_crd::{NamespaceName, SourceKind};
 
@@ -129,6 +130,11 @@ impl Feature<RegistryObjectWrite> for RegistryGuard {
             return Ok(Decision::new(Vec::new(), None, None, "operator_allowed"));
         }
 
+        // A namespace being deleted must be able to finish — see `TEARDOWN_IDENTITIES`.
+        if subject.operation == WriteOperation::Delete && is_teardown_identity(&subject.actor) {
+            return Ok(Decision::new(Vec::new(), None, None, "teardown_allowed"));
+        }
+
         // Everything this guard refuses. An object that is not ours is not this guard's
         // business, whatever the operation — see this module's doc for why that absence is
         // load-bearing rather than an omission.
@@ -191,6 +197,22 @@ mod tests {
         WriteOperation::Update,
         WriteOperation::Delete,
     ];
+
+    #[test]
+    fn the_control_plane_may_delete_a_managed_object_but_not_rewrite_it() {
+        for actor in weebo_si_chassis::teardown::TEARDOWN_IDENTITIES {
+            assert!(
+                decide(&write(actor, WriteOperation::Delete, true))
+                    .denial
+                    .is_none()
+            );
+            assert!(
+                decide(&write(actor, WriteOperation::Update, true))
+                    .denial
+                    .is_some()
+            );
+        }
+    }
 
     fn decide(subject: &RegistryObjectWrite) -> Decision<RegistryObjectWrite> {
         let namespace = NamespaceFacts::default();

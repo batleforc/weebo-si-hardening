@@ -1,0 +1,6 @@
+# Every value arrives from the WeeboSiTeam's template, rendered per person by the operator.
+username: ""
+email: ""
+team: ""
+storage:
+  size: 1Gi

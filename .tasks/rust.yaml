@@ -4,6 +4,9 @@ version: "3"
 # an empty virtual manifest, and `task lint` runs in the pre-commit hook — so the guard is what
 # keeps committing docs-only changes possible before the first brick exists.
 
+# `--locked` on every task that resolves dependencies, as CI does: a Cargo.lock that no longer
+# matches the manifests is an error, not a silent re-resolve to something `task audit` never saw.
+
 vars:
   HAS_MEMBER:
     sh: 'ls {{.ROOT_DIR}}/bins/*/Cargo.toml {{.ROOT_DIR}}/crates/*/Cargo.toml 2>/dev/null | head -1'
@@ -28,28 +31,28 @@ tasks:
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   check:
     desc: "Type-check the workspace without producing binaries"
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo check --workspace --all-targets
+      - cargo check --workspace --all-targets --locked
 
   build:
     desc: "Build every crate in release mode"
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo build --workspace --release
+      - cargo build --workspace --release --locked
 
   test:
     desc: "Run the whole test suite"
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo test --workspace --all-features
+      - cargo test --workspace --all-features --locked
 
   test:openshift:
     desc: "Run the deferred OpenShift tier — the ReverseProxy dialect's tests, which the base suite skips"
@@ -60,14 +63,14 @@ tasks:
       # 0009's OpenShift tier. They pass; what they do not do is prove anything about a real
       # OpenShift router, which is why the base suite does not run them and why enabling the
       # dialect is not yet a supported configuration.
-      - cargo test --workspace --all-features -- --ignored
+      - cargo test --workspace --all-features --locked -- --ignored
 
   bench:
     desc: "Measure the endpoint-auth decision — RFC 0009's request-cost budget, asserted rather than hoped"
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo bench -p weebo-si-endpoint-auth
+      - cargo bench -p weebo-si-endpoint-auth --locked
 
   audit:
     desc: "Check Rust dependencies for known CVEs (RUSTSEC advisories)"

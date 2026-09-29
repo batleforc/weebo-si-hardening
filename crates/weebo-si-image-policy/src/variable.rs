@@ -398,13 +398,14 @@ mod tests {
     }
 
     mod resolve_declared {
-        use std::collections::{BTreeMap, HashMap};
+        use std::collections::HashMap;
 
         use weebo_si_chassis::NamespaceFacts;
         use weebo_si_chassis::port::namespace_view::NamespaceView;
         use weebo_si_crd::{
             Entry, EntryKey, FeatureMode, ImageCatalog, ImageNamespaceSelection, ImagePolicyConfig,
-            ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, VariableBinding,
+            ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, Resolved,
+            ResolvedImagePolicyConfig, VariableBinding,
         };
 
         use super::super::*;
@@ -442,8 +443,8 @@ mod tests {
             }
         }
 
-        fn config(variables: &[(&str, &str)]) -> ImagePolicyConfig {
-            ImagePolicyConfig {
+        fn config(variables: &[(&str, &str)]) -> ResolvedImagePolicyConfig {
+            Resolved::without_teams(ImagePolicyConfig {
                 mode: FeatureMode::Enforce,
                 namespace_selector: None,
                 catalog: ImageCatalog::new(vec![Entry {
@@ -462,12 +463,11 @@ mod tests {
                     })
                     .collect(),
                 default: vec![EntryKey::new("internal")],
-                grants: BTreeMap::new(),
                 namespace_selection: ImageNamespaceSelection::default(),
                 workspace_selection: ImageWorkspaceSelection::default(),
                 on_not_granted: OnUnknownKey::default(),
                 platform: PlatformConfig::default(),
-            }
+            })
         }
 
         #[test]

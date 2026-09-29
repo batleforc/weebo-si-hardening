@@ -18,3 +18,9 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+    {{- if .Values.metrics.enabled }}
+    # Scraped in-cluster only: no Ingress routes this port.
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    {{- end }}

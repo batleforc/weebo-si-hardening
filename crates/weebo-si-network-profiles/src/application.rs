@@ -9,11 +9,12 @@
 //! here. A future controller watch loop is a thin adapter calling this function, exactly as
 //! `weebo-si-webhook`'s router is a thin adapter calling `admit()`.
 
-use weebo_si_chassis::{Context, DomainError, ReconcileFeature, Subject};
+use weebo_si_chassis::managed::{ObjectKey, OwnedScope, compute_owned_diff};
+use weebo_si_chassis::{Context, DomainError, ReconcileFeature};
 use weebo_si_crd::{FeatureMode, ProfileKey, TeamName};
 
 use crate::canary::{CanaryVerdict, Reachability, verdict};
-use crate::model::diff::{Applied, DesiredState, Diff, compute_diff};
+use crate::model::diff::{Applied, DesiredState, Diff};
 use crate::port::{CanaryProbe, PolicyStore};
 
 /// What one `reconcile` call decided and (in `Enforce`) did.
@@ -33,6 +34,9 @@ pub struct ReconcileOutcome {
     /// Profile keys with no variant for the resolved backend — see
     /// [`DesiredState::unsupported`].
     pub unsupported: Vec<ProfileKey>,
+    /// Objects whose template did not resolve this pass and whose live copy was therefore left
+    /// untouched — see [`DesiredState::held`].
+    pub held: Vec<ObjectKey>,
 }
 
 /// Run one reconcile pass for `subject`: compute what should exist, diff it against what
@@ -46,7 +50,7 @@ pub struct ReconcileOutcome {
 /// `DomainError` rather than silently treated as `DryRun` — a silent choice between two
 /// plausible interpretations (no-op? same as DryRun?) is exactly the kind of ambiguity a
 /// hardening control cannot afford.
-pub async fn reconcile<S: Subject>(
+pub async fn reconcile<S: OwnedScope>(
     feature: &dyn ReconcileFeature<S, Desired = DesiredState>,
     subject: &S,
     ctx: &Context<'_>,
@@ -63,7 +67,14 @@ pub async fn reconcile<S: Subject>(
 
     let desired = feature.desired(subject, ctx)?;
     let existing = store.managed_in(subject.namespace());
-    let diffs = compute_diff(&desired.objects, &existing);
+    // Scoped to the objects this subject owns: the namespace holds the baseline *and* every
+    // workspace's profile objects, and each pass's `desired` only describes its own share.
+    let diffs = compute_owned_diff(
+        &subject.owned_selector(),
+        &desired.objects,
+        &desired.held,
+        &existing,
+    )?;
 
     let applied = if mode == FeatureMode::Enforce {
         Some(store.apply(&diffs).await?)
@@ -77,6 +88,7 @@ pub async fn reconcile<S: Subject>(
         team: desired.team,
         not_granted: desired.not_granted,
         unsupported: desired.unsupported,
+        held: desired.held,
     })
 }
 
@@ -107,19 +119,19 @@ pub async fn run_canary(probe: &dyn CanaryProbe) -> Result<CanaryVerdict, Domain
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::{Arc, RwLock};
 
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
         Backend, Enforcement, NamespaceName, NetworkProfilesConfig, OnNotGranted, Profile,
-        ProfileCatalog, ProfileKey, ProfileNamespaceSelection, TemplateRef, Variant,
-        WorkspaceSelection,
+        ProfileCatalog, ProfileGrant, ProfileKey, ProfileNamespaceSelection, Resolved,
+        ResolvedNetworkProfilesConfig, Selector, Team, TemplateRef, Variant, WorkspaceSelection,
     };
 
     use super::*;
-    use crate::feature::network_profiles::{NamespaceSubject, NetworkProfiles};
+    use crate::feature::network_profiles::{NamespaceSubject, NetworkProfiles, Workspace};
+    use crate::model::policy::{ManagedObject, Owner, PodSelector, PolicyBody};
     use crate::port::testing::{FakeCanaryProbe, FakePolicyStore, FakeTemplateStore};
 
     fn template_ref(name: &str) -> TemplateRef {
@@ -129,8 +141,8 @@ mod tests {
         }
     }
 
-    fn config() -> NetworkProfilesConfig {
-        NetworkProfilesConfig {
+    fn config() -> ResolvedNetworkProfilesConfig {
+        Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: ProfileCatalog::new(vec![Profile {
@@ -141,12 +153,11 @@ mod tests {
                 }],
             }]),
             baseline: ProfileKey::new("base"),
-            grants: BTreeMap::new(),
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
-        }
+        })
     }
 
     fn feature() -> NetworkProfiles {
@@ -310,6 +321,295 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert!(store.all().is_empty());
+    }
+
+    // --- B3: each subject's reconcile touches only its own objects -------------------------
+
+    fn scoped_config() -> ResolvedNetworkProfilesConfig {
+        let mut cfg = config();
+        let variant = |name: &str| Variant {
+            backend: Backend::NetworkPolicy,
+            template_ref: template_ref(name),
+        };
+        cfg.catalog = ProfileCatalog::new(vec![
+            Profile {
+                key: ProfileKey::new("base"),
+                variants: vec![variant("weebo-base")],
+            },
+            Profile {
+                key: ProfileKey::new("git"),
+                variants: vec![variant("weebo-git")],
+            },
+            Profile {
+                key: ProfileKey::new("vault"),
+                variants: vec![variant("weebo-vault")],
+            },
+        ]);
+        cfg.grants.insert(
+            "team-1".to_string(),
+            ProfileGrant {
+                allowed: vec![ProfileKey::new("git"), ProfileKey::new("vault")],
+                default: vec![ProfileKey::new("git")],
+            },
+        );
+        cfg
+    }
+
+    fn scoped_feature(templates: FakeTemplateStore) -> NetworkProfiles {
+        NetworkProfiles::new(
+            Arc::new(RwLock::new(Some(scoped_config()))),
+            Arc::new(RwLock::new(Backend::NetworkPolicy)),
+            Arc::new(templates),
+        )
+    }
+
+    fn all_templates() -> FakeTemplateStore {
+        FakeTemplateStore::new([
+            (template_ref("weebo-base"), b"base-rules".to_vec()),
+            (template_ref("weebo-git"), b"git-rules".to_vec()),
+            (template_ref("weebo-vault"), b"vault-rules".to_vec()),
+        ])
+    }
+
+    fn team1() -> Team {
+        Team {
+            name: TeamName::new("team-1"),
+            namespace_selector: Selector {
+                match_labels: [("weebo.io/team".to_string(), "team-1".to_string())].into(),
+                match_expressions: Vec::new(),
+            },
+        }
+    }
+
+    fn team_facts() -> NamespaceFacts {
+        NamespaceFacts {
+            labels: [("weebo.io/team".to_string(), "team-1".to_string())].into(),
+            selection_annotation: None,
+        }
+    }
+
+    fn workspace(id: &str, attribute: Option<&str>) -> Workspace {
+        Workspace {
+            name: format!("ws-{id}"),
+            namespace: NamespaceName::new("user-alice"),
+            workspace_id: id.to_string(),
+            attribute: attribute.map(str::to_string),
+            namespace_annotation: None,
+            owner: owner_of(id),
+        }
+    }
+
+    /// The DevWorkspace `workspace(id, ..)` stands for, as the owner of its profile objects.
+    fn owner_of(id: &str) -> Owner {
+        Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: format!("ws-{id}"),
+            uid: format!("uid-{id}"),
+        }
+    }
+
+    fn live(name: &str, profile: &str, selector: PodSelector, body: &[u8]) -> ManagedObject {
+        ManagedObject {
+            key: ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: name.to_string(),
+            },
+            backend: Backend::NetworkPolicy,
+            profile: ProfileKey::new(profile),
+            // A live profile object already adopted by its workspace, as the store would read
+            // it back; the baseline is never owned.
+            owner: match &selector {
+                PodSelector::DevWorkspaceId(id) => Some(owner_of(id)),
+                PodSelector::Empty => None,
+            },
+            pod_selector: selector,
+            body: PolicyBody::opaque(body.to_vec()),
+        }
+    }
+
+    /// Baseline + ws1's git and vault + ws2's git — everything current except `ws1`'s vault,
+    /// which ws1 no longer asks for (the stale object of the same subject).
+    fn shared_namespace_store() -> FakePolicyStore {
+        FakePolicyStore::new([
+            live("weebo-base", "base", PodSelector::Empty, b"base-rules"),
+            live(
+                "weebo-git-ws1",
+                "git",
+                PodSelector::DevWorkspaceId("ws1".to_string()),
+                b"git-rules",
+            ),
+            live(
+                "weebo-vault-ws1",
+                "vault",
+                PodSelector::DevWorkspaceId("ws1".to_string()),
+                b"vault-rules",
+            ),
+            live(
+                "weebo-git-ws2",
+                "git",
+                PodSelector::DevWorkspaceId("ws2".to_string()),
+                b"git-rules",
+            ),
+        ])
+    }
+
+    fn deleted(outcome: &ReconcileOutcome) -> Vec<String> {
+        outcome
+            .diffs
+            .iter()
+            .filter_map(|d| match d {
+                Diff::Delete { key, .. } => Some(key.name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_namespace_reconcile_never_deletes_a_workspace_profile_object() {
+        let store = shared_namespace_store();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        let outcome = reconcile(
+            &scoped_feature(all_templates()),
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(deleted(&outcome).is_empty(), "{:?}", outcome.diffs);
+        assert_eq!(store.all().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_workspace_reconcile_never_deletes_the_baseline_or_a_sibling_workspace_object() {
+        let store = shared_namespace_store();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        let outcome = reconcile(
+            &scoped_feature(all_templates()),
+            &workspace("ws2", None),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(deleted(&outcome).is_empty(), "{:?}", outcome.diffs);
+        assert_eq!(store.all().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_stale_object_of_the_same_workspace_is_still_deleted() {
+        let store = shared_namespace_store();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        // ws1 now asks only for the default (`git`): its `vault` object is stale.
+        let outcome = reconcile(
+            &scoped_feature(all_templates()),
+            &workspace("ws1", None),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted(&outcome), vec!["weebo-vault-ws1".to_string()]);
+        let mut left: Vec<String> = store.all().into_iter().map(|o| o.key.name).collect();
+        left.sort_unstable();
+        assert_eq!(left, vec!["weebo-base", "weebo-git-ws1", "weebo-git-ws2"]);
+    }
+
+    // --- F6: a live profile object written before owners existed is adopted ---------------
+
+    #[tokio::test]
+    async fn a_live_profile_object_without_an_owner_is_updated_to_carry_its_workspace() {
+        let mut orphan_prone = live(
+            "weebo-git-ws2",
+            "git",
+            PodSelector::DevWorkspaceId("ws2".to_string()),
+            b"git-rules",
+        );
+        orphan_prone.owner = None;
+        let store = FakePolicyStore::new([orphan_prone]);
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        let outcome = reconcile(
+            &scoped_feature(all_templates()),
+            &workspace("ws2", None),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome.diffs.as_slice(), [Diff::Update(obj)] if obj.key.name == "weebo-git-ws2"),
+            "{:?}",
+            outcome.diffs
+        );
+        assert_eq!(store.all()[0].owner, Some(owner_of("ws2")));
+    }
+
+    // --- H5: an unresolved template holds the live object instead of deleting it ---------
+
+    #[tokio::test]
+    async fn an_unresolved_baseline_template_holds_the_live_baseline() {
+        let store = shared_namespace_store();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        let outcome = reconcile(
+            &scoped_feature(FakeTemplateStore::new([])),
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(outcome.diffs.is_empty(), "{:?}", outcome.diffs);
+        assert_eq!(outcome.held.len(), 1);
+        assert_eq!(outcome.held[0].name, "weebo-base");
+        assert_eq!(store.all().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_profile_template_holds_the_live_profile_object() {
+        let store = shared_namespace_store();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        // `vault`'s template is gone; ws1 still asks for both.
+        let templates = FakeTemplateStore::new([
+            (template_ref("weebo-base"), b"base-rules".to_vec()),
+            (template_ref("weebo-git"), b"git-rules".to_vec()),
+        ]);
+        let outcome = reconcile(
+            &scoped_feature(templates),
+            &workspace("ws1", Some("git,vault")),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(deleted(&outcome).is_empty(), "{:?}", outcome.diffs);
+        assert_eq!(
+            outcome
+                .held
+                .iter()
+                .map(|k| k.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["weebo-vault-ws1"]
+        );
+        assert_eq!(store.all().len(), 4);
     }
 
     #[tokio::test]

@@ -1,7 +1,8 @@
 [tools]
 cocogitto = "latest"
 node = "24"
-rust = "latest"
+# = rust-toolchain.toml, the Containerfiles and CI; bump together.
+rust = "1.98.1"
 task = "latest"
 gitleaks = "latest"
 claude = "latest"
@@ -9,7 +10,7 @@ rtk = "latest"
 
 # `task audit`
 "aqua:EmbarkStudios/cargo-deny" = "latest"
-trivy = "latest"
+trivy = "0.74.0"
 
 # `task postmortem` — the dependency supply-chain gate. Pinned to the same
 # version the composite action downloads in .github/workflows/postmortem.yaml,
@@ -20,7 +21,7 @@ trivy = "latest"
 actionlint = "latest"
 
 # `task helm:lint` — lints and renders the charts under charts/
-helm = "latest"
+helm = "4.3.0" # = CI (helm.yaml, envtest.yaml)
 
 # `task lint` — the RFC tooling in scripts/ runs in the pre-commit hook, so it gets linted
 shellcheck = "latest"

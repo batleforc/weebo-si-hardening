@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use entry::{GroupEntry, InvalidField, PasswdEntry};
-use nss::{FsProbe, Outcome, SHELL_CANDIDATES};
+use nss::{FsProbe, Outcome, SHELL_CANDIDATES, Scan};
 
 /// Everything after the program name, as the RFC's *Contract* spells it.
 const USAGE: &str = "\
@@ -269,9 +269,9 @@ fn resolve(
 fn apply(
     path: &std::path::Path,
     line: &str,
-    already: impl Fn(&str) -> Option<String>,
+    scan: impl Fn(&[u8]) -> Scan,
 ) -> Result<bool, Failure> {
-    match nss::append_locked(path, line, already) {
+    match nss::append_locked(path, line, scan) {
         Ok(Outcome::Appended) => {
             log!("INFO", "appended to {}: {line}", path.display());
             Ok(false)
@@ -285,6 +285,12 @@ fn apply(
                 path.display()
             );
             Ok(false)
+        }
+        Ok(Outcome::Conflict(detail)) => {
+            // Counted as a failed append: the UID is left unresolved, exactly as if the write had
+            // failed, so `--strict` treats it the same way.
+            log!("WARN", "{}: {detail}, leaving it unchanged", path.display());
+            Ok(true)
         }
         Ok(Outcome::NotWritable) => {
             log!(
@@ -326,16 +332,20 @@ fn run() -> Result<u8, Failure> {
         return Ok(exit::OK);
     }
 
+    let name = config.passwd_entry.name();
     let mut any_failed = apply(&config.passwd_path, &passwd_line, |contents| {
-        nss::passwd_name_for_uid(contents, uid).map(|found| format!("uid {uid} to '{found}'"))
+        nss::passwd_scan(contents, uid, name)
     })?;
 
     if let (Some(entry), Some(line)) = (config.group_entry.as_ref(), group_line.as_ref()) {
         // The two files are handled independently: a read-only /etc/group does not prevent the
         // passwd entry.
         let failed = apply(&config.group_path, line, |contents| {
-            nss::group_has(contents, entry.name(), entry.gid_field())
-                .then(|| format!("group '{}'", entry.name()))
+            if nss::group_has(contents, entry.name(), entry.gid_field()) {
+                Scan::Present(format!("group '{}'", entry.name()))
+            } else {
+                Scan::Absent
+            }
         })?;
         any_failed = any_failed || failed;
     }

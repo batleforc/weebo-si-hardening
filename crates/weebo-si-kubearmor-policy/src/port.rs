@@ -37,8 +37,9 @@ pub trait TemplateStore {
     /// namespace}`, and that must be an added variant rather than a changed signature.
     ///
     /// `None` covers both "the object does not exist" and "it exists but is not yet in this
-    /// adapter's watch cache" — indistinguishable to a caller and treated identically (write
-    /// nothing for this object).
+    /// adapter's watch cache" — indistinguishable to a caller and treated identically: the object
+    /// is *held* (its live copy neither updated nor deleted) — see
+    /// [`crate::model::diff::DesiredState::held`].
     fn body(&self, backend: RuntimeBackend, template_ref: &TemplateRef) -> Option<RuleBody>;
 }
 

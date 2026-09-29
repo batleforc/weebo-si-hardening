@@ -1,0 +1,25 @@
+[package]
+name = "weebo-si-e2e"
+version = "0.1.0"
+description = "Test-only: the nightly end-to-end suites, against a kind cluster running real Eclipse Che"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# The harness drives the cluster the way an operator would — `kubectl` — and reads answers back
+# as JSON. No `kube` client and no async runtime: a nightly suite's cost is the cluster, not the
+# client, and every assertion here is one a human can replay by pasting the command it printed.
+[dependencies]
+reqwest = { workspace = true, features = ["blocking"] }
+rustls = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Opt-in, like `envtest`: the suites need the cluster `scripts/e2e.sh up` builds, and a plain
+# `cargo test --workspace` on a laptop must not try to reach one.
+e2e = []
+
+[lints]
+workspace = true

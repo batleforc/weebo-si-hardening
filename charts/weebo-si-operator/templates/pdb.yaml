@@ -1,4 +1,7 @@
 {{- if .Values.webhook.podDisruptionBudget.enabled }}
+{{- if lt (int .Values.webhook.replicaCount) 2 }}
+{{- fail "webhook.replicaCount must be at least 2 while webhook.podDisruptionBudget is enabled: with one replica, the one eviction the budget allows is an outage of every failurePolicy: Fail webhook" }}
+{{- end }}
 # RFC 0002's Operational considerations, Upgrade: at failurePolicy: Fail, a voluntary
 # disruption (a node drain, a cluster-autoscaler eviction) taking down a replica while the other
 # is also unavailable stops every DevWorkspace create and start/stop cluster-wide.
@@ -16,6 +19,9 @@ spec:
       {{- include "weebo-si-operator.webhook.selectorLabels" . | nindent 6 }}
 {{- end }}
 {{- if .Values.controller.podDisruptionBudget.enabled }}
+{{- if ge (int .Values.controller.podDisruptionBudget.minAvailable) (int .Values.controller.replicaCount) }}
+{{- fail (printf "controller.podDisruptionBudget.minAvailable (%v) must be below controller.replicaCount (%v): a budget that can never allow an eviction stalls every node drain on these pods" .Values.controller.podDisruptionBudget.minAvailable .Values.controller.replicaCount) }}
+{{- end }}
 ---
 # Not required by RFC 0002's own text — the controller is not in the admission path. Standard HA
 # hygiene now that the controller runs multiple replicas behind leader election.

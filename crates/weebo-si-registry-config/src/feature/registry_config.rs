@@ -10,7 +10,7 @@
 use std::sync::{Arc, RwLock};
 
 use weebo_si_chassis::{Context, DomainError, FeatureId, ReconcileFeature, Subject};
-use weebo_si_crd::{NamespaceName, RegistryConfig as RegistryConfigSpec, copy_name};
+use weebo_si_crd::{NamespaceName, ResolvedRegistryConfig, copy_name};
 
 use crate::model::diff::{DesiredState, RefusedTemplate};
 use crate::model::mount;
@@ -52,7 +52,7 @@ impl Subject for NamespaceSubject {
 /// [`weebo_si_crd::RegistryConfig`] already owns that name for the wire type, and a call site
 /// importing both would have to alias one of them anyway.
 pub struct RegistryConfigFeature {
-    config: Arc<RwLock<Option<RegistryConfigSpec>>>,
+    config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     templates: Arc<dyn TemplateStore + Send + Sync>,
 }
 
@@ -60,13 +60,13 @@ impl RegistryConfigFeature {
     /// Build a feature reading `config`, fetching templates from `templates`. The caller keeps
     /// the other half of `config`'s `Arc` and hands it to whatever keeps it current.
     pub fn new(
-        config: Arc<RwLock<Option<RegistryConfigSpec>>>,
+        config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
         templates: Arc<dyn TemplateStore + Send + Sync>,
     ) -> Self {
         Self { config, templates }
     }
 
-    fn current_config(&self) -> Result<RegistryConfigSpec, DomainError> {
+    fn current_config(&self) -> Result<ResolvedRegistryConfig, DomainError> {
         let guard = self
             .config
             .read()
@@ -187,9 +187,9 @@ mod tests {
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
-        Ecosystem, FeatureMode, OnNotGranted, RegistryCatalog, RegistryEntry, RegistryGrant,
-        RegistryKey, RegistryNamespaceSelection, RegistrySource, Selector, SourceKind, Team,
-        TeamName, TemplateRef,
+        Ecosystem, FeatureMode, OnNotGranted, RegistryCatalog, RegistryConfig, RegistryEntry,
+        RegistryGrant, RegistryKey, RegistryNamespaceSelection, RegistrySource, Resolved, Selector,
+        SourceKind, Team, TeamName, TemplateRef,
     };
 
     use super::*;
@@ -233,15 +233,15 @@ mod tests {
         ])
     }
 
-    fn config(grants: BTreeMap<String, RegistryGrant>) -> RegistryConfigSpec {
-        RegistryConfigSpec {
+    fn config(grants: BTreeMap<String, RegistryGrant>) -> ResolvedRegistryConfig {
+        Resolved::without_teams(RegistryConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: catalog(),
-            grants,
             namespace_selection: RegistryNamespaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn templates() -> FakeTemplateStore {
@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn feature(
-        config: RegistryConfigSpec,
+        config: ResolvedRegistryConfig,
         templates: impl TemplateStore + Send + Sync + 'static,
     ) -> RegistryConfigFeature {
         RegistryConfigFeature::new(Arc::new(RwLock::new(Some(config))), Arc::new(templates))

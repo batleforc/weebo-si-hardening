@@ -281,6 +281,7 @@ mod tests {
             profile: RuntimeProfileKey::new("base"),
             pod_selector: selector,
             body: RuleBody::opaque(b"rules".to_vec()),
+            owner: None,
         }
     }
 
@@ -291,6 +292,7 @@ mod tests {
             posture: None,
             team: Some(TeamName::new("team-1")),
             not_granted: Vec::new(),
+            held: Vec::new(),
         }
     }
 

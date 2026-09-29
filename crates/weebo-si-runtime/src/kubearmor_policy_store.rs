@@ -21,6 +21,8 @@ use weebo_si_kubearmor_policy::{
 };
 
 use crate::kubearmor_template_store::{SELECTOR_FIELD, kubearmor_policy_resource};
+use crate::ns_index::NsIndex;
+use crate::owner_reference::{owner_from_references, owner_references_json};
 
 /// Every write from this adapter goes through server-side apply under this one manager — the
 /// same one `network-profiles`' store uses, since a rolling update of one operator must never
@@ -78,11 +80,30 @@ fn labels_json(profile: &RuntimeProfileKey, backend: RuntimeBackend) -> Value {
     })
 }
 
+/// `metadata` for an apply of `obj`: identity, the managed labels, and — for a profile object
+/// only — the `ownerReferences` entry that lets the apiserver garbage-collect it with its
+/// DevWorkspace (see [`crate::owner_reference`]).
+fn metadata_json(obj: &ManagedObject) -> Value {
+    let mut metadata = json!({
+        "name": obj.key.name,
+        "namespace": obj.key.namespace.as_str(),
+        "labels": labels_json(&obj.profile, obj.backend),
+    });
+    if let (Value::Object(map), Some(references)) =
+        (&mut metadata, owner_references_json(obj.owner.as_ref()))
+    {
+        map.insert("ownerReferences".to_string(), references);
+    }
+    metadata
+}
+
 /// Watch-backed `PolicyStore` over `KubeArmorPolicy`, cluster-wide, filtered server-side to this
-/// operator's own managed objects.
+/// operator's own managed objects — paired with a [`NsIndex`] fed from the same watch, so the
+/// per-namespace reads touch only that namespace's objects.
 pub struct KubeArmorPolicyStore {
     client: Client,
     policies: Store<DynamicObject>,
+    index: NsIndex<DynamicObject>,
 }
 
 impl KubeArmorPolicyStore {
@@ -92,10 +113,19 @@ impl KubeArmorPolicyStore {
         let label_selector = format!("{MANAGED_BY_LABEL}={MANAGED_BY_VALUE}");
         let resource = kubearmor_policy_resource();
         let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
-        let writer = reflector::store::Writer::<DynamicObject>::new(resource);
+        let writer = reflector::store::Writer::<DynamicObject>::new(resource.clone());
         let reader = writer.as_reader();
+        let index = NsIndex::<DynamicObject>::new(resource);
         let watcher_config = watcher::Config::default().labels(&label_selector);
-        let stream = reflector::reflector(writer, watcher(api, watcher_config)).default_backoff();
+        let indexed = {
+            use futures_util::TryStreamExt;
+            let index = index.clone();
+            watcher(api, watcher_config).map_ok(move |event| {
+                index.observe(&event);
+                event
+            })
+        };
+        let stream = reflector::reflector(writer, indexed).default_backoff();
         tokio::spawn(async move {
             use futures_util::StreamExt;
             let mut stream = std::pin::pin!(stream);
@@ -110,6 +140,7 @@ impl KubeArmorPolicyStore {
         Ok(Self {
             client,
             policies: reader,
+            index,
         })
     }
 
@@ -130,6 +161,7 @@ impl KubeArmorPolicyStore {
             profile,
             pod_selector,
             body: RuleBody::opaque(serde_json::to_vec(&spec).ok()?),
+            owner: owner_from_references(obj.metadata.owner_references.as_deref()),
         })
     }
 
@@ -142,11 +174,7 @@ impl KubeArmorPolicyStore {
         let apply = json!({
             "apiVersion": API_VERSION,
             "kind": "KubeArmorPolicy",
-            "metadata": {
-                "name": obj.key.name,
-                "namespace": obj.key.namespace.as_str(),
-                "labels": labels_json(&obj.profile, obj.backend),
-            },
+            "metadata": metadata_json(obj),
             "spec": spec,
         });
         let resource = kubearmor_policy_resource();
@@ -208,10 +236,9 @@ impl BaselineView for KubeArmorPolicyStore {
 
 impl PolicyStore for KubeArmorPolicyStore {
     fn managed_in(&self, ns: &NamespaceName) -> Vec<ManagedObject> {
-        self.policies
-            .state()
+        self.index
+            .objects_in(&self.policies, ns.as_str())
             .iter()
-            .filter(|obj| obj.metadata.namespace.as_deref() == Some(ns.as_str()))
             .filter_map(|obj| Self::from_object(obj))
             .collect()
     }
@@ -252,6 +279,56 @@ impl PolicyStore for KubeArmorPolicyStore {
 )]
 mod tests {
     use super::*;
+
+    fn profile_object(owner: Option<weebo_si_kubearmor_policy::Owner>) -> ManagedObject {
+        ManagedObject {
+            key: ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-git-write-workspacede4f56".to_string(),
+            },
+            backend: RuntimeBackend::KubeArmor,
+            profile: RuntimeProfileKey::new("git-write"),
+            pod_selector: PodSelector::DevWorkspaceId("workspacede4f56".to_string()),
+            body: RuleBody::opaque(br#"{"action":"Allow"}"#.to_vec()),
+            owner,
+        }
+    }
+
+    /// The document `apply_object` sends, minus the apiserver round trip.
+    fn written(obj: &ManagedObject) -> DynamicObject {
+        let mut spec: Value = serde_json::from_slice(obj.body.as_bytes()).unwrap();
+        spec.as_object_mut()
+            .unwrap()
+            .insert(SELECTOR_FIELD.to_string(), selector_json(&obj.pod_selector));
+        serde_json::from_value(json!({
+            "apiVersion": API_VERSION,
+            "kind": "KubeArmorPolicy",
+            "metadata": metadata_json(obj),
+            "spec": spec,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_profile_object_round_trips_its_owner_through_what_this_adapter_writes() {
+        // `content_eq` compares owners: an object read back with a different owner than it was
+        // written with would be rewritten — and KubeArmor reloaded — on every pass.
+        let obj = profile_object(Some(weebo_si_kubearmor_policy::Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-uid".to_string(),
+        }));
+        assert_eq!(KubeArmorPolicyStore::from_object(&written(&obj)), Some(obj));
+    }
+
+    #[test]
+    fn an_unowned_object_is_written_without_owner_references_and_reads_back_unowned() {
+        let obj = profile_object(None);
+        let policy = written(&obj);
+        assert_eq!(policy.metadata.owner_references, None);
+        assert_eq!(KubeArmorPolicyStore::from_object(&policy), Some(obj));
+    }
 
     #[test]
     fn the_baseline_selector_is_an_empty_match_labels_not_an_empty_selector() {

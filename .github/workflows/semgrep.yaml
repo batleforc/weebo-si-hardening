@@ -29,9 +29,10 @@ jobs:
       security-events: write # upload SARIF to the Security tab
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      # pipx is preinstalled on GitHub-hosted runners.
+      # pipx is preinstalled on GitHub-hosted runners. Pinned: an unpinned install is both a
+      # supply-chain hole and a gate whose rule engine changes with no commit here.
       - name: Install Semgrep
-        run: pipx install semgrep
+        run: pipx install semgrep==1.178.0
       # r/bash covers scripts/ and .hooks/, which are not incidental here: they
       # run in the pre-commit hook and one of them (`rfc-check.sh`) is the thing
       # that decides whether a RFC is well-formed. It is the rule namespace and

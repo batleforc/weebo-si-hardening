@@ -1,0 +1,7 @@
+# weebo-si-operator on the e2e kind cluster (scripts/e2e.sh deploy <suite>). Everything else is the
+# chart's production default on purpose — two webhook replicas, two controller replicas behind a
+# leader lease, cert-manager-issued serving certificates, `failurePolicy: Fail` — so the nightly
+# exercises the shape a cluster actually runs, not a trimmed one. The image and the per-suite RBAC
+# toggles are set on the command line by the script.
+certificates:
+  provider: cert-manager

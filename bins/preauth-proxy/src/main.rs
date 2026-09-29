@@ -123,6 +123,18 @@ fn print_effective(config: &domain::config::Config, path: &std::path::Path, docu
             .collect::<Vec<_>>(),
         config.renew.max_replays
     );
+    let limits = &config.limits;
+    println!(
+        "limits: connect_timeout={}s response_timeout={}s response_idle_timeout={}s \
+         client_read_timeout={}s drain_timeout={}s max_in_flight={} max_buffered_bytes={}",
+        limits.connect_timeout.as_secs(),
+        limits.response_timeout.as_secs(),
+        limits.response_idle_timeout.as_secs(),
+        limits.client_read_timeout.as_secs(),
+        limits.drain_timeout.as_secs(),
+        limits.max_in_flight,
+        limits.max_buffered_bytes
+    );
     // The number of references proves substitution ran without disclosing any result.
     let references = document.matches("${").count();
     println!("# {references} ${{...}} reference(s) resolved");
@@ -155,9 +167,14 @@ async fn run(args: Args) -> u8 {
         return exit::OK;
     }
 
-    let http = client();
-    let source = HttpCredentialSource::new(http.clone(), config.credential.clone());
-    let upstream = HttpUpstream::new(http, config.upstream.clone());
+    let limits = &config.limits;
+    let http = client(limits.connect_timeout);
+    let source = HttpCredentialSource::new(
+        http.clone(),
+        config.credential.clone(),
+        limits.response_timeout,
+    );
+    let upstream = HttpUpstream::new(http, config.upstream.clone(), limits.response_timeout);
     let cache = Cache::new();
 
     // Acquire once before listening. A failure here stops the rollout, rather than surfacing as
@@ -184,12 +201,7 @@ async fn run(args: Args) -> u8 {
     };
     log!("INFO", "listening on {}", config.listen);
 
-    let proxy = Arc::new(Proxy {
-        config,
-        cache,
-        source,
-        upstream,
-    });
+    let proxy = Arc::new(Proxy::new(config, cache, source, upstream));
 
     let shutdown = Box::pin(async {
         let mut term =

@@ -32,8 +32,11 @@ webhooks:
       # `UPDATE` as well as `CREATE`: patching the image onto an existing DevWorkspace is the
       # same act as creating one with it.
       - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["controller.devfile.io"]
-        apiVersions: ["v1alpha1"]
+        # DevWorkspace Operator serves DevWorkspace as `workspace.devfile.io` (v1alpha2 is the
+        # storage version; `matchPolicy: Equivalent` also routes a v1alpha1 request here). Not
+        # `controller.devfile.io`, the group of its *config* CRD and of the attribute keys.
+        apiGroups: ["workspace.devfile.io"]
+        apiVersions: ["v1alpha2"]
         resources: ["devworkspaces"]
         scope: Namespaced
     # Opt-OUT, per RFC 0002's `dwoc-pin` — and deliberately the *opposite* polarity to the Pod

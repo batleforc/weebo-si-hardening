@@ -1,13 +1,15 @@
 //! The parse-dependent half of `spec.features.imagePolicy`'s validation, and the one function
 //! callers should use.
 //!
-//! [`weebo_si_crd::ImagePolicyConfig::validate`] proves everything structural without a parser;
+//! [`weebo_si_crd::ResolvedImagePolicyConfig::validate`] proves everything structural without a parser;
 //! this proves the rest, and [`validate`] runs both. The split is what the dependency direction
 //! forces — `weebo-si-crd` is this crate's dependency, so it cannot call
 //! [`crate::pattern::Pattern::parse`] — and it is recorded in that module's own header rather
 //! than left to be rediscovered.
 
-use weebo_si_crd::{ImagePolicyConfig, ImagePolicyConfigViolation, RESERVED_VARIABLES, Team};
+use weebo_si_crd::{
+    ImagePolicyConfigViolation, RESERVED_VARIABLES, ResolvedImagePolicyConfig, Team,
+};
 
 use crate::pattern::Pattern;
 use crate::platform::platform_patterns;
@@ -15,10 +17,13 @@ use crate::variable::{PathComponent, VariableName};
 
 /// Every violation this configuration has — structural and parse-dependent, in that order.
 ///
-/// Returns all of them rather than the first, mirroring `NetworkProfilesConfig::validate`: the
+/// Returns all of them rather than the first, mirroring `ResolvedNetworkProfilesConfig::validate`: the
 /// reconcile loop reports one `Degraded` condition per violation, and an admin fixing a
 /// catalogue wants the whole list rather than one round trip per mistake.
-pub fn validate(config: &ImagePolicyConfig, teams: &[Team]) -> Vec<ImagePolicyConfigViolation> {
+pub fn validate(
+    config: &ResolvedImagePolicyConfig,
+    teams: &[Team],
+) -> Vec<ImagePolicyConfigViolation> {
     let mut violations = config.validate(teams);
 
     // Which names a pattern may legally use: the two built in, plus whatever `spec.variables`
@@ -124,7 +129,7 @@ pub fn validate(config: &ImagePolicyConfig, teams: &[Team]) -> Vec<ImagePolicyCo
 /// Whether `name` may be used in a pattern under this configuration — the two built in, plus
 /// whatever `spec.variables` declares. Exposed for `images check`, which reports an undeclared
 /// name the same way this validator does.
-pub fn is_usable_variable(config: &ImagePolicyConfig, name: &VariableName) -> bool {
+pub fn is_usable_variable(config: &ResolvedImagePolicyConfig, name: &VariableName) -> bool {
     name.is_builtin() || config.variables.contains_key(name.as_str())
 }
 
@@ -139,7 +144,8 @@ mod tests {
 
     use weebo_si_crd::{
         Entry, EntryKey, FeatureMode, ImageCatalog, ImageGrant, ImageNamespaceSelection,
-        ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, Selector, TeamName, VariableBinding,
+        ImagePolicyConfig, ImageWorkspaceSelection, OnUnknownKey, PlatformConfig, Resolved,
+        Selector, TeamName, VariableBinding,
     };
 
     use super::*;
@@ -151,19 +157,18 @@ mod tests {
         }
     }
 
-    fn config(entries: Vec<Entry>, default: &[&str]) -> ImagePolicyConfig {
-        ImagePolicyConfig {
+    fn config(entries: Vec<Entry>, default: &[&str]) -> ResolvedImagePolicyConfig {
+        Resolved::without_teams(ImagePolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: ImageCatalog::new(entries),
             variables: BTreeMap::new(),
             default: default.iter().map(|k| EntryKey::new(*k)).collect(),
-            grants: BTreeMap::new(),
             namespace_selection: ImageNamespaceSelection::default(),
             workspace_selection: ImageWorkspaceSelection::default(),
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
-        }
+        })
     }
 
     fn team(name: &str) -> Team {
@@ -173,7 +178,7 @@ mod tests {
         }
     }
 
-    fn declare(config: &mut ImagePolicyConfig, name: &str, annotation: &str) {
+    fn declare(config: &mut ResolvedImagePolicyConfig, name: &str, annotation: &str) {
         config.variables.insert(
             name.to_string(),
             VariableBinding {

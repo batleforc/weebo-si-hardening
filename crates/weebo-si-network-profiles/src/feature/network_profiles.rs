@@ -14,11 +14,12 @@
 
 use std::sync::{Arc, RwLock};
 
+use weebo_si_chassis::managed::OwnedScope;
 use weebo_si_chassis::{Context, DomainError, FeatureId, ReconcileFeature, Subject};
-use weebo_si_crd::{Backend, NamespaceName, NetworkProfilesConfig};
+use weebo_si_crd::{Backend, NamespaceName, ResolvedNetworkProfilesConfig};
 
 use crate::model::diff::DesiredState;
-use crate::model::policy::{ManagedObject, ObjectKey, PodSelector};
+use crate::model::policy::{ManagedObject, ObjectKey, Owner, PodSelector};
 use crate::port::TemplateStore;
 use crate::resolve::{self};
 
@@ -47,6 +48,14 @@ impl Subject for NamespaceSubject {
     }
 }
 
+/// The namespace pass owns the baseline, and only the baseline — never a workspace's profile
+/// objects, which share its namespace.
+impl OwnedScope for NamespaceSubject {
+    fn owned_selector(&self) -> PodSelector {
+        PodSelector::Empty
+    }
+}
+
 /// The DevWorkspace under reconciliation, in domain vocabulary.
 ///
 /// Carries `namespace_annotation` alongside the workspace's own `attribute`, rather than relying
@@ -64,6 +73,11 @@ pub struct Workspace {
     pub attribute: Option<String>,
     /// The raw value of `namespaceSelection.annotation`, if the namespace carries it.
     pub namespace_annotation: Option<String>,
+    /// The DevWorkspace itself, as the owner every profile object this pass writes is
+    /// garbage-collected with — so a deleted workspace's objects go with it, with no reconcile
+    /// path having to notice it is gone (a workspace pass only ever sees its own objects, so a
+    /// deleted workspace has no pass left to clean up after it).
+    pub owner: Owner,
 }
 
 impl Subject for Workspace {
@@ -77,10 +91,18 @@ impl Subject for Workspace {
     }
 }
 
+/// A workspace pass owns its own profile objects, and only those — never the baseline or a
+/// sibling workspace's objects in the same namespace.
+impl OwnedScope for Workspace {
+    fn owned_selector(&self) -> PodSelector {
+        PodSelector::DevWorkspaceId(self.workspace_id.clone())
+    }
+}
+
 /// The `network-profiles` feature. Holds its configuration and resolved backend behind a lock,
 /// same live-reload shape as `weebo-si-dwoc-pin::DwocPin`.
 pub struct NetworkProfiles {
-    config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+    config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
     backend: Arc<RwLock<Backend>>,
     templates: Arc<dyn TemplateStore + Send + Sync>,
 }
@@ -90,7 +112,7 @@ impl NetworkProfiles {
     /// `templates`. The caller keeps the other half of `config`'s and `backend`'s `Arc`s and
     /// hands them to whatever keeps them current.
     pub fn new(
-        config: Arc<RwLock<Option<NetworkProfilesConfig>>>,
+        config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
         backend: Arc<RwLock<Backend>>,
         templates: Arc<dyn TemplateStore + Send + Sync>,
     ) -> Self {
@@ -101,7 +123,7 @@ impl NetworkProfiles {
         }
     }
 
-    fn current_config(&self) -> Result<NetworkProfilesConfig, DomainError> {
+    fn current_config(&self) -> Result<ResolvedNetworkProfilesConfig, DomainError> {
         let guard = self
             .config
             .read()
@@ -162,19 +184,27 @@ impl ReconcileFeature<NamespaceSubject> for NetworkProfiles {
             });
         };
 
+        let key = ObjectKey {
+            namespace: subject.namespace.clone(),
+            name: BASELINE_NAME.to_string(),
+        };
         let Some(body) = self.templates.body(backend, &variant.template_ref) else {
-            return Ok(DesiredState::default());
+            // Template deleted or not yet in the watch cache: hold whatever baseline is live
+            // rather than let its absence from `objects` become a `Delete` (fail-open).
+            return Ok(DesiredState {
+                held: vec![key],
+                ..DesiredState::default()
+            });
         };
 
         Ok(DesiredState::objects(vec![ManagedObject {
-            key: ObjectKey {
-                namespace: subject.namespace.clone(),
-                name: BASELINE_NAME.to_string(),
-            },
+            key,
             backend,
             profile: config.baseline.clone(),
             pod_selector: PodSelector::Empty,
             body,
+            // Never owned: a namespace outliving its workspaces must keep its floor.
+            owner: None,
         }]))
     }
 }
@@ -215,6 +245,7 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
         };
 
         let mut unsupported = Vec::new();
+        let mut held = Vec::new();
         let mut objects = Vec::with_capacity(provenance.resolved.len());
         for key in &provenance.resolved {
             let Some(profile) = config.catalog.profile(key) else {
@@ -227,18 +258,22 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
                 unsupported.push(key.clone());
                 continue;
             };
+            let object_key = ObjectKey {
+                namespace: subject.namespace.clone(),
+                name: format!("weebo-{key}-{}", subject.workspace_id),
+            };
             let Some(body) = self.templates.body(backend, &variant.template_ref) else {
+                // Unresolved template: hold the live object rather than delete it (fail-open).
+                held.push(object_key);
                 continue;
             };
             objects.push(ManagedObject {
-                key: ObjectKey {
-                    namespace: subject.namespace.clone(),
-                    name: format!("weebo-{key}-{}", subject.workspace_id),
-                },
+                key: object_key,
                 backend,
                 profile: key.clone(),
                 pod_selector: PodSelector::DevWorkspaceId(subject.workspace_id.clone()),
                 body,
+                owner: Some(subject.owner.clone()),
             });
         }
 
@@ -247,6 +282,7 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
             team: provenance.team,
             not_granted: provenance.dropped_not_granted,
             unsupported,
+            held,
         })
     }
 }
@@ -263,9 +299,9 @@ mod tests {
     use weebo_si_chassis::NamespaceFacts;
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_crd::{
-        Enforcement, FeatureMode, OnNotGranted, Profile, ProfileCatalog, ProfileGrant, ProfileKey,
-        ProfileNamespaceSelection, Selector, Team, TeamName, TemplateRef, Variant,
-        WorkspaceSelection,
+        Enforcement, FeatureMode, NetworkProfilesConfig, OnNotGranted, Profile, ProfileCatalog,
+        ProfileGrant, ProfileKey, ProfileNamespaceSelection, Resolved, Selector, Team, TeamName,
+        TemplateRef, Variant, WorkspaceSelection,
     };
 
     use super::*;
@@ -288,18 +324,18 @@ mod tests {
         }
     }
 
-    fn config(grants: BTreeMap<String, ProfileGrant>) -> NetworkProfilesConfig {
-        NetworkProfilesConfig {
+    fn config(grants: BTreeMap<String, ProfileGrant>) -> ResolvedNetworkProfilesConfig {
+        Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog: ProfileCatalog::new(vec![profile("base"), profile("git"), profile("vault")]),
             baseline: ProfileKey::new("base"),
-            grants,
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn templates() -> FakeTemplateStore {
@@ -310,7 +346,7 @@ mod tests {
         ])
     }
 
-    fn feature(config: NetworkProfilesConfig) -> NetworkProfiles {
+    fn feature(config: ResolvedNetworkProfilesConfig) -> NetworkProfiles {
         NetworkProfiles::new(
             Arc::new(RwLock::new(Some(config))),
             Arc::new(RwLock::new(Backend::NetworkPolicy)),
@@ -347,6 +383,9 @@ mod tests {
         assert_eq!(desired.objects[0].key.name, BASELINE_NAME);
         assert_eq!(desired.objects[0].pod_selector, PodSelector::Empty);
         assert_eq!(desired.objects[0].profile, ProfileKey::new("base"));
+        // A namespace outliving its workspaces must keep its floor: the baseline is never
+        // garbage-collected with anything.
+        assert_eq!(desired.objects[0].owner, None);
     }
 
     #[test]
@@ -387,6 +426,15 @@ mod tests {
         }
     }
 
+    fn owner() -> Owner {
+        Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: "8f0c2a4e-uid".to_string(),
+        }
+    }
+
     fn workspace(attribute: Option<&str>) -> Workspace {
         Workspace {
             name: "data-pipeline".to_string(),
@@ -394,6 +442,7 @@ mod tests {
             workspace_id: "workspacede4f56".to_string(),
             attribute: attribute.map(str::to_string),
             namespace_annotation: None,
+            owner: owner(),
         }
     }
 
@@ -426,6 +475,13 @@ mod tests {
             desired.objects.iter().all(
                 |o| o.pod_selector == PodSelector::DevWorkspaceId(subject.workspace_id.clone())
             )
+        );
+        // Every profile object is owned by its DevWorkspace, so the apiserver garbage-collects
+        // it with the workspace.
+        assert!(
+            desired.objects.iter().all(|o| o.owner == Some(owner())),
+            "{:?}",
+            desired.objects
         );
     }
 

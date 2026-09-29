@@ -120,7 +120,8 @@ async fn serve(
         .await;
 
     state.drop_identities_on_key_rotation();
-    let outcome = state.gateway().authorize(&auth, &presented);
+    let authorized = state.gateway().authorize_resolved(&auth, &presented);
+    let outcome = authorized.outcome;
     state
         .metrics
         .decided(outcome.decision, started.elapsed().as_secs_f64());
@@ -151,7 +152,8 @@ async fn serve(
             .into_response();
     };
 
-    let identity = state.identity_of(&auth, &presented);
+    // The caller the decision was made about, and no second resolution of it.
+    let identity = authorized.person().cloned();
     forward(
         &state,
         request,

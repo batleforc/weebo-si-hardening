@@ -5,7 +5,9 @@ tasks:
     desc: "Lint and render every chart under charts/ (run by task lint via the pre-commit hook)"
     cmds:
       - helm lint charts/weebo-si-operator
-      - helm lint charts/preauth-proxy
+      # The schema requires credentials.existingSecret (the chart renders no Secret), so lint
+      # with the same placeholder the render below uses.
+      - helm lint charts/preauth-proxy --set credentials.existingSecret=ci-placeholder
       - helm lint charts/endpoint-gateway
       # `helm lint` alone does not catch a template execution error (e.g. a `required` value
       # with no default) — `helm template` does, so both charts are actually rendered here too.

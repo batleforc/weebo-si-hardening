@@ -16,7 +16,6 @@
 //! redeclared: unlike a profile key (whose whole point is that a `NetworkPolicy` grant must not
 //! typecheck against a `KubeArmorPolicy` catalogue), those two carry no dialect at all.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -25,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
 use crate::network_profiles::{OnNotGranted, TemplateRef};
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
@@ -307,13 +307,6 @@ pub struct RegistryConfig {
     pub namespace_selector: Option<Selector>,
     /// Every entry a namespace may be granted.
     pub catalog: RegistryCatalog,
-    /// What each team may reach, keyed by team name.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`RegistryConfig::resolve`] fills this in from them, and a configuration nobody
-    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<String, RegistryGrant>,
     /// The namespace annotation naming a registry key list.
     #[serde(default)]
     pub namespace_selection: RegistryNamespaceSelection,
@@ -322,18 +315,20 @@ pub struct RegistryConfig {
     pub on_not_granted: OnNotGranted,
 }
 
-impl RegistryConfig {
-    /// This team's grant, if `grants` has one.
-    pub fn grant_for(&self, team: &TeamName) -> Option<&RegistryGrant> {
-        self.grants.get(team.as_str())
-    }
+/// [`RegistryConfig`] resolved against the `WeeboSiTeam` objects — what the feature evaluates.
+pub type ResolvedRegistryConfig = Resolved<RegistryConfig, RegistryGrant>;
 
-    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+impl RegistryConfig {
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
     ///
     /// Returns one violation per key a team redefined; everything else stays in
-    /// [`RegistryConfig::validate`], which now runs over the resolved shape and therefore over
+    /// [`ResolvedRegistryConfig::validate`], which now runs over the resolved shape and therefore over
     /// exactly what the feature will evaluate.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<RegistryConfigViolation> {
+    pub fn resolve(
+        &self,
+        teams: &[WeeboSiTeam],
+    ) -> (ResolvedRegistryConfig, Vec<RegistryConfigViolation>) {
         let blocks: Vec<(TeamName, Vec<RegistryEntry>)> = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
@@ -347,9 +342,10 @@ impl RegistryConfig {
 
         let (entries, conflicts) =
             merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
-        self.catalog = RegistryCatalog::new(entries);
+        let mut config = self.clone();
+        config.catalog = RegistryCatalog::new(entries);
 
-        self.grants = resolution_order(teams)
+        let grants = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
                 let block = team.spec.features.registry_config.as_ref()?;
@@ -374,13 +370,14 @@ impl RegistryConfig {
             })
             .collect();
 
-        conflicts
+        let violations = conflicts
             .into_iter()
             .map(|conflict| RegistryConfigViolation::CatalogKeyConflict {
                 team: conflict.team,
                 key: conflict.key,
             })
-            .collect()
+            .collect();
+        (Resolved { config, grants }, violations)
     }
 }
 
@@ -474,7 +471,7 @@ impl fmt::Display for RegistryConfigViolation {
 
 /// The name a copy of `source` under `key` is written under in a target namespace.
 ///
-/// Lives here rather than in the brick crate so that [`RegistryConfig::validate`] can refuse a
+/// Lives here rather than in the brick crate so that [`ResolvedRegistryConfig::validate`] can refuse a
 /// catalogue whose entries collide *before* the controller discovers it by overwriting one copy
 /// with another every pass. The scheme is RFC 0007's: "Named `weebo-si-<key>-<source-name>` in
 /// the target namespace, so two entries whose templates share a name do not collide."
@@ -482,7 +479,12 @@ pub fn copy_name(key: &RegistryKey, source_name: &str) -> String {
     format!("weebo-si-{key}-{source_name}")
 }
 
-impl RegistryConfig {
+impl ResolvedRegistryConfig {
+    /// This team's grant, if `grants` has one.
+    pub fn grant_for(&self, team: &TeamName) -> Option<&RegistryGrant> {
+        self.grants.get(team.as_str())
+    }
+
     /// Every violation this configuration has, if any. Returns all of them, not just the first —
     /// the reconcile loop reports one `Degraded` condition per violation.
     pub fn validate(&self, teams: &[Team]) -> Vec<RegistryConfigViolation> {
@@ -573,6 +575,8 @@ impl RegistryConfig {
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::namespace::NamespaceName;
     use crate::selector::Selector;
 
@@ -622,15 +626,18 @@ mod tests {
         ])
     }
 
-    fn config(catalog: RegistryCatalog, grants: BTreeMap<String, RegistryGrant>) -> RegistryConfig {
-        RegistryConfig {
+    fn config(
+        catalog: RegistryCatalog,
+        grants: BTreeMap<String, RegistryGrant>,
+    ) -> ResolvedRegistryConfig {
+        Resolved::without_teams(RegistryConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog,
-            grants,
             namespace_selection: RegistryNamespaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str) -> Team {

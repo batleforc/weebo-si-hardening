@@ -10,7 +10,7 @@
 //! contract, and the [`Managed`] impl that tells the chassis what "same content" means for a
 //! policy object.
 
-use weebo_si_chassis::managed::{Managed, ObjectKey};
+use weebo_si_chassis::managed::{Managed, ObjectKey, PodSelector, Selected};
 use weebo_si_crd::{Backend, ProfileKey, TeamName};
 
 use super::policy::ManagedObject;
@@ -36,10 +36,28 @@ impl Managed for ManagedObject {
     /// is deliberately *not* compared: it is provenance carried into a label, and a catalogue
     /// key renamed with identical rules underneath is not a reason to rewrite every object in
     /// the fleet.
+    ///
+    /// `owner` **is** compared, and deliberately so. It is not rule content, but a live object
+    /// whose `ownerReference` is missing (written before the operator set one) or points at a
+    /// different DevWorkspace uid is an object the apiserver will never garbage-collect with its
+    /// workspace. Treating that as an `Update` is what adopts every such object on the next pass
+    /// — one write per object, once — instead of leaving it orphaned forever once its workspace
+    /// is gone (a workspace pass only ever sees its own objects, so nothing else would delete
+    /// it). The store adapter reads back exactly the entry it writes, so an object already
+    /// carrying the right owner never churns.
     fn content_eq(&self, other: &Self) -> bool {
         self.backend == other.backend
             && self.pod_selector == other.pod_selector
             && self.body == other.body
+            && self.owner == other.owner
+    }
+}
+
+/// The selector is what ties an object to the subject that wrote it — see
+/// [`weebo_si_chassis::managed::scope`].
+impl Selected for ManagedObject {
+    fn pod_selector(&self) -> &PodSelector {
+        &self.pod_selector
     }
 }
 
@@ -70,6 +88,12 @@ pub struct DesiredState {
     /// `weebo_si_network_profile_unsupported`. Per the RFC's *Backends and degradation*:
     /// degradation is per profile and never silent.
     pub unsupported: Vec<ProfileKey>,
+    /// Objects this subject owns but could not build this pass because their template did not
+    /// resolve — deleted, or not yet in the adapter's watch cache. Their live copy is **held**:
+    /// never deleted, never updated, until the template resolves again. Dropping them from
+    /// `objects` alone would turn a momentarily unreadable template into a `Delete` of the policy
+    /// currently enforced (fail-open); holding them fails closed.
+    pub held: Vec<ObjectKey>,
 }
 
 impl DesiredState {
@@ -91,7 +115,7 @@ impl DesiredState {
 mod tests {
     use weebo_si_crd::{Backend, NamespaceName, ProfileKey};
 
-    use super::super::policy::{PodSelector, PolicyBody};
+    use super::super::policy::{Owner, PodSelector, PolicyBody};
     use super::*;
 
     fn object(name: &str, body: &[u8]) -> ManagedObject {
@@ -104,6 +128,7 @@ mod tests {
             profile: ProfileKey::new("git"),
             pod_selector: PodSelector::Empty,
             body: PolicyBody::opaque(body.to_vec()),
+            owner: None,
         }
     }
 
@@ -175,5 +200,50 @@ mod tests {
         assert_eq!(state.team, None);
         assert!(state.not_granted.is_empty());
         assert!(state.unsupported.is_empty());
+    }
+
+    fn owner(uid: &str) -> Owner {
+        Owner {
+            api_version: "workspace.devfile.io/v1alpha2".to_string(),
+            kind: "DevWorkspace".to_string(),
+            name: "data-pipeline".to_string(),
+            uid: uid.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_live_object_lacking_its_owner_is_updated_so_it_is_adopted() {
+        // An object written before the operator set `ownerReferences` would otherwise never be
+        // garbage-collected with its workspace — nothing else ever deletes it.
+        let mut desired = object("weebo-git-ws1", b"a");
+        desired.owner = Some(owner("uid-1"));
+        let existing = object("weebo-git-ws1", b"a");
+        assert_eq!(
+            compute_diff(&[desired.clone()], &[existing]),
+            vec![Diff::Update(desired)]
+        );
+    }
+
+    #[test]
+    fn a_live_object_owned_by_a_different_uid_is_updated() {
+        let mut desired = object("weebo-git-ws1", b"a");
+        desired.owner = Some(owner("uid-2"));
+        let mut existing = object("weebo-git-ws1", b"a");
+        existing.owner = Some(owner("uid-1"));
+        assert_eq!(
+            compute_diff(&[desired.clone()], &[existing]),
+            vec![Diff::Update(desired)]
+        );
+    }
+
+    #[test]
+    fn a_live_object_already_carrying_its_owner_is_unchanged() {
+        let mut desired = object("weebo-git-ws1", b"a");
+        desired.owner = Some(owner("uid-1"));
+        let existing = desired.clone();
+        assert_eq!(
+            compute_diff(&[desired.clone()], &[existing]),
+            vec![Diff::Unchanged(desired.key.clone())]
+        );
     }
 }

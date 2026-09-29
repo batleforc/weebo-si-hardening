@@ -74,12 +74,14 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24"
+      # Both tools pinned to an exact version: `npx --yes <pkg>@latest` runs whatever the npm
+      # registry serves today, in a job that has the checkout. Bump deliberately.
       # Both configs are committed (.markdownlint.yaml, cspell.json) but nothing
       # ran them outside an editor until now, which is how a hard-wrapped table
       # or a French word reaches main.
       - name: markdownlint
-        run: npx --yes markdownlint-cli2 "docs/**/*.md" "readme.md"
+        run: npx --yes markdownlint-cli2@0.23.3 "docs/**/*.md" "readme.md"
       - name: cspell
         run: >-
-          npx --yes cspell@latest lint --no-progress
+          npx --yes cspell@10.3.6 lint --no-progress
           "docs/**/*.md" "readme.md" "bins/**/*.rs" "bins/**/Containerfile"

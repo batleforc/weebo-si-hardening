@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use http::{HeaderName, Method, StatusCode};
 
@@ -56,7 +57,106 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Replace every `${NAME}` in `template` using `lookup`.
+/// How a substituted value is written into the text around it.
+///
+/// A `${NAME}` reference is replaced by a secret the operator does not otherwise see, so the
+/// value has to be escaped for the grammar it lands in — a password containing `&` or `=` spliced
+/// raw into `email=…&password=…` would silently become a different form, and the login would
+/// fail (or, worse, carry a field nobody wrote).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    /// Insert the value as-is. Header values, and bodies of any other content type.
+    Verbatim,
+    /// Percent-encode the value per `application/x-www-form-urlencoded`. The template's own
+    /// `&` and `=` are left alone: only what a reference expands to is encoded.
+    FormUrlencoded,
+    /// Escape the value as the *contents* of a JSON string (`"` → `\"`, `\` → `\\`, control
+    /// characters as `\uXXXX`). The template supplies the surrounding quotes —
+    /// `{"password":"${CRED_SECRET}"}` — so a secret containing `"` cannot close the string and
+    /// add a field.
+    JsonString,
+}
+
+impl Encoding {
+    /// The encoding a request body needs, decided by its configured `Content-Type`.
+    ///
+    /// Only an explicitly configured `application/x-www-form-urlencoded` (parameters such as
+    /// `; charset=utf-8` ignored, case-insensitive) turns encoding on. The body is never sniffed:
+    /// the header the operator wrote is the one the origin will parse the body by, so it is the
+    /// only honest signal.
+    pub fn for_body<'a>(headers: impl IntoIterator<Item = (&'a HeaderName, &'a str)>) -> Self {
+        let mime = headers
+            .into_iter()
+            .find(|(name, _)| **name == http::header::CONTENT_TYPE)
+            .and_then(|(_, value)| value.split(';').next())
+            .map(|mime| mime.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let form = mime == FORM_URLENCODED;
+        // `application/json`, and any structured-syntax `+json` type (`application/vnd.api+json`).
+        let json = mime == "application/json" || mime.ends_with("+json");
+        if form {
+            return Self::FormUrlencoded;
+        }
+        if json {
+            return Self::JsonString;
+        }
+        Self::Verbatim
+    }
+
+    fn apply(self, value: &str, out: &mut String) {
+        match self {
+            Self::Verbatim => out.push_str(value),
+            Self::FormUrlencoded => form_urlencode_into(value, out),
+            Self::JsonString => json_escape_into(value, out),
+        }
+    }
+}
+
+/// The media type whose bodies get their substitutions form-encoded.
+const FORM_URLENCODED: &str = "application/x-www-form-urlencoded";
+
+/// Percent-encode `value` as the WHATWG `application/x-www-form-urlencoded` serializer does:
+/// ASCII alphanumerics and `*-._` stay, a space becomes `+`, every other byte of the UTF-8
+/// encoding becomes `%XX`.
+fn form_urlencode_into(value: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(char::from(byte));
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[usize::from(byte >> 4)]));
+                out.push(char::from(HEX[usize::from(byte & 0x0F)]));
+            }
+        }
+    }
+}
+
+/// Escape `value` as the contents of a JSON string, per RFC 8259 §7.
+fn json_escape_into(value: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if u32::from(c) < 0x20 => {
+                let code = u32::from(c);
+                out.push_str("\\u00");
+                out.push(char::from(HEX[(code >> 4) as usize]));
+                out.push(char::from(HEX[(code & 0x0F) as usize]));
+            }
+            c => out.push(c),
+        }
+    }
+}
+
+/// Replace every `${NAME}` in `template` using `lookup`, inserting values verbatim.
 ///
 /// An unset variable is a [`ConfigError::UnsetEnv`], not an empty string — a credential silently
 /// becoming `password=` is the failure mode this rule exists to prevent. A bare `$` not followed
@@ -68,6 +168,19 @@ impl std::error::Error for ConfigError {}
 pub fn substitute(
     template: &str,
     lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<String, ConfigError> {
+    substitute_encoded(template, lookup, Encoding::Verbatim)
+}
+
+/// [`substitute`], escaping each expanded value per `encoding`.
+///
+/// # Errors
+///
+/// Returns on the first unset or malformed reference.
+pub fn substitute_encoded(
+    template: &str,
+    lookup: &impl Fn(&str) -> Option<String>,
+    encoding: Encoding,
 ) -> Result<String, ConfigError> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -83,7 +196,7 @@ pub fn substitute(
             return Err(ConfigError::MalformedReference(template.to_owned()));
         }
         let value = lookup(name).ok_or_else(|| ConfigError::UnsetEnv(name.to_owned()))?;
-        out.push_str(&value);
+        encoding.apply(&value, &mut out);
         rest = &after[close + 1..];
     }
 
@@ -265,6 +378,56 @@ impl Renew {
     }
 }
 
+/// Largest request body accepted, per request.
+///
+/// A body has to be buffered because a request may be **replayed** after a renewal, and a stream
+/// cannot be replayed. Response bodies are streamed and are not bounded by this.
+pub const MAX_REQUEST_BODY: usize = 4 * 1024 * 1024;
+
+/// How long the proxy waits, and how much it holds at once.
+///
+/// Every bound here exists because its absence was a way to exhaust a pod sized at 64 MiB: a
+/// stalled upstream pins a task forever, a slow client pins a buffer forever, and 4 MiB bodies
+/// times unbounded concurrency is an OOM kill. The defaults are sized for the chart's defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Limits {
+    /// Bound on opening a TCP connection to either origin.
+    pub connect_timeout: Duration,
+    /// Bound on an origin producing its response **head**, connect included. The body is
+    /// streamed afterwards and is not bounded by this, so a long download is not cut off.
+    pub response_timeout: Duration,
+    /// Bound on the gap between two frames of a streamed response body. A body that goes
+    /// silent this long is ended with an error, so a stalled upstream cannot hold a
+    /// `max_in_flight` slot (which lives until the body ends) forever. Resets on every frame,
+    /// so a long but live download is not cut off.
+    pub response_idle_timeout: Duration,
+    /// Bound on a caller sending its request head, and separately its request body.
+    pub client_read_timeout: Duration,
+    /// Requests handled at once — from admission until the response body has been fully
+    /// streamed or dropped; the next one is answered `503` immediately.
+    pub max_in_flight: usize,
+    /// Request-body bytes buffered across **all** in-flight requests; a request that would push
+    /// past it is answered `503`. Never below [`MAX_REQUEST_BODY`].
+    pub max_buffered_bytes: usize,
+    /// How long a `SIGTERM` waits for in-flight requests before closing what is left. Keep it
+    /// under the pod's `terminationGracePeriodSeconds`.
+    pub drain_timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(5),
+            response_timeout: Duration::from_secs(60),
+            response_idle_timeout: Duration::from_secs(60),
+            client_read_timeout: Duration::from_secs(30),
+            max_in_flight: 256,
+            max_buffered_bytes: 16 * 1024 * 1024,
+            drain_timeout: Duration::from_secs(20),
+        }
+    }
+}
+
 /// The whole validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -280,6 +443,8 @@ pub struct Config {
     pub inject: Inject,
     /// Reactive renewal.
     pub renew: Renew,
+    /// Timeouts and concurrency bounds.
+    pub limits: Limits,
 }
 
 /// Parse a header name, naming the field in the error.
@@ -361,6 +526,74 @@ mod tests {
             substitute("x=${}", &lookup),
             Err(ConfigError::MalformedReference(_))
         ));
+    }
+
+    #[test]
+    fn form_encoding_escapes_only_what_a_reference_expands_to() {
+        let lookup = env(&[
+            ("CRED_USER", "svc@example.test"),
+            ("CRED_SECRET", "a&b=c +%é"),
+        ]);
+        assert_eq!(
+            substitute_encoded(
+                "email=${CRED_USER}&password=${CRED_SECRET}",
+                &lookup,
+                Encoding::FormUrlencoded
+            )
+            .unwrap(),
+            // The template's own `&`/`=` survive; the secret's cannot split the form.
+            "email=svc%40example.test&password=a%26b%3Dc+%2B%25%C3%A9"
+        );
+        // Verbatim is still what header values get.
+        assert_eq!(substitute("${CRED_SECRET}", &lookup).unwrap(), "a&b=c +%é");
+    }
+
+    #[test]
+    fn form_encoding_follows_the_configured_content_type_only() {
+        let ct = http::header::CONTENT_TYPE;
+        let other = HeaderName::from_static("x-forwarded-proto");
+        for (value, expected) in [
+            (
+                "application/x-www-form-urlencoded",
+                Encoding::FormUrlencoded,
+            ),
+            (
+                "Application/X-WWW-Form-Urlencoded; charset=UTF-8",
+                Encoding::FormUrlencoded,
+            ),
+            ("application/json", Encoding::JsonString),
+            (
+                "application/vnd.api+json; charset=utf-8",
+                Encoding::JsonString,
+            ),
+            ("text/plain", Encoding::Verbatim),
+        ] {
+            assert_eq!(Encoding::for_body([(&ct, value)]), expected, "{value}");
+        }
+        assert_eq!(
+            Encoding::for_body([(&other, "application/x-www-form-urlencoded")]),
+            Encoding::Verbatim,
+            "only Content-Type decides"
+        );
+        assert_eq!(Encoding::for_body([]), Encoding::Verbatim);
+    }
+
+    #[test]
+    fn json_encoding_keeps_a_secret_inside_its_string() {
+        let lookup = env(&[("CRED_SECRET", "p\"w\\d\n\u{1}")]);
+        let body = substitute_encoded(
+            r#"{"user":"svc","password":"${CRED_SECRET}"}"#,
+            &lookup,
+            Encoding::JsonString,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["password"], "p\"w\\d\n\u{1}");
+        assert_eq!(
+            parsed.as_object().unwrap().len(),
+            2,
+            "no field was injected"
+        );
     }
 
     #[test]

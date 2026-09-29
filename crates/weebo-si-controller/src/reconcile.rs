@@ -86,14 +86,10 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         }
     };
     let declared_teams = team_views(&teams);
-    let mut spec = config.spec.clone();
-    violation_messages.extend(
-        spec.resolve_teams(&teams)
-            .into_iter()
-            .map(|conflict| conflict.message),
-    );
+    let (resolved, conflicts) = config.spec.resolve_teams(&teams);
+    violation_messages.extend(conflicts.into_iter().map(|conflict| conflict.message));
 
-    if let Some(dwoc_pin) = &spec.features.dwoc_pin {
+    if let Some(dwoc_pin) = &resolved.dwoc_pin {
         let violations = dwoc_pin.validate(&declared_teams);
         let state = if violations.is_empty() {
             match dwoc_pin.mode {
@@ -131,7 +127,7 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     // whose two entries collide on one copy name means one template's contents silently
     // overwrite another's in every granted namespace — so a bad configuration is reported on the
     // object rather than discovered from a metric.
-    if let Some(registry_config) = &spec.features.registry_config {
+    if let Some(registry_config) = &resolved.registry_config {
         let violations = registry_config.validate(&declared_teams);
         let state = if violations.is_empty() {
             match registry_config.mode {
@@ -164,6 +160,78 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0004's `networkProfiles`. Its `validate()` existed and nothing outside the tests called it, so a catalogue key
+    // that cannot become an object name, a duplicate key or a baseline missing from the catalogue
+    // was reported nowhere — the reconcile loop simply failed at the apiserver, every pass.
+    if let Some(network_profiles) = &resolved.network_profiles {
+        let violations = network_profiles.validate(&declared_teams);
+        let state = if violations.is_empty() {
+            match network_profiles.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} catalogue entries, {} grants",
+                network_profiles.catalog.entries().len(),
+                network_profiles.grants.len()
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "network-profiles".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
+    // RFC 0006's `kubearmorPolicy`, for the same reason. Its `validate()` existed and nothing outside the tests called it, so a catalogue key
+    // that cannot become an object name, a duplicate key or a baseline missing from the catalogue
+    // was reported nowhere — the reconcile loop simply failed at the apiserver, every pass.
+    if let Some(kubearmor_policy) = &resolved.kubearmor_policy {
+        let violations = kubearmor_policy.validate(&declared_teams);
+        let state = if violations.is_empty() {
+            match kubearmor_policy.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} catalogue entries, {} grants",
+                kubearmor_policy.catalog.entries().len(),
+                kubearmor_policy.grants.len()
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "kubearmor-policy".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
     // configuration this repo already knew how to reject was reported nowhere — including the one
     // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the
@@ -174,7 +242,7 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     // A violation here does **not** stop the gate attaching, and that asymmetry is deliberate: a
     // gate a knowing attacker can bypass still refuses everybody who is not attacking, and an
     // unattached gate refuses nobody at all.
-    if let Some(endpoint_auth) = &spec.features.endpoint_auth {
+    if let Some(endpoint_auth) = &resolved.endpoint_auth {
         let violations = endpoint_auth.validate(&declared_teams);
         let state = if violations.is_empty() {
             match endpoint_auth.mode {
@@ -212,7 +280,7 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     // than this cluster's own, so its whole validation — allow-lists, templates, duplicate
     // identities — runs before anything is provisioned, and reports on the object rather than
     // failing one person's onboarding later.
-    if let Some(identity) = &spec.features.identity {
+    if let Some(identity) = &resolved.identity {
         let users: Vec<WeeboSiUser> = match Api::<WeeboSiUser>::all(ctx.client.clone())
             .list(&ListParams::default())
             .await

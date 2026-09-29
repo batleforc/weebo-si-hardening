@@ -99,7 +99,19 @@ pub async fn run(
             );
             tokio::select! {
                 () = controller => {},
-                () = run_leader_election(leadership, is_leader) => {},
+                () = run_leader_election(&leadership, Arc::clone(&is_leader)) => {},
+            }
+            // Shutting down: stop acting as leader first, then hand the lease back so the next
+            // replica takes over now rather than after the lease's TTL runs out.
+            // Only the holder has a lease to give back: `step_down` on any other replica answers
+            // `ReleaseLockWhenNotLeading`, which is not an error worth a log line on every
+            // rollout.
+            let was_leader = is_leader.swap(false, Ordering::Relaxed);
+            if was_leader
+                && let Ok(Err(err)) =
+                    tokio::time::timeout(RENEW_TIMEOUT, leadership.step_down()).await
+            {
+                eprintln!("ERROR weebo-si-controller: releasing the leader lease: {err}");
             }
         }
         None => controller.await,
@@ -111,19 +123,33 @@ pub async fn run(
 /// instance holds the lease, so a leader that fails to renew in time must have this loop clear
 /// `is_leader` itself — otherwise a stale leader keeps reconciling alongside the new one
 /// (split-brain).
-async fn run_leader_election(leadership: LeaseLock, is_leader: Arc<AtomicBool>) {
+///
+/// Each attempt is bounded by [`RENEW_TIMEOUT`], well inside the lease's 15s TTL: an apiserver
+/// call that hangs would otherwise leave `is_leader` true after the lease expired and another
+/// replica took it — the same split-brain, reached by waiting rather than by failing.
+async fn run_leader_election(leadership: &LeaseLock, is_leader: Arc<AtomicBool>) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
-        match leadership.try_acquire_or_renew().await {
-            Ok(lease) => {
+        match tokio::time::timeout(RENEW_TIMEOUT, leadership.try_acquire_or_renew()).await {
+            Ok(Ok(lease)) => {
                 let acquired = matches!(lease, LeaseLockResult::Acquired(_));
                 is_leader.store(acquired, Ordering::Relaxed);
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 eprintln!("ERROR weebo-si-controller: leader election: {err}");
+                is_leader.store(false, Ordering::Relaxed);
+            }
+            Err(_) => {
+                eprintln!(
+                    "ERROR weebo-si-controller: leader election: renew timed out after {}s",
+                    RENEW_TIMEOUT.as_secs()
+                );
                 is_leader.store(false, Ordering::Relaxed);
             }
         }
         interval.tick().await;
     }
 }
+
+/// How long one acquire-or-renew may take before this replica stops considering itself leader.
+const RENEW_TIMEOUT: Duration = Duration::from_secs(4);

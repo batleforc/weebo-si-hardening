@@ -39,9 +39,11 @@ pub fn admit<S: Subject>(
     dwoc_catalog: &dyn DwocCatalog,
     observer: &dyn Observer,
 ) -> Result<AdmitOutcome, DomainError> {
-    let namespace = namespace_view
-        .facts(subject.namespace())
-        .ok_or_else(|| DomainError::NamespaceNotObserved(subject.namespace().clone()))?;
+    // Looked up only once a feature is actually on for this namespace. A namespace the watch has
+    // not caught up with yet is an error only for a feature that needs its facts — with every
+    // feature `Off`, a namespace created a moment ago must admit like any other, not be refused
+    // for a cache lag no feature cares about.
+    let mut namespace = None;
     let teams = gate.teams();
 
     let mut mutations = Vec::new();
@@ -52,7 +54,14 @@ pub fn admit<S: Subject>(
             continue;
         }
 
-        let ctx = Context::new(&teams, &namespace, dwoc_catalog);
+        let facts = match namespace.take() {
+            Some(facts) => facts,
+            None => namespace_view
+                .facts(subject.namespace())
+                .ok_or_else(|| DomainError::NamespaceNotObserved(subject.namespace().clone()))?,
+        };
+        let namespace = namespace.insert(facts);
+        let ctx = Context::new(&teams, namespace, dwoc_catalog);
         let decision = feature.evaluate(subject, &ctx)?;
         observer.decided(
             feature.id(),
@@ -434,5 +443,24 @@ mod tests {
             &observer,
         );
         assert!(matches!(result, Err(DomainError::NamespaceNotObserved(_))));
+    }
+
+    /// A namespace the watch has not caught up with is no reason to refuse anything while every
+    /// feature is `Off`: the lookup only happens for a feature that needs it.
+    #[test]
+    fn an_unobserved_namespace_admits_when_every_feature_is_off() {
+        let registry = registry(AlwaysMutates);
+        let gate = FakeFeatureGate::new(FeatureMode::Off, Vec::new());
+        let observer = RecordingObserver::default();
+        let empty_namespace_view = FakeNamespaceView::new(std::iter::empty());
+        let result = admit(
+            &registry,
+            &subject(),
+            &gate,
+            &empty_namespace_view,
+            &dwoc_catalog(),
+            &observer,
+        );
+        assert_eq!(result.unwrap(), AdmitOutcome::Allow(Vec::new()));
     }
 }

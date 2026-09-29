@@ -22,7 +22,7 @@ pub use application::{ReconcileOutcome, observe_enforcement, reconcile};
 pub use backend::resolve_backend;
 pub use feature::kubearmor_policy::{KubeArmorPolicy, NamespaceSubject, Workspace};
 pub use model::diff::{Applied, DesiredState, Diff, compute_diff, tally};
-pub use model::policy::{ManagedObject, ObjectKey, PodSelector, RuleBody};
+pub use model::policy::{ManagedObject, ObjectKey, Owner, PodSelector, RuleBody};
 pub use port::{
     BaselineView, Capabilities, Enforcement, EnforcementSubjects, NodeEnforcerView, PolicyStore,
     ReconcileObserver, TemplateStore,

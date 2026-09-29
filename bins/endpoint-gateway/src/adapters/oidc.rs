@@ -75,7 +75,7 @@ pub async fn discover(issuer: &str) -> Result<Discovery, String> {
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
     );
-    reqwest::Client::new()
+    crate::outbound::client()
         .get(&url)
         .timeout(Duration::from_secs(10))
         .send()
@@ -95,6 +95,14 @@ pub async fn discover(issuer: &str) -> Result<Discovery, String> {
 #[derive(Clone, Default)]
 pub struct JwksCache {
     inner: Arc<RwLock<JwksState>>,
+    /// Wakes [`refresh_jwks`] early — on a token naming a `kid` this cache does not hold, which
+    /// is what a rotation looks like from the verifier's side before the next scheduled fetch.
+    wake: Arc<tokio::sync::Notify>,
+    /// When the last on-demand refresh was asked for, seconds since the epoch — the rate limit
+    /// that keeps a flood of tokens with invented `kid`s from becoming a flood of JWKS fetches.
+    last_demand: Arc<std::sync::atomic::AtomicU64>,
+    /// How many on-demand refreshes have been asked for, for tests and the curious.
+    demands: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Default)]
@@ -103,13 +111,50 @@ struct JwksState {
     generation: u64,
 }
 
+/// At most one on-demand JWKS refresh per this many seconds, however many unknown `kid`s arrive.
+pub const ON_DEMAND_REFRESH_MIN_INTERVAL_SECS: u64 = 30;
+
 impl JwksCache {
-    /// Replace the key set, bumping the generation.
+    /// Replace the key set. The generation is bumped **only when the set changed**: every
+    /// bump drops the verified-bearer cache, and a scheduled refresh that fetched the same keys
+    /// again used to do that every ten minutes for nothing.
     pub fn store(&self, keys: JwkSet) {
         if let Ok(mut state) = self.inner.write() {
+            if state.keys.as_ref() == Some(&keys) {
+                return;
+            }
             state.keys = Some(keys);
             state.generation += 1;
         }
+    }
+
+    /// Ask for an early refresh because a token named a key this cache does not hold. Returns
+    /// whether the request was passed on — `false` inside the rate-limit window.
+    pub fn request_refresh(&self, now: Timestamp) -> bool {
+        use std::sync::atomic::Ordering;
+
+        let now = now.as_secs();
+        let last = self.last_demand.load(Ordering::Relaxed);
+        if last != 0 && now < last.saturating_add(ON_DEMAND_REFRESH_MIN_INTERVAL_SECS) {
+            return false;
+        }
+        if self
+            .last_demand
+            .compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            // Another request won the race and has already asked.
+            return false;
+        }
+        self.demands.fetch_add(1, Ordering::Relaxed);
+        self.wake.notify_one();
+        true
+    }
+
+    /// How many on-demand refreshes have been passed on.
+    #[cfg(test)]
+    pub fn on_demand_refreshes(&self) -> u64 {
+        self.demands.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The current key set and its generation.
@@ -130,25 +175,76 @@ impl JwksCache {
     }
 }
 
+/// How soon a failed JWKS fetch is retried while no key has ever been loaded, and the most that
+/// retry ever waits.
+pub const JWKS_RETRY_INITIAL: Duration = Duration::from_secs(1);
+/// See [`JWKS_RETRY_INITIAL`].
+pub const JWKS_RETRY_MAX: Duration = Duration::from_secs(60);
+
 /// Keep [`JwksCache`] current, forever. One fetch now, then every `interval`.
+///
+/// **While no key is loaded, a failure is retried with backoff rather than on the schedule**
+/// (second-pass finding 4): a replica with no keys fails `/readyz`, and the loop used to sleep the
+/// full ten-minute interval after a failed first fetch, so one blip at boot kept the replica out
+/// of the rotation for ten minutes with nothing retrying.
 pub async fn refresh_jwks(jwks_uri: String, cache: JwksCache, interval: Duration) {
-    let client = reqwest::Client::new();
+    refresh_jwks_with(
+        jwks_uri,
+        cache,
+        interval,
+        JWKS_RETRY_INITIAL,
+        JWKS_RETRY_MAX,
+    )
+    .await;
+}
+
+/// [`refresh_jwks`] with the retry timings as parameters, so a test does not wait a second.
+pub async fn refresh_jwks_with(
+    jwks_uri: String,
+    cache: JwksCache,
+    interval: Duration,
+    retry_initial: Duration,
+    retry_max: Duration,
+) {
+    let client = crate::outbound::client();
+    let mut retry = retry_initial;
     loop {
-        match client
+        let fetched = match client
             .get(&jwks_uri)
             .timeout(Duration::from_secs(10))
             .send()
             .await
+            .and_then(reqwest::Response::error_for_status)
         {
             Ok(response) => match response.json::<JwkSet>().await {
-                Ok(keys) => cache.store(keys),
+                Ok(keys) => {
+                    cache.store(keys);
+                    true
+                }
                 Err(err) => {
-                    eprintln!("WARN endpoint-gateway: JWKS at {jwks_uri} unreadable: {err}")
+                    eprintln!("WARN endpoint-gateway: JWKS at {jwks_uri} unreadable: {err}");
+                    false
                 }
             },
-            Err(err) => eprintln!("WARN endpoint-gateway: JWKS fetch failed: {err}"),
+            Err(err) => {
+                eprintln!("WARN endpoint-gateway: JWKS fetch failed: {err}");
+                false
+            }
+        };
+        let wait = if !fetched && !cache.is_loaded() {
+            let wait = retry.min(interval);
+            retry = retry.saturating_mul(2).min(retry_max);
+            wait
+        } else {
+            retry = retry_initial;
+            interval
+        };
+        // The schedule, or earlier when a token named a key we do not hold (rate-limited at the
+        // asking end, in `JwksCache::request_refresh`).
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = cache.wake.notified() => {}
         }
-        tokio::time::sleep(interval).await;
     }
 }
 
@@ -358,7 +454,7 @@ impl JwksVerifier {
         // apart by the issuer claim before doing any cryptography is what keeps a `TokenReview`
         // off the path of every ordinary bearer. An opaque token does not decode at all, and is
         // the introspection verifier's business rather than this one's.
-        let claims = match self.decode_verified(token) {
+        let claims = match self.decode_verified(token, now) {
             Ok(claims) => claims,
             Err((shape, result)) => return Examination::refused(shape, result),
         };
@@ -390,7 +486,7 @@ impl JwksVerifier {
     /// and the login path is the one place an ID token is exactly what should have arrived. Its
     /// audience is this gateway's own client id, which is what an ID token's audience *is*.
     pub fn claims_of_id_token(&self, token: &str, now: Timestamp) -> Option<Claims> {
-        let claims = self.decode_verified(token).ok()?;
+        let claims = self.decode_verified(token, now).ok()?;
         let presented = self.presented_from(&claims);
         if !presented.audiences.contains(&self.client_id) {
             return None;
@@ -412,7 +508,7 @@ impl JwksVerifier {
     pub fn session_of_logout_token(&self, token: &str, now: Timestamp) -> Option<SessionId> {
         const EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 
-        let claims = self.decode_verified(token).ok()?;
+        let claims = self.decode_verified(token, now).ok()?;
         let presented = self.presented_from(&claims);
         if !presented.audiences.contains(&self.client_id) || presented.nonce {
             return None;
@@ -439,7 +535,7 @@ impl JwksVerifier {
     /// `aud`, `exp` and `nbf` are deliberately left to the caller: which of them refused is the
     /// thing the metric and `--explain-token` exist to report, and `jsonwebtoken` would flatten
     /// all three into one error kind.
-    fn decode_verified(&self, token: &str) -> Result<serde_json::Value, Refusal> {
+    fn decode_verified(&self, token: &str, now: Timestamp) -> Result<serde_json::Value, Refusal> {
         let Ok(header) = jsonwebtoken::decode_header(token) else {
             // Not a JWT at all: an opaque access token, which only introspection can resolve.
             return Err((TokenShape::Opaque, BearerResult::Unverifiable));
@@ -451,7 +547,19 @@ impl JwksVerifier {
             return Err((TokenShape::Jwt, BearerResult::Unverifiable));
         };
         let Some(jwk) = header.kid.as_deref().and_then(|kid| keys.find(kid)) else {
-            return Err((TokenShape::Jwt, BearerResult::Foreign));
+            // A `kid` we do not hold is a forgery, a rotation we have not fetched yet — or, far
+            // more often, simply somebody else's token: every service-account token and every
+            // foreign issuer's JWT lands here. The *unverified* `iss` tells those apart for free,
+            // and only a token claiming to be ours is worth a fetch (second-pass finding 7:
+            // every service-account call used to ask for one). Claiming to be ours and naming a
+            // key we do not hold is `unverifiable`, not `foreign`: whose it says it is, we know.
+            if unverified_issuer(token).as_deref() != Some(self.issuer.as_str()) {
+                return Err((TokenShape::Jwt, BearerResult::Foreign));
+            }
+            if header.kid.is_some() {
+                self.cache.request_refresh(now);
+            }
+            return Err((TokenShape::Jwt, BearerResult::Unverifiable));
         };
         // Alg confusion, closed here rather than trusted from the header: a token naming an
         // algorithm this gateway does not verify with is refused before a key is chosen, so
@@ -491,6 +599,15 @@ impl JwksVerifier {
     fn claims_from(&self, value: &serde_json::Value) -> Option<(Claims, Timestamp)> {
         claims_from_values(value, &self.username_claim, &self.groups_claim)
     }
+}
+
+/// The `iss` a JWT *claims*, read without verifying anything — good for deciding whether a token
+/// is worth any further work, and for nothing else.
+pub fn unverified_issuer(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = B64.decode(payload.trim_end_matches('=')).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("iss")?.as_str().map(str::to_owned)
 }
 
 /// Read the five facts off a claim set — a JWT's payload, or an introspection response, which
@@ -641,7 +758,7 @@ impl OidcClient {
             client_id,
             client_secret,
             redirect_url,
-            http: reqwest::Client::new(),
+            http: crate::outbound::client(),
         }
     }
 
@@ -821,8 +938,12 @@ mod tests {
 
         /// Mint a token this realm's key signed, whatever is in it.
         fn mint(&self, claims: serde_json::Value) -> String {
+            self.mint_with_kid(KID, claims)
+        }
+
+        fn mint_with_kid(&self, kid: &str, claims: serde_json::Value) -> String {
             let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
-            header.kid = Some(KID.to_owned());
+            header.kid = Some(kid.to_owned());
             jsonwebtoken::encode(&header, &claims, &self.key).expect("the token must sign")
         }
 
@@ -1138,7 +1259,142 @@ mod tests {
         cache.store(JwkSet { keys: Vec::new() });
         assert!(cache.is_loaded());
         assert_eq!(cache.snapshot().1, 1);
-        cache.store(JwkSet { keys: Vec::new() });
+        let rotated = Realm::new().cache().snapshot().0.unwrap();
+        cache.store(rotated.clone());
         assert_eq!(cache.snapshot().1, 2);
+    }
+
+    /// M3: a refresh that fetched the same keys again bumped the generation, which drops every
+    /// verified bearer the gateway had cached — every ten minutes, for nothing.
+    #[test]
+    fn storing_the_same_key_set_again_is_not_a_rotation() {
+        let keys = Realm::new().cache().snapshot().0.unwrap();
+        let cache = JwksCache::default();
+        cache.store(keys.clone());
+        cache.store(keys.clone());
+        cache.store(keys);
+        assert_eq!(cache.snapshot().1, 1);
+    }
+
+    /// M3: a token naming a `kid` the cache does not hold asks for an early refresh — once per
+    /// window, however many such tokens arrive.
+    #[test]
+    fn an_unknown_kid_asks_for_a_refresh_and_a_flood_of_them_asks_once() {
+        let known = Realm::new();
+        let stranger = Realm::new();
+        let cache = known.cache();
+        let verifier = verifier(cache.clone(), Some(rules()));
+        let token = stranger.mint_with_kid(
+            "rotated-key",
+            serde_json::json!({
+                "iss": "https://sso.weebo.si/realms/weebo",
+                "aud": "endpoint-gateway",
+                "preferred_username": "alice",
+                "exp": 4_000_000_000_u64,
+            }),
+        );
+        for _ in 0..100 {
+            let _ = verifier.examine(&token, Timestamp::from_secs(1_000));
+        }
+        assert_eq!(cache.on_demand_refreshes(), 1);
+        // The next window asks again.
+        let _ = verifier.examine(
+            &token,
+            Timestamp::from_secs(1_000 + ON_DEMAND_REFRESH_MIN_INTERVAL_SECS),
+        );
+        assert_eq!(cache.on_demand_refreshes(), 2);
+        // A key we do hold asks for nothing.
+        let ours = known.mint(serde_json::json!({
+            "iss": "https://sso.weebo.si/realms/weebo",
+            "aud": "endpoint-gateway",
+            "preferred_username": "alice",
+            "exp": 4_000_000_000_u64,
+        }));
+        let _ = verifier.examine(&ours, Timestamp::from_secs(10_000));
+        assert_eq!(cache.on_demand_refreshes(), 2);
+    }
+
+    /// Second-pass finding 4: a JWKS fetch that failed at boot was retried only after the full
+    /// ten-minute interval, keeping the replica unready (no keys) for all of it.
+    #[tokio::test]
+    async fn a_failed_first_jwks_fetch_is_retried_with_backoff_not_on_the_schedule() {
+        use axum::routing::get;
+
+        let keys = Realm::new().keys;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let app = axum::Router::new().route(
+            "/certs",
+            get(move || {
+                let counted = Arc::clone(&counted);
+                let keys = keys.clone();
+                async move {
+                    let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if call < 2 {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "down").into_response()
+                    } else {
+                        axum::Json(keys).into_response()
+                    }
+                }
+            }),
+        );
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let cache = JwksCache::default();
+        tokio::spawn(refresh_jwks_with(
+            format!("http://{address}/certs"),
+            cache.clone(),
+            Duration::from_secs(600),
+            Duration::from_millis(10),
+            Duration::from_millis(40),
+        ));
+        let started = std::time::Instant::now();
+        while !cache.is_loaded() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the keys never loaded: the failure waited for the schedule"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// Second-pass finding 7: an unknown `kid` asked for a refresh on *every* JWT, and every
+    /// service-account token or foreign issuer's token carries a `kid` this cache will never hold.
+    /// Only a token whose (unverified) `iss` is ours is worth a fetch — and only such a token is
+    /// `unverifiable` rather than `foreign`.
+    #[test]
+    fn only_a_token_claiming_our_issuer_asks_for_a_refresh_on_an_unknown_kid() {
+        let known = Realm::new();
+        let stranger = Realm::new();
+        let cache = known.cache();
+        let verifier = verifier(cache.clone(), Some(rules()));
+        let now = Timestamp::from_secs(1_000);
+        for iss in [
+            "https://kubernetes.default.svc.cluster.local",
+            "https://sso.example.test/realms/other",
+        ] {
+            let theirs = stranger.mint_with_kid(
+                "their-key",
+                serde_json::json!({"iss": iss, "aud": "x", "exp": 4_000_000_000_u64}),
+            );
+            let examined = verifier.examine(&theirs, now);
+            assert_eq!(examined.result, BearerResult::Foreign, "{iss}");
+        }
+        assert_eq!(cache.on_demand_refreshes(), 0);
+
+        let claims_ours = stranger.mint_with_kid(
+            "rotated-key",
+            serde_json::json!({"iss": ISSUER, "aud": "endpoint-gateway", "exp": 4_000_000_000_u64}),
+        );
+        assert_eq!(
+            verifier.examine(&claims_ours, now).result,
+            BearerResult::Unverifiable
+        );
+        assert_eq!(cache.on_demand_refreshes(), 1);
     }
 }

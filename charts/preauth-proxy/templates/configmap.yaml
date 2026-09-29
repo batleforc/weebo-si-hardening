@@ -1,3 +1,4 @@
+{{- include "preauth-proxy.validate" . }}
 # `values.config`, verbatim — safe to check into git and safe as a ConfigMap because it carries
 # only `${ENV}` references, never a resolved credential. See RFC 0003's Security considerations.
 apiVersion: v1
@@ -9,4 +10,4 @@ metadata:
     {{- include "preauth-proxy.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- .Values.config | nindent 4 }}
+    {{- include "preauth-proxy.configText" . | nindent 4 }}

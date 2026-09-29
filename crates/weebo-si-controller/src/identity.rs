@@ -135,9 +135,8 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
     // this loop needs the whole `spec`, not only `features.identity`.
     let (conflicts, identity) = match singleton(&ctx.client).await? {
         Some(config) => {
-            let mut spec = config.spec.clone();
-            let conflicts = spec.resolve_teams(&teams);
-            (conflicts, spec.features.identity.clone())
+            let (resolved, conflicts) = config.spec.resolve_teams(&teams);
+            (conflicts, resolved.identity)
         }
         None => (Vec::new(), None),
     };

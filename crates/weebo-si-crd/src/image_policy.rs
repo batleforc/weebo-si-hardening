@@ -5,7 +5,7 @@
 //! `pattern.rs` in `weebo-si-image-policy` and calls it "the whole security surface"; this crate
 //! is `weebo-si-image-policy`'s *dependency*, so it cannot call into it. The split that falls
 //! out is the one the dependency direction forces and it is worth naming rather than
-//! discovering: [`ImagePolicyConfig::validate`] reports every violation that is *structural* —
+//! discovering: [`ResolvedImagePolicyConfig::validate`] reports every violation that is *structural* —
 //! duplicate keys, unknown keys, a grant defaulting outside its own `allowed`, a variable name
 //! outside its charset — and `weebo_si_image_policy::validate` calls it and appends the ones
 //! that need a parsed pattern (unparseable, undeclared variable, illegal team name, a top-level
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::dwoc_pin::OnUnknownKey;
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
@@ -229,13 +230,6 @@ pub struct ImagePolicyConfig {
     /// Applied to a namespace belonging to no team, and to a team with no grant. Required; may
     /// be empty, which means the platform set and nothing else.
     pub default: Vec<EntryKey>,
-    /// What each team may reach, keyed by team name.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`ImagePolicyConfig::resolve`] fills this in from them, and a configuration nobody
-    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<String, ImageGrant>,
     /// The namespace annotation naming an entry key list.
     #[serde(default)]
     pub namespace_selection: ImageNamespaceSelection,
@@ -255,18 +249,20 @@ pub struct ImagePolicyConfig {
     pub platform: PlatformConfig,
 }
 
-impl ImagePolicyConfig {
-    /// This team's grant, if `grants` has one.
-    pub fn grant_for(&self, team: &TeamName) -> Option<&ImageGrant> {
-        self.grants.get(team.as_str())
-    }
+/// [`ImagePolicyConfig`] resolved against the `WeeboSiTeam` objects — what the feature evaluates.
+pub type ResolvedImagePolicyConfig = Resolved<ImagePolicyConfig, ImageGrant>;
 
-    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+impl ImagePolicyConfig {
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
     ///
     /// Returns one violation per key a team redefined; everything else stays in
-    /// [`ImagePolicyConfig::validate`], which now runs over the resolved shape and therefore over
+    /// [`ResolvedImagePolicyConfig::validate`], which now runs over the resolved shape and therefore over
     /// exactly what the feature will evaluate.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<ImagePolicyConfigViolation> {
+    pub fn resolve(
+        &self,
+        teams: &[WeeboSiTeam],
+    ) -> (ResolvedImagePolicyConfig, Vec<ImagePolicyConfigViolation>) {
         let blocks: Vec<(TeamName, Vec<Entry>)> = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
@@ -280,9 +276,10 @@ impl ImagePolicyConfig {
 
         let (entries, conflicts) =
             merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
-        self.catalog = ImageCatalog::new(entries);
+        let mut config = self.clone();
+        config.catalog = ImageCatalog::new(entries);
 
-        self.grants = resolution_order(teams)
+        let grants = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
                 let block = team.spec.features.image_policy.as_ref()?;
@@ -307,13 +304,14 @@ impl ImagePolicyConfig {
             })
             .collect();
 
-        conflicts
+        let violations = conflicts
             .into_iter()
             .map(|conflict| ImagePolicyConfigViolation::CatalogKeyConflict {
                 team: conflict.team,
                 key: conflict.key,
             })
-            .collect()
+            .collect();
+        (Resolved { config, grants }, violations)
     }
 }
 
@@ -324,7 +322,7 @@ pub const RESERVED_VARIABLES: [&str; 2] = ["TEAM_NAME", "NAMESPACE"];
 
 /// Whether `name` is a legal variable name — `[A-Z][A-Z0-9_]*`, per RFC 0005's *Variables in a
 /// pattern*. Lives here rather than in the domain crate because
-/// [`ImagePolicyConfig::validate`] is the first thing that needs it, and the domain crate's
+/// [`ResolvedImagePolicyConfig::validate`] is the first thing that needs it, and the domain crate's
 /// `VariableName` newtype validates through this same function.
 pub fn is_legal_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -485,10 +483,15 @@ impl fmt::Display for ImagePolicyConfigViolation {
     }
 }
 
-impl ImagePolicyConfig {
+impl ResolvedImagePolicyConfig {
+    /// This team's grant, if `grants` has one.
+    pub fn grant_for(&self, team: &TeamName) -> Option<&ImageGrant> {
+        self.grants.get(team.as_str())
+    }
+
     /// Every *structural* violation this configuration has — everything provable without
     /// parsing a pattern. Returns all of them, not just the first, mirroring
-    /// `NetworkProfilesConfig::validate`: the reconcile loop reports one `Degraded` condition
+    /// `ResolvedNetworkProfilesConfig::validate`: the reconcile loop reports one `Degraded` condition
     /// per violation.
     ///
     /// Callers should prefer `weebo_si_image_policy::validate`, which calls this and appends the
@@ -600,19 +603,19 @@ mod tests {
         catalog: ImageCatalog,
         default: &[&str],
         grants: BTreeMap<String, ImageGrant>,
-    ) -> ImagePolicyConfig {
-        ImagePolicyConfig {
+    ) -> ResolvedImagePolicyConfig {
+        Resolved::without_teams(ImagePolicyConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog,
             variables: BTreeMap::new(),
             default: default.iter().map(|k| EntryKey::new(*k)).collect(),
-            grants,
             namespace_selection: ImageNamespaceSelection::default(),
             workspace_selection: ImageWorkspaceSelection::default(),
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str) -> Team {

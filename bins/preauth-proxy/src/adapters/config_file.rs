@@ -7,9 +7,11 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use std::time::Duration;
+
 use crate::domain::config::{
-    Acquisition, Config, ConfigError, Inject, InjectMode, Origin, Passthrough, Renew, Take,
-    header_name, status_code, substitute,
+    Acquisition, Config, ConfigError, Encoding, Inject, InjectMode, Limits, MAX_REQUEST_BODY,
+    Origin, Passthrough, Renew, Take, header_name, status_code, substitute, substitute_encoded,
 };
 
 /// Replays permitted after a renewal when `renew.max_replays` is omitted.
@@ -56,6 +58,8 @@ struct RawConfig {
     inject: RawInject,
     #[serde(default)]
     renew: RawRenew,
+    #[serde(default)]
+    limits: RawLimits,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +109,94 @@ struct RawRenew {
     #[serde(default)]
     on_status: Vec<u16>,
     max_replays: Option<u32>,
+}
+
+/// Every key optional; an omitted one takes [`Limits::default`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLimits {
+    connect_timeout_secs: Option<u64>,
+    response_timeout_secs: Option<u64>,
+    response_idle_timeout_secs: Option<u64>,
+    client_read_timeout_secs: Option<u64>,
+    drain_timeout_secs: Option<u64>,
+    max_in_flight: Option<usize>,
+    max_buffered_mib: Option<usize>,
+}
+
+impl RawLimits {
+    fn into_domain(self) -> Result<Limits, ConfigError> {
+        let defaults = Limits::default();
+        let positive = |field: &str, value: u64| {
+            if value == 0 {
+                Err(ConfigError::Invalid {
+                    field: format!("limits.{field}"),
+                    value: value.to_string(),
+                    expected: "a positive number",
+                })
+            } else {
+                Ok(value)
+            }
+        };
+        let secs = |field: &str, raw: Option<u64>, default: Duration| {
+            raw.map_or(Ok(default), |v| positive(field, v).map(Duration::from_secs))
+        };
+
+        let max_in_flight = match self.max_in_flight {
+            None => defaults.max_in_flight,
+            Some(0) => {
+                return Err(ConfigError::Invalid {
+                    field: "limits.max_in_flight".to_owned(),
+                    value: "0".to_owned(),
+                    expected: "a positive number",
+                });
+            }
+            Some(n) => n,
+        };
+
+        let max_buffered_bytes = match self.max_buffered_mib {
+            None => defaults.max_buffered_bytes,
+            Some(mib) => mib
+                .checked_mul(1024 * 1024)
+                .filter(|bytes| *bytes >= MAX_REQUEST_BODY)
+                .ok_or_else(|| ConfigError::Invalid {
+                    field: "limits.max_buffered_mib".to_owned(),
+                    value: mib.to_string(),
+                    // One maximal body must fit, or such a request could never be served.
+                    expected: "at least 4 (one maximal request body)",
+                })?,
+        };
+
+        Ok(Limits {
+            connect_timeout: secs(
+                "connect_timeout_secs",
+                self.connect_timeout_secs,
+                defaults.connect_timeout,
+            )?,
+            response_timeout: secs(
+                "response_timeout_secs",
+                self.response_timeout_secs,
+                defaults.response_timeout,
+            )?,
+            response_idle_timeout: secs(
+                "response_idle_timeout_secs",
+                self.response_idle_timeout_secs,
+                defaults.response_idle_timeout,
+            )?,
+            client_read_timeout: secs(
+                "client_read_timeout_secs",
+                self.client_read_timeout_secs,
+                defaults.client_read_timeout,
+            )?,
+            drain_timeout: secs(
+                "drain_timeout_secs",
+                self.drain_timeout_secs,
+                defaults.drain_timeout,
+            )?,
+            max_in_flight,
+            max_buffered_bytes,
+        })
+    }
 }
 
 fn non_empty(field: &'static str, value: &str) -> Result<(), ConfigError> {
@@ -157,6 +249,11 @@ impl RawConfig {
             headers.push((parsed, substitute(&value, lookup)?));
         }
 
+        // A form body gets its substitutions percent-encoded, so a secret containing `&`, `=`,
+        // `+` or `%` stays one field. Decided by the Content-Type the operator configured.
+        let encoding = Encoding::for_body(headers.iter().map(|(n, v)| (n, v.as_str())));
+        let body = substitute_encoded(&self.credential.request.body, lookup, encoding)?;
+
         let accept_status = self
             .credential
             .accept_status
@@ -195,7 +292,7 @@ impl RawConfig {
                 method,
                 path,
                 headers,
-                body: substitute(&self.credential.request.body, lookup)?,
+                body,
                 accept_status,
                 from_header: header_name(
                     "credential.extract.from_header",
@@ -211,6 +308,7 @@ impl RawConfig {
                 on_status,
                 max_replays: self.renew.max_replays.unwrap_or(DEFAULT_MAX_REPLAYS),
             },
+            limits: self.limits.into_domain()?,
         })
     }
 }
@@ -300,9 +398,10 @@ renew:
         assert_eq!(config.credential.origin.authority(), "app-auth:8000");
         assert_eq!(config.credential.method, Method::POST);
         assert_eq!(config.credential.path, "/login");
+        // Form-encoded, because the example's Content-Type is a form.
         assert_eq!(
             config.credential.body,
-            "email=svc@example.test&password=hunter2"
+            "email=svc%40example.test&password=hunter2"
         );
         assert_eq!(
             config.credential.accept_status,
@@ -366,6 +465,56 @@ renew:
         let config = parse(&doc, &creds()).unwrap();
         assert!(config.renew.on_status.is_empty(), "renewal stays disabled");
         assert_eq!(config.renew.max_replays, DEFAULT_MAX_REPLAYS);
+    }
+
+    #[test]
+    fn a_form_body_encodes_secrets_and_other_bodies_do_not() {
+        let tricky = env(&[("CRED_USER", "svc"), ("CRED_SECRET", "p&admin=1")]);
+        let config = parse(EXAMPLE, &tricky).unwrap();
+        assert_eq!(config.credential.body, "email=svc&password=p%26admin%3D1");
+
+        let json = EXAMPLE
+            .replace("application/x-www-form-urlencoded", "application/json")
+            .replace(
+                "\"email=${CRED_USER}&password=${CRED_SECRET}\"",
+                "'{\"p\":\"${CRED_SECRET}\"}'",
+            );
+        let config = parse(&json, &tricky).unwrap();
+        assert_eq!(config.credential.body, "{\"p\":\"p&admin=1\"}");
+    }
+
+    #[test]
+    fn limits_are_optional_and_default_sanely() {
+        let config = parse(EXAMPLE, &creds()).unwrap();
+        assert_eq!(config.limits, Limits::default());
+    }
+
+    #[test]
+    fn limits_can_be_tuned_and_nonsense_is_refused() {
+        let doc = format!(
+            "{EXAMPLE}limits:\n  connect_timeout_secs: 2\n  response_timeout_secs: 90\n  \
+             response_idle_timeout_secs: 45\n  client_read_timeout_secs: 10\n  drain_timeout_secs: 25\n  max_in_flight: 8\n  \
+             max_buffered_mib: 32\n"
+        );
+        let limits = parse(&doc, &creds()).unwrap().limits;
+        assert_eq!(limits.connect_timeout, Duration::from_secs(2));
+        assert_eq!(limits.response_timeout, Duration::from_secs(90));
+        assert_eq!(limits.response_idle_timeout, Duration::from_secs(45));
+        assert_eq!(limits.client_read_timeout, Duration::from_secs(10));
+        assert_eq!(limits.drain_timeout, Duration::from_secs(25));
+        assert_eq!(limits.max_in_flight, 8);
+        assert_eq!(limits.max_buffered_bytes, 32 * 1024 * 1024);
+
+        for bad in [
+            "limits:\n  connect_timeout_secs: 0\n",
+            "limits:\n  max_in_flight: 0\n",
+            "limits:\n  response_idle_timeout_secs: 0\n",
+            "limits:\n  max_buffered_mib: 1\n",
+            "limits:\n  retries: 3\n",
+        ] {
+            let doc = format!("{EXAMPLE}{bad}");
+            assert!(parse(&doc, &creds()).is_err(), "{bad:?} should be refused");
+        }
     }
 
     #[test]

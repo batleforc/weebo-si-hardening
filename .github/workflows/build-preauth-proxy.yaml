@@ -1,6 +1,7 @@
 name: Build preauth-proxy
 # Fires only when this brick's own code moves, or when a workspace-level change
 # means every binary links something different. RFC 0003 is the design.
+# Build + scan only: publishing happens in release.yaml, after every gate — docs/ci.md *Releases*.
 on:
   push:
     branches: ["main"]
@@ -33,7 +34,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      packages: write
     with:
       crate: preauth-proxy
       path: bins/preauth-proxy

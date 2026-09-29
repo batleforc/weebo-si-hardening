@@ -1,7 +1,6 @@
 //! `spec.features.networkProfiles` — the profile catalogue, the baseline, the grants, and the
 //! reconcile-time validation rules over them. See RFC 0004's *Design → Contract*.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -10,21 +9,62 @@ use serde::{Deserialize, Serialize};
 use crate::feature_mode::FeatureMode;
 use crate::merge::merge_catalogs;
 use crate::namespace::NamespaceName;
+use crate::resolved::Resolved;
 use crate::selector::Selector;
 use crate::team::{Team, TeamName, WeeboSiTeam, resolution_order};
 
+/// The longest a profile key may be: a DNS-1123 label's limit. The key is written verbatim into
+/// the `hardening.weebo.io/profile` label value (≤ 63) and into object names
+/// `weebo-{key}-{workspace_id}` — 6 + 63 + 1 + 63 (a label-value workspace id) = 133, well
+/// inside a DNS-1123 subdomain's 253.
+pub const PROFILE_KEY_MAX_LEN: usize = 63;
+
+/// The DNS-1123 label pattern a profile key must match — the same string the CRD schema carries.
+pub const PROFILE_KEY_PATTERN: &str = "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$";
+
+/// Whether `key` is a usable profile key: a DNS-1123 label (lowercase alphanumerics and `-`, no
+/// leading or trailing `-`, 1..=[`PROFILE_KEY_MAX_LEN`] characters). Shared with
+/// `kubearmor_policy`'s `RuntimeProfileKey`, which is interpolated the same way.
+pub(crate) fn is_valid_profile_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= PROFILE_KEY_MAX_LEN
+        && !key.starts_with('-')
+        && !key.ends_with('-')
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// A short identifier for a catalogue entry, unique within the catalogue. Never a
 /// `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
+///
+/// A DNS-1123 label of at most 63 characters: it is interpolated into object names and label
+/// values.
+// Enforced by the CRD schema (`PROFILE_KEY_PATTERN`, `PROFILE_KEY_MAX_LEN`) and again by
+// `ResolvedNetworkProfilesConfig::validate`, since anything else would make every write for it fail at
+// the apiserver.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(transparent)]
-pub struct ProfileKey(String);
+pub struct ProfileKey(
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+    )]
+    String,
+);
 
 impl ProfileKey {
-    /// Wrap a profile key.
+    /// Wrap a profile key. Does not validate — see [`Self::is_valid`].
     pub fn new(key: impl Into<String>) -> Self {
         Self(key.into())
+    }
+
+    /// Whether this key is a DNS-1123 label, safe to interpolate into an object name and a
+    /// label value.
+    pub fn is_valid(&self) -> bool {
+        is_valid_profile_key(&self.0)
     }
 
     /// The wrapped value.
@@ -258,13 +298,6 @@ pub struct NetworkProfilesConfig {
     pub catalog: ProfileCatalog,
     /// The profile applied to every namespace in scope, never negotiable.
     pub baseline: ProfileKey,
-    /// What each team may reach, keyed by team name.
-    ///
-    /// **Not a wire field.** RFC 0011 moved the grants onto the `WeeboSiTeam` objects;
-    /// [`NetworkProfilesConfig::resolve`] fills this in from them, and a configuration nobody
-    /// resolved grants nothing — which is the cluster default, the fail-closed direction.
-    #[serde(skip)]
-    pub grants: BTreeMap<String, ProfileGrant>,
     /// The namespace annotation naming a profile key list.
     #[serde(default)]
     pub namespace_selection: ProfileNamespaceSelection,
@@ -279,18 +312,23 @@ pub struct NetworkProfilesConfig {
     pub enforcement: Enforcement,
 }
 
-impl NetworkProfilesConfig {
-    /// This team's grant, if `grants` has one.
-    pub fn grant_for(&self, team: &TeamName) -> Option<&ProfileGrant> {
-        self.grants.get(team.as_str())
-    }
+/// [`NetworkProfilesConfig`] resolved against the `WeeboSiTeam` objects — what the feature evaluates.
+pub type ResolvedNetworkProfilesConfig = Resolved<NetworkProfilesConfig, ProfileGrant>;
 
-    /// Merge every team's catalogue and defaults into this configuration, per RFC 0011.
+impl NetworkProfilesConfig {
+    /// Merge every team's catalogue into this configuration and derive each team's grant, per
+    /// RFC 0011.
     ///
     /// Returns one violation per key a team redefined; everything else stays in
-    /// [`NetworkProfilesConfig::validate`], which now runs over the resolved shape and therefore over
+    /// [`ResolvedNetworkProfilesConfig::validate`], which now runs over the resolved shape and therefore over
     /// exactly what the feature will evaluate.
-    pub fn resolve(&mut self, teams: &[WeeboSiTeam]) -> Vec<NetworkProfilesConfigViolation> {
+    pub fn resolve(
+        &self,
+        teams: &[WeeboSiTeam],
+    ) -> (
+        ResolvedNetworkProfilesConfig,
+        Vec<NetworkProfilesConfigViolation>,
+    ) {
         let blocks: Vec<(TeamName, Vec<Profile>)> = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
@@ -304,9 +342,10 @@ impl NetworkProfilesConfig {
 
         let (entries, conflicts) =
             merge_catalogs(self.catalog.entries(), &blocks, |entry| entry.key.clone());
-        self.catalog = ProfileCatalog::new(entries);
+        let mut config = self.clone();
+        config.catalog = ProfileCatalog::new(entries);
 
-        self.grants = resolution_order(teams)
+        let grants = resolution_order(teams)
             .into_iter()
             .filter_map(|team| {
                 let block = team.spec.features.network_profiles.as_ref()?;
@@ -331,7 +370,7 @@ impl NetworkProfilesConfig {
             })
             .collect();
 
-        conflicts
+        let violations = conflicts
             .into_iter()
             .map(
                 |conflict| NetworkProfilesConfigViolation::CatalogKeyConflict {
@@ -339,13 +378,17 @@ impl NetworkProfilesConfig {
                     key: conflict.key,
                 },
             )
-            .collect()
+            .collect();
+        (Resolved { config, grants }, violations)
     }
 }
 
 /// One way `spec.features.networkProfiles` can violate its own invariants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkProfilesConfigViolation {
+    /// A catalogue key is not a DNS-1123 label of at most
+    /// [`PROFILE_KEY_MAX_LEN`] characters.
+    InvalidProfileKey(ProfileKey),
     /// The same key appears twice in `catalog`.
     DuplicateProfileKey(ProfileKey),
     /// `baseline` names a key absent from `catalog`.
@@ -390,6 +433,11 @@ pub enum NetworkProfilesConfigViolation {
 impl fmt::Display for NetworkProfilesConfigViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidProfileKey(key) => write!(
+                f,
+                "profile key \"{key}\" is not a DNS-1123 label of at most {PROFILE_KEY_MAX_LEN} \
+                 characters"
+            ),
             Self::DuplicateProfileKey(key) => write!(f, "profile key {key} is declared twice"),
             Self::BaselineNotInCatalog(key) => {
                 write!(f, "baseline profile key {key} is not in the catalog")
@@ -419,7 +467,12 @@ impl fmt::Display for NetworkProfilesConfigViolation {
     }
 }
 
-impl NetworkProfilesConfig {
+impl ResolvedNetworkProfilesConfig {
+    /// This team's grant, if `grants` has one.
+    pub fn grant_for(&self, team: &TeamName) -> Option<&ProfileGrant> {
+        self.grants.get(team.as_str())
+    }
+
     /// Every violation this configuration has, if any. Returns all of them, not just the first —
     /// the reconcile loop reports one `Degraded` condition per violation.
     pub fn validate(&self, teams: &[Team]) -> Vec<NetworkProfilesConfigViolation> {
@@ -427,6 +480,11 @@ impl NetworkProfilesConfig {
 
         let mut seen_keys = std::collections::HashSet::new();
         for entry in self.catalog.entries() {
+            if !entry.key.is_valid() {
+                violations.push(NetworkProfilesConfigViolation::InvalidProfileKey(
+                    entry.key.clone(),
+                ));
+            }
             if !seen_keys.insert(&entry.key) {
                 violations.push(NetworkProfilesConfigViolation::DuplicateProfileKey(
                     entry.key.clone(),
@@ -495,6 +553,8 @@ impl NetworkProfilesConfig {
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn template(name: &str) -> TemplateRef {
@@ -532,18 +592,18 @@ mod tests {
         catalog: ProfileCatalog,
         baseline: &str,
         grants: BTreeMap<String, ProfileGrant>,
-    ) -> NetworkProfilesConfig {
-        NetworkProfilesConfig {
+    ) -> ResolvedNetworkProfilesConfig {
+        Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::DryRun,
             namespace_selector: None,
             catalog,
             baseline: ProfileKey::new(baseline),
-            grants,
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
-        }
+        })
+        .with_grants(grants)
     }
 
     fn team(name: &str) -> Team {
@@ -575,6 +635,55 @@ mod tests {
         grants.insert("team-2".to_string(), ProfileGrant::default());
         let cfg = config(clean_catalog(), "base", grants);
         assert!(cfg.validate(&teams).is_empty());
+    }
+
+    #[test]
+    fn a_profile_key_must_be_a_dns_1123_label_of_at_most_63_characters() {
+        for good in ["a", "git", "git-write", "0vault9", &"k".repeat(63)] {
+            assert!(ProfileKey::new(good).is_valid(), "{good} should be valid");
+        }
+        for bad in [
+            "",
+            "Git",
+            "git_write",
+            "-git",
+            "git-",
+            "git.write",
+            "git/../x",
+            "gït",
+            &"k".repeat(64),
+        ] {
+            assert!(!ProfileKey::new(bad).is_valid(), "{bad} should be invalid");
+        }
+    }
+
+    #[test]
+    fn an_invalid_catalogue_key_is_reported() {
+        let catalog = ProfileCatalog::new(vec![
+            Profile {
+                key: ProfileKey::new("base"),
+                variants: vec![np_variant("weebo-base")],
+            },
+            Profile {
+                key: ProfileKey::new("Git_Write"),
+                variants: vec![np_variant("weebo-git")],
+            },
+        ]);
+        let cfg = config(catalog, "base", BTreeMap::new());
+        assert_eq!(
+            cfg.validate(&[]),
+            vec![NetworkProfilesConfigViolation::InvalidProfileKey(
+                ProfileKey::new("Git_Write")
+            )]
+        );
+    }
+
+    #[test]
+    fn the_profile_key_schema_carries_the_dns_1123_pattern_and_length() {
+        let schema = serde_json::to_value(schemars::schema_for!(ProfileKey)).unwrap();
+        assert_eq!(schema["pattern"], PROFILE_KEY_PATTERN);
+        assert_eq!(schema["maxLength"], PROFILE_KEY_MAX_LEN);
+        assert_eq!(schema["minLength"], 1);
     }
 
     #[test]

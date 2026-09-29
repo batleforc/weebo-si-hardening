@@ -162,7 +162,21 @@ templateRef:
 ```
 
 The operator copies the template's rule fields verbatim and rewrites the selector to scope the
-copy. A template's own selector is ignored — scoping belongs to the operator.
+copy. A template's own selector is ignored *for the copies* — scoping belongs to the operator.
+
+**It is not ignored where the template itself lives.** A template is a live `NetworkPolicy` (or
+`KubeArmorPolicy`) in the operator's namespace, enforced there like any other, so its own selector
+decides which *operator* pods it applies to. Give every template a selector no pod carries:
+
+```yaml
+spec:
+  podSelector:
+    matchLabels: { hardening.weebo.io/template: "never-matches" }
+```
+
+`podSelector: {}` on a restrictive egress template applies that egress to the operator's own
+webhook and controller — the webhook then cannot reach the apiserver, and with `failurePolicy:
+Fail` every workspace admission in the cluster fails with it.
 
 ## Teams and people
 

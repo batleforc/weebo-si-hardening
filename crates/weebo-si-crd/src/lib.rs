@@ -21,6 +21,7 @@ pub mod namespace;
 pub mod network_profiles;
 pub mod policy_guard;
 pub mod registry_config;
+pub mod resolved;
 pub mod selector;
 pub mod spec;
 pub mod team;
@@ -34,7 +35,7 @@ pub use argo::{
 pub use dwoc::DwocRef;
 pub use dwoc_pin::{
     Catalog, CatalogEntry, CatalogKey, ConfigViolation, DwocPinConfig, Grant, NamespaceSelection,
-    OnMissingTarget, OnUnknownKey, TeamDwocPin,
+    OnMissingTarget, OnUnknownKey, ResolvedDwocPinConfig, TeamDwocPin,
 };
 pub use endpoint_auth::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AccessEntry, AccessGrant,
@@ -42,8 +43,8 @@ pub use endpoint_auth::{
     DelegationKind, Dialect, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED,
     EndpointAuthConfig, EndpointAuthConfigViolation, EndpointOverride, EndpointSelection,
     GateEnforcement, GatewayRef, HostOwnership, HostsConfig, MIDDLEWARE_NAME, OverrideMatch,
-    OwnerConfig, RULES_ANNOTATION, Retarget, RoutingKind, SelfOriginConfig, ServiceRef,
-    TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
+    OwnerConfig, RULES_ANNOTATION, ResolvedEndpointAuthConfig, Retarget, RoutingKind,
+    SelfOriginConfig, ServiceRef, TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
 };
 pub use feature_mode::FeatureMode;
 pub use identity::{
@@ -53,14 +54,14 @@ pub use identity::{
 pub use image_policy::{
     Entry, EntryKey, ImageCatalog, ImageGrant, ImageNamespaceSelection, ImagePolicyConfig,
     ImagePolicyConfigViolation, ImageWorkspaceSelection, PlatformConfig, RESERVED_VARIABLES,
-    VariableBinding, is_legal_variable_name,
+    ResolvedImagePolicyConfig, VariableBinding, is_legal_variable_name,
 };
 pub use kubearmor_policy::{
     DefaultPosture, KUBEARMOR_CAPABILITIES_POSTURE_ANNOTATION, KUBEARMOR_FILE_POSTURE_ANNOTATION,
     KUBEARMOR_NETWORK_POSTURE_ANNOTATION, KubeArmorPolicyConfig, KubeArmorPolicyConfigViolation,
-    Posture, RuntimeBackend, RuntimeEnforcement, RuntimeEnforcementBackend,
-    RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog, RuntimeProfileGrant,
-    RuntimeProfileKey, RuntimeWorkspaceSelection, TeamKubeArmorPolicy,
+    Posture, ResolvedKubeArmorPolicyConfig, RuntimeBackend, RuntimeEnforcement,
+    RuntimeEnforcementBackend, RuntimeNamespaceSelection, RuntimeProfile, RuntimeProfileCatalog,
+    RuntimeProfileGrant, RuntimeProfileKey, RuntimeWorkspaceSelection, TeamKubeArmorPolicy,
 };
 pub use labels::{
     BACKEND_LABEL, CANARY_LABEL, DEVWORKSPACE_ID_LABEL, KUBEARMOR_ENFORCER_LABEL, MANAGED_BY_LABEL,
@@ -70,19 +71,20 @@ pub use namespace::NamespaceName;
 pub use network_profiles::{
     Backend, Canary, Enforcement, EnforcementBackend, NetworkProfilesConfig,
     NetworkProfilesConfigViolation, OnNotGranted, Profile, ProfileCatalog, ProfileGrant,
-    ProfileKey, ProfileNamespaceSelection, TeamNetworkProfiles, TemplateRef, Variant,
-    WorkspaceSelection,
+    ProfileKey, ProfileNamespaceSelection, ResolvedNetworkProfilesConfig, TeamNetworkProfiles,
+    TemplateRef, Variant, WorkspaceSelection,
 };
 pub use policy_guard::PolicyGuardConfig;
 pub use registry_config::{
     Ecosystem, RegistryCatalog, RegistryConfig, RegistryConfigViolation, RegistryEntry,
-    RegistryGrant, RegistryKey, RegistryNamespaceSelection, RegistrySource, SourceKind,
-    TeamRegistryConfig, copy_name,
+    RegistryGrant, RegistryKey, RegistryNamespaceSelection, RegistrySource, ResolvedRegistryConfig,
+    SourceKind, TeamRegistryConfig, copy_name,
 };
+pub use resolved::Resolved;
 pub use selector::{Expression, Operator, Selector};
 pub use spec::{
-    FeatureState, FeatureStatus, Features, ResolveConflict, SINGLETON_NAME, WeeboSiConfig,
-    WeeboSiConfigSpec, WeeboSiConfigStatus,
+    FeatureState, FeatureStatus, Features, ResolveConflict, ResolvedFeatures, SINGLETON_NAME,
+    WeeboSiConfig, WeeboSiConfigSpec, WeeboSiConfigStatus,
 };
 pub use team::{
     DEFAULT_PRIORITY, Team, TeamAuthentik, TeamFeatures, TeamIdentity, TeamName, TeamWorkspace,

@@ -30,3 +30,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The container image reference. `image.digest` wins when set (`repo@sha256:…`, immutable — what a
+release's cosign signature is bound to); otherwise `repo:tag`, where the tag defaults to the chart's
+appVersion, which the release workflow sets from the same `v*` git tag that produced the image.
+*/}}
+{{- define "endpoint-gateway.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end -}}

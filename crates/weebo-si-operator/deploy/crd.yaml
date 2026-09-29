@@ -740,6 +740,9 @@ spec:
                     properties:
                       baseline:
                         description: The profile applied to every workspace pod in scope, never negotiable.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                         type: string
                       catalog:
                         description: Every runtime profile a workspace may be granted.
@@ -754,6 +757,9 @@ spec:
                           properties:
                             key:
                               description: The short identifier a grant, an attribute, or a resolved decision names.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
                             templateRef:
                               description: The `KubeArmorPolicy` object this entry copies its rule content from.
@@ -905,6 +911,9 @@ spec:
                     properties:
                       baseline:
                         description: The profile applied to every namespace in scope, never negotiable.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                         type: string
                       catalog:
                         description: Every profile a workspace may be granted.
@@ -913,6 +922,9 @@ spec:
                           properties:
                             key:
                               description: The short identifier a grant, an attribute, or a resolved decision names.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
                             variants:
                               description: This profile's variants, at most one per [`Backend`].
@@ -1528,6 +1540,9 @@ spec:
                           properties:
                             key:
                               description: The short identifier a grant, an attribute, or a resolved decision names.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
                             templateRef:
                               description: The `KubeArmorPolicy` object this entry copies its rule content from.
@@ -1555,6 +1570,9 @@ spec:
                             A short identifier for a runtime profile catalogue entry, unique within the catalogue. Never
                             a `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin` and `ProfileKey` in
                             `network_profiles`.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                           type: string
                         type: array
                     type: object
@@ -1570,6 +1588,9 @@ spec:
                           properties:
                             key:
                               description: The short identifier a grant, an attribute, or a resolved decision names.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
                             variants:
                               description: This profile's variants, at most one per [`Backend`].
@@ -1612,6 +1633,12 @@ spec:
                           description: |-
                             A short identifier for a catalogue entry, unique within the catalogue. Never a
                             `{name, namespace}` pair — same rationale as `CatalogKey` in `dwoc_pin`.
+
+                            A DNS-1123 label of at most 63 characters: it is interpolated into object names and label
+                            values.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                           type: string
                         type: array
                     type: object

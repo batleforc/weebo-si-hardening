@@ -15,6 +15,9 @@ use weebo_si_network_profiles::Capabilities;
 /// The API group `CiliumNetworkPolicy` lives in — present only when Cilium's CRDs are installed.
 const CILIUM_GROUP: &str = "cilium.io";
 
+/// The plural this operator watches in [`CILIUM_GROUP`].
+const CILIUM_RESOURCE: &str = "ciliumnetworkpolicies";
+
 /// A one-shot snapshot of which backends this cluster offers.
 pub struct KubeCapabilities {
     cilium_offered: bool,
@@ -30,10 +33,33 @@ impl KubeCapabilities {
     /// `Discovery::has_group` is enough to answer it, since a coarse "this cluster runs Cilium's
     /// CRDs" is exactly what `Capabilities::offers` promises — not a check of any particular
     /// verb or version.
+    ///
+    /// **Served is not enough: this process must also be allowed to watch it.** The chart only
+    /// grants `ciliumnetworkpolicies` behind `networkProfiles.cilium.enabled`, and a Cilium
+    /// cluster installed with that value off would otherwise start a watch that retries a `403`
+    /// forever and never lets startup finish. A served-but-not-granted backend is reported as
+    /// not offered — `Auto` falls back to `NetworkPolicy` — and the reason is printed once.
     pub async fn discover(client: Client) -> Result<Self, kube::Error> {
-        let discovery = Discovery::new(client).filter(&[CILIUM_GROUP]).run().await?;
+        let discovery = Discovery::new(client.clone())
+            .filter(&[CILIUM_GROUP])
+            .run()
+            .await?;
+        let served = discovery.has_group(CILIUM_GROUP);
+        // An error asking is propagated, never read as "not granted": the webhook and the
+        // controller each run this independently, and one reading a blip as "absent" while the
+        // other sees Cilium would leave them disagreeing on the live backend (see
+        // [`crate::access`]).
+        let granted = served
+            && crate::access::can_watch(&client, CILIUM_GROUP, CILIUM_RESOURCE, None).await?;
+        if served && !granted {
+            println!(
+                "weebo-si-operator: the apiserver serves {CILIUM_RESOURCE}.{CILIUM_GROUP} but this \
+                 ServiceAccount may not watch it — the Cilium backend is treated as absent (set \
+                 networkProfiles.cilium.enabled in the chart to use it)"
+            );
+        }
         Ok(Self {
-            cilium_offered: discovery.has_group(CILIUM_GROUP),
+            cilium_offered: granted,
         })
     }
 }

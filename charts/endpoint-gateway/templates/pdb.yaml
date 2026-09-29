@@ -1,4 +1,8 @@
 {{- if .Values.podDisruptionBudget.enabled }}
+{{- $replicas := ternary .Values.autoscaling.minReplicas .Values.replicaCount .Values.autoscaling.enabled }}
+{{- if ge (int .Values.podDisruptionBudget.minAvailable) (int $replicas) }}
+{{- fail (printf "podDisruptionBudget.minAvailable (%v) must be below the replica count (%v): a budget that can never allow an eviction stalls every node drain on these pods" .Values.podDisruptionBudget.minAvailable $replicas) }}
+{{- end }}
 {{/*
   Part of the bill for failing closed: a drain that takes every replica at once is an outage of
   every workspace endpoint in the cluster.

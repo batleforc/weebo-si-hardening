@@ -15,7 +15,7 @@ passwd block assumes an identity that resolves. So the block is replaced in plac
 keeps running:
 
 ```dockerfile
-COPY --from=passwd-append / /usr/local/bin/passwd-append
+COPY --from=passwd-append /passwd-append /usr/local/bin/passwd-append
 # Both files must be writable by GID 0, the only identity we are sure to have.
 RUN chmod g=u /etc/passwd /etc/group
 # The grep is the assertion — an upstream reword must fail the build, never silently no-op.
@@ -32,7 +32,7 @@ it look fixed. See the RFC's *PID 1 and signals*.
 ### Case 2 — an entrypoint you do own
 
 ```dockerfile
-COPY --from=passwd-append / /usr/local/bin/passwd-append
+COPY --from=passwd-append /passwd-append /usr/local/bin/passwd-append
 RUN chmod g=u /etc/passwd /etc/group
 ENTRYPOINT ["/usr/bin/tini", "--", \
             "/usr/local/bin/passwd-append", "--", \
@@ -113,6 +113,12 @@ code is `0` either way, deliberately, so that an init container running this doe
 
 - **Write a second entry for a UID that already resolves.** In any mode, through any flag
   combination. There is no `--force`.
+- **Write a second entry for a login name that is already taken** — by another UID, or by an
+  entry whose UID field does not even parse. The name match alone decides; nothing is written and
+  a `WARN` names the owner (exit `3` under `--strict`).
+- **Read the databases differently from glibc.** Leading whitespace on a line is skipped before
+  the fields are split, as `nss_files` does, so `  root:x:0:…` counts as `root` and `  # …` as a
+  comment.
 - **Write an entry for a UID other than its own effective one.**
 - **Write an entry claiming UID `0`.**
 - **Fail the container** unless you ask for it with `--strict`.

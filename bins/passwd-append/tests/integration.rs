@@ -196,6 +196,55 @@ fn an_empty_database_gets_no_leading_blank_line() {
 }
 
 #[test]
+fn a_non_utf8_passwd_database_still_gets_its_entry() {
+    if skip_as_root() {
+        return;
+    }
+    let fx = Fixture::new();
+    // A Latin-1 GECOS on somebody else's line must not become exit 1.
+    fs::write(
+        &fx.passwd,
+        b"root:x:0:0:root:/root:/bin/bash\njose:x:1001:0:Jos\xe9:/home/jose:/bin/sh\n",
+    )
+    .unwrap();
+
+    let out = fx.run(&[]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    let text = String::from_utf8_lossy(&fs::read(&fx.passwd).unwrap()).into_owned();
+    assert_eq!(entries_for(&text, uid()), 1);
+    assert!(
+        text.contains("Jos\u{fffd}"),
+        "the foreign line is untouched"
+    );
+}
+
+#[test]
+fn a_login_name_taken_by_another_uid_is_not_duplicated() {
+    if skip_as_root() {
+        return;
+    }
+    let other = uid().wrapping_add(1).max(1);
+    let seeded = format!("root:x:0:0:root:/root:/bin/bash\nuser:x:{other}:0::/home/user:/bin/sh\n");
+    let fx = Fixture::with_contents(&seeded, "root:x:0:\n");
+
+    let out = fx.run(&[]);
+    assert_eq!(code(&out), 0, "fail-open by default");
+    assert!(
+        stderr(&out).contains("already taken"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert_eq!(fx.passwd_text(), seeded, "nothing appended");
+
+    assert_eq!(
+        code(&fx.run(&["--strict"])),
+        3,
+        "--strict counts it as a failed append"
+    );
+    assert_eq!(fx.passwd_text(), seeded);
+}
+
+#[test]
 fn a_read_only_target_warns_and_continues() {
     if skip_as_root() {
         return;

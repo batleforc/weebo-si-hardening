@@ -21,8 +21,11 @@ webhooks:
     reinvocationPolicy: IfNeeded
     rules:
       - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["controller.devfile.io"]
-        apiVersions: ["v1alpha1"]
+        # DevWorkspace Operator serves DevWorkspace as `workspace.devfile.io` (v1alpha2 is the
+        # storage version; `matchPolicy: Equivalent` also routes a v1alpha1 request here). Not
+        # `controller.devfile.io`, the group of its *config* CRD and of the attribute keys.
+        apiGroups: ["workspace.devfile.io"]
+        apiVersions: ["v1alpha2"]
         resources: ["devworkspaces"]
         scope: Namespaced
     namespaceSelector:

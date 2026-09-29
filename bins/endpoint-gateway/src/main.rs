@@ -13,6 +13,7 @@
 mod adapters;
 mod config;
 mod http;
+mod outbound;
 mod probe;
 mod proxy;
 mod ratelimit;
@@ -96,6 +97,11 @@ async fn main() -> ExitCode {
         }
     };
 
+    if let Err(err) = outbound::init(&config.extra_ca_file) {
+        eprintln!("endpoint-gateway: {err}");
+        return ExitCode::from(exit::CONFIG);
+    }
+
     if args.iter().any(|arg| arg == "--check") {
         return check(&config, args.iter().any(|arg| arg == "--explain-token")).await;
     }
@@ -124,6 +130,9 @@ async fn check(config: &GatewayConfig, explain_token: bool) -> ExitCode {
     println!("config: valid");
     println!("  listen:  {}", config.listen);
     println!("  issuer:  {}", config.issuer);
+    if !config.extra_ca_file.is_empty() {
+        println!("  extra CA: {}", config.extra_ca_file);
+    }
     println!("  suffix:  {}", config.hosts.suffix);
     println!(
         "  claims:  username={} groups={}",
@@ -278,7 +287,7 @@ async fn explain(
 
     // One fetch, not the background refresh: this is a command, not a process.
     let jwks = JwksCache::default();
-    match reqwest::Client::new()
+    match outbound::client()
         .get(&discovery.jwks_uri)
         .timeout(Duration::from_secs(10))
         .send()
@@ -347,59 +356,32 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     // sign-in, and both are off the request path: the keys land in a cache a synchronous verifier
     // reads.
     let jwks = JwksCache::default();
-    let discovery = discover(&config.issuer).await;
-    let oidc = match discovery {
-        Ok(discovery) => {
-            // The startup check RFC 0009 keeps even though question 3 answered "yes": it is one
-            // call, and it turns a cluster-wide lockout into a line an admin reads at boot.
-            if discovery.advertises_claim(&config.claims.username) == Some(false) {
-                eprintln!(
-                    "WARN endpoint-gateway: the issuer does not advertise {:?}; if it is not the \
-                     claim Che derives usernames from, every owner check will fail closed",
-                    config.claims.username
-                );
-            }
-            if !discovery.backchannel_logout_supported {
-                eprintln!(
-                    "WARN endpoint-gateway: the issuer does not support back-channel logout; \
-                     sessions are cut off at revalidation ({}s), not at logout",
-                    config.revalidation.interval_secs
-                );
-            }
-            tokio::spawn(refresh_jwks(
-                discovery.jwks_uri.clone(),
-                jwks.clone(),
-                Duration::from_secs(600),
-            ));
-            let secret = std::env::var(&config.client_secret_env).unwrap_or_default();
-            if secret.is_empty() {
-                println!(
-                    "WARN endpoint-gateway: {} is empty; a public client cannot complete a code exchange",
-                    config.client_secret_env
-                );
-            }
-            Some(OidcClient::new(
-                discovery,
-                config.client_id.clone(),
-                secret,
-                config.redirect_url.clone(),
-            ))
-        }
+    let discovered = match discover(&config.issuer).await {
+        Ok(discovery) => Some(discovery),
         Err(err) => {
             // Not fatal on purpose: an identity provider that is down must not stop a gateway
             // from answering with the cookies and tokens it already holds. What is unavailable
-            // is a *new* sign-in, which is what the metric and this line say.
-            eprintln!("WARN endpoint-gateway: discovery failed ({err}); sign-in is unavailable");
+            // is a *new* sign-in — and only until discovery succeeds, which is retried in the
+            // background below rather than never (H3).
+            eprintln!(
+                "WARN endpoint-gateway: discovery failed ({err}); sign-in is unavailable until \
+                 it succeeds, retrying in the background"
+            );
             None
         }
     };
     // Built before the verifier because the verifier holds it: *Which tokens are ours* checks a
     // bearer's `sid` against the same set the cookie is checked against, so a back-channel logout
     // ends the access tokens minted from that session and not only its cookies.
+    // "Some replica's probe watched a forged client address come back", shared through the
+    // revocation `ConfigMap` so that one replica's finding turns pod-address identity off on all
+    // of them — and read by the workload identity below.
+    let address_forgery = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let revocations = KubeRevocations::spawn(
         client.clone(),
         config.backchannel_logout.namespace.clone(),
         config.backchannel_logout.configmap.clone(),
+        Arc::clone(&address_forgery),
     )
     .await
     .map_err(|err| format!("could not start the revocation watch: {err}"))?;
@@ -425,7 +407,7 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     }
 
     let verifier = JwksVerifier::new(VerifierPorts {
-        cache: jwks,
+        cache: jwks.clone(),
         issuer: config.issuer.clone(),
         client_id: config.client_id.clone(),
         rules,
@@ -441,8 +423,9 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     // the first `401`.
     let introspector = if config.bearer.introspection.enabled {
         let endpoint = if config.bearer.introspection.endpoint.is_empty() {
-            oidc.as_ref()
-                .and_then(|oidc| oidc.discovery().introspection_endpoint.clone())
+            discovered
+                .as_ref()
+                .and_then(|discovery| discovery.introspection_endpoint.clone())
                 .ok_or_else(|| {
                     "bearer.introspection.enabled is on and the issuer's discovery document                      advertises no introspection_endpoint — set bearer.introspection.endpoint, or                      turn introspection off; a gateway that starts here would refuse every                      non-browser caller on this platform while looking healthy"
                         .to_owned()
@@ -491,9 +474,19 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     .await
     .map_err(|err| format!("could not start the endpoint watches: {err}"))?;
 
+    // `On` starts trusted, as the admin asserted. `Auto` starts **untrusted** and is turned on
+    // only by a conclusive probe (`probe.rs`) — a forged address that did not come back.
+    if config.self_origin.pod_network == PodNetwork::Auto && !config.probe.enabled {
+        eprintln!(
+            "WARN endpoint-gateway: self_origin.pod_network is Auto and the probe is disabled, so \
+             nothing can confirm the controller overwrites the client-address header: pod-address \
+             identity stays OFF. Enable the probe, or set pod_network: On if you have verified it."
+        );
+    }
     let workloads = KubeWorkloadIdentity::spawn(
         client.clone(),
-        config.self_origin.pod_network != PodNetwork::Off,
+        config.self_origin.pod_network == PodNetwork::On,
+        address_forgery,
         config.self_origin.service_account_token,
         config.cache.token_review_max_entries,
     )
@@ -504,6 +497,10 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     // `max(1)` because a zero-capacity bucket would refuse everything; `0` means *off*, and the
     // handler checks the configured value rather than asking the limiter.
     let state_rate = config.rate_limit.login_per_address_per_minute.max(1);
+    let logout_rate = config.rate_limit.backchannel_logout_per_minute.max(1);
+    // Derived from the keys every replica holds, so any replica can answer any replica's probe.
+    let selftest_tokens =
+        adapters::session::selftest_tokens(&keys).map_err(|err| err.to_string())?;
     let enforcement = match config.enforcement {
         ConfigEnforcement::Observe => Enforcement::Observe,
         ConfigEnforcement::Enforce => Enforcement::Enforce,
@@ -524,7 +521,8 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
         codec,
         verifier,
         introspector,
-        oidc,
+        oidc: std::sync::OnceLock::new(),
+        shutting_down: std::sync::atomic::AtomicBool::new(false),
         clock: SystemClock,
         session_cache: caches.sessions,
         bearer_cache: caches.bearers,
@@ -538,17 +536,49 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
             },
             10_000,
         ),
+        logout_limiter: RateLimiter::new(
+            Rate {
+                burst: logout_rate,
+                per_minute: logout_rate,
+            },
+            1_000,
+        ),
         logged: caches.logged,
         allows: std::sync::atomic::AtomicU64::new(0),
         metrics,
         registry,
         enforcement,
         proxy: proxy::client(),
-        selftest_token: adapters::session::random_id()
-            .ok_or_else(|| "no randomness available for the probe token".to_string())?,
+        selftest_tokens,
         keys_generation: std::sync::atomic::AtomicU64::new(0),
         published: std::sync::Mutex::new(Default::default()),
     });
+
+    match discovered {
+        Some(discovery) => install_oidc(&state, discovery, &jwks),
+        None => {
+            let state = Arc::clone(&state);
+            let jwks = jwks.clone();
+            tokio::spawn(async move {
+                let issuer = state.config.issuer.clone();
+                let discovery = until_ok(
+                    || discover(&issuer),
+                    DISCOVERY_RETRY_INITIAL,
+                    DISCOVERY_RETRY_MAX,
+                    |err, next| {
+                        eprintln!(
+                            "WARN endpoint-gateway: discovery failed ({err}); next attempt in \
+                             {}s",
+                            next.as_secs()
+                        );
+                    },
+                )
+                .await;
+                println!("endpoint-gateway: discovery succeeded; sign-in is available");
+                install_oidc(&state, discovery, &jwks);
+            });
+        }
+    }
 
     if state.config.probe.enabled && state.config.self_origin.pod_network != PodNetwork::Off {
         let url = if state.config.probe.url.is_empty() {
@@ -581,12 +611,246 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
             "forward-auth: this process answers questions and carries nothing"
         }
     );
+    // H2: SIGTERM (and SIGINT) mark the replica not-ready, wait for that to reach the
+    // endpoints controller, then stop accepting and let in-flight requests finish — bounded, so a
+    // keep-alive connection that never goes idle cannot hold the pod past its grace period.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            termination().await;
+            state.begin_shutdown();
+            println!(
+                "endpoint-gateway: shutting down — not ready, draining for {}s",
+                SHUTDOWN_DELAY.as_secs()
+            );
+            tokio::time::sleep(SHUTDOWN_DELAY).await;
+            let _ = stop_tx.send(true);
+        });
+    }
+
+    let metrics_server = if state.config.metrics_listen.is_empty() {
+        None
+    } else {
+        let metrics_addr: SocketAddr = state.config.metrics_listen.parse().map_err(|err| {
+            format!(
+                "invalid metrics_listen address {:?}: {err}",
+                state.config.metrics_listen
+            )
+        })?;
+        let metrics_listener = tokio::net::TcpListener::bind(metrics_addr)
+            .await
+            .map_err(|err| format!("could not bind {metrics_addr}: {err}"))?;
+        println!("endpoint-gateway metrics on {metrics_addr}");
+        Some(tokio::spawn(serve_until(
+            metrics_listener,
+            http::metrics_router(Arc::clone(&state)),
+            stop_rx.clone(),
+            DRAIN_TIMEOUT,
+        )))
+    };
+
     // `ConnectInfo`, because the reverse-proxy shell decides whether to believe a client-address
     // header from the *connection* rather than from the header.
-    axum::serve(
+    let served = serve_until(listener, http::router(state), stop_rx, DRAIN_TIMEOUT).await;
+    if let Some(metrics_server) = metrics_server {
+        metrics_server.abort();
+    }
+    served
+}
+
+/// How long discovery waits before its first retry, and the most it ever waits between two.
+const DISCOVERY_RETRY_INITIAL: Duration = Duration::from_secs(2);
+const DISCOVERY_RETRY_MAX: Duration = Duration::from_secs(300);
+/// Between SIGTERM and closing the listener: long enough for `/readyz`'s `503` to be seen and the
+/// endpoint removed, so no new request is routed to a listener that is about to close.
+const SHUTDOWN_DELAY: Duration = Duration::from_secs(5);
+/// The most in-flight requests are waited for once the listener has closed. With
+/// `SHUTDOWN_DELAY`, inside the chart's 30-second `terminationGracePeriodSeconds`.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Build the login path from a discovery document, start the key refresh it names, and make it
+/// available to the handlers — at boot, or whenever the background retry first succeeds.
+fn install_oidc(state: &GatewayState, discovery: adapters::oidc::Discovery, jwks: &JwksCache) {
+    let config = &state.config;
+    // The startup check RFC 0009 keeps even though question 3 answered "yes": it is one call,
+    // and it turns a cluster-wide lockout into a line an admin reads at boot.
+    if discovery.advertises_claim(&config.claims.username) == Some(false) {
+        eprintln!(
+            "WARN endpoint-gateway: the issuer does not advertise {:?}; if it is not the claim \
+             Che derives usernames from, every owner check will fail closed",
+            config.claims.username
+        );
+    }
+    if !discovery.backchannel_logout_supported {
+        eprintln!(
+            "WARN endpoint-gateway: the issuer does not support back-channel logout; sessions \
+             are cut off at revalidation ({}s), not at logout",
+            config.revalidation.interval_secs
+        );
+    }
+    tokio::spawn(refresh_jwks(
+        discovery.jwks_uri.clone(),
+        jwks.clone(),
+        Duration::from_secs(600),
+    ));
+    let secret = std::env::var(&config.client_secret_env).unwrap_or_default();
+    if secret.is_empty() {
+        println!(
+            "WARN endpoint-gateway: {} is empty; a public client cannot complete a code exchange",
+            config.client_secret_env
+        );
+    }
+    let client = OidcClient::new(
+        discovery,
+        config.client_id.clone(),
+        secret,
+        config.redirect_url.clone(),
+    );
+    // `set` fails only if it is already set, which cannot happen: boot and the retry are
+    // exclusive.
+    let _ = state.oidc.set(client);
+}
+
+/// Call `attempt` until it succeeds, sleeping `initial`, then twice that, up to `max`, between
+/// failures — each of which is handed to `on_error` with the delay before the next try.
+async fn until_ok<T, E, F, Fut>(
+    mut attempt: F,
+    initial: Duration,
+    max: Duration,
+    mut on_error: impl FnMut(E, Duration),
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut delay = initial;
+    loop {
+        match attempt().await {
+            Ok(value) => return value,
+            Err(err) => {
+                on_error(err, delay);
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(max);
+            }
+        }
+    }
+}
+
+/// Resolve on SIGTERM — what the kubelet sends — or SIGINT.
+async fn termination() {
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            // No handler could be installed: SIGINT is still honoured below.
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = terminate => {}
+    }
+}
+
+/// Serve `router` until `stop` turns true, then stop accepting and give in-flight requests up to
+/// `drain` to finish.
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    drain: Duration,
+) -> Result<(), String> {
+    let mut stopped = stop.clone();
+    let server = axum::serve(
         listener,
-        http::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .map_err(|err| format!("server error: {err}"))
+    .with_graceful_shutdown(async move {
+        let _ = stop.wait_for(|stop| *stop).await;
+    });
+    tokio::select! {
+        served = server => served.map_err(|err| format!("server error: {err}")),
+        () = async move {
+            let _ = stopped.wait_for(|stop| *stop).await;
+            tokio::time::sleep(drain).await;
+        } => {
+            eprintln!(
+                "WARN endpoint-gateway: connections still open after the drain timeout; exiting"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use super::*;
+
+    /// H3: discovery that failed at boot used to leave sign-in off for the life of the pod.
+    #[tokio::test]
+    async fn a_failing_attempt_is_retried_with_backoff_until_it_succeeds() {
+        let mut calls = 0_u32;
+        let mut delays = Vec::new();
+        let value = until_ok(
+            || {
+                calls += 1;
+                let now = calls;
+                async move { if now < 5 { Err("down") } else { Ok(now) } }
+            },
+            Duration::from_millis(1),
+            Duration::from_millis(4),
+            |_, next| delays.push(next.as_millis()),
+        )
+        .await;
+        assert_eq!(value, 5);
+        assert_eq!(delays, vec![1, 2, 4, 4]);
+    }
+
+    /// H2: a stop lets the request already in flight finish, and then the server returns.
+    #[tokio::test]
+    async fn stopping_drains_the_request_in_flight_and_then_returns() {
+        use axum::routing::get;
+
+        let router = axum::Router::new().route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                "done"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(serve_until(
+            listener,
+            router,
+            stop_rx,
+            Duration::from_secs(10),
+        ));
+
+        let request = tokio::spawn(async move {
+            reqwest::get(format!("http://{address}/slow"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_tx.send(true).unwrap();
+        assert_eq!(request.await.unwrap(), "done");
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the server must return once drained")
+            .unwrap()
+            .unwrap();
+    }
 }

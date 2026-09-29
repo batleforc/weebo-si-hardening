@@ -4,11 +4,14 @@
 # and why `certificates.provider` has no default that "just works": RFC 0002 has no self-signed
 # fallback of its own, on purpose.
 
-# This repo has no registry decision yet (see .github/workflows/brick.yaml) — replace both
-# before installing.
 image:
-  repository: weebo-si-operator
-  tag: ""  # defaults to .Chart.AppVersion
+  # What `.github/workflows/release.yaml` pushes: `ghcr.io/<repository owner>/<crate>`, tagged
+  # `<version>` and `<major>.<minor>` from the `v*` git tag, and cosign-signed by digest.
+  repository: ghcr.io/batleforc/weebo-si-operator
+  tag: ""  # defaults to .Chart.AppVersion — the release workflow sets it from the git tag
+  # Optional `sha256:…`. When set it wins over `tag` (`repository@digest`), pinning the exact
+  # signed artifact rather than a tag that could be re-pushed.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -33,9 +36,12 @@ webhook:
   rollingUpdate:
     maxUnavailable: 0
     maxSurge: 1
+  # One at a time, never both: with two replicas this keeps one webhook serving through a drain.
+  # `0` looks safer and is not — an eviction the budget can never allow stalls every node drain,
+  # cluster upgrade and autoscaler scale-down on these pods indefinitely.
   podDisruptionBudget:
     enabled: true
-    maxUnavailable: 0
+    maxUnavailable: 1
   resources:
     requests:
       cpu: 50m
@@ -50,6 +56,11 @@ webhook:
     port: 443
     targetPort: 9443
   timeoutSeconds: 5
+
+# A PriorityClass for both roles. The webhook sits in the admission path of every DevWorkspace;
+# under node pressure it should not be the pod the scheduler evicts first. Empty = cluster
+# default. `system-cluster-critical` is the usual choice where policy allows it.
+priorityClassName: ""
 
 controller:
   replicaCount: 2

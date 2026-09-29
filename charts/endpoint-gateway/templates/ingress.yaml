@@ -27,15 +27,50 @@ spec:
       secretName: {{ .Values.ingress.tls.secretName }}
       {{- end }}
   {{- end }}
+  {{- /*
+    Only the paths a browser — or the identity provider, for back-channel logout — needs. H7:
+    this used to route `/` as a prefix, which published `/auth` (the forward-auth decision, meant
+    for the ingress controller over the Service), `/healthz`, `/readyz` and `/metrics` on the
+    public host. `/auth` is reached by the controller through the Service and never through this
+    Ingress; `/metrics` is on its own port and not routed here at all.
+  */}}
   rules:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          {{- /*
+            `/oidc/backchannel-logout` only while the gateway serves it: with
+            `backchannelLogout.enabled: false` it answers `404`, and a public route to a `404` is
+            surface for nothing.
+          */}}
+          {{- $paths := list "/oidc/start" "/oidc/callback" "/host-session" "/sign_out" }}
+          {{- if .Values.config.backchannelLogout.enabled }}
+          {{- $paths = append $paths "/oidc/backchannel-logout" }}
+          {{- end }}
+          {{- range $path := $paths }}
+          - path: {{ $path }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "endpoint-gateway.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+          {{- /*
+            The self-origin probe reaches `/selftest` through this Ingress on purpose — the
+            property it tests is what the controller does to a request on the way in — so the
+            path is routed exactly when the probe runs. It answers `404` to anything not carrying
+            the probe token, which every replica derives from the shared session keys (so the
+            replica the Service picks can answer another's probe) and nobody without them can,
+            compared in constant time.
+          */}}
+          {{- if and .Values.config.probe.enabled (ne (toString .Values.config.selfOrigin.podNetwork) "Off") }}
+          - path: /selftest
+            pathType: Exact
             backend:
               service:
                 name: {{ include "endpoint-gateway.fullname" . }}
                 port:
                   name: http
+          {{- end }}
 {{- end }}

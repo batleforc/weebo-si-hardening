@@ -20,7 +20,9 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use kube::{CustomResourceExt, ResourceExt};
 use weebo_si_controller::{Ctx, reconcile_fn};
-use weebo_si_crd::{FeatureState, WeeboSiConfig, WeeboSiTeam};
+use weebo_si_crd::{
+    FeatureState, Resolved, ResolvedKubeArmorPolicyConfig, WeeboSiConfig, WeeboSiTeam,
+};
 use weebo_si_envtest_support::EnvTest;
 
 macro_rules! envtest_or_skip {
@@ -594,8 +596,8 @@ use weebo_si_kubearmor_policy::{KubeArmorPolicy, NamespaceSubject};
 
 const POSTURE_NAMESPACE: &str = "user-posture";
 
-fn kubearmor_config(mode: FeatureMode, posture: DefaultPosture) -> KubeArmorPolicyConfig {
-    KubeArmorPolicyConfig {
+fn kubearmor_config(mode: FeatureMode, posture: DefaultPosture) -> ResolvedKubeArmorPolicyConfig {
+    Resolved::without_teams(KubeArmorPolicyConfig {
         mode,
         namespace_selector: None,
         catalog: RuntimeProfileCatalog::new(vec![RuntimeProfile {
@@ -606,7 +608,6 @@ fn kubearmor_config(mode: FeatureMode, posture: DefaultPosture) -> KubeArmorPoli
             },
         }]),
         baseline: RuntimeProfileKey::new("base"),
-        grants: BTreeMap::new(),
         namespace_selection: RuntimeNamespaceSelection::default(),
         workspace_selection: RuntimeWorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
@@ -614,10 +615,10 @@ fn kubearmor_config(mode: FeatureMode, posture: DefaultPosture) -> KubeArmorPoli
             backend: RuntimeEnforcementBackend::KubeArmor,
             default_posture: posture,
         },
-    }
+    })
 }
 
-fn kubearmor_feature(config: KubeArmorPolicyConfig) -> KubeArmorPolicy {
+fn kubearmor_feature(config: ResolvedKubeArmorPolicyConfig) -> KubeArmorPolicy {
     KubeArmorPolicy::new(
         Arc::new(RwLock::new(Some(config))),
         Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),

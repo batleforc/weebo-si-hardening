@@ -21,7 +21,7 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::port::observer::Observer;
 use weebo_si_chassis::{AdmitOutcome, Registry, Subject};
-use weebo_si_crd::{ImagePolicyConfig, NamespaceName};
+use weebo_si_crd::{NamespaceName, ResolvedImagePolicyConfig};
 use weebo_si_image_policy::port::Resource;
 use weebo_si_image_policy::variable::resolve_declared;
 use weebo_si_image_policy::{
@@ -43,7 +43,7 @@ pub const VALIDATE_PODS_PATH: &str = "/validate/v1/pods";
 pub struct ImagePolicyState {
     /// `spec.features.imagePolicy`, hot-reloaded — read fresh on every request, and shared with
     /// both features so the two enforcement points can never disagree.
-    pub config: Arc<RwLock<Option<ImagePolicyConfig>>>,
+    pub config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
     /// The `DevWorkspace` half.
     pub workspace_registry: Registry<WorkspaceImages>,
     /// The `Pod` half.
@@ -392,7 +392,7 @@ async fn validate_pods(
 /// the composition root and the envtest suite both use, so what the tests prove is the wiring
 /// production runs.
 pub fn registries(
-    config: Arc<RwLock<Option<ImagePolicyConfig>>>,
+    config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
     observer: Arc<dyn ImagePolicyObserver>,
 ) -> (Registry<WorkspaceImages>, Registry<PodImages>) {
     let mut workspace_registry: Registry<WorkspaceImages> = Registry::new();
@@ -443,8 +443,8 @@ mod tests {
         object(
             "DevWorkspace",
             "devworkspaces",
-            "controller.devfile.io",
-            "v1alpha1",
+            "workspace.devfile.io",
+            "v1alpha2",
             spec,
         )
     }

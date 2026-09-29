@@ -24,8 +24,21 @@ pub struct GatewayConfig {
     /// per request.
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// Where `/metrics` is served, on a listener of its own. Empty (the default, for
+    /// compatibility) serves it on `listen` beside everything else; the chart sets a separate
+    /// port so that nothing routed to the main one — the public `Ingress` included — can reach
+    /// it.
+    #[serde(default)]
+    pub metrics_listen: String,
     /// The identity provider's issuer URL — the same client Che already uses.
     pub issuer: String,
+    /// A PEM bundle of extra root certificates, trusted for every outbound HTTPS call — issuer
+    /// discovery, JWKS, the token and introspection endpoints, the self-origin probe — **in
+    /// addition to** the built-in Mozilla roots, never instead of them. Empty (the default)
+    /// trusts the built-in roots only. The way to reach an identity provider behind a private
+    /// CA; an unreadable file or one holding no certificate is a refusal to start.
+    #[serde(default)]
+    pub extra_ca_file: String,
     /// The OIDC client id.
     pub client_id: String,
     /// The environment variable holding the client secret. Never the secret itself: a
@@ -104,16 +117,31 @@ pub struct RateLimitConfig {
     /// any real person's rate and still bounds the cost of a flood.
     #[serde(default = "default_login_rate")]
     pub login_per_address_per_minute: u32,
+    /// Back-channel logout calls per minute per address, with a burst of the same size, on a
+    /// bucket of its own. `0` turns this limiter off.
+    ///
+    /// Separate from the login limit (second-pass finding 5): every call comes from the identity
+    /// provider's egress address, so a realm-wide logout — an admin ending every session, a user
+    /// disabled with many devices — is a burst from *one* address, and sharing the sign-in bucket
+    /// answered it `429`. The identity provider does not retry a back-channel logout, so every
+    /// refused call was a session that stayed alive. Over the limit is answered `503`.
+    #[serde(default = "default_backchannel_rate")]
+    pub backchannel_logout_per_minute: u32,
 }
 
 const fn default_login_rate() -> u32 {
     300
 }
 
+const fn default_backchannel_rate() -> u32 {
+    6_000
+}
+
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             login_per_address_per_minute: default_login_rate(),
+            backchannel_logout_per_minute: default_backchannel_rate(),
         }
     }
 }
@@ -445,13 +473,109 @@ pub enum TrustedProxy {
     /// Believe the header on any connection.
     #[default]
     Any,
-    /// Believe it only from these address prefixes — matched as a string prefix, which covers
-    /// the pod and node CIDRs a cluster actually writes without pulling in an IP-arithmetic
-    /// dependency for a comparison this coarse.
-    Cidrs(Vec<String>),
+    /// Believe it only from these networks — real CIDRs (`10.128.0.0/14`, `fd00::/8`), a bare
+    /// address, or the legacy dotted prefix (`"10.128."`, read as `10.128.0.0/16`). It used to be
+    /// a string prefix, under which `"10.1"` also trusted `10.10.x.x` through `10.199.x.x`.
+    Cidrs(Vec<Cidr>),
     /// Never believe it. Pod-address identity is then off, and the service-account token path is
     /// the only self-origin mechanism left.
     Off,
+}
+
+/// One network, parsed at load: an address and a prefix length, compared by mask.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Cidr {
+    network: std::net::IpAddr,
+    prefix: u8,
+    /// What the admin wrote, so the value round-trips and error messages quote it.
+    spelled: String,
+}
+
+impl Cidr {
+    /// Parse `a.b.c.d/n`, `v6::/n`, a bare address, or a legacy dotted IPv4 prefix of whole
+    /// octets ending in `.` (`"10."`, `"10.128."`, `"10.128.3."`).
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let spelled = raw.trim().to_owned();
+        let (network, prefix) = if let Some((address, length)) = spelled.split_once('/') {
+            let network: IpAddr = address
+                .parse()
+                .map_err(|_| format!("{spelled:?} is not a CIDR: {address:?} is not an address"))?;
+            let prefix: u8 = length
+                .parse()
+                .map_err(|_| format!("{spelled:?} is not a CIDR: bad prefix length"))?;
+            (network, prefix)
+        } else if let Ok(address) = spelled.parse::<IpAddr>() {
+            (address, if address.is_ipv4() { 32 } else { 128 })
+        } else if let Some(head) = spelled.strip_suffix('.') {
+            let octets = head
+                .split('.')
+                .map(str::parse::<u8>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| format!("{spelled:?} is neither a CIDR nor a dotted prefix"))?;
+            if octets.is_empty() || octets.len() > 3 {
+                return Err(format!("{spelled:?} is neither a CIDR nor a dotted prefix"));
+            }
+            let mut bytes = [0_u8; 4];
+            for (slot, octet) in bytes.iter_mut().zip(&octets) {
+                *slot = *octet;
+            }
+            let prefix = u8::try_from(octets.len() * 8).unwrap_or(32);
+            (IpAddr::V4(Ipv4Addr::from(bytes)), prefix)
+        } else {
+            return Err(format!("{spelled:?} is not a CIDR"));
+        };
+        let max = if network.is_ipv4() { 32 } else { 128 };
+        if prefix > max {
+            return Err(format!(
+                "{spelled:?}: prefix /{prefix} is longer than /{max}"
+            ));
+        }
+        Ok(Self {
+            network,
+            prefix,
+            spelled,
+        })
+    }
+
+    /// Whether `address` is inside this network. An IPv4-mapped IPv6 peer (`::ffff:10.1.2.3`,
+    /// which is how an IPv4 client appears on a `[::]` listener) is compared as the IPv4 address
+    /// it is; otherwise the families must match.
+    pub fn contains(&self, address: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+
+        match (self.network, address.to_canonical()) {
+            (IpAddr::V4(network), IpAddr::V4(address)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(network) & mask == u32::from(address) & mask
+            }
+            (IpAddr::V6(network), IpAddr::V6(address)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(network) & mask == u128::from(address) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl TryFrom<String> for Cidr {
+    type Error = String;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::parse(&raw)
+    }
+}
+
+impl From<Cidr> for String {
+    fn from(cidr: Cidr) -> Self {
+        cidr.spelled
+    }
 }
 
 fn default_client_ip_header() -> String {
@@ -488,7 +612,10 @@ pub struct RulesConfig {
     /// How many rules one endpoint may carry.
     #[serde(default = "default_max_rules")]
     pub max_per_endpoint: usize,
-    /// A path that does not survive normalisation is denied.
+    /// A path that does not survive normalisation is denied. **Always**: the decision enforces
+    /// it unconditionally, because turning it off is the path-confusion bypass RFC 0009 spends a
+    /// section closing. The key is kept so existing files still load, and `false` is a refusal
+    /// to start rather than a setting that is silently not honoured.
     #[serde(default = "yes")]
     pub reject_unnormalised_path: bool,
     /// What an `access` annotation naming an unknown key resolves to.
@@ -570,7 +697,9 @@ pub enum Enforcement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackchannelConfig {
-    /// Whether back-channel logout is served at all.
+    /// Whether back-channel logout is served at all. Off, `/oidc/backchannel-logout` answers
+    /// `404` and the chart does not route it; the revocation `ConfigMap` is still watched, so a
+    /// revocation recorded before it was turned off keeps holding.
     #[serde(default = "yes")]
     pub enabled: bool,
     /// The `ConfigMap` holding revoked session ids, in the gateway's own namespace.
@@ -663,6 +792,14 @@ impl GatewayConfig {
                 "reverse_proxy with self_origin.trusted_proxy: any would let any pod that can \
                  reach this gateway claim any namespace's identity by setting one header — set \
                  trusted_proxy to the router's CIDRs, or pod_network: Off"
+                    .into(),
+            ));
+        }
+        if !self.rules.reject_unnormalised_path {
+            return Err(ConfigError::Invalid(
+                "rules.reject_unnormalised_path: false is not supported — a path that does not \
+                 survive normalisation is always denied, because allowing it is the \
+                 path-confusion bypass; remove the key or set it to true"
                     .into(),
             ));
         }
@@ -888,7 +1025,10 @@ bearer:
             ("trusted_proxy: off", TrustedProxy::Off),
             (
                 "trusted_proxy:\n    cidrs: [\"10.128.\", \"10.129.\"]",
-                TrustedProxy::Cidrs(vec!["10.128.".into(), "10.129.".into()]),
+                TrustedProxy::Cidrs(vec![
+                    Cidr::parse("10.128.").unwrap(),
+                    Cidr::parse("10.129.").unwrap(),
+                ]),
             ),
         ] {
             let file = write(&format!(
@@ -899,11 +1039,70 @@ bearer:
         }
     }
 
+    /// Second-pass finding 10: `reject_unnormalised_path` was parsed and never read, so `false`
+    /// looked like a setting and changed nothing. It is now refused at load.
+    #[test]
+    fn turning_off_the_unnormalised_path_refusal_refuses_to_start() {
+        let file = write(&format!(
+            "{MINIMAL}\nrules:\n  reject_unnormalised_path: false\n"
+        ));
+        let Err(ConfigError::Invalid(why)) = GatewayConfig::load(file.path()) else {
+            panic!("reject_unnormalised_path: false must not load");
+        };
+        assert!(why.contains("reject_unnormalised_path"), "{why}");
+        let file = write(&format!(
+            "{MINIMAL}\nrules:\n  reject_unnormalised_path: true\n"
+        ));
+        assert!(GatewayConfig::load(file.path()).is_ok());
+    }
+
+    #[test]
+    fn the_back_channel_has_a_limit_of_its_own_and_generous_by_default() {
+        let config = GatewayConfig::load(write(MINIMAL).path()).unwrap();
+        assert!(
+            config.rate_limit.backchannel_logout_per_minute
+                > config.rate_limit.login_per_address_per_minute
+        );
+    }
+
     #[test]
     fn the_compile_settings_are_what_every_endpoint_is_compiled_with() {
         let file = write(MINIMAL);
         let settings = GatewayConfig::load(file.path()).unwrap().compile_settings();
         assert_eq!(settings.max_rules, 16);
         assert_eq!(settings.foreign_bearer, BearerMode::Reject);
+    }
+
+    /// M2: the trusted-proxy match used to be a string prefix, so `"10.1"` trusted every address
+    /// from `10.1.x.x` to `10.199.x.x` — including `10.10.0.0/16`, somebody else's network.
+    #[test]
+    fn trusted_proxy_networks_are_matched_as_networks_and_not_as_strings() {
+        use std::net::IpAddr;
+
+        let ip = |raw: &str| raw.parse::<IpAddr>().unwrap();
+        let cidr = Cidr::parse("10.1.0.0/16").unwrap();
+        assert!(cidr.contains(ip("10.1.200.3")));
+        assert!(!cidr.contains(ip("10.10.0.1")), "the string-prefix bypass");
+        assert!(!cidr.contains(ip("10.199.0.1")));
+        // An IPv4 client on a `[::]` listener arrives IPv4-mapped.
+        assert!(cidr.contains(ip("::ffff:10.1.0.9")));
+        // Legacy dotted prefixes keep their meaning — whole octets.
+        let legacy = Cidr::parse("10.128.").unwrap();
+        assert!(legacy.contains(ip("10.128.4.4")));
+        assert!(!legacy.contains(ip("10.12.8.4")));
+        // IPv6, bare addresses, and the edges.
+        assert!(Cidr::parse("fd00::/8").unwrap().contains(ip("fd12::1")));
+        assert!(!Cidr::parse("fd00::/8").unwrap().contains(ip("10.0.0.1")));
+        assert!(Cidr::parse("10.0.0.7").unwrap().contains(ip("10.0.0.7")));
+        assert!(!Cidr::parse("10.0.0.7").unwrap().contains(ip("10.0.0.8")));
+        assert!(Cidr::parse("0.0.0.0/0").unwrap().contains(ip("192.0.2.1")));
+        // What is not a network refuses to load rather than trusting something unintended.
+        for bad in ["10.1", "10.0.0.0/33", "banana", "10.300.", "/8", ""] {
+            assert!(Cidr::parse(bad).is_err(), "{bad:?}");
+        }
+        let file = write(&format!(
+            "{MINIMAL}\nself_origin:\n  pod_network: Off\n  trusted_proxy:\n    cidrs: [\"10.1\"]\n"
+        ));
+        assert!(GatewayConfig::load(file.path()).is_err());
     }
 }

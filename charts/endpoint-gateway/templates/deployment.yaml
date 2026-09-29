@@ -46,18 +46,25 @@ spec:
                   matchLabels:
                     {{- include "endpoint-gateway.selectorLabels" . | nindent 20 }}
       {{- end }}
+      # SIGTERM marks the replica not-ready, waits five seconds for that to reach the endpoints
+      # controller, then drains in-flight requests for at most twenty: inside thirty.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: endpoint-gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "endpoint-gateway.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--config", "/etc/endpoint-gateway/config.yaml"]
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           env:
             - name: ENDPOINT_GATEWAY_SESSION_KEYS
               valueFrom:
@@ -73,10 +80,28 @@ spec:
             - name: config
               mountPath: /etc/endpoint-gateway
               readOnly: true
+            {{- if or .Values.extraCa.configMap .Values.extraCa.secret }}
+            - name: extra-ca
+              mountPath: /etc/endpoint-gateway-ca
+              readOnly: true
+            {{- end }}
+          # The listener is bound only once the informers have synced, which on a large cluster
+          # takes longer than a liveness probe should wait: the startup probe owns that window,
+          # and liveness starts counting only after it.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           # Readiness is wired to the informer sync, not just to the process being up: a cold
           # replica must not answer "allow" from an empty cache, and it must not answer "deny"
           # from one either — staying out of the rotation is the correct third answer.
@@ -84,8 +109,9 @@ spec:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 3
-            periodSeconds: 5
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -97,3 +123,20 @@ spec:
         - name: config
           configMap:
             name: {{ include "endpoint-gateway.fullname" . }}
+        {{- if and .Values.extraCa.configMap .Values.extraCa.secret }}
+        {{- fail "extraCa: name a configMap or a secret, not both" }}
+        {{- else if .Values.extraCa.configMap }}
+        - name: extra-ca
+          configMap:
+            name: {{ .Values.extraCa.configMap }}
+            items:
+              - key: {{ .Values.extraCa.key }}
+                path: {{ .Values.extraCa.key }}
+        {{- else if .Values.extraCa.secret }}
+        - name: extra-ca
+          secret:
+            secretName: {{ .Values.extraCa.secret }}
+            items:
+              - key: {{ .Values.extraCa.key }}
+                path: {{ .Values.extraCa.key }}
+        {{- end }}

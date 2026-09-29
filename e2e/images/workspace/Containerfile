@@ -1,0 +1,28 @@
+# The one workspace image the end-to-end suites start. Small on purpose — the Universal Developer
+# Image is several GB and a nightly on a stock runner has none to spare — and carrying exactly the
+# tools the assertions need: `curl` for the network-profile rows, `whoami`/`getent` for
+# passwd-append's, `serve.py` for the endpoint rows, a shell for everything else.
+#
+# passwd-append is adopted **exactly** as docs/bricks/passwd-append.md *Case 2* says, line for
+# line: if that page is wrong, this build is where it fails, not a user's.
+
+ARG PASSWD_APPEND_IMAGE=localhost/passwd-append:e2e
+FROM ${PASSWD_APPEND_IMAGE} AS passwd-append
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8
+
+# `getent` lives in glibc-common, which ubi-minimal leaves out; python3 runs serve.py, the
+# application the endpoint-auth and preauth-proxy rows are asserted against.
+RUN microdnf install -y --nodocs glibc-common python3 && microdnf clean all
+
+COPY serve.py /usr/local/bin/serve.py
+
+COPY --from=passwd-append /passwd-append /usr/local/bin/passwd-append
+RUN chmod g=u /etc/passwd /etc/group \
+ && mkdir -p /home/user && chgrp 0 /home/user && chmod g=u /home/user
+
+ENV HOME=/home/user
+USER 10001
+# No init here, unlike the documented shape: serve.py is the whole workload, it forks nothing, and
+# SIGTERM reaching it directly is all the shutdown it needs.
+ENTRYPOINT ["/usr/local/bin/passwd-append", "--", "python3", "/usr/local/bin/serve.py", "8080"]

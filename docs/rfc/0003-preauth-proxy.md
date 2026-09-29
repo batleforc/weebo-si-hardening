@@ -160,6 +160,7 @@ reads the values.
 | `inject.mode` | yes | `append` (add to existing) or `set` (replace). |
 | `renew.on_status` | no | Upstream statuses that mean "credential stale"; triggers one re-acquire+replay. Empty disables renewal. |
 | `renew.max_replays` | no (default `1`) | Replays per request after a renewal. |
+| `limits.*` | no | Resource bounds, each optional: `connect_timeout_secs` (5), `response_timeout_secs` (60, origin response head, connect included), `response_idle_timeout_secs` (60, longest gap between two frames of a streamed response body), `client_read_timeout_secs` (30, caller's request head and, separately, body), `drain_timeout_secs` (20), `max_in_flight` (256, a request counting until its response body ends), `max_buffered_mib` (16, request bodies across all requests, ≥ 4). Added by amendment — see *Changelog*. |
 
 The vocabulary is deliberately generic. `credential` is any opaque token; `marker` is any header
 substring; the *exchange* is any single HTTP request/response. Nothing in the schema names a
@@ -178,7 +179,13 @@ and they are the only place the deployment's actual purpose is legible.
 4. Relay the response. Bodies are streamed, not buffered: a declared `Content-Length` is passed
    through and the body copied in bounded chunks, so a multi-megabyte upstream response never sits
    whole in memory. Hop-by-hop headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, …) are
-   dropped in both directions per RFC 7230 §6.1.
+   dropped in both directions per RFC 7230 §6.1. On a response to an **injected** request, a
+   `Set-Cookie` naming the injected cookie, or carrying the passthrough marker, is dropped: that
+   response was produced for the service identity, and relaying such a cookie would hand the
+   caller the service session. If the injected credential's cookie names cannot be determined —
+   including whenever `inject.header` is not `Cookie`, since a session the upstream mints off an
+   `Authorization` (or similar) header has a name the proxy cannot know — every `Set-Cookie` on
+   that response is dropped.
 
 **Acquisition**
 
@@ -364,8 +371,10 @@ surface is *Future work*, not required for a first ship: the acquisition/renewal
 upstream's own request logs already tell an operator whether injection is happening.
 
 **Upgrade.** Rolling. Each replica holds its own credential and acquires independently, so old and
-new run side by side with no shared state to coordinate. A replica draining mid-request finishes it;
-a new one acquires on startup before it serves.
+new run side by side with no shared state to coordinate. A replica draining mid-request finishes it
+— on `SIGTERM` the listener closes, open connections finish the request they are serving and close,
+and whatever is still open after `limits.drain_timeout_secs` is dropped so the process exits before
+the kubelet's `SIGKILL`; a new one acquires on startup before it serves.
 
 **Latency.** Steady-state cost is one added in-cluster hop and a header write — negligible. The only
 slow path is an acquisition, which happens on first request and on renewal, and single-flight keeps
@@ -518,8 +527,11 @@ second login defeats the point of putting single sign-on in front of the service
 
 | Date | Change |
 | --- | --- |
+| 2026-09-29 | Production-review amendments. **Contract changes:** (1) a new optional `limits` block (schema table) bounding upstream connect and response-head time, the caller's header and body read time, requests in flight and request-body bytes buffered across them — a saturated proxy answers `503` at once, a slow caller body `408`, an upstream past its timeout `502`. Omitting it keeps working configs working, with the documented defaults; before, none of these were bounded, and 4 MiB bodies times unbounded concurrency could OOM the chart's 64 MiB pod. (2) `${ENV}` values substituted into a `credential.request.body` whose configured `Content-Type` is `application/x-www-form-urlencoded` are now **percent-encoded**, so a secret containing `&`, `=`, `+` or `%` stays one field; a secret that was stored pre-encoded to work around the old behaviour must be stored raw. Header values and other bodies are still substituted verbatim. **Behaviour fixes, no contract change:** `Set-Cookie` headers that would hand the caller the injected service session are dropped (*Request handling* step 4); `SIGTERM` now really drains, bounded by `limits.drain_timeout_secs`, where it used to drop in-flight connections despite logging "draining". The chart gains an optional, default-off `networkPolicy` restricting ingress to the gateway's pods, which puts the *Trust boundary* in a manifest rather than only in prose. |
 | 2026-08-23 | Amended after re-reading the code against the contract: the renewal log line this RFC shows under *Guide-level explanation* — and promises under *Observability* as "one structured line per acquisition and per renewal" — **was never emitted**. With no metrics in this RFC, that line is the only signal an operator has that renewal works at all, so its absence was a hole in the one observability story the design has. `relay` now returns what it did (`renewals`, `renewed_on`) and the inbound adapter logs it, which keeps the domain free of I/O rather than reaching for `eprintln!` inside it. |
 | 2026-08-23 | **Accepted and implemented in one step**, skipping `Proposed`: the RFC was written, built and merged together, so merging the implementation was the decision. Recorded because the process asks for the intermediate statuses and this did not have them — a reviewer reading the history should know the design was never reviewed separately from the code. |
 | 2026-08-23 | Implementation found two rules the design did not state, both now in the code and in *Request handling*. **`invalidate()` is a compare-and-clear, not a clear**: two requests holding the same stale credential would otherwise have the second discard the fresh one the first had just acquired, and the pair would renew forever. **A passed-through request is never renewed on its caller's behalf**: doing so would swap their identity for the service account's, which is exactly what *pass through* promised not to do. Neither is a contract change; both are properties the RFC should have named. |
 | 2026-08-23 | Two limits the design implied but did not admit, now in *Drawbacks* with a way out in *Future work*. **Request bodies are buffered to 4 MiB and rejected above it** — a replay cannot re-read a stream, so replayability and streaming *requests* are mutually exclusive; the RFC asks for streaming *responses*, and those stream. **`http://` only**, refused at startup rather than silently downgraded. |
 | 2026-08-23 | *Architecture* amended to the tree that was actually built: `exchange.rs` for the renew-and-replay loop, which is orchestration with nowhere to live in a `domain`/`adapters` pair; `port.rs` matching `hexagonal.md`; and one `http_client.rs` instead of two outbound adapters, because they are the same client with two configs. The **ports** stay two, which is where the seam is. Also: `--check` prints how many `${ENV}` references resolved and never their values, because printing the effective body would print the service password. |
+| 2026-09-29 | Substituted values in a body whose configured `Content-Type` is `application/json` or any `+json` type are now escaped as JSON string contents (`"`, `\`, control characters), the same argument as the form-urlencoded rule: a password containing `"` used to close the string and could add a field. The template supplies the quotes. A secret stored pre-escaped to work around the old behaviour must now be stored raw. |
+| 2026-09-29 | Second review pass. **Contract changes:** (1) a new optional `limits.response_idle_timeout_secs` (default 60): a streamed response body silent that long between two frames is ended with an error (the caller sees a truncated response). (2) `limits.max_in_flight` now counts a request until its response **body** has finished or been dropped, not only until the head is returned — before, streamed bodies were unbounded in number and, with no idle timeout, a stalled one lived forever. (3) With `inject.header` other than `Cookie`, **every** `Set-Cookie` on an injected response is now dropped (fail-closed): an upstream that mints a session off an `Authorization`-style header does so under a name the proxy cannot know, and the old rule relayed it. No opt-out was added — "relay the harmless ones" would need exactly that name. An integration relying on a CSRF or preference cookie from such an upstream loses it on injected responses. **Chart:** `containerPort` (default 8080) replaces `service.port` as the container's port and must match `config.listen`'s port (render fails otherwise); a TCP `startupProbe` whose budget must exceed `connect_timeout_secs + response_timeout_secs`; `terminationGracePeriodSeconds` exposed (default 30), with the render failing unless `preStopSleepSeconds` and `preStopSleepSeconds + drain_timeout_secs` are both below it; `networkPolicy.gateway.*Selector` are now full LabelSelector objects (`matchLabels`/`matchExpressions`) as in `charts/endpoint-gateway`, a **breaking** values change for anyone who set the bare-map shape; and a `values.schema.json` that requires a non-empty `credentials.existingSecret` and rejects unknown keys. |

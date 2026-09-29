@@ -39,6 +39,24 @@ impl Fingerprint {
         Self(bytes)
     }
 
+    /// Hash a credential **together with the scope it was proved in** — the host a host cookie
+    /// was opened for. Length-prefixed, so no `(scope, credential)` pair can collide with
+    /// another by moving bytes across the boundary.
+    ///
+    /// A cache keyed by the credential alone skips whatever check produced the entry for every
+    /// later hit, and for a host cookie that check *is* the host binding: an entry opened for one
+    /// host would answer for any other.
+    pub fn scoped(scope: &str, credential: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update((scope.len() as u64).to_be_bytes());
+        hasher.update(scope.as_bytes());
+        hasher.update(credential.as_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(&digest);
+        Self(bytes)
+    }
+
     /// The first four bytes, hex — enough to correlate, useless to replay.
     pub fn short(&self) -> String {
         self.0[..4]

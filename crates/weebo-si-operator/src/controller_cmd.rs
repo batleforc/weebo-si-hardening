@@ -35,6 +35,17 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         .parse()
         .map_err(|err| format!("invalid --health-addr: {err}"))?;
 
+    // Health first, readiness last. The watches below each wait for their initial list, which on
+    // a large cluster can take longer than a liveness probe's patience; serving `/healthz` from
+    // the start means a slow start is a slow start, not a restart loop.
+    let prometheus_registry = prometheus::Registry::new();
+    let ready = Ready::default();
+    tokio::spawn(observability::serve(
+        health_addr,
+        ready.clone(),
+        prometheus_registry.clone(),
+    ));
+
     let client = kube::Client::try_default()
         .await
         .map_err(|err| format!("could not build a Kubernetes client: {err}"))?;
@@ -81,7 +92,6 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         weebo_si_crd::RuntimeBackend::KubeArmor,
     );
 
-    let prometheus_registry = prometheus::Registry::new();
     let config_store = Arc::new(
         KubeConfigStore::spawn(
             client.clone(),
@@ -191,47 +201,63 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         None
     };
 
-    // RFC 0007's `registry-config`. Unlike `kubearmor-policy` above there is no capability to
-    // discover: `ConfigMap` and `Secret` are core resources every apiserver serves, so the loop
-    // is always wired and `spec.features.registryConfig.mode` is the only thing that decides
-    // whether it does anything.
-    let registry_config_handle = config_store.registry_config();
-    let registry_templates = Arc::new(
-        KubeRegistryTemplateStore::spawn(client.clone(), &operator_namespace)
-            .await
-            .map_err(|err| format!("could not start the registry template watch: {err}"))?,
-    );
-    let registry_store = Arc::new(
-        KubeRegistryObjectStore::spawn(client.clone())
-            .await
-            .map_err(|err| format!("could not start the managed-registry-object watch: {err}"))?,
-    );
-    let registry_metrics =
-        Arc::new(RegistryMetrics::register(&prometheus_registry).map_err(|err| err.to_string())?);
-    let registry_config = RegistryConfigDeps {
-        feature: Arc::new(RegistryConfigFeature::new(
-            Arc::clone(&registry_config_handle),
-            registry_templates,
-        )),
-        config: registry_config_handle,
-        gate: config_store.clone(),
-        namespace_view: Arc::clone(&ns_store) as _,
-        dwoc_catalog: Arc::clone(&dwoc_store) as _,
-        object_store: registry_store as _,
-        observer: registry_metrics as _,
-        operator_namespace: NamespaceName::new(operator_namespace.clone()),
+    // RFC 0007's `registry-config`. `ConfigMap` and `Secret` are core resources every apiserver
+    // serves, so the question here is not the cluster's but the chart's: the read on them is
+    // granted only behind `registryConfig.rbac.enabled`, and a watch without it would retry a
+    // `403` forever and never let this process finish starting. Without the grant the loop is
+    // not wired at all, like `kubearmor-policy` on a cluster without the CRD.
+    let registry_config = if registry_watchable(&client)
+        .await
+        .map_err(|err| format!("could not ask whether registry-config may watch: {err}"))?
+    {
+        Some(
+            registry_config_deps(
+                &client,
+                &config_store,
+                &ns_store,
+                &dwoc_store,
+                &prometheus_registry,
+                &operator_namespace,
+            )
+            .await?,
+        )
+    } else {
+        println!(
+            "weebo-si-operator controller: registry-config is inert — this ServiceAccount may \
+             not watch configmaps and secrets (set registryConfig.rbac.enabled in the chart)"
+        );
+        None
     };
 
     // RFC 0009's sweep: it covers the routing objects that existed before the feature was
     // switched on, puts the annotations back when anything strips them, and owns the one shared
     // Traefik `Middleware` every gated Ingress names. Constructed unconditionally and inert
-    // until `spec.features.endpointAuth` exists, like the admission half.
-    let endpoint_auth = weebo_si_controller::EndpointAuthDeps {
-        config: config_store.endpoint_auth_config(),
-        gate: config_store.clone(),
-        operator_namespace: NamespaceName::new(operator_namespace.clone()),
+    // until `spec.features.endpointAuth` exists, like the admission half — but only started
+    // when this ServiceAccount may watch `ingresses` (`endpointAuth.rbac.enabled`), for the
+    // reason `registry-config` gives above.
+    let endpoint_auth = if weebo_si_runtime::access::can_watch(
+        &client,
+        "networking.k8s.io",
+        "ingresses",
+        None,
+    )
+    .await
+    .map_err(|err| format!("could not ask whether endpoint-auth may watch ingresses: {err}"))?
+    {
+        Some(weebo_si_controller::EndpointAuthDeps {
+            config: config_store.endpoint_auth_config(),
+            gate: config_store.clone(),
+            operator_namespace: NamespaceName::new(operator_namespace.clone()),
+        })
+    } else {
+        println!(
+            "weebo-si-operator controller: endpoint-auth's sweep is inert — this ServiceAccount \
+             may not watch ingresses (set endpointAuth.rbac.enabled in the chart)"
+        );
+        None
     };
 
+    // RFC 0011's `identity`.
     // RFC 0011's `identity`. Constructed unconditionally and inert until
     // `spec.features.identity` exists: the two loops still report team and user status, and
     // neither provisioner is called at all while the feature is absent or `Off`. Both handles
@@ -246,13 +272,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         observer: Arc::new(identity_metrics) as _,
     };
 
-    let ready = Ready::default();
     ready.mark_ready();
-    tokio::spawn(observability::serve(
-        health_addr,
-        ready,
-        prometheus_registry,
-    ));
 
     let leader_election = has_flag(args, "--leader-election").then(|| LeaderElection {
         namespace: operator_namespace,
@@ -268,10 +288,56 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         leader_election,
         Some(network_profiles),
         kubearmor_policy,
-        Some(registry_config),
-        Some(endpoint_auth),
+        registry_config,
+        endpoint_auth,
         Some(identity),
     )
     .await;
     Ok(())
+}
+
+/// Whether this ServiceAccount may watch both kinds `registry-config` copies, cluster-wide. An
+/// error asking is an error, not a "no" — see `weebo_si_runtime::access`.
+async fn registry_watchable(client: &kube::Client) -> Result<bool, kube::Error> {
+    Ok(
+        weebo_si_runtime::access::can_watch(client, "", "configmaps", None).await?
+            && weebo_si_runtime::access::can_watch(client, "", "secrets", None).await?,
+    )
+}
+
+/// Start `registry-config`'s two watches and assemble what its loop needs.
+async fn registry_config_deps(
+    client: &kube::Client,
+    config_store: &Arc<KubeConfigStore>,
+    ns_store: &Arc<KubeNsStore>,
+    dwoc_store: &Arc<KubeDwocStore>,
+    prometheus_registry: &prometheus::Registry,
+    operator_namespace: &str,
+) -> Result<RegistryConfigDeps, String> {
+    let registry_config_handle = config_store.registry_config();
+    let registry_templates = Arc::new(
+        KubeRegistryTemplateStore::spawn(client.clone(), operator_namespace)
+            .await
+            .map_err(|err| format!("could not start the registry template watch: {err}"))?,
+    );
+    let registry_store = Arc::new(
+        KubeRegistryObjectStore::spawn(client.clone())
+            .await
+            .map_err(|err| format!("could not start the managed-registry-object watch: {err}"))?,
+    );
+    let registry_metrics =
+        Arc::new(RegistryMetrics::register(prometheus_registry).map_err(|err| err.to_string())?);
+    Ok(RegistryConfigDeps {
+        feature: Arc::new(RegistryConfigFeature::new(
+            Arc::clone(&registry_config_handle),
+            registry_templates,
+        )),
+        config: registry_config_handle,
+        gate: config_store.clone(),
+        namespace_view: Arc::clone(ns_store) as _,
+        dwoc_catalog: Arc::clone(dwoc_store) as _,
+        object_store: registry_store as _,
+        observer: registry_metrics as _,
+        operator_namespace: NamespaceName::new(operator_namespace.to_string()),
+    })
 }

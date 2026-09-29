@@ -13,6 +13,7 @@
 //! an appropriate home for it.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -27,12 +28,74 @@ use weebo_si_endpoint_auth::identity::SessionId;
 use weebo_si_endpoint_auth::port::RevocationStore;
 use weebo_si_endpoint_auth::time::Timestamp;
 
+/// The annotation on the revocation `ConfigMap` that records "a replica's self-origin probe saw
+/// a forged client address come back". Its presence turns pod-address identity off on every
+/// replica; an admin removes it once the ingress controller is fixed.
+pub const ADDRESS_FORGERY_ANNOTATION: &str = "endpoint-auth.weebo.si/address-forgery-seen";
+
+/// The most revoked sessions the `ConfigMap` holds. A `ConfigMap` is capped at 1 MiB and an
+/// entry is well under a hundred bytes, so this is far inside it — and a set this large means
+/// something other than people signing out is happening, which is worth being loud about.
+pub const MAX_REVOCATIONS: usize = 10_000;
+
+/// Why a revocation was not recorded.
+#[derive(Debug)]
+pub enum RevokeError {
+    /// The set is at [`MAX_REVOCATIONS`] live entries even after pruning the expired ones.
+    Full,
+    /// The apiserver refused the write.
+    Kube(kube::Error),
+}
+
+impl std::fmt::Display for RevokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => write!(
+                f,
+                "the revocation set is full ({MAX_REVOCATIONS} live sessions); refusing to drop \
+                 one silently"
+            ),
+            Self::Kube(err) => write!(f, "{err}"),
+        }
+    }
+}
+
 /// Watch-backed revocation set, plus the one write verb this gateway holds.
 pub struct KubeRevocations {
     revoked: Arc<RwLock<BTreeMap<String, u64>>>,
+    address_forgery: Arc<AtomicBool>,
     client: Client,
     namespace: String,
     name: String,
+}
+
+/// The `data` merge patch that records `session` until `until`: every entry already expired at
+/// `now` is pruned in the same write, and a set still at `cap` live entries is refused rather
+/// than grown past what a `ConfigMap` holds or trimmed by dropping somebody's revocation.
+pub fn plan_revocation(
+    current: &BTreeMap<String, u64>,
+    session: &str,
+    until: Timestamp,
+    now: Timestamp,
+    cap: usize,
+) -> Result<serde_json::Map<String, serde_json::Value>, RevokeError> {
+    let mut data = serde_json::Map::new();
+    let mut live = 0_usize;
+    for (sid, expiry) in current {
+        if now.is_at_or_after(Timestamp::from_secs(*expiry)) {
+            data.insert(sid.clone(), serde_json::Value::Null);
+        } else if sid != session {
+            live += 1;
+        }
+    }
+    if live >= cap {
+        return Err(RevokeError::Full);
+    }
+    data.insert(
+        session.to_owned(),
+        serde_json::Value::String(until.as_secs().to_string()),
+    );
+    Ok(data)
 }
 
 impl KubeRevocations {
@@ -44,6 +107,7 @@ impl KubeRevocations {
         client: Client,
         namespace: String,
         name: String,
+        address_forgery: Arc<AtomicBool>,
     ) -> Result<Arc<Self>, kube::Error> {
         let api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
         let config = watcher::Config::default().fields(&format!("metadata.name={name}"));
@@ -51,12 +115,30 @@ impl KubeRevocations {
         let revoked: Arc<RwLock<BTreeMap<String, u64>>> = Arc::default();
 
         let index = Arc::clone(&revoked);
+        let forgery = Arc::clone(&address_forgery);
         let reader: Store<ConfigMap> = store.clone();
         tokio::spawn(async move {
             let stream = reflector::reflector(writer, watcher(api, config)).default_backoff();
             let mut stream = std::pin::pin!(stream);
             while stream.next().await.is_some() {
                 let mut rebuilt = BTreeMap::new();
+                let seen = reader.state().iter().any(|map| {
+                    map.metadata
+                        .annotations
+                        .as_ref()
+                        .is_some_and(|annotations| {
+                            annotations.contains_key(ADDRESS_FORGERY_ANNOTATION)
+                        })
+                });
+                if seen && !forgery.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "WARN endpoint-gateway: a self-origin probe recorded a forged client \
+                         address ({ADDRESS_FORGERY_ANNOTATION}); pod-address identity is OFF on \
+                         every replica until an admin removes that annotation"
+                    );
+                } else if !seen {
+                    forgery.store(false, Ordering::Relaxed);
+                }
                 for map in reader.state() {
                     for (sid, expiry) in map.data.clone().unwrap_or_default() {
                         if let Ok(expiry) = expiry.trim().parse::<u64>() {
@@ -72,6 +154,7 @@ impl KubeRevocations {
 
         Ok(Arc::new(Self {
             revoked,
+            address_forgery,
             client,
             namespace,
             name,
@@ -79,21 +162,90 @@ impl KubeRevocations {
     }
 
     /// Record a revocation, so every replica sees it within informer lag.
-    pub async fn revoke(&self, session: &str, until: Timestamp) -> Result<(), kube::Error> {
-        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
-        let patch = json!({
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": { "name": self.name },
-            "data": { session: until.as_secs().to_string() }
-        });
-        api.patch(
-            &self.name,
-            &PatchParams::apply("endpoint-gateway").force(),
-            &Patch::Apply(&patch),
-        )
+    ///
+    /// A **merge** patch, not server-side apply: every replica applies as the same field manager,
+    /// and an apply that names only one key tells the apiserver the manager no longer wants the
+    /// keys it applied before — so each revocation silently dropped the previous one. Expired
+    /// entries are pruned in the same write, and a set still at [`MAX_REVOCATIONS`] is an error
+    /// the caller makes loud rather than an entry quietly lost.
+    pub async fn revoke(
+        &self,
+        session: &str,
+        until: Timestamp,
+        now: Timestamp,
+    ) -> Result<(), RevokeError> {
+        let data = {
+            let current = self
+                .revoked
+                .read()
+                .map(|revoked| revoked.clone())
+                .unwrap_or_default();
+            plan_revocation(&current, session, until, now, MAX_REVOCATIONS)?
+        };
+        self.merge_or_create(json!({ "data": data }))
+            .await
+            .map_err(RevokeError::Kube)
+    }
+
+    /// Record, for every replica, that a self-origin probe watched a forged client address come
+    /// back. Sets the shared flag locally at once rather than waiting for the watch.
+    pub async fn record_address_forgery(&self, now: Timestamp) -> Result<(), kube::Error> {
+        self.address_forgery.store(true, Ordering::Relaxed);
+        self.merge_or_create(json!({
+            "metadata": { "annotations": {
+                ADDRESS_FORGERY_ANNOTATION: now.as_secs().to_string()
+            } }
+        }))
         .await
-        .map(|_| ())
+    }
+
+    /// Whether any replica has recorded a forged client address.
+    pub fn address_forgery_recorded(&self) -> bool {
+        self.address_forgery.load(Ordering::Relaxed)
+    }
+
+    /// Merge `patch` into the `ConfigMap`, creating it first on a fresh install.
+    async fn merge_or_create(&self, patch: serde_json::Value) -> Result<(), kube::Error> {
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
+        match api
+            .patch(&self.name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(status)) if status.code == 404 => {
+                let mut created = serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "ConfigMap",
+                    "metadata": { "name": self.name, "namespace": self.namespace },
+                });
+                if let (Some(created), Some(patch)) = (created.as_object_mut(), patch.as_object()) {
+                    for (key, value) in patch {
+                        if key == "metadata" {
+                            if let (Some(meta), Some(extra)) = (
+                                created.get_mut("metadata").and_then(|m| m.as_object_mut()),
+                                value.as_object(),
+                            ) {
+                                meta.extend(extra.clone());
+                            }
+                        } else {
+                            created.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                let map: ConfigMap =
+                    serde_json::from_value(created).map_err(kube::Error::SerdeError)?;
+                match api.create(&kube::api::PostParams::default(), &map).await {
+                    Ok(_) => Ok(()),
+                    // Another replica created it between the two calls: patch the one it made.
+                    Err(kube::Error::Api(status)) if status.code == 409 => api
+                        .patch(&self.name, &PatchParams::default(), &Patch::Merge(&patch))
+                        .await
+                        .map(|_| ()),
+                    Err(err) => Err(err),
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Drop every entry whose session could no longer be presented anyway.
@@ -154,5 +306,47 @@ impl RevocationStore for KubeRevocations {
             .read()
             .map(|revoked| revoked.contains_key(session.as_str()))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use super::*;
+
+    fn set(entries: &[(&str, u64)]) -> BTreeMap<String, u64> {
+        entries
+            .iter()
+            .map(|(sid, until)| ((*sid).to_owned(), *until))
+            .collect()
+    }
+
+    /// Second-pass finding 10: the revocation `ConfigMap` grew without bound between hourly
+    /// sweeps. Every write now prunes what has expired, and a set still full is refused loudly.
+    #[test]
+    fn a_revocation_prunes_the_expired_and_refuses_to_overflow() {
+        let now = Timestamp::from_secs(1_000);
+        let current = set(&[("old-1", 500), ("old-2", 1_000), ("live", 5_000)]);
+        let data = plan_revocation(&current, "new", now.plus_secs(60), now, 10).unwrap();
+        assert_eq!(data.get("old-1"), Some(&serde_json::Value::Null));
+        assert_eq!(data.get("old-2"), Some(&serde_json::Value::Null));
+        assert!(!data.contains_key("live"), "a live entry is left alone");
+        assert_eq!(data.get("new"), Some(&serde_json::json!("1060")));
+
+        // Full of live entries: refused, not trimmed.
+        let full = set(&[("a", 5_000), ("b", 5_000)]);
+        assert!(matches!(
+            plan_revocation(&full, "c", now.plus_secs(60), now, 2),
+            Err(RevokeError::Full)
+        ));
+        // Re-revoking a session already in the set is not growth.
+        assert!(plan_revocation(&full, "a", now.plus_secs(60), now, 2).is_ok());
+        // Full only until something expires.
+        let expiring = set(&[("a", 900), ("b", 5_000)]);
+        assert!(plan_revocation(&expiring, "c", now.plus_secs(60), now, 2).is_ok());
     }
 }

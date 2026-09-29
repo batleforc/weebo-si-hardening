@@ -5,8 +5,13 @@
 # chart's. Installing this chart alone publishes an unauthenticated upstream.
 
 image:
-  repository: preauth-proxy
-  tag: ""  # defaults to .Chart.AppVersion
+  # What `.github/workflows/release.yaml` pushes: `ghcr.io/<repository owner>/<crate>`, tagged
+  # `<version>` and `<major>.<minor>` from the `v*` git tag, and cosign-signed by digest.
+  repository: ghcr.io/batleforc/preauth-proxy
+  tag: ""  # defaults to .Chart.AppVersion — the release workflow sets it from the git tag
+  # Optional `sha256:…`. When set it wins over `tag` (`repository@digest`), pinning the exact
+  # signed artifact rather than a tag that could be re-pushed.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -16,11 +21,20 @@ replicaCount: 1
 # The proxy has no config-reload story — see RFC 0003's Future work — so a config change needs a
 # rollout. `checksum/config` in the pod template annotations (below) forces one automatically.
 service:
+  # The Service's port. Independent of the pod: it targets the container's named `http` port.
   port: 8080
+
+# The port the container listens on — the port of `config.listen` below. The two are kept in
+# step by the chart: a `config` whose `listen` names another port fails the render, since the
+# probes, the Service's `targetPort` and the NetworkPolicy would otherwise all aim at a port
+# nothing listens on.
+containerPort: 8080
 
 # The whole preauth-proxy config.yaml body, verbatim — see docs/bricks/preauth-proxy.md's
 # Configuration section for every key. Rendered into a ConfigMap unmodified: it is safe in git,
-# since it carries only `${ENV}` references and never a secret value.
+# since it carries only `${ENV}` references and never a secret value. A YAML map is accepted too
+# (rendered with toYaml). Its `listen` port must equal `containerPort`, and its `limits` are read
+# at render time to check the probe and termination budgets below.
 config: |
   listen: "[::]:8080"
   upstream: "http://app:3000"
@@ -58,6 +72,18 @@ config: |
     on_status: [401]
     max_replays: 1
 
+  # Optional resource bounds; every key defaults as shown. preStopSleepSeconds +
+  # drain_timeout_secs must stay under terminationGracePeriodSeconds (checked at render), and
+  # connect_timeout_secs + response_timeout_secs under the startupProbe budget (likewise).
+  # limits:
+  #   connect_timeout_secs: 5
+  #   response_timeout_secs: 60
+  #   response_idle_timeout_secs: 60
+  #   client_read_timeout_secs: 30
+  #   drain_timeout_secs: 20
+  #   max_in_flight: 256
+  #   max_buffered_mib: 16
+
 # `${CRED_USER}`/`${CRED_SECRET}` (or whatever names the `config` above references) are resolved
 # from the environment at startup — never from this chart. Bring your own Secret; this chart
 # renders none, deliberately, so a credential never has a path through `helm install --set`.
@@ -66,6 +92,37 @@ credentials:
   userKey: user
   secretKey: secret
 
+# Restrict who may reach the proxy at the network layer. RFC 0003: "the gateway middleware is not
+# defence in depth; it is the entire authentication story" — and the Service is otherwise
+# reachable by any pod in the cluster, which is that story's bypass. Strongly recommended.
+#
+# Off by default only because this chart cannot know where your gateway runs: a guessed selector
+# would either admit nothing (a broken install) or too much (a false sense of safety). Enabling it
+# without a gateway selector fails the render rather than admitting the whole namespace.
+networkPolicy:
+  enabled: false
+  # The forward-auth gateway's pods. Each is a full Kubernetes LabelSelector (`matchLabels`
+  # and/or `matchExpressions`), rendered as given — the same shape charts/endpoint-gateway's
+  # networkPolicy takes. Both given = those pods in those namespaces.
+  gateway:
+    namespaceSelector: {}
+    #   matchLabels:
+    #     kubernetes.io/metadata.name: traefik
+    podSelector: {}
+    #   matchLabels:
+    #     app.kubernetes.io/name: traefik
+  # Metrics scrapers, admitted on `port` only (never on the proxy port). Rendered only when both
+  # are set; the binary exposes no metrics listener yet (RFC 0003's Future work), so this is the
+  # slot for one, not a port that exists today.
+  metrics:
+    port: ""
+    from: []
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: monitoring
+
+# 16 MiB of request bodies (config `limits.max_buffered_mib`, default 16) plus the process itself
+# fits inside the 64Mi limit below; raise the limit if you raise that budget.
 resources:
   requests:
     cpu: 25m
@@ -76,3 +133,25 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Seconds the kubelet waits (preStop sleep action, Kubernetes >= 1.30) before sending SIGTERM,
+# so the Service stops routing here before the proxy closes its listener. 0 disables the hook,
+# for clusters older than 1.30.
+preStopSleepSeconds: 5
+
+# The pod's whole shutdown budget: the kubelet SIGKILLs this long after termination starts, and
+# the preStop sleep counts against it. The shutdown sequence is
+#   preStopSleepSeconds  →  SIGTERM  →  up to config.limits.drain_timeout_secs of draining
+# so the render fails unless preStopSleepSeconds < terminationGracePeriodSeconds, and unless
+# preStopSleepSeconds + drain_timeout_secs (default 20) < terminationGracePeriodSeconds — the
+# proxy should end its drain on its own terms, not be killed mid-response.
+terminationGracePeriodSeconds: 30
+
+# Startup: the proxy acquires its credential **before** binding the listener, and that
+# acquisition may take up to connect_timeout_secs + response_timeout_secs (default 5 + 60).
+# The startupProbe (TCP on `http`) holds off the liveness probe for periodSeconds ×
+# failureThreshold (default 150 s); the render fails if that budget does not cover the
+# acquisition's worst case.
+startupProbe:
+  periodSeconds: 5
+  failureThreshold: 30
