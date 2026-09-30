@@ -521,9 +521,10 @@ fn policy_guard_refuses_even_a_cluster_admin_and_the_controller_puts_drift_back(
         })
         .to_string(),
     );
+    // Nothing watches the templates: an edit lands on the namespace's five-minute requeue.
     wait_until(
         "the edited template to reach the namespace",
-        RECONCILE,
+        Duration::from_secs(360),
         || {
             let live = get(&["networkpolicy", "-n", &ns.name, "weebo-base"]).ok_or("absent")?;
             let ports = live
@@ -703,6 +704,10 @@ fn a_team_reports_its_namespaces_and_a_conflicting_redefinition_is_blamed_on_it(
     let _hardened = dwoc("e2e-hardened");
     let _gpu = dwoc("e2e-gpu");
     set_features(json!({ "dwocPin": dwoc_pin("hardened", "Default") }));
+    // Namespaces before teams: the team loop counts them when a team changes and otherwise only
+    // on its five-minute requeue, which is longer than the suite waits.
+    let _a = Namespace::workspace("alice", "first-a", Some("first"));
+    let _b = Namespace::workspace("carol", "first-b", Some("first"));
     let _first = team(
         "e2e-first",
         json!({
@@ -725,8 +730,6 @@ fn a_team_reports_its_namespaces_and_a_conflicting_redefinition_is_blamed_on_it(
             } },
         }),
     );
-    let _a = Namespace::workspace("alice", "first-a", Some("first"));
-    let _b = Namespace::workspace("carol", "first-b", Some("first"));
 
     wait_until(
         "team e2e-first to count its two namespaces",

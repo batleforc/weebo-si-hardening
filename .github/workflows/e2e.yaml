@@ -174,7 +174,7 @@ jobs:
       - name: Load the images
         run: for tar in "$RUNNER_TEMP"/images/*.tar; do docker load -i "$tar"; done
       - name: Bring up Che
-        run: scripts/e2e.sh up
+        run: scripts/e2e.sh up "${{ matrix.suite }}"
       - name: Addons for ${{ matrix.suite }}
         run: scripts/e2e.sh addons "${{ matrix.suite }}"
       - name: Deploy weebo-si-hardening

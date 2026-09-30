@@ -366,19 +366,21 @@ fn dry_run_says_what_it_would_create_and_creates_nothing() {
 }
 
 #[test]
-fn a_second_person_claiming_a_taken_username_is_in_conflict() {
+fn a_second_person_claiming_a_taken_account_is_in_conflict() {
     set_features(json!({ "identity": identity("Enforce") }));
     let _one = user(
         "ivan-one",
-        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure" } }),
+        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure", "name": "ivan" } }),
     );
     let _two = user(
         "ivan-two",
-        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure" } }),
+        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure", "name": "ivan" } }),
     );
-    // Whichever is reconciled first creates the account and keeps it; the other finds it owned
-    // by a different WeeboSiUser and is refused — docs/weebosiuser.md: nobody's object is taken
-    // over. Which of the two wins is the reconcile order's to decide, so the test does not.
+    // The target is the AuthentikUser *object*, named after the WeeboSiUser unless
+    // `authentik.name` says otherwise — so both name it, or there are two targets and no claim to
+    // contest. Whichever is reconciled first creates it and keeps it; the other finds it owned by
+    // a different WeeboSiUser and is refused (docs/weebosiuser.md: nobody's object is taken
+    // over). Which of the two wins is the reconcile order's to decide, so the test does not.
     let states = wait_until("one owner and one conflict", RECONCILE, || {
         let states = ["ivan-one", "ivan-two"].map(|name| {
             get(&["weebosiuser", name])
