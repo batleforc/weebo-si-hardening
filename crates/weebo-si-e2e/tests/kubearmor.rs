@@ -53,14 +53,14 @@ fn kubearmor_policy() -> Value {
     })
 }
 
-fn no_cat_team() -> Cleanup {
+fn no_rpm_team() -> Cleanup {
     team(
         "e2e-locked",
         json!({
             "priority": 10,
             "namespaceSelector": { "matchLabels": { "weebo.io/team": "locked" } },
             "features": { "kubearmorPolicy": {
-                "catalog": [{ "key": "no-cat", "templateRef": { "name": "e2e-no-cat", "namespace": OPERATOR_NAMESPACE } }],
+                "catalog": [{ "key": "no-rpm", "templateRef": { "name": "e2e-no-rpm", "namespace": OPERATOR_NAMESPACE } }],
                 "default": [],
             } },
         }),
@@ -128,8 +128,11 @@ fn the_baseline_and_the_posture_land_on_every_namespace_in_scope() {
 #[test]
 fn a_granted_profile_blocks_a_process_in_its_own_workspace_only() {
     let _base = block_template("e2e-no-nc", "/usr/bin/nc");
-    let _cat = block_template("e2e-no-cat", "/usr/bin/cat");
-    let _team = no_cat_team();
+    // `rpm` rather than `cat`: in the UBI-minimal workspace image every coreutils command is a
+    // `#!/usr/bin/coreutils` script, not the binary its path names, so a path rule on it says
+    // nothing about whether the profile is enforced. `rpm` is an ELF at its own path.
+    let _rpm = block_template("e2e-no-rpm", "/usr/bin/rpm");
+    let _team = no_rpm_team();
     set_features(json!({ "kubearmorPolicy": kubearmor_policy() }));
     let enforcer = node_enforcer();
     assert!(
@@ -143,7 +146,7 @@ fn a_granted_profile_blocks_a_process_in_its_own_workspace_only() {
         &ns.name,
         "locked",
         &WorkspaceSpec {
-            attributes: json!({ "hardening.weebo.io/kubearmor-policy": "no-cat" }),
+            attributes: json!({ "hardening.weebo.io/kubearmor-policy": "no-rpm" }),
             ..WorkspaceSpec::default()
         },
     );
@@ -157,7 +160,7 @@ fn a_granted_profile_blocks_a_process_in_its_own_workspace_only() {
             "kubearmorpolicy",
             "-n",
             &ns.name,
-            &format!("weebo-no-cat-{id}"),
+            &format!("weebo-no-rpm-{id}"),
         ])
         .ok_or("absent")?;
         let selected = text(
@@ -172,18 +175,26 @@ fn a_granted_profile_blocks_a_process_in_its_own_workspace_only() {
     });
 
     wait_until(
-        "cat to be refused in the locked workspace",
+        "rpm to be refused in the locked workspace",
         RECONCILE,
         || {
-            if blocked(&locked, &["cat", "/etc/hostname"]) {
+            if blocked(&locked, &["rpm", "--version"]) {
                 Ok(())
             } else {
-                Err("cat still runs".into())
+                // Which profile the shell actually runs under is the first question a red run
+                // asks, so it answers it.
+                let confinement = locked
+                    .exec(&["bash", "-c", "echo $(< /proc/self/attr/current)"])
+                    .unwrap_or_else(|err| err);
+                Err(format!(
+                    "rpm still runs; confined by {:?}",
+                    confinement.trim()
+                ))
             }
         },
     );
     assert!(
-        free.exec(&["cat", "/etc/hostname"]).is_ok(),
+        free.exec(&["rpm", "--version"]).is_ok(),
         "the profile must select its own workspace only"
     );
     wait_until("the enforced gauge", RECONCILE, || {
