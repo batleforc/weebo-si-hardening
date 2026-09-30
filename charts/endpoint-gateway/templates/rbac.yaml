@@ -15,9 +15,10 @@ metadata:
   labels:
     {{- include "endpoint-gateway.labels" . | nindent 4 }}
 rules:
-  # The catalogue, the grants, the overrides and the host-ownership patterns.
+  # The catalogue, the grants, the overrides and the host-ownership patterns — the singleton's,
+  # and each team's own entries and default (RFC 0011), which the index resolves together.
   - apiGroups: ["hardening.weebo.io"]
-    resources: ["weebosiconfigs"]
+    resources: ["weebosiconfigs", "weebositeams"]
     verbs: ["get", "list", "watch"]
   # Which namespace an endpoint lives in, who owns it, and which team that owner is in.
   - apiGroups: [""]

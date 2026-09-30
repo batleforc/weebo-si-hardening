@@ -121,6 +121,9 @@ impl KubeCatalog {
         // from a half-synced store is an index that denies hosts it would otherwise allow, which
         // is why `/readyz` and not just `/healthz` is wired to this.
         config_store.wait_until_ready().await.map_err(not_ready)?;
+        // Teams too: an index built before they list resolves every team-contributed key to
+        // "no catalogue entry" and indexes those endpoints closed.
+        team_store.wait_until_ready().await.map_err(not_ready)?;
         namespace_store
             .wait_until_ready()
             .await
@@ -363,7 +366,12 @@ where
     tokio::spawn(async move {
         let stream = stream.default_backoff();
         let mut stream = std::pin::pin!(stream);
-        while stream.next().await.is_some() {
+        while let Some(event) = stream.next().await {
+            // Logged, not only retried: a watch this ServiceAccount may not make fails the same
+            // way forever, and an empty store denies quietly.
+            if let Err(err) = &event {
+                eprintln!("WARN endpoint-gateway: watch failed, retrying: {err}");
+            }
             notify.notify_one();
         }
     });

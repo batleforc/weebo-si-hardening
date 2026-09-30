@@ -402,7 +402,7 @@ node_apparmor() {
   # goes, and a permissive `cri-containerd.apparmor.d` is loaded before containerd restarts —
   # containerd only generates that profile when none of the name is loaded. Every pod KubeArmor
   # does not select runs under it; the profiles the suite asserts on are KubeArmor's own.
-  "$E2E_RUNTIME" exec -i "$node" sh -c 'cat > /etc/apparmor.d/cri-containerd.apparmor.d' <<'PROFILE'
+  "$E2E_RUNTIME" exec -i "$node" sh -c 'mkdir -p /etc/apparmor.d && cat > /etc/apparmor.d/cri-containerd.apparmor.d' <<'PROFILE'
 #include <tunables/global>
 profile cri-containerd.apparmor.d flags=(attach_disconnected,mediate_deleted) {
   capability,

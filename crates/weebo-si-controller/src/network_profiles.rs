@@ -110,6 +110,9 @@ pub(crate) fn warn_held(feature: &str, held: &[ObjectKey]) {
     }
 }
 
+/// How soon a namespace the feature does not reach is looked at again.
+const OFF_RECHECK: Duration = Duration::from_secs(60);
+
 /// How often the enforcement canary's verdict is refreshed when `enforcement.canary.enabled` is
 /// set but `intervalSeconds` is not usable (zero). The CRD's own default is 300s; this only
 /// guards against a configuration that would otherwise spin.
@@ -221,7 +224,10 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         .gate
         .mode(FeatureId::new("network-profiles"), &name);
     if mode == FeatureMode::Off {
-        return Ok(Action::await_change());
+        // Re-checked rather than awaited: the gate answers from the namespace index and the
+        // singleton, either of which can lag the event that got us here, and a namespace seen
+        // `Off` once would otherwise never be looked at again when the feature reaches it.
+        return Ok(Action::requeue(OFF_RECHECK));
     }
 
     let teams = ctx.deps.gate.teams();
@@ -267,7 +273,10 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         .gate
         .mode(FeatureId::new("network-profiles"), &namespace);
     if mode == FeatureMode::Off {
-        return Ok(Action::await_change());
+        // Re-checked rather than awaited: the gate answers from the namespace index and the
+        // singleton, either of which can lag the event that got us here, and a namespace seen
+        // `Off` once would otherwise never be looked at again when the feature reaches it.
+        return Ok(Action::requeue(OFF_RECHECK));
     }
 
     let Some(workspace_id) = devworkspace_id(&obj) else {

@@ -40,6 +40,9 @@ use weebo_si_registry_config::{
     NamespaceSubject, ObjectStore, ReconcileObserver, ReconcileOutcome, RegistryConfigFeature,
 };
 
+/// How soon a namespace the feature does not reach is looked at again.
+const OFF_RECHECK: Duration = Duration::from_secs(60);
+
 /// This feature's identifier, as the gate and the log lines name it.
 const FEATURE: &str = "registry-config";
 
@@ -157,7 +160,10 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // A namespace this feature no longer reconciles must stop being counted, or the readiness
         // gauge reports a degradation for a namespace nobody is configuring any more.
         ctx.deps.observer.forget(&name);
-        return Ok(Action::await_change());
+        // Re-checked rather than awaited: the gate answers from the namespace index and the
+        // singleton, either of which can lag the event that got us here, and a namespace seen
+        // `Off` once would otherwise never be looked at again when the feature reaches it.
+        return Ok(Action::requeue(OFF_RECHECK));
     }
 
     let annotation_key = {
