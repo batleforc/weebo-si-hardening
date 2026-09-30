@@ -68,15 +68,20 @@ jobs:
             echo "::error::running as root — the passwd-append suite would skip itself silently"
             exit 1
           fi
+      # `--all-features` would switch on weebo-si-e2e's `e2e` feature, and its suites need the
+      # kind cluster only e2e.yaml builds — so the crate is excluded here and its unit tests run
+      # in the next step, without the feature.
       - name: cargo test
-        run: cargo test --workspace --all-features --locked
+        run: cargo test --workspace --all-features --exclude weebo-si-e2e --locked
+      - name: cargo test (e2e harness, no cluster)
+        run: cargo test -p weebo-si-e2e --locked
       # RFC 0009's `ReverseProxy` dialect is deferred: written, never run against a real
       # OpenShift router, and deliberately not asserted by the suite above. It is still *built*
       # and still run here, in a step that says what it is — deferred code that nothing exercises
       # is deferred code that stops compiling, and finding that out the day OpenShift arrives is
       # the expensive way.
       - name: Deferred OpenShift tier (not a supported configuration)
-        run: cargo test --workspace --all-features --locked -- --ignored
+        run: cargo test --workspace --all-features --exclude weebo-si-e2e --locked -- --ignored
 
       # The request-cost budget RFC 0009 promises, asserted rather than hoped: the benchmark
       # fails the build if a decision crosses 50 µs. Generous by two orders of magnitude, because

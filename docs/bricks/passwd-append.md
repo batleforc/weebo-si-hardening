@@ -117,8 +117,8 @@ code is `0` either way, deliberately, so that an init container running this doe
   entry whose UID field does not even parse. The name match alone decides; nothing is written and
   a `WARN` names the owner (exit `3` under `--strict`).
 - **Read the databases differently from glibc.** Leading whitespace on a line is skipped before
-  the fields are split, as `nss_files` does, so `  root:x:0:…` counts as `root` and `  # …` as a
-  comment.
+  the fields are split, as `nss_files` does, so an indented `root:x:0:…` counts as `root` and an
+  indented `# …` as a comment.
 - **Write an entry for a UID other than its own effective one.**
 - **Write an entry claiming UID `0`.**
 - **Fail the container** unless you ask for it with `--strict`.

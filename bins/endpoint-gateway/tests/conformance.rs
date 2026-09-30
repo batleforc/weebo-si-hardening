@@ -645,6 +645,14 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         "the gateway",
     )
     .await;
+    // Traefik binds its entrypoint a moment after it is spawned — long enough, on a CI runner,
+    // for the first request below to be refused. Any answer at all means it is listening.
+    wait_for(
+        &format!("https://{ALICE_HOST}:{entry_port}/healthz"),
+        &plain,
+        "Traefik",
+    )
+    .await;
 
     // The informers need a moment to see everything created above; the gate answers `403` for an
     // unknown host until then, which is the right answer and the wrong one to assert on.

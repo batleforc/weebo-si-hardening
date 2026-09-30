@@ -52,7 +52,10 @@ tasks:
     status:
       - test -z "{{.HAS_MEMBER}}"
     cmds:
-      - cargo test --workspace --all-features --locked
+      # weebo-si-e2e is excluded from `--all-features`: its `e2e` feature needs the kind cluster
+      # `task e2e:up` builds. Its harness unit tests still run, without the feature.
+      - cargo test --workspace --all-features --exclude weebo-si-e2e --locked
+      - cargo test -p weebo-si-e2e --locked
 
   test:openshift:
     desc: "Run the deferred OpenShift tier — the ReverseProxy dialect's tests, which the base suite skips"
@@ -63,7 +66,7 @@ tasks:
       # 0009's OpenShift tier. They pass; what they do not do is prove anything about a real
       # OpenShift router, which is why the base suite does not run them and why enabling the
       # dialect is not yet a supported configuration.
-      - cargo test --workspace --all-features --locked -- --ignored
+      - cargo test --workspace --all-features --exclude weebo-si-e2e --locked -- --ignored
 
   bench:
     desc: "Measure the endpoint-auth decision — RFC 0009's request-cost budget, asserted rather than hoped"

@@ -71,7 +71,7 @@ done
 
 RESULTS=$(mktemp)
 NOTES=$(mktemp)
-# shellcheck disable=SC2329  # invoked from the EXIT trap below, which shellcheck cannot see.
+# shellcheck disable=SC2317,SC2329  # invoked from the EXIT trap below, which shellcheck cannot see.
 cleanup_tmp() { rm -f "$RESULTS" "$NOTES"; }
 trap cleanup_tmp EXIT
 
@@ -430,7 +430,7 @@ live_setup() {
   k -n "$NS" wait --for=condition=Ready pod/spike-client --timeout=180s >/dev/null
 }
 
-# shellcheck disable=SC2329  # invoked from the EXIT trap installed once the rig is up.
+# shellcheck disable=SC2317,SC2329  # invoked from the EXIT trap installed once the rig is up.
 live_teardown() {
   [ "$keep" = 1 ] && return 0
   k delete ns "$NS" --wait=false >/dev/null 2>&1 || true
