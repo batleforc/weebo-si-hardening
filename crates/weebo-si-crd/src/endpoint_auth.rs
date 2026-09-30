@@ -341,6 +341,13 @@ pub struct GatewayRef {
     pub external_url: String,
     /// The gateway's in-cluster `Service`.
     pub service: ServiceRef,
+    /// The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.
+    ///
+    /// Qualified rather than left to the search path because not every router resolves through
+    /// it: ingress-nginx hands `auth-url` to nginx's own resolver, which applies no search
+    /// domains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`.
+    #[serde(default = "default_cluster_domain")]
+    pub cluster_domain: String,
     /// Which router this cluster runs.
     pub dialect: Dialect,
     /// Whether the gate's own verdict is answered or only counted.
@@ -381,6 +388,18 @@ fn default_enforcement() -> GateEnforcement {
     GateEnforcement::Enforce
 }
 
+fn default_cluster_domain() -> String {
+    "cluster.local".to_owned()
+}
+
+impl GatewayRef {
+    /// `http://<name>.<namespace>.svc.<clusterDomain>:<port>` — the in-cluster URL every
+    /// forward-auth dialect points at.
+    pub fn service_url(&self) -> String {
+        self.service.url(&self.cluster_domain)
+    }
+}
+
 /// A `Service` reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -394,10 +413,15 @@ pub struct ServiceRef {
 }
 
 impl ServiceRef {
-    /// `http://<name>.<namespace>.svc:<port>` — the in-cluster URL every forward-auth dialect
-    /// points at.
-    pub fn url(&self) -> String {
-        format!("http://{}.{}.svc:{}", self.name, self.namespace, self.port)
+    /// `http://<name>.<namespace>.svc.<cluster_domain>:<port>`.
+    pub fn url(&self, cluster_domain: &str) -> String {
+        format!(
+            "http://{}.{}.svc.{}:{}",
+            self.name,
+            self.namespace,
+            cluster_domain.trim_matches('.'),
+            self.port
+        )
     }
 }
 
@@ -512,7 +536,7 @@ impl Dialect {
     /// The annotations that attach the gate.
     pub fn annotations(self, gateway: &GatewayRef) -> BTreeMap<String, String> {
         let mut annotations = BTreeMap::new();
-        let url = gateway.service.url();
+        let url = gateway.service_url();
         match self {
             Self::Traefik => {
                 let mut chain = vec![format!(
@@ -639,7 +663,7 @@ impl Dialect {
 
 fn render_custom(template: &str, gateway: &GatewayRef) -> String {
     template
-        .replace("${gateway_url}", &gateway.service.url())
+        .replace("${gateway_url}", &gateway.service_url())
         .replace("${gateway_external_url}", &gateway.external_url)
         .replace(
             "${middleware}",
@@ -1134,6 +1158,7 @@ mod tests {
     fn gateway(dialect: Dialect) -> GatewayRef {
         GatewayRef {
             external_url: "https://auth.weebo.si".to_owned(),
+            cluster_domain: "cluster.local".to_owned(),
             service: ServiceRef {
                 name: "endpoint-gateway".to_owned(),
                 namespace: "weebo-si-hardening".to_owned(),
@@ -1343,7 +1368,20 @@ mod tests {
         let rendered = Dialect::Custom.annotations(&config.gateway);
         assert_eq!(
             rendered["x/auth-url"],
-            "http://endpoint-gateway.weebo-si-hardening.svc:4180/auth"
+            "http://endpoint-gateway.weebo-si-hardening.svc.cluster.local:4180/auth"
+        );
+    }
+
+    #[test]
+    fn the_nginx_auth_url_is_qualified_with_the_cluster_domain() {
+        // nginx resolves `auth-url` without a search path, so a bare `.svc` never resolves.
+        let mut gateway = gateway(Dialect::Nginx);
+        gateway.cluster_domain = "corp.internal.".to_owned();
+        let annotations = Dialect::Nginx.annotations(&gateway);
+        assert!(
+            annotations["nginx.ingress.kubernetes.io/auth-url"]
+                .starts_with("http://endpoint-gateway.weebo-si-hardening.svc.corp.internal:4180/"),
+            "{annotations:?}"
         );
     }
 

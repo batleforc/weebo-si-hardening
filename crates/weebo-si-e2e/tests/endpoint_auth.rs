@@ -143,7 +143,7 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
     );
     assert!(
         auth_url.starts_with(&format!(
-            "http://endpoint-gateway.{OPERATOR_NAMESPACE}.svc:4180/auth?"
+            "http://endpoint-gateway.{OPERATOR_NAMESPACE}.svc.cluster.local:4180/auth?"
         )),
         "auth-url {auth_url}"
     );
@@ -166,13 +166,24 @@ fn status(
     path: &str,
     bearer: Option<&str>,
 ) -> (u16, String, String) {
-    let mut request = ingress.client.get(ingress.url(host, path));
-    if let Some(token) = bearer {
-        request = request.bearer_auth(token);
+    let send = || {
+        let mut request = ingress.client.get(ingress.url(host, path));
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        request
+            .send()
+            .unwrap_or_else(|err| panic!("GET https://{host}{path}: {err}"))
+    };
+    // ingress-nginx answers 503 — before any auth subrequest — until a reload has picked up an
+    // Ingress it has just seen or a backend has endpoints; no row here expects one, so it is
+    // waited out rather than asserted on.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut response = send();
+    while response.status().as_u16() == 503 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        response = send();
     }
-    let response = request
-        .send()
-        .unwrap_or_else(|err| panic!("GET https://{host}{path}: {err}"));
     let code = response.status().as_u16();
     let location = response
         .headers()

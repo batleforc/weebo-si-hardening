@@ -240,6 +240,11 @@ window.WEEBO_CRDS = [
                         },
                         "type": "array"
                       },
+                      "clusterDomain": {
+                        "default": "cluster.local",
+                        "description": "The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.\n\nQualified rather than left to the search path because not every router resolves through\nit: ingress-nginx hands `auth-url` to nginx's own resolver, which applies no search\ndomains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`.",
+                        "type": "string"
+                      },
                       "custom": {
                         "description": "`Custom` only: the annotations this cluster's controller wants, and the keys the template\ndeclares it owns.",
                         "nullable": true,

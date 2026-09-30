@@ -292,7 +292,7 @@ pub async fn ensure_middleware(
         data: json!({
             "spec": {
                 "forwardAuth": {
-                    "address": format!("{}/auth", config.gateway.service.url()),
+                    "address": format!("{}/auth", config.gateway.service_url()),
                     "trustForwardHeader": false,
                     "authResponseHeaders": [
                         "X-Auth-Request-User",
@@ -596,6 +596,7 @@ mod tests {
             namespace_selector: None,
             gateway: GatewayRef {
                 external_url: "https://auth.weebo.si".to_owned(),
+                cluster_domain: "cluster.local".to_owned(),
                 service: ServiceRef {
                     name: "endpoint-gateway".to_owned(),
                     namespace: "weebo-si-hardening".to_owned(),

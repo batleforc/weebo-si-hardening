@@ -395,20 +395,47 @@ node_apparmor() {
     die "the host's securityfs has no AppArmor: this runner cannot enforce with it"
   # policy-rc.d keeps the package from starting apparmor.service, which would load Debian's own
   # profiles into the host kernel.
+  #
+  # Debian 12's parser is pinned to an old feature set, and containerd's generated default profile
+  # has no `unix` rule: loaded into the runner's newer kernel, it refuses every unix socket, and
+  # nginx cannot even start its workers ("socketpair() failed … Permission denied"). So the pin
+  # goes, and a permissive `cri-containerd.apparmor.d` is loaded before containerd restarts —
+  # containerd only generates that profile when none of the name is loaded. Every pod KubeArmor
+  # does not select runs under it; the profiles the suite asserts on are KubeArmor's own.
+  "$E2E_RUNTIME" exec -i "$node" sh -c 'cat > /etc/apparmor.d/cri-containerd.apparmor.d' <<'PROFILE'
+#include <tunables/global>
+profile cri-containerd.apparmor.d flags=(attach_disconnected,mediate_deleted) {
+  capability,
+  network,
+  unix,
+  file,
+  mount,
+  remount,
+  umount,
+  pivot_root,
+  ptrace,
+  signal,
+  dbus,
+  change_profile -> **,
+}
+PROFILE
   "$E2E_RUNTIME" exec "$node" sh -c '
     printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d &&
     apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends apparmor >/dev/null &&
     rm -f /usr/sbin/policy-rc.d &&
+    sed -i "/^policy-features=/d" /etc/apparmor/parser.conf &&
+    apparmor_parser -r /etc/apparmor.d/cri-containerd.apparmor.d &&
     mkdir -p /etc/systemd/system/containerd.service.d &&
     printf "[Service]\nUnsetEnvironment=container\n" > /etc/systemd/system/containerd.service.d/apparmor.conf &&
     systemctl daemon-reload && systemctl restart containerd' ||
     die "could not install apparmor on the node"
-  # The four conditions containerd's own probe checks, so a node that still cannot apply a profile
+  # The four conditions containerd's own probe checks, and our profile in place of its own, so a node that still cannot apply a profile
   # stops the rig here rather than as a pod refused three steps later.
   # shellcheck disable=SC2016 # expanded on the node, not here
   "$E2E_RUNTIME" exec "$node" sh -c '
     test -d /sys/kernel/security/apparmor && test -x /sbin/apparmor_parser &&
     grep -q "^Y" /sys/module/apparmor/parameters/enabled &&
+    grep -q "^cri-containerd.apparmor.d " /sys/kernel/security/apparmor/profiles &&
     ! tr "\0" "\n" < /proc/$(pidof containerd)/environ | grep -q "^container="' ||
     die "the node still cannot apply AppArmor profiles"
   wait_for 120 "kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type==\"Ready\")].status}' | grep -qx True"

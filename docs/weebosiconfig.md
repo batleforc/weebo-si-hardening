@@ -709,6 +709,7 @@ endpointAuth:
   gateway:
     externalUrl: https://auth.weebo.si
     service: { name: endpoint-gateway, namespace: weebo-si-hardening, port: 4180 }
+    clusterDomain: cluster.local # qualifies the in-cluster URL the router calls
     dialect: Traefik # Traefik | Nginx | HaproxyIngress | OpenShiftRoute | Custom
     enforcement: Enforce # Observe | Enforce — the gate's own verdict, not the feature's mode
     allowedMiddlewares: [] # Traefik only: entries an Ingress may name *after* ours
@@ -744,6 +745,7 @@ endpointAuth:
 | `namespaceSelector` | selector | no | everything | Narrows within the webhook's own scope. |
 | `gateway.externalUrl` | URL | yes | — | Where a browser is sent to sign in. Must be `https`. |
 | `gateway.service` | `{name,namespace,port}` | yes | — | The gateway's in-cluster `Service`. |
+| `gateway.clusterDomain` | string | no | `cluster.local` | The cluster's DNS domain. The gate is called at `http://<name>.<namespace>.svc.<clusterDomain>:<port>`, fully qualified because ingress-nginx resolves `auth-url` with nginx's own resolver, which applies no search domains. Set it on a cluster whose domain is not `cluster.local`. |
 | `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik` is the one with no caveat. `Nginx` is **partial** (a refused caller gets a bare `401`, and `auth-signin` redirects everybody — RFC 0009's *Future work*). `HaproxyIngress` needs the prerequisite below. `OpenShiftRoute` is **deferred** to [RFC 0010](./rfc/0010-endpoint-auth-openshift.md) — written, never run against a router. |
 | `gateway.enforcement` | `Observe`/`Enforce` | no | `Enforce` | `Observe` computes and counts every decision and answers `200` — the rollout step that finds the unauthenticated probe before it breaks. |
 | `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Entries an `Ingress` may carry **after** ours; anything else is denied, because the chain runs before `forwardAuth`. |

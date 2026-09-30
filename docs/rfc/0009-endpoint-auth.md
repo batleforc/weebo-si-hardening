@@ -920,7 +920,7 @@ instead**, where ingress-nginx interpolates nginx variables without any snippet:
 
 ```yaml
 nginx.ingress.kubernetes.io/auth-url: >-
-  http://endpoint-gateway.weebo-si-hardening.svc:4180/auth?host=$host&uri=$request_uri&method=$request_method&proto=$scheme
+  http://endpoint-gateway.weebo-si-hardening.svc.cluster.local:4180/auth?host=$host&uri=$request_uri&method=$request_method&proto=$scheme
 nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-User,X-Auth-Request-Groups,X-Auth-Request-Email
 ```
 

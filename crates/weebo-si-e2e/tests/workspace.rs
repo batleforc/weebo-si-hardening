@@ -613,7 +613,12 @@ fn registry_team() -> Cleanup {
 fn a_teams_registry_configuration_is_copied_mounted_by_devworkspace_operator_and_guarded() {
     let _templates = registry_templates();
     let _team = registry_team();
-    set_features(json!({ "registryConfig": registry_config() }));
+    // The guard on the copies is `policyGuard`'s — one mode for every guard rule this operator
+    // serves — so asserting the refusal below needs it on as well.
+    set_features(json!({
+        "registryConfig": registry_config(),
+        "policyGuard": { "mode": "Enforce", "namespaceSelector": in_scope() },
+    }));
     let ns = Namespace::workspace("alice", "registry", Some("npm"));
 
     wait_until("both copies in the team's namespace", RECONCILE, || {
