@@ -71,6 +71,17 @@ wait_for() {
   done
 }
 
+# Run a command up to three times: GitHub's release downloads and the chart repos answer the
+# occasional 5xx, and a nightly that dies on one reads as ours.
+retry() {
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [ "$attempt" -lt 3 ] || return 1
+    printf 'e2e: attempt %s failed, retrying: %s\n' "$attempt" "$1" >&2
+    sleep 15
+  done
+}
+
 # --- one certificate authority for the whole rig ------------------------------------------------------
 #
 # Keycloak's certificate, every Ingress certificate cert-manager issues (`ClusterIssuer e2e-ca`)
@@ -367,7 +378,7 @@ up() {
   # podman's pids limit stops `worker_processes auto` coming up. The default certificate is the
   # rig's wildcard, so a workspace Ingress Che writes without a TLS secret of its own still chains
   # to the one CA the suites trust.
-  helm upgrade --install ingress-nginx ingress-nginx \
+  retry helm upgrade --install ingress-nginx ingress-nginx \
     --repo https://kubernetes.github.io/ingress-nginx --version "$INGRESS_NGINX_CHART" \
     -n ingress-nginx --create-namespace \
     --set controller.service.type=ClusterIP \
@@ -394,7 +405,7 @@ addon_kubearmor() {
   # The chart floats every image on `stable`/`latest` and points kube-rbac-proxy at the retired
   # gcr.io/kubebuilder registry, so each image is pinned here; the relay is only a log fan-out
   # and has no image at this version, so it is off.
-  helm upgrade --install kubearmor kubearmor \
+  retry helm upgrade --install kubearmor kubearmor \
     --repo https://kubearmor.github.io/charts --version "$KUBEARMOR_VERSION" \
     -n kubearmor --create-namespace \
     --set kubearmor.image.tag="$KUBEARMOR_VERSION" \
@@ -410,6 +421,20 @@ addon_kubearmor() {
     -p '{"spec":{"template":{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000}}}}}' >/dev/null
   kubectl -n kubearmor rollout status deploy/kubearmor-controller --timeout=900s >/dev/null
   kubectl -n kubearmor rollout status ds/kubearmor --timeout=900s >/dev/null
+  # `kubearmor.io/enforcer` is written by KubeArmor's *operator* (its snitch job), which this chart
+  # does not ship — the bare daemon only logs which enforcer it initialised. The operator's
+  # `NodeEnforcerView` and the suite both read the label, so it is set here from that log line,
+  # with the value the snitch would write (`apparmor`, `selinux`, `bpf`).
+  wait_for 120 "kubectl -n kubearmor logs ds/kubearmor -c kubearmor | grep -Eq 'Initialized [A-Za-z-]+ Enforcer'"
+  enforcer=$(kubectl -n kubearmor logs ds/kubearmor -c kubearmor |
+    grep -Eo 'Initialized [A-Za-z-]+ Enforcer' | grep -v 'KubeArmor Enforcer' | head -n 1 |
+    awk '{ print tolower($2) }')
+  case "$enforcer" in
+    apparmor | selinux) ;;
+    bpf*) enforcer=bpf ;;
+    *) enforcer=none ;;
+  esac
+  kubectl label nodes --all "kubearmor.io/enforcer=$enforcer" --overwrite >/dev/null
   # Which enforcer the node ended up with is what the suite asserts against; print it here so a
   # failed run's log says it without anybody opening the diagnostics.
   printf 'kubearmor enforcer: %s\n' \
@@ -516,7 +541,7 @@ MANIFEST
   say "weebo-authentik $WEEBO_AUTHENTIK_CHART"
   # The chart defaults the image tag to its bare appVersion (0.15.0), but the operator image is
   # only ever published with a `v` prefix (v0.15.0) — so the tag is set explicitly.
-  helm upgrade --install weebo-authentik oci://ghcr.io/batleforc/charts/weebo-authentik \
+  retry helm upgrade --install weebo-authentik oci://ghcr.io/batleforc/charts/weebo-authentik \
     --version "$WEEBO_AUTHENTIK_CHART" -n weebo-authentik --create-namespace \
     --set image.tag="v$WEEBO_AUTHENTIK_CHART" \
     --set replicaCount=1 --set podDisruptionBudget.enabled=false \

@@ -750,7 +750,7 @@ endpointAuth:
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
-| `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2. Wrong here means every workspace endpoint stops being created. |
+| `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2: whoever writes the generated routing objects. Wrong here means every workspace endpoint stops being created. Under Eclipse Che (`routingClass: che`) that is che-operator, not DWO — `system:serviceaccount:eclipse-che:che-operator`. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |
 | `hosts.ownership` | `[{template}\|{regex}]` | yes | — | How a host names its owner. First match wins; a host no pattern describes is refused at admission. |
 | `hosts.exclude` | `[string]` | no | `[]` | Hosts the gate never attaches to — Che's own, and the gateway's. |

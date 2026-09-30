@@ -366,7 +366,7 @@ fn dry_run_says_what_it_would_create_and_creates_nothing() {
 }
 
 #[test]
-fn two_people_claiming_one_username_are_both_in_conflict() {
+fn a_second_person_claiming_a_taken_username_is_in_conflict() {
     set_features(json!({ "identity": identity("Enforce") }));
     let _one = user(
         "ivan-one",
@@ -376,14 +376,33 @@ fn two_people_claiming_one_username_are_both_in_conflict() {
         "ivan-two",
         json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure" } }),
     );
-    for name in ["ivan-one", "ivan-two"] {
-        wait_until(&format!("{name} to be Degraded"), RECONCILE, || {
-            let object = get(&["weebosiuser", name]).ok_or("absent")?;
-            match condition(&object, "Degraded") {
-                Some(c) if text(&c, "/status") == "True" => Ok(()),
-                other => Err(format!("{other:?}")),
-            }
+    // Whichever is reconciled first creates the account and keeps it; the other finds it owned
+    // by a different WeeboSiUser and is refused — docs/weebosiuser.md: nobody's object is taken
+    // over. Which of the two wins is the reconcile order's to decide, so the test does not.
+    let states = wait_until("one owner and one conflict", RECONCILE, || {
+        let states = ["ivan-one", "ivan-two"].map(|name| {
+            get(&["weebosiuser", name])
+                .map(|object| text(&object, "/status/authentik/state"))
+                .unwrap_or_default()
         });
-    }
+        let mut sorted = states.clone();
+        sorted.sort();
+        if sorted == ["Conflict", "Created"] {
+            Ok(states)
+        } else {
+            Err(format!("{states:?}"))
+        }
+    });
+    let loser = if states[0] == "Conflict" {
+        "ivan-one"
+    } else {
+        "ivan-two"
+    };
+    let object = get(&["weebosiuser", loser]).unwrap();
+    assert_eq!(
+        condition(&object, "Degraded").map(|c| text(&c, "/status")),
+        Some("True".to_string()),
+        "the person in conflict must be Degraded: {object}"
+    );
     let _ = kubectl(&["get", "weebosiusers"]);
 }

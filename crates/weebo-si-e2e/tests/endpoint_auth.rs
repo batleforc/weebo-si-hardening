@@ -33,8 +33,9 @@ fn endpoint_auth() -> Value {
         },
         "owner": {
             "namespaceAnnotation": "che.eclipse.org/username",
-            "devworkspaceOperatorIdentity":
-                "system:serviceaccount:devworkspace-controller:devworkspace-controller-serviceaccount",
+            // Not DWO's own account: a `routingClass: che` workspace's routing objects are
+            // written by the routing controller che-operator embeds, under che-operator's account.
+            "devworkspaceOperatorIdentity": "system:serviceaccount:eclipse-che:che-operator",
         },
         "hosts": {
             "suffix": format!(".{DOMAIN}"),
@@ -465,8 +466,11 @@ fn preauth_proxy_logs_in_once_injects_the_credential_and_renews_it_on_a_401() {
             "http://preauth-proxy:8080/private",
         ])
     };
+    // The status line's version is the upstream's own — the app is Python's `http.server`, which
+    // answers HTTP/1.0, and the proxy relays that as it is — so only the code is asserted.
+    let is_ok = |answer: &str| answer.split_whitespace().nth(1) == Some("200");
     let answer = through_proxy();
-    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(is_ok(&answer), "{answer}");
     assert!(answer.contains("private data"), "{answer}");
     assert!(
         !answer.to_ascii_lowercase().contains("set-cookie: session="),
@@ -488,7 +492,7 @@ fn preauth_proxy_logs_in_once_injects_the_credential_and_renews_it_on_a_401() {
     ]);
     let answer = through_proxy();
     assert!(
-        answer.starts_with("HTTP/1.1 200"),
+        is_ok(&answer),
         "a 401 must be renewed and replayed: {answer}"
     );
     let logs = must(&["logs", "-n", &ns.name, "deploy/preauth-proxy"]);
