@@ -112,10 +112,12 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
                 .unwrap_or_default();
             let web = items
                 .into_iter()
+                // `che.routing…/endpoint-name` is what Che's routing solver writes; DWO's own
+                // `controller.devfile.io/endpoint_name` only appears under `routingClass: basic`.
                 .find(|ingress| {
                     text(
                         ingress,
-                        "/metadata/annotations/controller.devfile.io~1endpoint_name",
+                        "/metadata/annotations/che.routing.controller.devfile.io~1endpoint-name",
                     ) == "web"
                 })
                 .ok_or("no Ingress for endpoint web yet")?;

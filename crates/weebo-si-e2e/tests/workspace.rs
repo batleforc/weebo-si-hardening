@@ -543,11 +543,16 @@ fn policy_guard_refuses_even_a_cluster_admin_and_the_controller_puts_drift_back(
 // --- registry-config --------------------------------------------------------------------------------
 
 fn registry_templates() -> [Cleanup; 2] {
-    let metadata = |name: &str| {
+    // DWO only caches objects carrying its watch label, so an automount label without it mounts
+    // nothing; the copies keep the template's labels verbatim, so the template is where it goes.
+    let metadata = |name: &str, watch: &str| {
         json!({
             "name": name,
             "namespace": OPERATOR_NAMESPACE,
-            "labels": { "controller.devfile.io/mount-to-devworkspace": "true" },
+            "labels": {
+                "controller.devfile.io/mount-to-devworkspace": "true",
+                format!("controller.devfile.io/watch-{watch}"): "true",
+            },
             "annotations": {
                 "controller.devfile.io/mount-as": "subpath",
                 "controller.devfile.io/mount-path": "/home/user",
@@ -556,14 +561,14 @@ fn registry_templates() -> [Cleanup; 2] {
     };
     apply(
         &json!({
-            "apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata("e2e-npmrc"),
+            "apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata("e2e-npmrc", "configmap"),
             "data": { ".npmrc": "registry=https://npm.e2e.weebo.si/\n" },
         })
         .to_string(),
     );
     apply(
         &json!({
-            "apiVersion": "v1", "kind": "Secret", "metadata": metadata("e2e-npm-token"),
+            "apiVersion": "v1", "kind": "Secret", "metadata": metadata("e2e-npm-token", "secret"),
             "stringData": { ".npm-token": "e2e-not-a-real-token\n" },
         })
         .to_string(),

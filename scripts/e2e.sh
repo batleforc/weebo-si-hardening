@@ -731,6 +731,16 @@ deploy_operator() {
   helm upgrade --install weebo-si-operator "$REPO_ROOT/charts/weebo-si-operator" \
     -n "$NAMESPACE" -f "$REPO_ROOT/e2e/values/weebo-si-operator.yaml" "$@" \
     --set namespace.create=false --wait --timeout 10m
+  # `--wait` returns once the webhook pods are Ready, which can be before kube-proxy routes the
+  # Service to them — and a suite's first write then meets `connection refused` under
+  # `failurePolicy: Fail`. A server-side dry run takes the apiserver's own path to the webhook.
+  cat > "$STATE/probe-devworkspace.yaml" <<'PROBE'
+apiVersion: workspace.devfile.io/v1alpha2
+kind: DevWorkspace
+metadata: { name: e2e-webhook-probe, namespace: default }
+spec: { started: false, template: {} }
+PROBE
+  wait_for 180 "! kubectl apply --dry-run=server -f '$STATE/probe-devworkspace.yaml' 2>&1 | grep -q 'failed calling webhook'"
 }
 
 deploy_gateway() {
@@ -775,7 +785,11 @@ diag() {
   kubectl get devworkspaces -A -o yaml > "$out/devworkspaces.yaml" 2>&1 || true
   kubectl get checluster -A -o yaml > "$out/checluster.yaml" 2>&1 || true
   kubectl get networkpolicies,ingresses -A -o yaml > "$out/networking.yaml" 2>&1 || true
-  for ns in "$NAMESPACE" eclipse-che devworkspace-controller sso kubearmor authentik weebo-authentik argocd; do
+  # AppArmor denials land in the host kernel's log, not in any pod's — the one place a profile
+  # refusing a process explains itself.
+  { sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null; } | grep -i apparmor | tail -n 500 > "$out/dmesg-apparmor.txt" || true
+  for ns in "$NAMESPACE" eclipse-che devworkspace-controller sso kubearmor authentik weebo-authentik argocd \
+    ingress-nginx kube-system; do
     kubectl get namespace "$ns" >/dev/null 2>&1 || continue
     for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
       kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 \
