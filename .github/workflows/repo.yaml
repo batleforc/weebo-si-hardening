@@ -8,6 +8,7 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "charts/weebo-si-operator/crds/**"
       - "docs/**"
       - "scripts/**"
       - ".hooks/**"
@@ -18,6 +19,7 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - "charts/weebo-si-operator/crds/**"
       - "docs/**"
       - "scripts/**"
       - ".hooks/**"
@@ -50,6 +52,17 @@ jobs:
             echo "::error::docs/rfc/readme.md is stale — run 'task recu'"
             exit 1
           fi
+
+  generator:
+    name: Config generator schemas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # docs/generator/schemas.js is derived from the chart's CRDs; a stale copy is a form that
+      # offers fields the operator no longer has. yq is preinstalled on GitHub-hosted runners.
+      - name: docs/generator/schemas.js is not stale
+        run: ./scripts/docs-schemas.sh --check
 
   shell:
     name: shellcheck

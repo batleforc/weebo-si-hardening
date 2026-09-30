@@ -76,14 +76,30 @@ pub async fn run(state: Arc<GatewayState>, url: String, interval: Duration) {
 /// Act on one result.
 async fn apply(state: &GatewayState, url: &str, result: ProbeResult, stale: bool) {
     let auto = state.config.self_origin.pod_network == PodNetwork::Auto;
+    if result != ProbeResult::Forged {
+        // A forgery an earlier patch failed to record is retried whatever this probe found: a
+        // controller fixed since must not leave this replica off with a finding the other
+        // replicas never saw and no admin can clear.
+        match state.revocations.retry_address_forgery().await {
+            Ok(true) => println!(
+                "endpoint-gateway: recorded the earlier forged-address finding on the revocation \
+                 ConfigMap"
+            ),
+            Ok(false) => {}
+            Err(err) => eprintln!(
+                "WARN endpoint-gateway: still could not record the earlier forged-address finding \
+                 for the other replicas (retried on the next probe): {err}"
+            ),
+        }
+    }
     match result {
         ProbeResult::Forged => {
             state.metrics.probe("forged");
             state.workloads.revoke_address_trust();
             if let Err(err) = state.revocations.record_address_forgery(state.now()).await {
                 eprintln!(
-                    "WARN endpoint-gateway: could not record the forgery for the other replicas: \
-                     {err}"
+                    "WARN endpoint-gateway: could not record the forgery for the other replicas \
+                     (retried on the next probe; this replica stays off meanwhile): {err}"
                 );
             }
             eprintln!(
@@ -95,10 +111,18 @@ async fn apply(state: &GatewayState, url: &str, result: ProbeResult, stale: bool
         ProbeResult::Clean => {
             state.metrics.probe("clean");
             if auto && !state.workloads.confirm_address_trust() {
-                println!(
-                    "endpoint-gateway: self-origin probe clean, but a forgery is recorded on the \
-                     revocation ConfigMap; pod-address identity stays off"
-                );
+                if state.revocations.address_forgery_unrecorded() {
+                    println!(
+                        "endpoint-gateway: self-origin probe clean, but this replica saw a forgery \
+                         it has not managed to record on the revocation ConfigMap yet; \
+                         pod-address identity stays off"
+                    );
+                } else {
+                    println!(
+                        "endpoint-gateway: self-origin probe clean, but a forgery is recorded on \
+                         the revocation ConfigMap; pod-address identity stays off"
+                    );
+                }
             } else {
                 println!(
                     "endpoint-gateway: self-origin probe ok ({} workspace pods indexed)",

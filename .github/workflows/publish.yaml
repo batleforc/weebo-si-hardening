@@ -73,7 +73,9 @@ jobs:
 
       # `cache-from: type=gha` replays the layers `brick.yaml` built and scanned for this same
       # commit a few minutes earlier in the same release run, so what is pushed is what was
-      # scanned — the build is deterministic from `--locked` and a digest-pinned base.
+      # scanned — the build is deterministic from `--locked` and a digest-pinned base. The cache
+      # is scoped per crate, with the same scope `brick.yaml` writes: unscoped, the bricks built
+      # in parallel overwrote each other's cache and this step rebuilt from scratch.
       #
       # `sbom: true` and `provenance: mode=max` attach BuildKit's SPDX SBOM and a SLSA
       # provenance attestation to the pushed index, so `docker buildx imagetools inspect
@@ -89,8 +91,8 @@ jobs:
           provenance: mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=brick-${{ inputs.crate }}
+          cache-to: type=gha,scope=brick-${{ inputs.crate }},mode=max
 
   sign:
     name: cosign (keyless)

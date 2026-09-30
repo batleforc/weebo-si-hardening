@@ -167,6 +167,47 @@ pub struct TokenReviewer {
 /// The one key every caller shares in the global bucket.
 const GLOBAL_KEY: &str = "*";
 
+/// One caller's hold on a single-flight entry, which removes the entry however that caller's
+/// wait ends.
+///
+/// The review is awaited inside a request handler, and a handler's future is dropped when its
+/// client disconnects: removing the entry after the `.await` leaked it on every hang-up, so a
+/// caller sending fresh service-account-shaped tokens and closing the connection grew the map
+/// without bound.
+///
+/// **Only once the answer is in, or by the last holder.** A waiter that hangs up while another
+/// caller's review is still running must leave the entry alone: removing it let the next caller
+/// with the same token start a second review, so a caller replaying somebody's token and
+/// disconnecting could spend a review per hang-up.
+struct InFlightEntry<'a> {
+    in_flight: &'a Mutex<HashMap<Fingerprint, Arc<tokio::sync::OnceCell<Option<NamespaceName>>>>>,
+    key: Fingerprint,
+    /// Taken in `drop`, so this holder's reference is released under the map's lock: counted
+    /// outside it, two holders dropping together could each still see the other and both leave
+    /// the entry behind.
+    cell: Option<Arc<tokio::sync::OnceCell<Option<NamespaceName>>>>,
+}
+
+impl Drop for InFlightEntry<'_> {
+    fn drop(&mut self) {
+        let Some(cell) = self.cell.take() else {
+            return;
+        };
+        let Ok(mut in_flight) = self.in_flight.lock() else {
+            return;
+        };
+        let ours = in_flight
+            .get(&self.key)
+            .is_some_and(|current| Arc::ptr_eq(current, &cell));
+        // Every holder clones under this lock and releases under it, so the count is exact: the
+        // map's reference plus this one means nobody else is waiting.
+        if ours && (cell.initialized() || Arc::strong_count(&cell) <= 2) {
+            in_flight.remove(&self.key);
+        }
+        drop(cell);
+    }
+}
+
 impl TokenReviewer {
     /// A reviewer holding at most `cache_entries` answers of each kind.
     pub fn new(client: Client, accept: bool, cache_entries: usize, timeout: Duration) -> Self {
@@ -241,21 +282,22 @@ impl TokenReviewer {
         }
         // Single flight: whoever arrives first asks, everyone else with the same token waits for
         // that answer rather than asking again.
-        let cell = match self.in_flight.lock() {
-            Ok(mut in_flight) => Arc::clone(in_flight.entry(key).or_default()),
+        let entry = match self.in_flight.lock() {
+            Ok(mut in_flight) => InFlightEntry {
+                in_flight: &self.in_flight,
+                key,
+                cell: Some(Arc::clone(in_flight.entry(key).or_default())),
+            },
             Err(_) => return None,
         };
-        let namespace = cell
-            .get_or_init(|| self.review_uncached(token, key, client, now))
-            .await
-            .clone();
-        if let Ok(mut in_flight) = self.in_flight.lock()
-            && in_flight
-                .get(&key)
-                .is_some_and(|current| Arc::ptr_eq(current, &cell))
-        {
-            in_flight.remove(&key);
-        }
+        let namespace = match entry.cell.as_ref() {
+            Some(cell) => cell
+                .get_or_init(|| self.review_uncached(token, key, client, now))
+                .await
+                .clone(),
+            None => None,
+        };
+        drop(entry);
         namespace.map(|namespace| ServiceAccountIdentity {
             namespace,
             expires_at: now.plus_secs(3_600),
@@ -747,6 +789,53 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    /// A review whose caller hung up used to leave its single-flight entry behind for good.
+    #[tokio::test]
+    async fn an_abandoned_review_does_not_leave_its_single_flight_entry_behind() {
+        let (client, _calls) = fake_apiserver(Duration::from_secs(5), true).await;
+        let reviewer = TokenReviewer::new(client, true, 100, TOKEN_REVIEW_TIMEOUT);
+        let now = Timestamp::from_secs(1_000);
+        for n in 0..10 {
+            let abandoned = tokio::time::timeout(
+                Duration::from_millis(20),
+                reviewer.review(&sa_token(n), "", now),
+            )
+            .await;
+            assert!(abandoned.is_err());
+        }
+        assert!(reviewer.in_flight.lock().unwrap().is_empty());
+    }
+
+    /// A waiter hanging up while another caller's review runs used to remove the entry, so the
+    /// next caller with the same token started a second review.
+    #[tokio::test]
+    async fn a_waiter_hanging_up_does_not_start_a_second_review() {
+        let (client, calls) = fake_apiserver(Duration::from_millis(300), true).await;
+        let reviewer = Arc::new(TokenReviewer::new(client, true, 100, TOKEN_REVIEW_TIMEOUT));
+        let now = Timestamp::from_secs(1_000);
+        let first = {
+            let reviewer = Arc::clone(&reviewer);
+            tokio::spawn(async move { reviewer.review(&sa_token(1), "", now).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..5 {
+            let abandoned = tokio::time::timeout(
+                Duration::from_millis(10),
+                reviewer.review(&sa_token(1), "", now),
+            )
+            .await;
+            assert!(abandoned.is_err());
+        }
+        let late = {
+            let reviewer = Arc::clone(&reviewer);
+            tokio::spawn(async move { reviewer.review(&sa_token(1), "", now).await })
+        };
+        assert!(first.await.unwrap().is_some());
+        assert!(late.await.unwrap().is_some());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(reviewer.in_flight.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

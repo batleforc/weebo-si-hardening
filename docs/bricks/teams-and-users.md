@@ -6,8 +6,10 @@ which team are they in, and what should exist for them outside this cluster**.
 
 Design and rationale: [RFC 0011](../rfc/0011-teams-and-users.md). This page is the operator's copy
 — how to install them, migrate to them, roll provisioning out and roll it back. The field-by-field
-reference is [`weebosiconfig.md`](../weebosiconfig.md#teams-and-people); when this page and the RFC
-disagree, the RFC is right and this page is a bug.
+references are [`weebositeam.md`](../weebositeam.md) and [`weebosiuser.md`](../weebosiuser.md),
+with the summary and the `identity` feature in
+[`weebosiconfig.md`](../weebosiconfig.md#teams-and-people); when this page and the RFC disagree,
+the RFC is right and this page is a bug.
 
 > **A `WeeboSiTeam` is a security object.** Whoever may write one decides which DevWorkspace
 > Operator configs, image patterns, registries and runtime profiles that team reaches. They are
@@ -235,7 +237,8 @@ namespace its selector matches but another team won is reported in the `Degraded
 up to three of them plus a count.
 
 A person's `status` carries `team`, the two halves above, and one condition. `Adopted` is a
-success: the object exists and this person can use it.
+success: the object exists and this person can use it. Every status field is in
+[`weebositeam.md`](../weebositeam.md#status) and [`weebosiuser.md`](../weebosiuser.md#status).
 
 ## Observability
 

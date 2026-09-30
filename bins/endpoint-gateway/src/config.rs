@@ -818,6 +818,25 @@ impl GatewayConfig {
         Ok(())
     }
 
+    /// Why this configuration cannot limit `TokenReview`s per client, when it cannot.
+    ///
+    /// On forward-auth with `trusted_proxy: off` no caller has an address — `/auth` has no peer
+    /// of its own and the controller's header is not believed — so every review is held to the
+    /// global limit only, and one caller varying its token can spend it for everybody. Not a load
+    /// error: sharing one small bucket instead would cut every workspace's capacity to one
+    /// client's, which fails closed after a cold start with no attacker at all.
+    pub fn token_review_limit_warning(&self) -> Option<&'static str> {
+        (!self.reverse_proxy
+            && self.self_origin.service_account_token
+            && self.self_origin.trusted_proxy == TrustedProxy::Off)
+            .then_some(
+                "self_origin.trusted_proxy is off on a forward-auth deployment, so no caller has \
+                 an address and TokenReviews are limited globally only: one caller sending fresh \
+                 service-account-shaped tokens can use up the limit for every workspace. Set \
+                 trusted_proxy to any (only the ingress controller calls /auth) or to its CIDRs.",
+            )
+    }
+
     /// What makes a bearer ours, or why nothing could.
     ///
     /// `None` where `verify_own_issuer` is off: the branch does not exist, so there is no list to
@@ -1012,6 +1031,26 @@ bearer:
             "{MINIMAL}\nreverse_proxy: true\nself_origin:\n  trusted_proxy:\n    cidrs: [\"10.128.\"]\n"
         ));
         assert!(GatewayConfig::load(scoped.path()).is_ok());
+    }
+
+    #[test]
+    fn forward_auth_without_a_trusted_proxy_is_warned_about_and_nothing_else_is() {
+        let load = |extra: &str| {
+            let file = write(&format!("{MINIMAL}\n{extra}"));
+            GatewayConfig::load(file.path()).unwrap()
+        };
+        let off = load("self_origin:\n  trusted_proxy: off\n");
+        assert!(off.token_review_limit_warning().is_some());
+        for quiet in [
+            "self_origin:\n  trusted_proxy: any\n",
+            "self_origin:\n  trusted_proxy: off\n  service_account_token: false\n",
+            "reverse_proxy: true\nself_origin:\n  pod_network: Off\n  trusted_proxy: off\n",
+        ] {
+            assert!(
+                load(quiet).token_review_limit_warning().is_none(),
+                "{quiet}"
+            );
+        }
     }
 
     #[test]

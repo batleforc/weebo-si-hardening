@@ -402,8 +402,13 @@ addon_kubearmor() {
     --set kubearmorController.image.tag="$KUBEARMOR_VERSION" \
     --set kubeRbacProxy.image.repository="$KUBE_RBAC_PROXY_IMAGE" \
     --set kubeRbacProxy.image.tag="$KUBE_RBAC_PROXY_TAG" \
-    --set kubearmorRelay.enabled=false \
-    --wait --timeout 15m >/dev/null
+    --set kubearmorRelay.enabled=false >/dev/null
+  # The controller's pod securityContext hard-codes `runAsNonRoot` with no `runAsUser`, and the
+  # $KUBEARMOR_VERSION controller image ships without a numeric USER (`stable` has 1000), so the
+  # kubelet refuses it. The chart has no knob for it: give the pod the UID the image should declare.
+  kubectl -n kubearmor patch deploy/kubearmor-controller --type=merge \
+    -p '{"spec":{"template":{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000}}}}}' >/dev/null
+  kubectl -n kubearmor rollout status deploy/kubearmor-controller --timeout=900s >/dev/null
   kubectl -n kubearmor rollout status ds/kubearmor --timeout=900s >/dev/null
   # Which enforcer the node ended up with is what the suite asserts against; print it here so a
   # failed run's log says it without anybody opening the diagnostics.
@@ -509,8 +514,11 @@ MANIFEST
   kubectl -n authentik rollout status deploy/authentik-server --timeout=1200s >/dev/null
 
   say "weebo-authentik $WEEBO_AUTHENTIK_CHART"
+  # The chart defaults the image tag to its bare appVersion (0.15.0), but the operator image is
+  # only ever published with a `v` prefix (v0.15.0) — so the tag is set explicitly.
   helm upgrade --install weebo-authentik oci://ghcr.io/batleforc/charts/weebo-authentik \
     --version "$WEEBO_AUTHENTIK_CHART" -n weebo-authentik --create-namespace \
+    --set image.tag="v$WEEBO_AUTHENTIK_CHART" \
     --set replicaCount=1 --set podDisruptionBudget.enabled=false \
     --set certManager.createIssuer=false \
     --set certManager.issuerRef.name=e2e-ca --set certManager.issuerRef.kind=ClusterIssuer \
@@ -635,9 +643,14 @@ deploy_operator() {
     endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Nginx ;;
     identity) set -- "$@" --set identity.rbac.enabled=true --set identity.argoNamespace=argocd ;;
   esac
+  # Helm needs the namespace to exist before it can store the release, and the chart's own
+  # Namespace would then clash with it — so it is created here, pre-labelled out of the webhook's
+  # scope before anything can be admitted, and the chart is told not to render one.
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl label namespace "$NAMESPACE" hardening.weebo.io/exclude=true --overwrite >/dev/null
   helm upgrade --install weebo-si-operator "$REPO_ROOT/charts/weebo-si-operator" \
     -n "$NAMESPACE" -f "$REPO_ROOT/e2e/values/weebo-si-operator.yaml" "$@" \
-    --wait --timeout 10m
+    --set namespace.create=false --wait --timeout 10m
 }
 
 deploy_gateway() {

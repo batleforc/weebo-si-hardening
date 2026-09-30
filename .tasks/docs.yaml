@@ -1,0 +1,21 @@
+version: "3"
+
+tasks:
+  schemas:
+    desc: "Regenerate docs/generator/schemas.js (the config generator's CRD schemas) from charts/weebo-si-operator/crds/"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/docs-schemas.sh"
+
+  check:
+    desc: "Validate docs/generator/schemas.js is not stale against the chart's CRDs (run by task lint)"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/docs-schemas.sh --check"
+
+  generator:
+    desc: "Serve the config generator (docs/generator/) on http://127.0.0.1:{{.PORT}} — also opens fine straight from disk"
+    vars:
+      PORT: '{{.PORT | default "8765"}}'
+    dir: "{{.ROOT_DIR}}/docs/generator"
+    cmds:
+      - echo "config generator on http://127.0.0.1:{{.PORT}}/"
+      - python3 -m http.server {{.PORT}} --bind 127.0.0.1

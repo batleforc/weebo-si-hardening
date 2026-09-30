@@ -1,7 +1,8 @@
 # Documentation
 
 Documentation for `weebo-si-hardening` is plain markdown, versioned next to the code.
-No static site generator: a RFC has to be readable in a diff and in the forge UI.
+No static site generator: a RFC has to be readable in a diff and in the forge UI. The one
+exception is [`generator/`](./generator/readme.md), a single static page with no build step.
 
 ## Map
 
@@ -11,6 +12,9 @@ No static site generator: a RFC has to be readable in a diff and in the forge UI
 | [`architecture/`](./architecture/readme.md) | Cross-cutting conventions every brick follows (hexagonal layering, repo layout). |
 | [`bricks/`](./bricks/readme.md) | Operator-facing docs for what has shipped: flags, config, exit codes, failure modes. |
 | [`weebosiconfig.md`](./weebosiconfig.md) | Every field of the `WeeboSiConfig` CRD: type, default, meaning, and what a wrong value does. |
+| [`weebositeam.md`](./weebositeam.md) | Every field of the `WeeboSiTeam` CRD: a team's selector, priority, per-feature catalogues, groups and workspace template. |
+| [`weebosiuser.md`](./weebosiuser.md) | Every field of the `WeeboSiUser` CRD: a person's identity, team, provisioning switches, and what their `status` means. |
+| [`generator/`](./generator/readme.md) | A form per CRD that builds a valid object from the schema and prints the YAML — [published on GitHub Pages](https://batleforc.github.io/weebo-si-hardening/). |
 | [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
 
 ## Reading order for a newcomer

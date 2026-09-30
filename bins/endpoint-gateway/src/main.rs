@@ -165,6 +165,10 @@ async fn check(config: &GatewayConfig, explain_token: bool) -> ExitCode {
         }
     }
 
+    if let Some(warning) = config.token_review_limit_warning() {
+        println!("  self-origin: WARNING {warning}");
+    }
+
     let discovery = match discover(&config.issuer).await {
         Ok(discovery) => {
             println!("discovery: ok");
@@ -473,6 +477,10 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     )
     .await
     .map_err(|err| format!("could not start the endpoint watches: {err}"))?;
+
+    if let Some(warning) = config.token_review_limit_warning() {
+        eprintln!("WARN endpoint-gateway: {warning}");
+    }
 
     // `On` starts trusted, as the admin asserted. `Auto` starts **untrusted** and is turned on
     // only by a conclusive probe (`probe.rs`) — a forged address that did not come back.

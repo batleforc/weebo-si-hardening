@@ -101,8 +101,12 @@ struct Guarded {
     inner: ResponseBody,
     /// The gap allowed between two frames.
     idle: Duration,
-    /// When the current gap runs out; pushed back on every frame.
+    /// When the current gap runs out. Started when the client asks for a frame, not when the last
+    /// one was handed out: time the client spends not reading is not the upstream being idle.
     deadline: Pin<Box<Sleep>>,
+    /// Whether the client is waiting on the upstream right now — asked for a frame and not yet
+    /// given one. The deadline only runs while this is set.
+    waiting: bool,
     /// The request's admission slot. Released at end-of-stream, on error, or on drop — whichever
     /// comes first.
     admitted: Option<OwnedSemaphorePermit>,
@@ -132,6 +136,7 @@ impl Guarded {
             inner,
             idle,
             deadline: Box::pin(tokio::time::sleep(idle)),
+            waiting: false,
             admitted: Some(admitted),
             finished: false,
         }
@@ -156,10 +161,16 @@ impl Body for Guarded {
         if this.finished {
             return Poll::Ready(None);
         }
+        if !this.waiting {
+            // A fresh request for a frame: the upstream's gap starts now. Measuring it from the
+            // previous frame instead cut a bursty upstream whenever a slow client paused reading
+            // longer than the timeout and the next burst had not arrived yet.
+            this.deadline.as_mut().reset(Instant::now() + this.idle);
+            this.waiting = true;
+        }
         match Pin::new(&mut this.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                let next = Instant::now() + this.idle;
-                this.deadline.as_mut().reset(next);
+                this.waiting = false;
                 if this.inner.is_end_stream() {
                     this.finish();
                 }
@@ -735,6 +746,37 @@ mod tests {
             "a cut body yields nothing more"
         );
         drop(tx);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_pauses_reading_does_not_get_the_upstream_cut() {
+        let limits = Limits {
+            max_in_flight: 1,
+            response_idle_timeout: Duration::from_millis(100),
+            ..Limits::default()
+        };
+        let (proxy, tx) = streaming(limits);
+
+        let mut body = handle(Arc::clone(&proxy), get(b""))
+            .await
+            .unwrap()
+            .into_body();
+        tx.send(Bytes::from_static(b"burst")).await.unwrap();
+        assert!(body.frame().await.unwrap().is_ok());
+
+        // The client stops reading for longer than the timeout; the upstream's next burst then
+        // arrives well inside the window counted from when the client asks again.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let sender = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            tx.send(Bytes::from_static(b"burst")).await.unwrap();
+            tx
+        });
+        assert!(
+            matches!(body.frame().await, Some(Ok(_))),
+            "the client's own pause was counted against the upstream"
+        );
+        drop(sender.await.unwrap());
     }
 
     #[tokio::test]

@@ -1,0 +1,50 @@
+name: Pages
+# Publishes the config generator (docs/generator/) to GitHub Pages: a static page, a form per CRD
+# built from the operator's schema. The repository's Pages source must be set to "GitHub Actions"
+# (Settings › Pages) once, by hand. Nothing is built here — the page is its own files — but the
+# schemas it carries are checked against the chart's CRDs first, so a stale form is never
+# published.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/generator/**"
+      - "charts/weebo-si-operator/crds/**"
+      - "scripts/docs-schemas.sh"
+      - ".github/workflows/pages.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+# One deployment at a time, and never cancel one halfway: a half-published site is worse than
+# a late one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Package docs/generator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: docs/generator/schemas.js is not stale
+        run: ./scripts/docs-schemas.sh --check
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/generator
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write # publish the artifact
+      id-token: write # the OIDC token deploy-pages authenticates with
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

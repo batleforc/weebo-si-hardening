@@ -7,7 +7,9 @@ it is required, what it defaults to, and what happens when it is wrong.
 This is the *reference*. Each feature's **why** is its RFC and each feature's **how to roll it
 out** is [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) — or, for the two kinds
 below and the `identity` feature, [`bricks/teams-and-users.md`](./bricks/teams-and-users.md).
-When this page and an RFC disagree, the RFC is right and this page is a bug.
+The two other kinds have their own field references: [`weebositeam.md`](./weebositeam.md) and
+[`weebosiuser.md`](./weebosiuser.md). When this page and an RFC disagree, the RFC is right and
+this page is a bug.
 
 The schema itself is generated from the Rust types in `crates/weebo-si-crd/` and checked in twice
 (`crates/weebo-si-operator/deploy/crd.yaml`, which carries all three kinds, and
@@ -19,6 +21,9 @@ weebo-si-operator crd weebositeams   # or just one kind
 weebo-si-operator features     # which features this build actually contains
 kubectl explain weebosiconfig.spec.features --recursive
 ```
+
+To build one without hand-writing YAML, the [config generator](https://batleforc.github.io/weebo-si-hardening/#WeeboSiConfig) renders a form
+from this same schema, validates as you type and prints the object.
 
 ## The object
 
@@ -191,6 +196,9 @@ own. The set of people who may write a `WeeboSiTeam` is exactly the set who may 
 singleton, and the per-team catalogue ships with no ceiling over its contents *because* of that.
 Granting a team write access to its own object without adding that ceiling first would let it
 catalogue anything it likes.
+
+This section is the summary; every field of both kinds, their validation and their `status` are in
+[`weebositeam.md`](./weebositeam.md) and [`weebosiuser.md`](./weebosiuser.md).
 
 ### `WeeboSiTeam`
 

@@ -139,8 +139,8 @@ jobs:
           load: true
           push: false
           tags: ${{ inputs.crate }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=brick-${{ inputs.crate }}
+          cache-to: type=gha,scope=brick-${{ inputs.crate }},mode=max
 
       # Report first, gate second. If the scan itself failed the build, the SARIF
       # upload below would be skipped and the findings would never reach the

@@ -36,15 +36,24 @@ The Helm chart is the one supported install path: `charts/weebo-si-operator/`, p
 release as `oci://ghcr.io/batleforc/charts/weebo-si-operator` (see [CI › Releases](../ci.md#releases)).
 
 ```bash
+kubectl create namespace weebo-si-hardening
+kubectl label namespace weebo-si-hardening hardening.weebo.io/exclude=true
 helm install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
-  --version <x.y.z> -n weebo-si-hardening --create-namespace \
+  --version <x.y.z> -n weebo-si-hardening --set namespace.create=false \
   --set certificates.provider=cert-manager   # or openshift, or none
 ```
+
+Helm stores the release in its namespace, so that namespace has to exist before `helm install`
+runs. Neither `--create-namespace` nor a pre-created namespace can be combined with the chart's
+default `namespace.create: true`: the rendered `Namespace` would clash with the existing one. Hence
+the namespace is created and labelled by hand first — the label before the install, so the
+operator's own pods are never admitted through its own webhook — and the chart is told not to
+render one. `namespace.create: true` is only for a `helm template … | kubectl apply` install.
 
 The chart's `appVersion` is the release version, and `image.repository`/`image.tag` default to the
 image that same release pushed (`ghcr.io/batleforc/weebo-si-operator:<x.y.z>`); set
 `image.digest` to pin the exact cosign-signed artifact instead of the tag. The chart renders every
-object in the right order — namespace (pre-labelled `hardening.weebo.io/exclude: "true"` so it is
+object in the right order — namespace (with `namespace.create: true`; pre-labelled `hardening.weebo.io/exclude: "true"` so it is
 never a target of its own webhook), the two `ServiceAccount`s and their RBAC (never one: the
 webhook role, the one an untrusted `AdmissionReview` body reaches, never holds the
 `weebosiconfigs/status` write the controller role needs), the certificate for the chosen provider,

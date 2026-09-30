@@ -25,6 +25,9 @@ pub struct GatewayMetrics {
     revocations_refused: IntCounterVec,
     self_origin_probe: IntCounterVec,
     token_reviews_throttled: prometheus::IntCounter,
+    /// Serialises [`Self::token_reviews_throttled`]'s read-then-add, which two overlapping
+    /// scrapes would otherwise both apply in full. Shared by every clone, as the counter is.
+    token_reviews_throttled_sync: std::sync::Arc<std::sync::Mutex<()>>,
     policy_compile_seconds: Histogram,
     observed_only: IntGaugeVec,
 }
@@ -165,6 +168,7 @@ impl GatewayMetrics {
             revocations_refused,
             self_origin_probe,
             token_reviews_throttled,
+            token_reviews_throttled_sync: std::sync::Arc::default(),
             policy_compile_seconds,
             observed_only,
         })
@@ -267,6 +271,12 @@ impl GatewayMetrics {
 
     /// Bring the throttled-review counter up to the reviewer's own running total.
     pub fn token_reviews_throttled(&self, total: u64) {
+        // A poisoned lock only means another scrape panicked mid-update; the counter itself is
+        // still consistent, so carry on under it.
+        let _sync = self
+            .token_reviews_throttled_sync
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seen = self.token_reviews_throttled.get();
         if total > seen {
             self.token_reviews_throttled.inc_by(total - seen);

@@ -13,7 +13,7 @@
 //! an appropriate home for it.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -64,6 +64,10 @@ impl std::fmt::Display for RevokeError {
 pub struct KubeRevocations {
     revoked: Arc<RwLock<BTreeMap<String, u64>>>,
     address_forgery: Arc<AtomicBool>,
+    /// When this replica saw a forgery the `ConfigMap` does not show yet, in seconds; `0` for
+    /// none. Held until the watch shows the annotation, so neither an unrelated event nor a failed
+    /// patch can clear the flag in between — see [`Self::record_address_forgery`].
+    forgery_pending: Arc<AtomicU64>,
     client: Client,
     namespace: String,
     name: String,
@@ -116,6 +120,8 @@ impl KubeRevocations {
 
         let index = Arc::clone(&revoked);
         let forgery = Arc::clone(&address_forgery);
+        let forgery_pending: Arc<AtomicU64> = Arc::default();
+        let pending = Arc::clone(&forgery_pending);
         let reader: Store<ConfigMap> = store.clone();
         tokio::spawn(async move {
             let stream = reflector::reflector(writer, watcher(api, config)).default_backoff();
@@ -130,14 +136,24 @@ impl KubeRevocations {
                             annotations.contains_key(ADDRESS_FORGERY_ANNOTATION)
                         })
                 });
-                if seen && !forgery.swap(true, Ordering::Relaxed) {
-                    eprintln!(
-                        "WARN endpoint-gateway: a self-origin probe recorded a forged client \
-                         address ({ADDRESS_FORGERY_ANNOTATION}); pod-address identity is OFF on \
-                         every replica until an admin removes that annotation"
-                    );
-                } else if !seen {
-                    forgery.store(false, Ordering::Relaxed);
+                if seen {
+                    if !forgery.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "WARN endpoint-gateway: a self-origin probe recorded a forged client \
+                             address ({ADDRESS_FORGERY_ANNOTATION}); pod-address identity is OFF \
+                             on every replica until an admin removes that annotation"
+                        );
+                    }
+                    // The annotation now carries it, and its removal by an admin is what clears
+                    // it on every replica, this one included.
+                    pending.store(0, Ordering::SeqCst);
+                } else {
+                    forgery.store(false, Ordering::SeqCst);
+                    // A forgery recorded here but not visible yet must survive this event: an
+                    // unrelated revocation, a relist, or a patch that never landed.
+                    if pending.load(Ordering::SeqCst) != 0 {
+                        forgery.store(true, Ordering::SeqCst);
+                    }
                 }
                 for map in reader.state() {
                     for (sid, expiry) in map.data.clone().unwrap_or_default() {
@@ -155,6 +171,7 @@ impl KubeRevocations {
         Ok(Arc::new(Self {
             revoked,
             address_forgery,
+            forgery_pending,
             client,
             namespace,
             name,
@@ -188,12 +205,43 @@ impl KubeRevocations {
     }
 
     /// Record, for every replica, that a self-origin probe watched a forged client address come
-    /// back. Sets the shared flag locally at once rather than waiting for the watch.
+    /// back. Sets the shared flag locally at once rather than waiting for the watch, and keeps it
+    /// set until the watch shows the annotation: a patch that fails leaves this replica off
+    /// rather than letting the next watch event turn it back on, and
+    /// [`Self::retry_address_forgery`] keeps trying until the annotation lands — where an admin
+    /// can see it and remove it, the one way it is cleared.
     pub async fn record_address_forgery(&self, now: Timestamp) -> Result<(), kube::Error> {
-        self.address_forgery.store(true, Ordering::Relaxed);
+        // The first sighting's time, not the latest retry's.
+        let _ = self.forgery_pending.compare_exchange(
+            0,
+            now.as_secs().max(1),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.address_forgery.store(true, Ordering::SeqCst);
+        self.patch_address_forgery().await
+    }
+
+    /// Whether this replica saw a forgery the `ConfigMap` does not show yet.
+    pub fn address_forgery_unrecorded(&self) -> bool {
+        self.forgery_pending.load(Ordering::SeqCst) != 0
+    }
+
+    /// Try again to record a forgery an earlier patch failed to — called on every probe,
+    /// whatever it found, so a controller fixed since does not strand this replica with a
+    /// finding nobody else can see or clear. `Ok(false)` when there was nothing to retry.
+    pub async fn retry_address_forgery(&self) -> Result<bool, kube::Error> {
+        if !self.address_forgery_unrecorded() {
+            return Ok(false);
+        }
+        self.patch_address_forgery().await.map(|()| true)
+    }
+
+    async fn patch_address_forgery(&self) -> Result<(), kube::Error> {
+        let at = self.forgery_pending.load(Ordering::SeqCst);
         self.merge_or_create(json!({
             "metadata": { "annotations": {
-                ADDRESS_FORGERY_ANNOTATION: now.as_secs().to_string()
+                ADDRESS_FORGERY_ANNOTATION: at.to_string()
             } }
         }))
         .await

@@ -26,7 +26,8 @@ them is a deliberate commit, never something that happens to a green build.
 | [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, `bins/endpoint-gateway/**`, manifests | all five envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip — plus RFC 0009's dialect conformance suite, which drives a real Traefik |
 | [`e2e`](../.github/workflows/e2e.yaml) | nightly · manual, per suite | any of the four end-to-end suites against a kind cluster running real Eclipse Che — see [End to end](#end-to-end) |
 | [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for all three charts, every certificate-provider variant and both endpoint-auth dialect shapes |
-| [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, configs | a malformed RFC, a stale RFC index, shellcheck, markdownlint, cspell |
+| [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, `charts/weebo-si-operator/crds/**`, configs | a malformed RFC, a stale RFC index, a stale `docs/generator/schemas.js`, shellcheck, markdownlint, cspell |
+| [`pages`](../.github/workflows/pages.yaml) | `docs/generator/**`, the chart's CRDs, on `main` · manual | a stale `docs/generator/schemas.js`; then publishes the [config generator](https://batleforc.github.io/weebo-si-hardening/) to GitHub Pages |
 | [`dep-audit`](../.github/workflows/dep-audit.yaml) | manifests, `deny.toml` · daily | `cargo deny check advisories bans licenses sources` |
 | [`postmortem`](../.github/workflows/postmortem.yaml) | manifests · daily | a HIGH supply-chain vulnerability |
 | [`codeql`](../.github/workflows/codeql.yaml) | Rust changes · weekly | CodeQL alerts |
@@ -209,13 +210,14 @@ tab. The scan reports; a separate step fails the build.
 ## Running the gates locally
 
 ```bash
-task lint            # fmt, clippy, shellcheck, RFC format, crd freshness, helm lint, actionlint
+task lint            # fmt, clippy, shellcheck, RFC format, crd + generator-schema freshness, helm lint, actionlint
 task test            # the whole suite
 task audit           # cargo-deny + trivy fs (covers charts/ too — see task helm:lint's own comment)
 task supply-chain    # postmortem, the same scanner version CI pins
 task ci:lint         # actionlint on the workflow files alone
 task ci:image BRICK=passwd-append   # build + scan one image as CI does (bins/ or crates/, e.g. BRICK=weebo-si-operator)
 task e2e:build && task e2e:run SUITE=workspace   # one end-to-end suite on a local kind cluster
+task docs:generator  # the config generator on http://127.0.0.1:8765
 ```
 
 `task supply-chain` is deliberately **not** part of `task audit`: it goes over

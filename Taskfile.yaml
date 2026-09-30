@@ -11,6 +11,7 @@ includes:
   helm: ./.tasks/helm.yaml
   spike: ./.tasks/spike.yaml
   e2e: ./.tasks/e2e.yaml
+  docs: ./.tasks/docs.yaml
 
 tasks:
   init:
@@ -20,10 +21,11 @@ tasks:
       - cog install-hook -a -o
 
   recu:
-    desc: "Regenerate everything derived from source: the RFC index, and crd.yaml when its schema is staged"
+    desc: "Regenerate everything derived from source: the RFC index, crd.yaml when its schema is staged, and the generator's schemas"
     cmds:
       - task: rfc:index
       - task: crd:gen
+      - task: docs:schemas
 
   lint:
     desc: "Format, lint and validate the repo (run by the pre-commit hook)"
@@ -33,6 +35,7 @@ tasks:
       - task: shell:lint
       - task: rfc:check
       - task: crd:check
+      - task: docs:check
       - task: helm:lint
       - task: ci:lint
 

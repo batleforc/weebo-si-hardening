@@ -255,10 +255,10 @@ jobs:
           } > release-notes.md
           flags=""
           if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
-          # shellcheck disable=SC2086 # $flags is empty or one word, on purpose
           # Idempotent, so "re-run failed jobs" after a partial failure can finish the release.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists — leaving it as is"
             exit 0
           fi
+          # shellcheck disable=SC2086 # $flags is empty or one word, on purpose
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md $flags
