@@ -393,16 +393,16 @@ node_apparmor() {
   node="$CLUSTER-control-plane"
   "$E2E_RUNTIME" exec "$node" test -d /sys/kernel/security/apparmor ||
     die "the host's securityfs has no AppArmor: this runner cannot enforce with it"
-  # policy-rc.d keeps the package from starting apparmor.service, which would load Debian's own
-  # profiles into the host kernel.
-  #
-  # Debian 12's parser is pinned to an old feature set, and containerd's generated default profile
-  # has no `unix` rule: loaded into the runner's newer kernel, it refuses every unix socket, and
-  # nginx cannot even start its workers ("socketpair() failed … Permission denied"). So the pin
-  # goes, and a permissive `cri-containerd.apparmor.d` is loaded before containerd restarts —
-  # containerd only generates that profile when none of the name is loaded. Every pod KubeArmor
-  # does not select runs under it; the profiles the suite asserts on are KubeArmor's own.
-  "$E2E_RUNTIME" exec -i "$node" sh -c 'mkdir -p /etc/apparmor.d && cat > /etc/apparmor.d/cri-containerd.apparmor.d' <<'PROFILE'
+  # containerd's generated default profile has no `unix` rule, and a profile compiled by the
+  # node's Debian 12 parser (3.0) cannot express network rules the runner's kernel mediates: under
+  # either, the kernel refuses every unix socket and nginx cannot start its workers
+  # ("socketpair() failed … Permission denied"). So a permissive `cri-containerd.apparmor.d` is
+  # compiled and loaded by the *runner's* own parser — the kernel, and so its profiles, are
+  # shared with the node — before containerd restarts: containerd only generates that profile
+  # when none of the name is loaded. Every pod KubeArmor does not select runs under it; the
+  # profiles the suite asserts on are KubeArmor's own.
+  command -v apparmor_parser >/dev/null 2>&1 || die "the runner has no apparmor_parser"
+  cat > "$STATE/cri-containerd.apparmor.d" <<'PROFILE'
 #include <tunables/global>
 profile cri-containerd.apparmor.d flags=(attach_disconnected,mediate_deleted) {
   capability,
@@ -419,18 +419,21 @@ profile cri-containerd.apparmor.d flags=(attach_disconnected,mediate_deleted) {
   change_profile -> **,
 }
 PROFILE
+  sudo -n apparmor_parser -r "$STATE/cri-containerd.apparmor.d" ||
+    die "could not load the containerd profile from the runner"
+  # The node still needs a parser of its own: containerd applies no profile without one.
+  # policy-rc.d keeps the package from starting apparmor.service, which would load Debian's own
+  # profiles into the host kernel.
   "$E2E_RUNTIME" exec "$node" sh -c '
     printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d &&
     apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends apparmor >/dev/null &&
     rm -f /usr/sbin/policy-rc.d &&
-    sed -i "/^policy-features=/d" /etc/apparmor/parser.conf &&
-    apparmor_parser -r /etc/apparmor.d/cri-containerd.apparmor.d &&
     mkdir -p /etc/systemd/system/containerd.service.d &&
     printf "[Service]\nUnsetEnvironment=container\n" > /etc/systemd/system/containerd.service.d/apparmor.conf &&
     systemctl daemon-reload && systemctl restart containerd' ||
     die "could not install apparmor on the node"
-  # The four conditions containerd's own probe checks, and our profile in place of its own, so a node that still cannot apply a profile
-  # stops the rig here rather than as a pod refused three steps later.
+  # The four conditions containerd's own probe checks, and our profile in place of its own, so a
+  # node that still cannot apply a profile stops the rig here rather than as a pod refused later.
   # shellcheck disable=SC2016 # expanded on the node, not here
   "$E2E_RUNTIME" exec "$node" sh -c '
     test -d /sys/kernel/security/apparmor && test -x /sbin/apparmor_parser &&

@@ -160,13 +160,28 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
     }
 }
 
+/// Send a request, sending it again while ingress-nginx answers 503.
+///
+/// ingress-nginx answers 503 — before any auth subrequest — until a reload has picked up an
+/// Ingress it has just seen or a backend has endpoints; no row here expects one, so it is waited
+/// out rather than asserted on.
+fn settled(send: impl Fn() -> reqwest::blocking::Response) -> reqwest::blocking::Response {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut response = send();
+    while response.status().as_u16() == 503 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        response = send();
+    }
+    response
+}
+
 fn status(
     ingress: &Ingress,
     host: &str,
     path: &str,
     bearer: Option<&str>,
 ) -> (u16, String, String) {
-    let send = || {
+    let response = settled(|| {
         let mut request = ingress.client.get(ingress.url(host, path));
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
@@ -174,16 +189,7 @@ fn status(
         request
             .send()
             .unwrap_or_else(|err| panic!("GET https://{host}{path}: {err}"))
-    };
-    // ingress-nginx answers 503 — before any auth subrequest — until a reload has picked up an
-    // Ingress it has just seen or a backend has endpoints; no row here expects one, so it is
-    // waited out rather than asserted on.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    let mut response = send();
-    while response.status().as_u16() == 503 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        response = send();
-    }
+    });
     let code = response.status().as_u16();
     let location = response
         .headers()
@@ -296,14 +302,17 @@ fn a_caller_stated_identity_never_reaches_the_workspace() {
     let served = serve(&ns, "echo", json!({}));
     let ingress = Ingress::open();
 
-    let response = ingress
-        .client
-        .get(ingress.url(&served.host, "/headers"))
-        .bearer_auth(ingress.token("alice"))
-        .header("X-Auth-Request-User", "bob")
-        .header("X-Auth-Request-Groups", "platform-admins")
-        .send()
-        .unwrap();
+    let token = ingress.token("alice");
+    let response = settled(|| {
+        ingress
+            .client
+            .get(ingress.url(&served.host, "/headers"))
+            .bearer_auth(&token)
+            .header("X-Auth-Request-User", "bob")
+            .header("X-Auth-Request-Groups", "platform-admins")
+            .send()
+            .unwrap()
+    });
     assert_eq!(response.status().as_u16(), 200);
     let headers: Value = response.json().unwrap();
     let seen = |name: &str| {
