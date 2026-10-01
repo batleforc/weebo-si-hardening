@@ -1211,6 +1211,9 @@ async fn metrics(State(state): State<Arc<GatewayState>>) -> Response {
         .token_reviews_throttled(state.workloads.reviews_throttled());
     state
         .metrics
+        .token_reviews_avoided(state.workloads.reviews_avoided());
+    state
+        .metrics
         .address_trust(state.workloads.addresses_trusted());
     let families = state.registry.gather();
     let mut buffer = String::new();

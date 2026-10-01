@@ -27,6 +27,7 @@ pub struct GatewayMetrics {
     token_reviews_throttled: prometheus::IntCounter,
     bearer_verifications_throttled: prometheus::IntCounter,
     log_lines_suppressed: prometheus::IntCounter,
+    token_reviews_avoided: prometheus::IntCounter,
     /// Serialises [`Self::token_reviews_throttled`]'s read-then-add, which two overlapping
     /// scrapes would otherwise both apply in full. Shared by every clone, as the counter is.
     token_reviews_throttled_sync: std::sync::Arc<std::sync::Mutex<()>>,
@@ -124,6 +125,10 @@ impl GatewayMetrics {
             "weebo_si_endpoint_auth_bearer_verifications_throttled_total",
             "Bearer signatures not verified because a limit refused them (the bearer failed closed)",
         )?;
+        let token_reviews_avoided = prometheus::IntCounter::new(
+            "weebo_si_endpoint_auth_token_reviews_avoided_total",
+            "Service-account tokens refused on their signature alone, with no TokenReview",
+        )?;
         let log_lines_suppressed = prometheus::IntCounter::new(
             "weebo_si_endpoint_auth_log_lines_suppressed_total",
             "Deny and challenge lines not written because logging.deny_per_minute refused them",
@@ -158,6 +163,7 @@ impl GatewayMetrics {
             Box::new(token_reviews_throttled.clone()),
             Box::new(bearer_verifications_throttled.clone()),
             Box::new(log_lines_suppressed.clone()),
+            Box::new(token_reviews_avoided.clone()),
             Box::new(policy_compile_seconds.clone()),
             Box::new(observed_only.clone()),
         ] {
@@ -182,6 +188,7 @@ impl GatewayMetrics {
             token_reviews_throttled,
             bearer_verifications_throttled,
             log_lines_suppressed,
+            token_reviews_avoided,
             token_reviews_throttled_sync: std::sync::Arc::default(),
             policy_compile_seconds,
             observed_only,
@@ -292,6 +299,19 @@ impl GatewayMetrics {
     /// One bearer whose signature was not checked because a verification limit refused it.
     pub fn bearer_verification_throttled(&self) {
         self.bearer_verifications_throttled.inc();
+    }
+
+    /// Advance the avoided-review counter to `total` — published at scrape, like the throttled
+    /// one below and under the same lock.
+    pub fn token_reviews_avoided(&self, total: u64) {
+        let _sync = self
+            .token_reviews_throttled_sync
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = self.token_reviews_avoided.get();
+        if total > seen {
+            self.token_reviews_avoided.inc_by(total - seen);
+        }
     }
 
     pub fn token_reviews_throttled(&self, total: u64) {

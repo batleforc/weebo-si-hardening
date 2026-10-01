@@ -8,7 +8,7 @@
 //! request path" true in the only way that is honest: the I/O is not hidden inside the decision,
 //! it is visible in the handler, and it happens once per token rather than once per request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -27,6 +27,9 @@ use weebo_si_endpoint_auth::identity::NamespaceName;
 use weebo_si_endpoint_auth::port::{ServiceAccountIdentity, WorkloadIdentity};
 use weebo_si_endpoint_auth::time::Timestamp;
 
+use jsonwebtoken::jwk::JwkSet;
+
+use crate::adapters::oidc::{JWKS_RETRY_INITIAL, JWKS_RETRY_MAX, JwksCache, KeyLookup};
 use crate::ratelimit::{Rate, RateLimiter};
 
 /// Where the kubelet mounts this pod's own service-account token — read once at boot for its
@@ -179,7 +182,34 @@ pub struct TokenReviewer {
     /// Client keys that have had a token accepted, by hash — who may draw on `reserved`.
     known: IdentityCache<()>,
     throttled: std::sync::atomic::AtomicU64,
+    /// The service-account issuer's public keys (`/openid/v1/jwks`), kept current by
+    /// [`refresh_service_account_keys`] — what lets a forged token be refused with no
+    /// `TokenReview` at all.
+    keys: JwksCache,
+    /// The `kid`s, at the key-set generation they were proven at, that have verified a token the
+    /// apiserver then accepted — see [`TokenReviewer::offline`].
+    proven: Mutex<(u64, HashSet<String>)>,
+    /// `TokenReview`s not asked because the signature alone refused the token.
+    avoided: std::sync::atomic::AtomicU64,
 }
+
+/// What the signature alone says about a service-account token, before any `TokenReview`.
+enum Offline {
+    /// Signed by a key this cluster publishes and that is proven to verify its tokens here, and
+    /// the signature does not hold: refused, with no apiserver call.
+    Forged,
+    /// The signature holds under `kid`. Still reviewed — a valid signature says nothing about
+    /// whether the pod it was bound to still exists — and, once the review agrees, proof that
+    /// this key verifies here.
+    Valid(String),
+    /// Nothing the signature can settle: no keys yet, a `kid` the set does not hold (a rotation
+    /// not fetched yet), an algorithm or key not verifiable here, or a key not proven yet. The
+    /// `TokenReview`, inside its limits, decides — exactly as before this check existed.
+    Undecided,
+}
+
+/// How often the service-account issuer keys are re-read when nothing asks earlier.
+const SERVICE_ACCOUNT_KEYS_INTERVAL: Duration = Duration::from_secs(600);
 
 /// The one key every caller shares in the global bucket.
 const GLOBAL_KEY: &str = "*";
@@ -258,6 +288,9 @@ impl TokenReviewer {
             reserved: RateLimiter::new(limits.reserved, 1),
             known: IdentityCache::new(CacheKind::TokenReview, 10_000, KNOWN_CLIENT_TTL_SECS),
             throttled: std::sync::atomic::AtomicU64::new(0),
+            keys: JwksCache::default(),
+            proven: Mutex::new((0, HashSet::new())),
+            avoided: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -299,6 +332,15 @@ impl TokenReviewer {
         if self.refused.get(&key, now).is_some() {
             return None;
         }
+        // In front of the limits as well as the apiserver: a forgery the signature settles
+        // spends neither, which is what keeps a flood of them from draining the budget a real
+        // workspace's next token needs.
+        let offline = self.offline(token, now);
+        if matches!(offline, Offline::Forged) {
+            self.avoided
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
         // Single flight: whoever arrives first asks, everyone else with the same token waits for
         // that answer rather than asking again.
         let entry = match self.in_flight.lock() {
@@ -317,10 +359,87 @@ impl TokenReviewer {
             None => None,
         };
         drop(entry);
+        if let (Some(_), Offline::Valid(kid)) = (namespace.as_ref(), offline) {
+            self.prove(kid);
+        }
         namespace.map(|namespace| ServiceAccountIdentity {
             namespace,
             expires_at: now.plus_secs(3_600),
         })
+    }
+
+    /// The service-account issuer's key set, for [`refresh_service_account_keys`] to keep.
+    pub fn keys(&self) -> &JwksCache {
+        &self.keys
+    }
+
+    /// How many `TokenReview`s the signature alone made unnecessary.
+    pub fn avoided(&self) -> u64 {
+        self.avoided.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What the signature alone says, with no I/O.
+    ///
+    /// **A key refuses only once it has proven it verifies here.** `ring` answers "this
+    /// signature does not hold" and "this key is not one I verify with" (an RSA modulus under
+    /// 2048 bits, say) with the same error, and the second, read as the first, would refuse every
+    /// real token in the cluster. So a failed signature counts as a forgery only under a `kid`
+    /// that has already verified a token the apiserver then accepted, at the current key-set
+    /// generation; until then the `TokenReview` decides, as it did before this check existed.
+    fn offline(&self, token: &str, now: Timestamp) -> Offline {
+        use jsonwebtoken::Algorithm;
+
+        let Ok(header) = jsonwebtoken::decode_header(token) else {
+            return Offline::Undecided;
+        };
+        let Some(kid) = header.kid else {
+            return Offline::Undecided;
+        };
+        if !matches!(
+            header.alg,
+            Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 | Algorithm::ES256
+        ) {
+            return Offline::Undecided;
+        }
+        let key = match self.keys.key(&kid) {
+            KeyLookup::Found(key) => key,
+            KeyLookup::Unknown => {
+                // A rotation this replica has not fetched yet looks exactly like this; asking
+                // for the set early is rate-limited at the cache.
+                self.keys.request_refresh(now);
+                return Offline::Undecided;
+            }
+            KeyLookup::NoKeys | KeyLookup::Unusable => return Offline::Undecided,
+        };
+        let Some((message, signature)) = token.rsplit_once('.') else {
+            return Offline::Undecided;
+        };
+        match jsonwebtoken::crypto::verify(signature, message.as_bytes(), &key, header.alg) {
+            Ok(true) => Offline::Valid(kid),
+            Ok(false) if self.is_proven(&kid) => Offline::Forged,
+            _ => Offline::Undecided,
+        }
+    }
+
+    fn is_proven(&self, kid: &str) -> bool {
+        let generation = self.keys.generation();
+        let Ok(mut proven) = self.proven.lock() else {
+            return false;
+        };
+        if proven.0 != generation {
+            *proven = (generation, HashSet::new());
+        }
+        proven.1.contains(kid)
+    }
+
+    fn prove(&self, kid: String) {
+        let generation = self.keys.generation();
+        if let Ok(mut proven) = self.proven.lock() {
+            if proven.0 != generation {
+                *proven = (generation, HashSet::new());
+            }
+            proven.1.insert(kid);
+        }
     }
 
     async fn review_uncached(
@@ -391,6 +510,51 @@ impl TokenReviewer {
             );
         }
         Some(namespace)
+    }
+}
+
+/// Keep `keys` current with this cluster's service-account issuer keys, forever: one fetch now,
+/// then every `interval`, or earlier when a token names a `kid` the set does not hold.
+///
+/// Read from the apiserver's own `/openid/v1/jwks` through the gateway's client — the issuer
+/// discovery endpoint, which needs nothing but a `get` on that one path — rather than from the
+/// issuer URL, which a cluster may not publish anywhere this pod can reach. A failure only means
+/// every service-account token is reviewed, as it was before this check existed.
+pub async fn refresh_service_account_keys(client: Client, keys: JwksCache, interval: Duration) {
+    let mut retry = JWKS_RETRY_INITIAL;
+    let mut warned = false;
+    loop {
+        let fetched = match axum::http::Request::get("/openid/v1/jwks").body(Vec::new()) {
+            Ok(request) => match client.request::<JwkSet>(request).await {
+                Ok(set) => {
+                    keys.store(set);
+                    warned = false;
+                    true
+                }
+                Err(err) => {
+                    if !warned {
+                        eprintln!(
+                            "WARN endpoint-gateway: service-account issuer keys unavailable                              ({err}); every service-account token is reviewed until they are"
+                        );
+                        warned = true;
+                    }
+                    false
+                }
+            },
+            Err(_) => false,
+        };
+        let wait = if !fetched && !keys.is_loaded() {
+            let wait = retry.min(interval);
+            retry = retry.saturating_mul(2).min(JWKS_RETRY_MAX);
+            wait
+        } else {
+            retry = JWKS_RETRY_INITIAL;
+            interval
+        };
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = keys.woken() => {}
+        }
     }
 }
 
@@ -477,15 +641,23 @@ impl KubeWorkloadIdentity {
             ),
         }
 
+        let reviewer = TokenReviewer::new(
+            client.clone(),
+            accept_service_account_tokens,
+            cache_entries,
+            TOKEN_REVIEW_TIMEOUT,
+        );
+        if accept_service_account_tokens {
+            tokio::spawn(refresh_service_account_keys(
+                client,
+                reviewer.keys().clone(),
+                SERVICE_ACCOUNT_KEYS_INTERVAL,
+            ));
+        }
         Ok(Arc::new(Self {
             pods: store,
             addresses,
-            reviewer: TokenReviewer::new(
-                client,
-                accept_service_account_tokens,
-                cache_entries,
-                TOKEN_REVIEW_TIMEOUT,
-            ),
+            reviewer,
             cluster_issuer: issuer,
             trust: AddressTrust::new(trust_addresses, shared_forgery),
         }))
@@ -530,6 +702,11 @@ impl KubeWorkloadIdentity {
     /// How many reviews a limit refused.
     pub fn reviews_throttled(&self) -> u64 {
         self.reviewer.throttled()
+    }
+
+    /// How many reviews a forged signature made unnecessary.
+    pub fn reviews_avoided(&self) -> u64 {
+        self.reviewer.avoided()
     }
 
     /// Whether this token is worth a `TokenReview` at all: shaped like a service-account token,
@@ -757,6 +934,131 @@ mod tests {
                 per_minute: 0,
             },
         }
+    }
+
+    /// A service-account issuer key pair, and tokens it signs — so the offline check runs
+    /// against real cryptography.
+    struct Issuer {
+        key: jsonwebtoken::EncodingKey,
+        keys: JwkSet,
+    }
+
+    impl Issuer {
+        fn new() -> Self {
+            use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+
+            crate::adapters::jwt_crypto::install();
+            let rng = ring::rand::SystemRandom::new();
+            let pkcs8 =
+                EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+            let pair =
+                EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+                    .unwrap();
+            let point = pair.public_key().as_ref().to_vec();
+            let keys = serde_json::from_value::<JwkSet>(serde_json::json!({
+                "keys": [{
+                    "kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": "sa-key",
+                    "x": B64.encode(&point[1..33]), "y": B64.encode(&point[33..65]),
+                }]
+            }))
+            .unwrap();
+            Self {
+                key: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_ref()),
+                keys,
+            }
+        }
+
+        fn sign(&self, kid: &str, n: usize) -> String {
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            header.kid = Some(kid.to_owned());
+            jsonwebtoken::encode(
+                &header,
+                &serde_json::json!({"iss": "https://kubernetes.default.svc", "n": n}),
+                &self.key,
+            )
+            .unwrap()
+        }
+
+        /// A token naming the issuer's real key, with a signature that key never made.
+        fn forge(&self, n: usize) -> String {
+            let real = self.sign("sa-key", n);
+            let (message, _) = real.rsplit_once('.').unwrap();
+            format!("{message}.{}", B64.encode([7_u8; 64]))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forged_signature_under_a_proven_key_costs_no_token_review() {
+        let issuer = Issuer::new();
+        let (client, calls) = fake_apiserver(Duration::ZERO, true).await;
+        let reviewer = TokenReviewer::new(client, true, 100, TOKEN_REVIEW_TIMEOUT);
+        reviewer.keys().store(issuer.keys.clone());
+        let now = Timestamp::from_secs(1_000);
+        let reviews = || calls.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A real token: verified offline, then reviewed — which proves the key verifies here.
+        assert!(
+            reviewer
+                .review(&issuer.sign("sa-key", 1), "", now)
+                .await
+                .is_some()
+        );
+        assert_eq!(reviews(), 1);
+        // A forgery under that key: refused on the signature, the apiserver never asked.
+        for n in 0..20 {
+            assert!(
+                reviewer
+                    .review(&issuer.forge(100 + n), "", now)
+                    .await
+                    .is_none()
+            );
+        }
+        assert_eq!(reviews(), 1);
+        assert_eq!(reviewer.avoided(), 20);
+        // A key the set does not hold is a rotation as far as this replica knows: reviewed.
+        assert!(
+            reviewer
+                .review(&issuer.sign("rotated", 2), "", now)
+                .await
+                .is_some()
+        );
+        assert_eq!(reviews(), 2);
+    }
+
+    /// The safety half: until a key has verified a token the apiserver accepted, a failed
+    /// signature is not trusted to mean "forged" — it might mean "a key this gateway cannot
+    /// verify with", and refusing on it would refuse every real token in the cluster.
+    #[tokio::test]
+    async fn an_unproven_key_leaves_the_decision_to_the_token_review() {
+        let issuer = Issuer::new();
+        let (client, calls) = fake_apiserver(Duration::ZERO, true).await;
+        let reviewer = TokenReviewer::new(client, true, 100, TOKEN_REVIEW_TIMEOUT);
+        reviewer.keys().store(issuer.keys.clone());
+        let now = Timestamp::from_secs(1_000);
+        let _ = reviewer.review(&issuer.forge(1), "", now).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(reviewer.avoided(), 0);
+    }
+
+    /// A rotation drops what was proven: the new set's keys prove themselves again.
+    #[tokio::test]
+    async fn a_new_key_set_has_to_prove_itself_again() {
+        let issuer = Issuer::new();
+        let (client, calls) = fake_apiserver(Duration::ZERO, true).await;
+        let reviewer = TokenReviewer::new(client, true, 100, TOKEN_REVIEW_TIMEOUT);
+        reviewer.keys().store(issuer.keys.clone());
+        let now = Timestamp::from_secs(1_000);
+        assert!(
+            reviewer
+                .review(&issuer.sign("sa-key", 1), "", now)
+                .await
+                .is_some()
+        );
+        let rotated = Issuer::new();
+        reviewer.keys().store(rotated.keys.clone());
+        let _ = reviewer.review(&rotated.forge(2), "", now).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(reviewer.avoided(), 0);
     }
 
     /// Second-pass gap: the global bucket is shared, so strangers rotating addresses could spend

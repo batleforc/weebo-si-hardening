@@ -1239,6 +1239,15 @@ fn forged_oidc_bearer(nonce: usize) -> String {
     )
 }
 
+/// [`forged_token`], but naming the key id a real token from this cluster carries — so the
+/// gateway holds that key, and the forgery fails on its signature rather than on an unknown key.
+fn forged_under_real_key(like: &str, nonce: usize) -> String {
+    let forged = forged_token(like, 20_000 + nonce);
+    let header = like.split('.').next().expect("a JWT has a header");
+    let rest = forged.split_once('.').expect("a JWT has a payload").1;
+    format!("{header}.{rest}")
+}
+
 /// A token shaped like this cluster's service-account tokens — same issuer, the Kubernetes claim,
 /// an expiry in the future — and signed by nobody. It passes every free check, so each fresh one
 /// costs the gateway a `TokenReview` until its limits refuse to ask: the flood a caller can aim at
@@ -1476,9 +1485,47 @@ async fn cost_matrix(
         )
         .await,
     );
+    // Forged under the cluster's *real* key id: the gateway holds the issuer's keys
+    // (`/openid/v1/jwks`), and the first-use row above proved that key verifies here, so these
+    // are refused on their signature with no `TokenReview` at all — the counter says how many.
+    let avoided_before = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_token_reviews_avoided_total",
+    )
+    .await;
     rows.push(
         series(
-            "forged service-account token, fresh each",
+            "forged service-account token, real key",
+            "/auth direct",
+            401,
+            0,
+            COLD_SAMPLES,
+            &|round| {
+                auth("/api").header(
+                    "authorization",
+                    bearer(&forged_under_real_key(alice_token, round)),
+                )
+            },
+            None,
+        )
+        .await,
+    );
+    let avoided = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_token_reviews_avoided_total",
+    )
+    .await
+        - avoided_before;
+    assert!(
+        avoided >= COLD_SAMPLES as f64,
+        "{COLD_SAMPLES} tokens forged under the cluster's own key id were sent and only \
+         {avoided} were refused on their signature — each of the rest cost a TokenReview"
+    );
+    rows.push(
+        series(
+            "forged service-account token, unknown key",
             "/auth direct",
             401,
             0,
@@ -1502,7 +1549,7 @@ async fn cost_matrix(
     )
     .await;
     let flood = series(
-        "forged service-account token, one client flooding",
+        "forged service-account token, unknown key, one client flooding",
         "/auth direct",
         401,
         0,
@@ -1531,7 +1578,7 @@ async fn cost_matrix(
     );
     let reviewed = rows
         .iter()
-        .find(|row| row.case == "forged service-account token, fresh each")
+        .find(|row| row.case == "forged service-account token, unknown key")
         .map(|row| percentile(&row.gated, 50))
         .expect("the unthrottled forged row is measured above");
     assert!(

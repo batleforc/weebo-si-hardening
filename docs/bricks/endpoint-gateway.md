@@ -129,6 +129,16 @@ caller rotating addresses to spend the shared budget cannot make every workspace
 fail closed. Over a limit the token is simply not an identity — nothing is asked and nothing is
 cached. Counted in `weebo_si_endpoint_auth_token_reviews_throttled_total`.
 
+**And a forgery costs no review at all.** The gateway reads the service-account issuer's public
+keys from the apiserver's `/openid/v1/jwks` (every ten minutes, and early when a token names a key
+it does not hold) and checks a token's signature before asking anything. A token whose signature
+fails under a key that has already verified a token the apiserver then accepted is refused there
+— no `TokenReview`, no budget spent — and counted in
+`weebo_si_endpoint_auth_token_reviews_avoided_total`. A valid signature is still reviewed, because
+only the apiserver knows whether the pod a token was bound to still exists. Until a key has proven
+itself, and for a key id the set does not hold, the review decides as before: the check can make a
+review unnecessary, never refuse a real token. The chart grants the `get` on that path.
+
 **Bearer signatures are limited the same way.** Only a bearer naming this gateway's issuer and
 not already cached costs a verification (~45 µs of ES256 with `ring`), and a caller can mint a
 fresh one per request: 120/min (burst 20) per client key and 6 000/min (burst 500) cluster-wide.

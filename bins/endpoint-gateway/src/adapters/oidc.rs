@@ -177,6 +177,12 @@ impl JwksCache {
         true
     }
 
+    /// Wait until [`Self::request_refresh`] asks for an early fetch — what a refresh loop
+    /// selects on beside its schedule.
+    pub async fn woken(&self) {
+        self.wake.notified().await;
+    }
+
     /// How many on-demand refreshes have been passed on.
     #[cfg(test)]
     pub fn on_demand_refreshes(&self) -> u64 {
@@ -292,7 +298,7 @@ pub async fn refresh_jwks_with(
         // asking end, in `JwksCache::request_refresh`).
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
-            () = cache.wake.notified() => {}
+            () = cache.woken() => {}
         }
     }
 }

@@ -39,6 +39,11 @@ rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]
+  # The service-account issuer's public keys, so a forged token is refused on its signature
+  # alone instead of costing a TokenReview. Most clusters grant this to every service account
+  # already (`system:service-account-issuer-discovery`); stated here so it does not depend on it.
+  - nonResourceURLs: ["/openid/v1/jwks"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
