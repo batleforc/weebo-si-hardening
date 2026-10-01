@@ -20,9 +20,9 @@ tasks:
       - "{{.ROOT_DIR}}/scripts/e2e.sh build"
 
   up:
-    desc: "Create the e2e kind cluster with real Eclipse Che, Keycloak, cert-manager and DevWorkspace Operator (slow: several GB; SUITE=kubearmor also enables AppArmor on the node)"
+    desc: "Create the e2e kind cluster with real Eclipse Che, Keycloak, cert-manager and DevWorkspace Operator (slow: several GB)"
     cmds:
-      - "{{.ROOT_DIR}}/scripts/e2e.sh up {{.SUITE}}"
+      - "{{.ROOT_DIR}}/scripts/e2e.sh up"
 
   deploy:
     desc: 'Install one suite''s addons and this repo''s charts on the e2e cluster (usage: task e2e:deploy SUITE=identity)'
@@ -40,7 +40,6 @@ tasks:
     desc: 'Bring the cluster up if needed, deploy one suite and run it (usage: task e2e:run SUITE=endpoint-auth)'
     cmds:
       - task: up
-        vars: { SUITE: "{{.SUITE}}" }
       - task: deploy
         vars: { SUITE: "{{.SUITE}}" }
       - task: test

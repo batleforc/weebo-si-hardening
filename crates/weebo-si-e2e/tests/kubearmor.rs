@@ -2,9 +2,11 @@
 //! a process the policy blocks is refused inside a workspace DevWorkspace Operator started, and
 //! the same process runs in the neighbour the policy does not select.
 //!
-//! Enforcement needs an LSM KubeArmor can drive on the node (BPF-LSM or AppArmor). The first
-//! test says which one the node reported, so a red run on a node without one reads as that rather
-//! than as a policy bug.
+//! Enforcement needs an LSM KubeArmor can drive on the node (BPF-LSM or AppArmor). The nightly's
+//! kind node has neither — its kubelet cannot apply AppArmor and the runner kernel has no BPF-LSM —
+//! so the one test that asserts a process is actually refused is `#[ignore]`d and run by hand,
+//! with `--ignored`, against a cluster that can enforce (docs/ci.md *Known gaps*). The first test
+//! prints which enforcer the node reported.
 
 #![cfg(feature = "e2e")]
 #![allow(
@@ -126,6 +128,7 @@ fn the_baseline_and_the_posture_land_on_every_namespace_in_scope() {
 }
 
 #[test]
+#[ignore = "needs a node that can enforce AppArmor or BPF-LSM, which a GitHub runner's kind node cannot; run with `--ignored` on such a cluster"]
 fn a_granted_profile_blocks_a_process_in_its_own_workspace_only() {
     let _base = block_template("e2e-no-nc", "/usr/bin/nc");
     // `rpm` rather than `cat`: in the UBI-minimal workspace image every coreutils command is a

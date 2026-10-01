@@ -6,8 +6,7 @@
 # the code; this proves the code meets the platform it was written for.
 #
 #   scripts/e2e.sh build                 build every image the suites need, tagged :e2e
-#   scripts/e2e.sh up [suite]            cluster + ingress + Keycloak + cert-manager + DWO + Che
-#                                        (`up kubearmor` also gives the node a working AppArmor)
+#   scripts/e2e.sh up                    cluster + ingress + Keycloak + cert-manager + DWO + Che
 #   scripts/e2e.sh addons <suite>        what one suite needs on top (kubearmor, identity, ...)
 #   scripts/e2e.sh deploy <suite>        load the :e2e images, install the charts for one suite
 #   scripts/e2e.sh diag [dir]            dump every pod, event and log worth reading after a failure
@@ -371,91 +370,13 @@ CLUSTER"
   wait_for 1800 "kubectl -n eclipse-che get checluster eclipse-che -o jsonpath='{.status.chePhase}' | grep -qx Active"
 }
 
-# A kind node cannot enforce AppArmor out of the box, and KubeArmor on a runner kernel without
-# BPF-LSM has nothing else: the node's /sys/kernel/security is an empty directory rather than the
-# host's securityfs, and containerd applies no profile unless `apparmor_parser` exists (the node
-# image ships none) and its own environment has no `container=` (the node image sets one). So the
-# kubearmor suite's node gets the host's securityfs bound in, the parser installed, the variable
-# unset for containerd, and containerd restarted to re-probe — it decides once, at start.
-kind_config() {
-  if [ "${1:-}" != kubearmor ]; then
-    printf '%s\n' "$REPO_ROOT/scripts/kind-e2e.yaml"
-    return 0
-  fi
-  cat "$REPO_ROOT/scripts/kind-e2e.yaml" - > "$STATE/kind-e2e.yaml" <<'MOUNT'
-      - hostPath: /sys/kernel/security
-        containerPath: /sys/kernel/security
-MOUNT
-  printf '%s\n' "$STATE/kind-e2e.yaml"
-}
-
-node_apparmor() {
-  node="$CLUSTER-control-plane"
-  "$E2E_RUNTIME" exec "$node" test -d /sys/kernel/security/apparmor ||
-    die "the host's securityfs has no AppArmor: this runner cannot enforce with it"
-  # containerd's generated default profile has no `unix` rule, and a profile compiled by the
-  # node's Debian 12 parser (3.0) cannot express network rules the runner's kernel mediates: under
-  # either, the kernel refuses every unix socket and nginx cannot start its workers
-  # ("socketpair() failed … Permission denied"). So a permissive `cri-containerd.apparmor.d` is
-  # compiled and loaded by the *runner's* own parser — the kernel, and so its profiles, are
-  # shared with the node — before containerd restarts: containerd only generates that profile
-  # when none of the name is loaded. Every pod KubeArmor does not select runs under it; the
-  # profiles the suite asserts on are KubeArmor's own.
-  command -v apparmor_parser >/dev/null 2>&1 || die "the runner has no apparmor_parser"
-  cat > "$STATE/cri-containerd.apparmor.d" <<'PROFILE'
-#include <tunables/global>
-profile cri-containerd.apparmor.d flags=(attach_disconnected,mediate_deleted) {
-  capability,
-  network,
-  unix,
-  file,
-  mount,
-  remount,
-  umount,
-  pivot_root,
-  ptrace,
-  signal,
-  dbus,
-  change_profile -> **,
-}
-PROFILE
-  sudo -n apparmor_parser -r "$STATE/cri-containerd.apparmor.d" ||
-    die "could not load the containerd profile from the runner"
-  # The node still needs a parser of its own: containerd applies no profile without one.
-  # policy-rc.d keeps the package from starting apparmor.service, which would load Debian's own
-  # profiles into the host kernel.
-  "$E2E_RUNTIME" exec "$node" sh -c '
-    printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d &&
-    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends apparmor >/dev/null &&
-    rm -f /usr/sbin/policy-rc.d &&
-    mkdir -p /etc/systemd/system/containerd.service.d &&
-    printf "[Service]\nUnsetEnvironment=container\n" > /etc/systemd/system/containerd.service.d/apparmor.conf &&
-    systemctl daemon-reload && systemctl restart containerd' ||
-    die "could not install apparmor on the node"
-  # The four conditions containerd's own probe checks, and our profile in place of its own, so a
-  # node that still cannot apply a profile stops the rig here rather than as a pod refused later.
-  # shellcheck disable=SC2016 # expanded on the node, not here
-  "$E2E_RUNTIME" exec "$node" sh -c '
-    test -d /sys/kernel/security/apparmor && test -x /sbin/apparmor_parser &&
-    grep -q "^Y" /sys/module/apparmor/parameters/enabled &&
-    grep -q "^cri-containerd.apparmor.d " /sys/kernel/security/apparmor/profiles &&
-    ! tr "\0" "\n" < /proc/$(pidof containerd)/environ | grep -q "^container="' ||
-    die "the node still cannot apply AppArmor profiles"
-  wait_for 120 "kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type==\"Ready\")].status}' | grep -qx True"
-}
-
 up() {
-  suite=${1:-}
   need kind kubectl helm jq openssl curl "$E2E_RUNTIME"
   make_ca
   if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-    kind create cluster --config "$(kind_config "$suite")" --wait 300s
+    kind create cluster --config "$REPO_ROOT/scripts/kind-e2e.yaml" --wait 300s
   fi
   kubectl config use-context "kind-$CLUSTER" >/dev/null
-  if [ "$suite" = kubearmor ]; then
-    say "AppArmor on the node"
-    node_apparmor
-  fi
 
   say "cert-manager $CERT_MANAGER_VERSION"
   install_cert_manager
@@ -510,22 +431,10 @@ addon_kubearmor() {
     -p '{"spec":{"template":{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000}}}}}' >/dev/null
   kubectl -n kubearmor rollout status deploy/kubearmor-controller --timeout=900s >/dev/null
   kubectl -n kubearmor rollout status ds/kubearmor --timeout=900s >/dev/null
-  # `kubearmor.io/enforcer` is written by KubeArmor's operator (its snitch job), which this chart
-  # does not ship; kubearmor-controller only injects profiles into pods on a node so labelled. It
-  # is set here to what the snitch would write — and only once the node's own kubelet and
-  # containerd can apply the profile (`node_apparmor`), since a label the node cannot honour gets
-  # every new pod refused with "AppArmor is not enabled on the host".
-  wait_for 120 "kubectl -n kubearmor logs ds/kubearmor -c kubearmor | grep -q 'Initialized KubeArmor Enforcer'"
-  # kubearmor-controller names a pod's profile when the pod is bound, and the daemon loads it only
-  # once it sees the pod — so the first container create can miss it and the kubelet retries.
-  # DevWorkspace Operator would fail the workspace on that first `CreateContainerError`; here it
-  # waits for the retry instead. The default list (FailedScheduling) is replaced, so it is kept.
-  kubectl -n devworkspace-controller patch devworkspaceoperatorconfig devworkspace-operator-config \
-    --type=merge -p '{"config":{"workspace":{"ignoredUnrecoverableEvents":["FailedScheduling","CreateContainerError"]}}}' >/dev/null
-  if "$E2E_RUNTIME" exec "$CLUSTER-control-plane" test -x /sbin/apparmor_parser &&
-    kubectl -n kubearmor logs ds/kubearmor -c kubearmor | grep -q 'Initialized AppArmor Enforcer'; then
-    kubectl label nodes --all kubearmor.io/enforcer=apparmor --overwrite >/dev/null
-  fi
+  # `kubearmor.io/enforcer` is left to KubeArmor's operator, which this chart does not ship, and
+  # is never forged: kubearmor-controller injects AppArmor profiles into every pod on a node so
+  # labelled, and a kind node's kubelet cannot apply them. Enforcement itself is therefore not
+  # asserted here — see docs/ci.md *Known gaps*.
   # Which enforcer the node ended up with is what the suite asserts against; print it here so a
   # failed run's log says it without anybody opening the diagnostics.
   printf 'kubearmor enforcer: %s\n' \
@@ -842,10 +751,10 @@ down() {
 
 case "${1:-}" in
   build) build ;;
-  up) up "${2:-}" ;;
+  up) up ;;
   addons) addons "${2:-}" ;;
   deploy) deploy "${2:-}" ;;
   diag) diag "${2:-}" ;;
   down) down ;;
-  *) printf 'usage: %s build|up [suite]|addons <suite>|deploy <suite>|diag [dir]|down\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s build|up|addons <suite>|deploy <suite>|diag [dir]|down\n' "$0" >&2; exit 2 ;;
 esac

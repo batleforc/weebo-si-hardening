@@ -79,7 +79,7 @@ cluster, so one suite's addons never change another's answer.
 | Suite | Adds to the rig | Proves |
 | --- | --- | --- |
 | `workspace` | — | `dwoc-pin` pins a config DevWorkspace Operator **runs with** (read off the pod); team priority and namespace annotations; `image-policy` at the devfile and at the pod floor, dry run included; `network-profiles` dropping real traffic and a granted profile opening exactly its own path; `policy-guard` refusing a cluster admin; `registry-config` copies DevWorkspace Operator actually mounts; passwd-append under an arbitrary UID; team status and conflicts; the webhook failing closed |
-| `kubearmor` | KubeArmor | the baseline and posture on every namespace in scope; a granted profile **blocking a process** in its own workspace and not in the neighbour's; the guard on managed `KubeArmorPolicy` objects |
+| `kubearmor` | KubeArmor | the baseline and posture on every namespace in scope; the guard on managed `KubeArmorPolicy` objects. A granted profile **blocking a process** in its own workspace and not the neighbour's is written but `#[ignore]`d — see *Known gaps* |
 | `endpoint-auth` | endpoint-gateway | the gate on the Ingress Che generates; owner, teammate, stranger and anonymous over HTTPS through ingress-nginx; an `open` rule; a workspace's own service-account token; a forged identity header stripped; a developer unable to take the gate off; preauth-proxy logging in, stripping the upstream session and renewing on a `401` |
 | `identity` | Authentik, weebo-authentik, Argo CD, an in-cluster chart repository | a `WeeboSiUser` becoming a real Authentik account in the right groups and leaving with its object; an `Application` Argo CD syncs with the person's own values; adoption of a hand-made account; the allow-list refusing a whole person; dry run; a username conflict |
 
@@ -267,6 +267,18 @@ of at least 512 on the host.
 - **`VULN_MLAB_TOKEN` is optional and currently unset.** An absent secret
   resolves to anonymous, which is the action's default anyway — it just means the
   8 scans/hour cap applies.
+- **KubeArmor enforcement is not asserted in CI.** A GitHub runner's kind node
+  cannot enforce: its kubelet sees no AppArmor (the node's securityfs is empty,
+  its image ships no `apparmor_parser`, and containerd refuses profiles under
+  `container=docker`), and the runner kernel has no BPF-LSM. Making AppArmor work
+  inside kind was tried and peeled one layer per run — host securityfs, a parser
+  too old for the runner's kernel, containerd's default profile refusing unix
+  sockets, profiles loaded after the container is created — so the test that a
+  granted profile actually refuses a process,
+  `a_granted_profile_blocks_a_process_in_its_own_workspace_only`, is `#[ignore]`d.
+  Run it by hand against a cluster whose nodes report `kubearmor.io/enforcer`:
+  `task e2e:test SUITE=kubearmor -- --ignored`. Everything up to the policy object
+  KubeArmor reads is still asserted nightly.
 - **Three upstreams float inside their pins.** The KubeArmor chart's images are
   pinned by `--set` because the chart itself tracks `stable`/`latest`;
   ingress-nginx is archived upstream, and `4.15.1` is its last chart; and the
