@@ -516,6 +516,12 @@ addon_kubearmor() {
   # containerd can apply the profile (`node_apparmor`), since a label the node cannot honour gets
   # every new pod refused with "AppArmor is not enabled on the host".
   wait_for 120 "kubectl -n kubearmor logs ds/kubearmor -c kubearmor | grep -q 'Initialized KubeArmor Enforcer'"
+  # kubearmor-controller names a pod's profile when the pod is bound, and the daemon loads it only
+  # once it sees the pod — so the first container create can miss it and the kubelet retries.
+  # DevWorkspace Operator would fail the workspace on that first `CreateContainerError`; here it
+  # waits for the retry instead. The default list (FailedScheduling) is replaced, so it is kept.
+  kubectl -n devworkspace-controller patch devworkspaceoperatorconfig devworkspace-operator-config \
+    --type=merge -p '{"config":{"workspace":{"ignoredUnrecoverableEvents":["FailedScheduling","CreateContainerError"]}}}' >/dev/null
   if "$E2E_RUNTIME" exec "$CLUSTER-control-plane" test -x /sbin/apparmor_parser &&
     kubectl -n kubearmor logs ds/kubearmor -c kubearmor | grep -q 'Initialized AppArmor Enforcer'; then
     kubectl label nodes --all kubearmor.io/enforcer=apparmor --overwrite >/dev/null
