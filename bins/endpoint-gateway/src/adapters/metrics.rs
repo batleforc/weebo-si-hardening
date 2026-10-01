@@ -298,7 +298,6 @@ impl GatewayMetrics {
         self.self_origin_probe.with_label_values(&[result]).inc();
     }
 
-    /// Bring the throttled-review counter up to the reviewer's own running total.
     /// The accepted-connections counter, for the listener to increment.
     pub fn connections_accepted(&self) -> prometheus::IntCounter {
         self.connections_accepted.clone()
@@ -327,6 +326,7 @@ impl GatewayMetrics {
         }
     }
 
+    /// Bring the throttled-review counter up to the reviewer's own running total.
     pub fn token_reviews_throttled(&self, total: u64) {
         // A poisoned lock only means another scrape panicked mid-update; the counter itself is
         // still consistent, so carry on under it.

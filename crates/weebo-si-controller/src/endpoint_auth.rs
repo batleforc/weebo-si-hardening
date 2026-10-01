@@ -33,11 +33,11 @@ use weebo_si_crd::{
     ResolvedEndpointAuthConfig,
 };
 
-/// This feature's identifier, as the gate and the log lines name it.
 /// The largest auth response body Traefik will read from the gate, in bytes — two orders of
 /// magnitude above what the gate sends.
 const TRAEFIK_MAX_AUTH_BODY: u64 = 65_536;
 
+/// This feature's identifier, as the gate and the log lines name it.
 const FEATURE: &str = "endpoint-auth";
 
 /// How often the sweep re-examines an object it already agreed with — long, because every
@@ -293,28 +293,7 @@ pub async fn ensure_middleware(
             ),
             ..ObjectMeta::default()
         },
-        data: json!({
-            "spec": {
-                "forwardAuth": {
-                    "address": format!("{}/auth", config.gateway.service_url()),
-                    "trustForwardHeader": false,
-                    "authResponseHeaders": [
-                        "X-Auth-Request-User",
-                        "X-Auth-Request-Groups",
-                        "X-Auth-Request-Email"
-                    ],
-                    // What makes the sliding re-mint of RFC 0009's *Developer continuity*
-                    // possible at all: without it a `Set-Cookie` on the gate's own `200` never
-                    // reaches the browser, and an endpoint in continuous use would still expire
-                    // under the person using it.
-                    "addAuthCookiesToResponse": ["__Host-weebo-endpoint"],
-                    // Traefik reads a non-2xx auth answer's body to return it, and without this
-                    // bound reads it whole — it warns as much on every middleware it loads. The
-                    // gate's own bodies (a sign-in page, a refusal) are a few hundred bytes.
-                    "maxResponseBodySize": TRAEFIK_MAX_AUTH_BODY
-                }
-            }
-        }),
+        data: middleware_data(config),
     };
     api.patch(
         MIDDLEWARE_NAME,
@@ -323,6 +302,33 @@ pub async fn ensure_middleware(
     )
     .await
     .map(|_| ())
+}
+
+/// The shared `Middleware`'s body. The conformance suite runs Traefik against a hand-written copy
+/// of it (`bins/endpoint-gateway/tests/conformance.rs`), so a change here belongs there too.
+fn middleware_data(config: &ResolvedEndpointAuthConfig) -> Value {
+    json!({
+        "spec": {
+            "forwardAuth": {
+                "address": format!("{}/auth", config.gateway.service_url()),
+                "trustForwardHeader": false,
+                "authResponseHeaders": [
+                    "X-Auth-Request-User",
+                    "X-Auth-Request-Groups",
+                    "X-Auth-Request-Email"
+                ],
+                // What makes the sliding re-mint of RFC 0009's *Developer continuity*
+                // possible at all: without it a `Set-Cookie` on the gate's own `200` never
+                // reaches the browser, and an endpoint in continuous use would still expire
+                // under the person using it.
+                "addAuthCookiesToResponse": ["__Host-weebo-endpoint"],
+                // Traefik reads a non-2xx auth answer's body to return it, and without this
+                // bound reads it whole — it warns as much on every middleware it loads. The
+                // gate's own bodies (a sign-in page, a refusal) are a few hundred bytes.
+                "maxResponseBodySize": TRAEFIK_MAX_AUTH_BODY
+            }
+        }
+    })
 }
 
 /// What can go wrong in one pass. A newtype over the one thing that can — the apiserver refusing
@@ -728,6 +734,31 @@ mod tests {
         assert_eq!(patch["metadata"]["annotations"]["a"], json!("b"));
         let patch = annotation_patch(&BTreeMap::from([("a".to_owned(), String::new())]), true);
         assert!(patch["metadata"]["annotations"]["a"].is_null());
+    }
+
+    /// Pinned whole: the conformance suite runs Traefik against a hand-written copy of this body,
+    /// so a field dropped or changed here must fail here rather than pass there.
+    #[test]
+    fn the_middleware_never_trusts_forwarded_headers_and_bounds_the_auth_body() {
+        let config = config();
+        assert_eq!(
+            middleware_data(&config),
+            json!({
+                "spec": {
+                    "forwardAuth": {
+                        "address": format!("{}/auth", config.gateway.service_url()),
+                        "trustForwardHeader": false,
+                        "authResponseHeaders": [
+                            "X-Auth-Request-User",
+                            "X-Auth-Request-Groups",
+                            "X-Auth-Request-Email"
+                        ],
+                        "addAuthCookiesToResponse": ["__Host-weebo-endpoint"],
+                        "maxResponseBodySize": 65_536
+                    }
+                }
+            })
+        );
     }
 
     #[ignore = "OpenShift's ReverseProxy dialect is deferred (RFC 0009): the code is here, nothing has run it against a router, and the base suite does not assert it. Run this tier with `task test:openshift`."]
