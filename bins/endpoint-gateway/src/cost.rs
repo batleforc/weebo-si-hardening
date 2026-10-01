@@ -362,8 +362,14 @@ fn what_each_step_of_an_auth_request_costs() {
         line(&mut std::io::stdout().lock());
     }));
 
-    let mut table = String::from(
-        "\n| step | credential / case | p50 ns/op | p99 ns/op |\n| --- | --- | ---: | ---: |\n",
+    let profile = if cfg!(debug_assertions) {
+        "debug build"
+    } else {
+        "release build"
+    };
+    let mut table = format!(
+        "\n### endpoint-gateway /auth, step by step (ns per operation, {profile})\n\n\
+         | step | credential / case | p50 ns/op | p99 ns/op |\n| --- | --- | ---: | ---: |\n",
     );
     for row in &rows {
         table.push_str(&format!(
@@ -372,6 +378,12 @@ fn what_each_step_of_an_auth_request_costs() {
         ));
     }
     eprintln!("{table}");
+    // The job summary too, when GitHub Actions provides one — the perf workflow's whole output.
+    if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY")
+        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary)
+    {
+        let _ = std::io::Write::write_all(&mut file, table.as_bytes());
+    }
     if cfg!(debug_assertions) {
         eprintln!("unoptimised build: numbers printed, guards skipped — rerun with --release");
         return;

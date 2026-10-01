@@ -128,10 +128,10 @@ base64 = "0.22"
 # bearer token any endpoint ever sees. Pure Rust rather than `aws_lc_rs` for the same reason
 # rustls is on `tls-rustls-no-provider` below: no C toolchain in the build.
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-# Test-only, and only in `endpoint-gateway`: minting a real ES256 keypair so the bearer branch can
-# be asserted at the wire level — a token another client of the same realm holds, signed by the
-# same key, must still not be an identity. Already in the tree as rustls's crypto provider, so it
-# costs the build nothing new.
+# `endpoint-gateway` verifies bearer signatures with it (`adapters/jwt_crypto.rs`, several times
+# faster than jsonwebtoken's pure-Rust backend on a first-seen token), and its tests mint real ES256
+# keypairs with it. Already in the tree as rustls's crypto provider, so it costs the build nothing
+# new — and, unlike `aws-lc-rs`, needs no C toolchain.
 ring = "0.17"
 
 # `hosts.ownership` regexes in RFC 0009's endpoint-auth configuration: an admin-written pattern

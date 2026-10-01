@@ -72,6 +72,24 @@ would deny every request in the cluster while looking healthy.
 | `/healthz`, `/readyz` | GET | no | Liveness, and readiness: informer caches synced, signing keys loaded, not shutting down. |
 | `/metrics` | GET | no | Prometheus, on `metrics_listen` (chart: port `9090`) when set, otherwise on the main port. |
 
+**These paths belong to the gateway's own hosts, never to an endpoint's.** The gateway's own host
+(`redirect_url`'s) is never governed — it is excluded whether or not `hosts.exclude` names it.
+On a forward-auth dialect an endpoint's traffic never reaches these routes at all; on a
+`ReverseProxy` deployment, where the gateway carries that traffic, a request whose host the
+gateway governs is the application's **whatever its path**, so an application's own `/healthz`,
+`/metrics` or `/auth` reaches the application. The table above is served only on hosts the
+gateway does not govern: its public host, the pod address the kubelet probes, and the `Service`
+name a router calls `/auth` on.
+
+**What the gateway does reserve on an endpoint host** is three names, all prefixed so an
+application is unlikely to use them by accident, and none of them a path:
+
+| Name | Kind | What the gate does with it |
+| --- | --- | --- |
+| `__weebo_grant` | query parameter | Redeems it for a host cookie and redirects without it — **only** when its value is shaped like a grant the gateway sealed (`v1.`, a 12-byte nonce, a ciphertext). Any other value is the application's: the request is decided normally and reaches it unchanged. |
+| `__Host-weebo-endpoint` | cookie | The host session. Set by the gate; an application cookie of the same name would be overwritten. |
+| `X-Auth-Request-User`, `-Groups`, `-Email` | request headers | Set from the decision and replaced if the caller sent them — the reason the application may trust them. |
+
 "Public" is what the chart's `Ingress` routes on the gateway's own host — exact paths only,
 nothing else. The optional `NetworkPolicy` (`networkPolicy.enabled`) narrows who may connect at
 all to the ingress controller's namespace (main port) and the monitoring namespace (metrics port).

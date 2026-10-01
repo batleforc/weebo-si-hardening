@@ -1,0 +1,69 @@
+name: Perf
+# What the endpoint-auth gate costs, measured on a **release** build — the figures a production
+# gateway shows. The `envtest` workflow already runs the conformance suite's cost matrix on every
+# change, but against a debug build (about ten times slower), which makes its numbers a margin to
+# RFC 0009's budget rather than a measurement; and it never runs the in-process `cost` test, the
+# only one that times a session cookie and an OIDC bearer. This workflow runs both, optimised,
+# and puts both tables in the job summary. docs/endpoint-auth-performance.md is what to read them
+# against.
+#
+# Nightly and on demand, never on a pull request: a release build of the gateway is several
+# minutes the per-change workflows do not need to pay, and a regression in a number is read from
+# the nightly trend rather than gated per change (the debug run in `envtest` still fails a change
+# that blows the budget). `task envtest:perf` is the same run on a laptop.
+on:
+  schedule:
+    # 02:40 UTC — after the 01:10 e2e run, so the two do not compete for a morning's attention.
+    - cron: "40 2 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  perf:
+    name: endpoint-auth cost (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The same pins and checksums as envtest.yaml — bump them together.
+      ENVTEST_K8S_VERSION: "1.32.0"
+      TRAEFIK_VERSION: "3.7.13"
+      ENVTEST_SHA512: "3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+      TRAEFIK_SHA256: "52cd039a34258dd61c617a95d69252bc6bcae27c520f338186c31c7fef8f6394"
+      KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
+      # A missing apiserver or Traefik is a failure here, not a green skip: a perf run that
+      # measured nothing must not look like one that measured well.
+      REQUIRE_ENVTEST: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "1.98.1" # = rust-toolchain.toml and the Containerfiles' base image
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Its own cache: a release target directory shares nothing with envtest's debug one.
+          key: perf-release
+      - name: Fetch the envtest binaries
+        run: |
+          mkdir -p "$KUBEBUILDER_ASSETS"
+          curl -fsSL -o /tmp/envtest.tar.gz \
+            "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
+          echo "${ENVTEST_SHA512}  /tmp/envtest.tar.gz" | sha512sum -c -
+          tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
+      - name: Fetch Traefik
+        run: |
+          curl -fsSL -o /tmp/traefik.tar.gz \
+            "https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_amd64.tar.gz"
+          echo "${TRAEFIK_SHA256}  /tmp/traefik.tar.gz" | sha256sum -c -
+          tar xzf /tmp/traefik.tar.gz -C /usr/local/bin traefik
+          traefik version
+      - name: The cost matrix — per credential and protocol, through a real Traefik
+        run: |
+          cargo test --release -p endpoint-gateway --features conformance --test conformance --locked \
+            -- --test-threads=1 --nocapture
+      - name: The /auth path, step by step — session cookie and OIDC bearer included
+        run: |
+          cargo test --release -p endpoint-gateway --bin endpoint-gateway cost --locked \
+            -- --ignored --nocapture --test-threads=1

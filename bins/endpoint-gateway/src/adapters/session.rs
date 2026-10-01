@@ -243,6 +243,23 @@ impl SealedCodec {
         Some(payload)
     }
 
+    /// Whether `value` has the shape of something [`Self::seal`] produced — `v1.`, a 12-byte
+    /// nonce and a ciphertext, both base64url — without opening it. What tells a grant this
+    /// gateway minted apart from an application's own query parameter that happens to share its
+    /// name: only the first is worth redeeming, and refusing the second would make that page
+    /// unreachable for everybody.
+    pub fn looks_sealed(value: &str) -> bool {
+        let mut parts = value.splitn(3, '.');
+        parts.next() == Some("v1")
+            && parts
+                .next()
+                .and_then(|nonce| B64.decode(nonce).ok())
+                .is_some_and(|nonce| nonce.len() == 12)
+            && parts
+                .next()
+                .is_some_and(|sealed| sealed.len() >= 22 && B64.decode(sealed).is_ok())
+    }
+
     /// Seal the sign-in state, against [`Binding::LoginState`] and nothing else.
     pub fn seal_login_state(&self, state: &LoginState) -> Option<String> {
         self.seal_json(&serde_json::to_vec(state).ok()?, Binding::LoginState)
@@ -399,6 +416,33 @@ mod tests {
             proved_at: 0,
             refresh: None,
             session_expires_at: None,
+        }
+    }
+
+    /// What `/auth` redeems as a grant: only a value of the shape this codec produces, so an
+    /// application's own `__weebo_grant=...` is left to the application.
+    #[test]
+    fn only_a_value_this_codec_could_have_sealed_looks_sealed() {
+        let codec = SealedCodec::new(&keys(1)).unwrap();
+        let grant = codec
+            .seal(&payload(), Binding::HostBound("alice-ws-api.weebo.si"))
+            .unwrap();
+        assert!(SealedCodec::looks_sealed(&grant));
+        for application_value in [
+            "",
+            "1",
+            "promo-2026",
+            "v1",
+            "v1.abc.def",
+            "v2.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA",
+            "v1.AAAA.AAAAAAAAAAAAAAAAAAAAAA",
+            "v1.AAAAAAAAAAAAAAAA.short",
+            "v1.AAAAAAAAAAAAAAAA.not base64 at all!!!!!",
+        ] {
+            assert!(
+                !SealedCodec::looks_sealed(application_value),
+                "{application_value:?}"
+            );
         }
     }
 

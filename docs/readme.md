@@ -16,6 +16,7 @@ exception is [`generator/`](./generator/readme.md), a single static page with no
 | [`weebosiuser.md`](./weebosiuser.md) | Every field of the `WeeboSiUser` CRD: a person's identity, team, provisioning switches, and what their `status` means. |
 | [`generator/`](./generator/readme.md) | A form per CRD that builds a valid object from the schema and prints the YAML — [published on GitHub Pages](https://batleforc.github.io/weebo-si-hardening/). |
 | [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
+| [`endpoint-auth-performance.md`](./endpoint-auth-performance.md) | What the endpoint-auth gate costs per credential and protocol, where the time goes, and the improvements that follow. |
 
 ## Reading order for a newcomer
 

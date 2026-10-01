@@ -28,7 +28,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use weebo_si_endpoint_auth::decide::Verdict;
-use weebo_si_endpoint_auth::host::Host;
+use weebo_si_endpoint_auth::host::{Host, HostScope};
 use weebo_si_endpoint_auth::index::CatalogLookup;
 use weebo_si_endpoint_auth::policy::Method;
 
@@ -67,6 +67,21 @@ const HOP_BY_HOP: [&str; 6] = [
 ///
 /// In `ForwardAuth` mode this is a `404` — the gateway answers questions and carries nothing. In
 /// `ReverseProxy` mode it is the application's traffic.
+/// Whether a request is an application's traffic rather than a request for this gateway: on a
+/// `ReverseProxy` deployment, any request whose host this gateway governs — **whatever its
+/// path**. Decided on the host alone so that an application's own `/healthz`, `/metrics` or
+/// `/auth` reaches the application, instead of this gateway answering for it; the gateway's own
+/// paths are served only on hosts it does not govern — its public host, the pod address the
+/// kubelet probes, the `Service` name a router calls `/auth` on.
+pub(crate) fn is_endpoint_traffic(
+    reverse_proxy: bool,
+    scope: &HostScope,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> bool {
+    reverse_proxy && host_of(headers, uri).is_some_and(|host| scope.governs(&host))
+}
+
 pub async fn fallback(
     State(state): State<Arc<GatewayState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
@@ -78,7 +93,7 @@ pub async fn fallback(
     serve(state, Some(peer), request).await
 }
 
-async fn serve(
+pub(crate) async fn serve(
     state: Arc<GatewayState>,
     peer: Option<std::net::SocketAddr>,
     request: Request,
@@ -164,7 +179,7 @@ async fn serve(
 }
 
 /// The host under decision, from the `Host` header or the absolute-form URI.
-fn host_of(headers: &HeaderMap, uri: &Uri) -> Option<Host> {
+pub(crate) fn host_of(headers: &HeaderMap, uri: &Uri) -> Option<Host> {
     let raw = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -452,5 +467,132 @@ mod shell_equivalence {
             },
             Scheme::Https
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod endpoint_hosts_first {
+    //! A proxied application's paths are its own: on a `ReverseProxy` deployment, a governed
+    //! host's request reaches the application even when its path is one this gateway serves.
+
+    use axum::http::HeaderValue;
+
+    use super::*;
+
+    fn scope() -> HostScope {
+        HostScope::new(".weebo.si", ["che.weebo.si", "auth.weebo.si"]).unwrap()
+    }
+
+    fn with_host(host: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        headers
+    }
+
+    #[test]
+    fn an_endpoint_hosts_request_is_the_applications_whatever_its_path() {
+        for path in [
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/auth",
+            "/oidc/callback",
+            "/app",
+        ] {
+            let uri: Uri = path.parse().unwrap();
+            assert!(
+                is_endpoint_traffic(true, &scope(), &with_host("alice-ws-api.weebo.si"), &uri),
+                "{path} on an endpoint host must reach the application"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gateways_own_hosts_keep_its_own_paths() {
+        let uri: Uri = "/healthz".parse().unwrap();
+        // Its public host, the pod address the kubelet probes, the Service name a router calls.
+        for host in [
+            "auth.weebo.si",
+            "10.42.0.7:4180",
+            "endpoint-gateway.weebo-si-hardening.svc:4180",
+        ] {
+            assert!(
+                !is_endpoint_traffic(true, &scope(), &with_host(host), &uri),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forward_auth_deployment_never_carries_application_traffic() {
+        let uri: Uri = "/healthz".parse().unwrap();
+        assert!(!is_endpoint_traffic(
+            false,
+            &scope(),
+            &with_host("alice-ws-api.weebo.si"),
+            &uri
+        ));
+    }
+
+    /// What `http::router` relies on, checked against axum rather than assumed: a layer added
+    /// after the routes and the fallback runs for a matched route, for a known path under a
+    /// method it does not serve, and for an unknown path alike — so no path or method of an
+    /// endpoint host can slip past the host check to one of this gateway's own handlers.
+    #[tokio::test]
+    async fn the_host_check_runs_before_every_route_whatever_the_method() {
+        use axum::routing::get;
+
+        async fn host_first(request: Request, next: axum::middleware::Next) -> Response {
+            if request
+                .headers()
+                .get(header::HOST)
+                .is_some_and(|host| host.as_bytes().ends_with(b".weebo.si"))
+            {
+                return "application".into_response();
+            }
+            next.run(request).await
+        }
+
+        let router = axum::Router::new()
+            .route("/healthz", get(|| async { "gateway" }))
+            .fallback(|| async { "fallback" })
+            .layer(axum::middleware::from_fn(host_first));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let client = reqwest::Client::new();
+        let ask = |method: reqwest::Method, path: &str, host: &str| {
+            client
+                .request(method, format!("http://{address}{path}"))
+                .header("host", host.to_owned())
+                .send()
+        };
+        for (method, path) in [
+            (reqwest::Method::GET, "/healthz"),
+            (reqwest::Method::POST, "/healthz"),
+            (reqwest::Method::GET, "/nowhere"),
+        ] {
+            let body = ask(method.clone(), path, "alice-ws-api.weebo.si")
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert_eq!(body, "application", "{method} {path}");
+        }
+        let own = ask(reqwest::Method::GET, "/healthz", "gateway.internal")
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(own, "gateway");
     }
 }

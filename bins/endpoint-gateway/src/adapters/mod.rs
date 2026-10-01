@@ -8,6 +8,7 @@
 //! `reqwest`, `aes-gcm`, `jsonwebtoken` and a Kubernetes client to read a type.
 
 pub mod introspection;
+pub mod jwt_crypto;
 pub mod kube_catalog;
 pub mod kube_revocations;
 pub mod kube_workload;

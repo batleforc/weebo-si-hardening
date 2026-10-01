@@ -175,29 +175,33 @@ impl GatewayState {
             return;
         };
         let now = self.now();
+        // A token the reviewer already answered for is done: looked up first, because the shape
+        // check below decodes the payload twice and parses it, and a workspace calling another
+        // repeats the same token on every request.
+        if weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_service_account(
+            self.workloads.as_ref(),
+            token,
+            now,
+        )
+        .is_some()
+        {
+            return;
+        }
         // Shape, claimed issuer and claimed expiry — all unverified, all free — decide whether a
         // `TokenReview` is worth asking for; the reviewer's own limits bound how many are.
         if self.workloads.worth_reviewing(token, now) {
-            if weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_service_account(
-                self.workloads.as_ref(),
-                token,
-                now,
-            )
-            .is_none()
-            {
-                let reviewed = self
-                    .workloads
-                    .review(token, address.unwrap_or_default(), now)
-                    .await;
-                self.metrics.bearer(
-                    weebo_si_endpoint_auth::bearer::TokenShape::ServiceAccount,
-                    if reviewed.is_some() {
-                        weebo_si_endpoint_auth::bearer::BearerResult::Accepted
-                    } else {
-                        weebo_si_endpoint_auth::bearer::BearerResult::Unverifiable
-                    },
-                );
-            }
+            let reviewed = self
+                .workloads
+                .review(token, address.unwrap_or_default(), now)
+                .await;
+            self.metrics.bearer(
+                weebo_si_endpoint_auth::bearer::TokenShape::ServiceAccount,
+                if reviewed.is_some() {
+                    weebo_si_endpoint_auth::bearer::BearerResult::Accepted
+                } else {
+                    weebo_si_endpoint_auth::bearer::BearerResult::Unverifiable
+                },
+            );
             return;
         }
         // The second thing that genuinely needs an API call on this path, and it goes where the

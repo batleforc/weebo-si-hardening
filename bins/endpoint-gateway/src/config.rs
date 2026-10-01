@@ -862,11 +862,35 @@ impl GatewayConfig {
     }
 
     /// The host scope `/auth` reads.
+    ///
+    /// The gateway's own host — `redirect_url`'s — is excluded whether or not `hosts.exclude`
+    /// names it. It is never an endpoint: on a `ReverseProxy` deployment a governed host is
+    /// handed to the application whatever its path, and the gateway's own `/oidc/callback`
+    /// would be handed with it.
     pub fn scope(&self) -> Result<HostScope, ScopeError> {
+        let own = self.own_host();
         HostScope::new(
             &self.hosts.suffix,
-            self.hosts.exclude.iter().map(String::as_str),
+            self.hosts
+                .exclude
+                .iter()
+                .map(String::as_str)
+                .chain(own.as_deref()),
         )
+    }
+
+    /// The host of `redirect_url`, lowercased and without a port.
+    pub fn own_host(&self) -> Option<String> {
+        let authority = self
+            .redirect_url
+            .strip_prefix("https://")?
+            .split(['/', '?', '#'])
+            .next()?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = host.split(':').next()?.trim().to_ascii_lowercase();
+        (!host.is_empty()).then_some(host)
     }
 
     /// The compile-time settings every endpoint in this cluster is compiled with.
@@ -934,6 +958,23 @@ bearer:
             GatewayConfig::load(file.path()),
             Err(ConfigError::Unparseable(_))
         ));
+    }
+
+    #[test]
+    fn the_gateways_own_host_is_never_governed_even_when_exclude_forgets_it() {
+        // MINIMAL's `exclude` names only Che's host; `redirect_url`'s is excluded regardless.
+        use weebo_si_endpoint_auth::host::Host;
+
+        let file = write(MINIMAL);
+        let config = GatewayConfig::load(file.path()).unwrap();
+        let scope = config.scope().unwrap();
+        assert!(!scope.governs(&Host::parse("auth.weebo.si").unwrap()));
+        assert!(scope.governs(&Host::parse("alice-ws-api.weebo.si").unwrap()));
+        assert_eq!(config.own_host().as_deref(), Some("auth.weebo.si"));
+
+        let mut ported = config.clone();
+        ported.redirect_url = "https://Auth.Weebo.si:8443/oidc/callback".to_owned();
+        assert_eq!(ported.own_host().as_deref(), Some("auth.weebo.si"));
     }
 
     #[test]

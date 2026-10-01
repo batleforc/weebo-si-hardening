@@ -59,6 +59,19 @@ tasks:
       # purpose.
       - cargo test -p endpoint-gateway --features conformance --test conformance -- --test-threads=1 --nocapture
 
+  perf:
+    desc: "Measure what the endpoint-auth gate costs on a release build: the conformance suite's cost matrix (needs traefik) and the gateway's in-process cost test — what .github/workflows/perf.yaml runs"
+    silent: true
+    deps:
+      - setup
+    env:
+      KUBEBUILDER_ASSETS: "{{ .ENVTEST_DIR }}"
+    cmds:
+      # Release, unlike `conformance` above: these are the numbers a production gateway shows,
+      # where the debug build's are ten times slower and only good as a margin to the budget.
+      - cargo test --release -p endpoint-gateway --features conformance --test conformance -- --test-threads=1 --nocapture
+      - cargo test --release -p endpoint-gateway --bin endpoint-gateway cost -- --ignored --nocapture --test-threads=1
+
   clean:
     desc: "Remove the downloaded envtest binaries"
     silent: true

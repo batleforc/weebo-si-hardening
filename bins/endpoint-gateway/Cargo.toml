@@ -40,13 +40,13 @@ jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 rustls = { workspace = true }
+# Bearer signatures (`adapters/jwt_crypto.rs`): ES256 and RS256-512 are verified with ring rather
+# than jsonwebtoken's pure-Rust backend. Already linked as rustls's provider, so nothing new.
+ring = { workspace = true }
 
 [dev-dependencies]
 weebo-si-endpoint-auth = { version = "0.1.0", path = "../../crates/weebo-si-endpoint-auth", features = ["testing"] }
 tempfile = { workspace = true }
-# Minting a signed token for the bearer table, so "our issuer, somebody else's audience" is
-# refused against real cryptography rather than against a fake verifier.
-ring = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 # RFC 0009's dialect conformance suite, behind the `conformance` feature: it needs a real
 # apiserver for the gateway's own informers, and a real Traefik in front of it.

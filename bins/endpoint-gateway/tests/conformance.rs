@@ -68,6 +68,11 @@ const CONTROL_HOST: &str = "control.local";
 const LAG_SAMPLES: usize = 300;
 /// Fresh credentials for the rows that time a first use — each one is one apiserver call.
 const COLD_SAMPLES: usize = 25;
+/// Forged tokens one client sends in the limiter row: well past the per-client `TokenReview`
+/// burst (10), so most of them must be refused without asking the apiserver.
+const FLOOD_SAMPLES: usize = 40;
+/// The per-client `TokenReview` burst (`kube_workload::ReviewLimits`' default).
+const PER_CLIENT_REVIEW_BURST: usize = 10;
 /// RFC 0009's *Request cost*: p99 under 5 ms for the auth round trip.
 const LAG_BUDGET: Duration = Duration::from_millis(5);
 const ALICE_POD_IP: &str = "10.42.0.7";
@@ -786,6 +791,20 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         closed.body
     );
 
+    // --- an application's own parameter is not mistaken for the gateway's ---------------------
+    // `__weebo_grant` is the one query parameter the gate acts on at an endpoint host. Only a
+    // value shaped like a grant it sealed is redeemed; the same name carrying anything else is
+    // the application's, decided on like any other request rather than refused.
+    let namesake = tree
+        .get(&plain, ALICE_HOST, "/healthz?__weebo_grant=promo-2026")
+        .await;
+    assert_eq!(
+        namesake.status,
+        reqwest::StatusCode::OK,
+        "an application's own `__weebo_grant` must reach it on an open path: {}",
+        namesake.body
+    );
+
     // --- a spoofed identity header does not reach the application ------------------------------
     // The header the application trusts is the one the gate sets. A caller that can set it
     // themselves has the whole feature.
@@ -1155,6 +1174,25 @@ async fn series(
     row
 }
 
+/// One counter from the gateway's own `/metrics`, `0` when it has not been emitted yet.
+async fn gateway_metric(client: &reqwest::Client, gateway_port: u16, name: &str) -> f64 {
+    client
+        .get(format!("http://127.0.0.1:{gateway_port}/metrics"))
+        .send()
+        .await
+        .expect("the gateway should serve /metrics")
+        .text()
+        .await
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(name)
+                .filter(|rest| rest.starts_with(' '))
+                .and_then(|rest| rest.trim().parse().ok())
+        })
+        .unwrap_or(0.0)
+}
+
 /// A token the apiserver issues for `name` in `namespace` — a new one on every call, so the
 /// gateway has never seen it and must ask for a `TokenReview`.
 async fn fresh_token(client: kube::Client, namespace: &str, name: &str) -> String {
@@ -1430,6 +1468,57 @@ async fn cost_matrix(
         )
         .await,
     );
+    // The limiter, exercised rather than assumed: one client (the address a router states in
+    // `X-Real-Ip`) sending fresh forged tokens. Past the per-client burst the gateway must stop
+    // asking the apiserver — the throttled counter moves by the overflow, and the row's median
+    // falls to an answer with no round trip in it. Without the header, the direct rows above
+    // are held to the global limit only, which is why they each paid a `TokenReview`.
+    let throttled_before = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_token_reviews_throttled_total",
+    )
+    .await;
+    let flood = series(
+        "forged service-account token, one client flooding",
+        "/auth direct",
+        401,
+        0,
+        FLOOD_SAMPLES,
+        &|round| {
+            auth("/api").header("x-real-ip", "198.51.100.7").header(
+                "authorization",
+                bearer(&forged_token(alice_token, 10_000 + round)),
+            )
+        },
+        None,
+    )
+    .await;
+    let throttled = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_token_reviews_throttled_total",
+    )
+    .await
+        - throttled_before;
+    assert!(
+        throttled >= (FLOOD_SAMPLES - PER_CLIENT_REVIEW_BURST) as f64 - 2.0,
+        "one client sent {FLOOD_SAMPLES} fresh forged tokens and only {throttled} were refused a \
+         TokenReview — the per-client limit (burst {PER_CLIENT_REVIEW_BURST}) is not holding, \
+         so one caller can spend the apiserver's budget"
+    );
+    let reviewed = rows
+        .iter()
+        .find(|row| row.case == "forged service-account token, fresh each")
+        .map(|row| percentile(&row.gated, 50))
+        .expect("the unthrottled forged row is measured above");
+    assert!(
+        percentile(&flood.gated, 50) < reviewed,
+        "a throttled forged token should answer faster than one that cost a TokenReview \
+         ({:?} vs {reviewed:?})",
+        percentile(&flood.gated, 50)
+    );
+    rows.push(flood);
     rows.push(
         series(
             "opaque bearer, fresh each",

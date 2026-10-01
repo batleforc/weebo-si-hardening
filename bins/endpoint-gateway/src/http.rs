@@ -33,7 +33,7 @@ use weebo_si_endpoint_auth::policy::Method;
 
 use weebo_si_endpoint_auth::{Gateway, GatewayPorts, Presented};
 
-use crate::adapters::session::{Binding, LoginState, SealedPayload, random_id};
+use crate::adapters::session::{Binding, LoginState, SealedCodec, SealedPayload, random_id};
 use crate::state::GatewayState;
 
 /// The cookie the gateway's own host carries.
@@ -72,7 +72,35 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         // Anything else: a `404` on a forward-auth deployment, and the application's own traffic
         // on a `ReverseProxy` one. One router, two shells, one `decide()`.
         .fallback(crate::proxy::fallback)
+        // ...and before any of the routes above is matched, an endpoint host's request is the
+        // application's whatever its path — see `proxy::is_endpoint_traffic`.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            endpoint_traffic_first,
+        ))
         .with_state(state)
+}
+
+/// Hand a governed host's request to the reverse-proxy shell before this gateway's own routes
+/// can claim its path.
+async fn endpoint_traffic_first(
+    State(state): State<Arc<GatewayState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if crate::proxy::is_endpoint_traffic(
+        state.config.reverse_proxy,
+        &state.scope,
+        request.headers(),
+        request.uri(),
+    ) {
+        let peer = request
+            .extensions()
+            .get::<ConnectInfo<std::net::SocketAddr>>()
+            .map(|ConnectInfo(peer)| *peer);
+        return crate::proxy::serve(state, peer, request).await;
+    }
+    next.run(request).await
 }
 
 /// The metrics listener's paths: `/metrics` and nothing else.
@@ -288,7 +316,13 @@ async fn auth(
     // host cookie. Traefik returns a non-2xx auth response verbatim, `Set-Cookie` included,
     // which is the one property the two-cookie design cannot work without.
     let params = query_of(&forwarded.uri);
-    if let Some(grant) = params.get(GRANT_PARAM) {
+    // Only a value shaped like one this gateway sealed: an application's own `__weebo_grant`
+    // parameter is the application's, and is decided on like any other request rather than
+    // refused as a grant that does not open.
+    if let Some(grant) = params
+        .get(GRANT_PARAM)
+        .filter(|grant| SealedCodec::looks_sealed(grant))
+    {
         return redeem(&state, &host, grant, &forwarded.uri);
     }
 

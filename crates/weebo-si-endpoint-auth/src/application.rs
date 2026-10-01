@@ -208,9 +208,17 @@ impl<'a> Gateway<'a> {
     }
 
     fn resolve_bearer(&self, token: &str, now: Timestamp) -> Credential {
+        // One fingerprint for both caches: a token is hashed once per request, not once per
+        // cache it is looked up in.
         let key = Fingerprint::of(token);
         let claims = if let Some(claims) = self.bearer_cache.get(&key, now) {
             claims
+        } else if let Some(namespace) = self.service_account_cache.get(&key, now) {
+            // Checked before `verify`, which would only decode the header and the unverified
+            // issuer to conclude what this entry already says: a token lands here only after it
+            // was found not to be ours *and* the apiserver vouched for it. The workspace-to-
+            // workspace call is the path that repeats this, every request.
+            return Credential::ServiceAccount(namespace);
         } else {
             match self.tokens.verify(token, now) {
                 TokenOutcome::Ours { claims, expires_at } => {
@@ -221,7 +229,7 @@ impl<'a> Gateway<'a> {
                     claims
                 }
                 TokenOutcome::Foreign | TokenOutcome::Invalid => {
-                    return self.resolve_service_account(token, now);
+                    return self.resolve_service_account(token, key, now);
                 }
             }
         };
@@ -243,11 +251,7 @@ impl<'a> Gateway<'a> {
     /// A service-account token is the answer where a pod's address does not survive the network
     /// path — the SNAT case. Tried only once the token turned out not to be ours, so an ordinary
     /// bearer costs no `TokenReview` at all.
-    fn resolve_service_account(&self, token: &str, now: Timestamp) -> Credential {
-        let key = Fingerprint::of(token);
-        if let Some(namespace) = self.service_account_cache.get(&key, now) {
-            return Credential::ServiceAccount(namespace);
-        }
+    fn resolve_service_account(&self, token: &str, key: Fingerprint, now: Timestamp) -> Credential {
         match self.workloads.namespace_of_service_account(token, now) {
             Some(identity) => {
                 self.service_account_cache.insert(
@@ -627,6 +631,9 @@ mod tests {
         // call per token, not per request".
         assert_eq!(harness.service_account_cache.stats().entries, 1);
         assert_eq!(harness.service_account_cache.stats().misses, 1);
+        // And one bearer verification: once the token is known to be a service account, the
+        // cache answers before `verify` would decode it again to reach the same conclusion.
+        assert_eq!(harness.tokens.calls(), 1);
     }
 
     #[test]

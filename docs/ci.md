@@ -24,6 +24,7 @@ them is a deliberate commit, never something that happens to a green build.
 | [`build-endpoint-gateway`](../.github/workflows/build-endpoint-gateway.yaml) | `bins/endpoint-gateway/**`, `crates/weebo-si-crd/**`, `crates/weebo-si-endpoint-auth/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, the deferred OpenShift tier, RFC 0009's decision budget, a release build |
 | [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, `bins/endpoint-gateway/**`, manifests | all five envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip — plus RFC 0009's dialect conformance suite, which drives a real Traefik |
+| [`perf`](../.github/workflows/perf.yaml) | nightly · manual | nothing on its own — it measures. The conformance cost matrix and the gateway's in-process `cost` test on a **release** build, both tables in the job summary; fails only if a budget or a status assertion breaks. See [`endpoint-auth-performance.md`](./endpoint-auth-performance.md) |
 | [`e2e`](../.github/workflows/e2e.yaml) | nightly · manual, per suite | any of the four end-to-end suites against a kind cluster running real Eclipse Che — see [End to end](#end-to-end) |
 | [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for all three charts, every certificate-provider variant and both endpoint-auth dialect shapes |
 | [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, `charts/weebo-si-operator/crds/**`, configs | a malformed RFC, a stale RFC index, a stale `docs/generator/schemas.js`, shellcheck, markdownlint, cspell |
@@ -79,7 +80,8 @@ step (`cargo test --release -p endpoint-gateway --bin endpoint-gateway cost --
 gateway's path, not the in-cluster hop a real controller pays on top. CI runs
 the matrix against a debug build, about ten times slower than release — the
 table's title says which — so read CI's numbers as a margin to the budget and
-`--release` locally for the figures a production gateway shows.
+the nightly [`perf`](../.github/workflows/perf.yaml) workflow — or `task envtest:perf`
+locally — for the figures a production gateway shows.
 
 **The daily schedules are the point, not padding.** A CVE disclosed against a
 base image or a dependency *after* the last commit has to trip something, and a

@@ -82,6 +82,12 @@ async fn main() -> ExitCode {
         eprintln!("endpoint-gateway: could not install the ring crypto provider: {err:?}");
         return ExitCode::from(exit::STARTUP);
     }
+    // The same for bearer signatures — before anything signs or verifies one, since the first
+    // use fixes `jsonwebtoken`'s provider for the life of the process.
+    if !adapters::jwt_crypto::installed() {
+        eprintln!("endpoint-gateway: could not install ring as the JWT signature provider");
+        return ExitCode::from(exit::STARTUP);
+    }
 
     let path = flag(&args, "--config")
         .map(PathBuf::from)

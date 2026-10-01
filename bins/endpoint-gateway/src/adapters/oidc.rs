@@ -8,6 +8,7 @@
 //! assets cannot become two hundred round trips. [`OidcClient`] is the login path, where a
 //! network call is exactly right and happens once per sign-in.
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -108,7 +109,24 @@ pub struct JwksCache {
 #[derive(Default)]
 struct JwksState {
     keys: Option<JwkSet>,
+    /// Every key of `keys` with a `kid`, already turned into the form a verification takes —
+    /// built once per key-set change rather than on every first-seen bearer, which used to clone
+    /// the whole set and rebuild the key each time. `None` for a key `DecodingKey::from_jwk`
+    /// refuses, so the refusal is remembered rather than recomputed.
+    decoding: HashMap<String, Option<Arc<DecodingKey>>>,
     generation: u64,
+}
+
+/// What [`JwksCache::key`] found under a `kid`.
+pub enum KeyLookup {
+    /// No key set has been fetched yet.
+    NoKeys,
+    /// The set holds no key under that `kid`.
+    Unknown,
+    /// The set holds one, and it is not a key this gateway can verify with.
+    Unusable,
+    /// The key, ready to verify with.
+    Found(Arc<DecodingKey>),
 }
 
 /// At most one on-demand JWKS refresh per this many seconds, however many unknown `kid`s arrive.
@@ -123,6 +141,14 @@ impl JwksCache {
             if state.keys.as_ref() == Some(&keys) {
                 return;
             }
+            state.decoding = keys
+                .keys
+                .iter()
+                .filter_map(|jwk| {
+                    let kid = jwk.common.key_id.clone()?;
+                    Some((kid, DecodingKey::from_jwk(jwk).ok().map(Arc::new)))
+                })
+                .collect();
             state.keys = Some(keys);
             state.generation += 1;
         }
@@ -157,7 +183,30 @@ impl JwksCache {
         self.demands.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The current key set and its generation.
+    /// The verification key under `kid`, without copying the key set.
+    pub fn key(&self, kid: &str) -> KeyLookup {
+        let Ok(state) = self.inner.read() else {
+            return KeyLookup::NoKeys;
+        };
+        if state.keys.is_none() {
+            return KeyLookup::NoKeys;
+        }
+        match state.decoding.get(kid) {
+            None => KeyLookup::Unknown,
+            Some(None) => KeyLookup::Unusable,
+            Some(Some(key)) => KeyLookup::Found(Arc::clone(key)),
+        }
+    }
+
+    /// The generation alone — read on every request, so it must not copy the key set the way
+    /// [`Self::snapshot`] does.
+    pub fn generation(&self) -> u64 {
+        self.inner.read().map(|state| state.generation).unwrap_or(0)
+    }
+
+    /// The current key set and its generation — a copy, so tests only; the request path reads
+    /// [`Self::key`] and [`Self::generation`].
+    #[cfg(test)]
     pub fn snapshot(&self) -> (Option<JwkSet>, u64) {
         match self.inner.read() {
             Ok(state) => (state.keys.clone(), state.generation),
@@ -410,6 +459,9 @@ pub struct VerifierPorts {
 impl JwksVerifier {
     /// Build a verifier.
     pub fn new(ports: VerifierPorts) -> Self {
+        // Every path that verifies a bearer goes through a verifier, so constructing one is the
+        // last moment `ring` can still become the provider — see `jwt_crypto::install`.
+        crate::adapters::jwt_crypto::install();
         Self {
             cache: ports.cache,
             issuer: ports.issuer,
@@ -424,7 +476,7 @@ impl JwksVerifier {
 
     /// The generation the keys are at — the value the identity cache is invalidated on.
     pub fn generation(&self) -> u64 {
-        self.cache.snapshot().1
+        self.cache.generation()
     }
 
     /// Whether any key has been fetched yet. `/readyz` reads this: a replica with no keys
@@ -540,13 +592,17 @@ impl JwksVerifier {
             // Not a JWT at all: an opaque access token, which only introspection can resolve.
             return Err((TokenShape::Opaque, BearerResult::Unverifiable));
         };
-        let (Some(keys), _) = self.cache.snapshot() else {
+        let lookup = header
+            .kid
+            .as_deref()
+            .map_or(KeyLookup::Unknown, |kid| self.cache.key(kid));
+        if matches!(lookup, KeyLookup::NoKeys) {
             // No keys yet: refusing is the only safe answer, and `/readyz` is already failing
             // for the same reason, so this is a window a cold replica is kept out of the
             // rotation for rather than one it answers wrongly in.
             return Err((TokenShape::Jwt, BearerResult::Unverifiable));
-        };
-        let Some(jwk) = header.kid.as_deref().and_then(|kid| keys.find(kid)) else {
+        }
+        if matches!(lookup, KeyLookup::Unknown) {
             // A `kid` we do not hold is a forgery, a rotation we have not fetched yet — or, far
             // more often, simply somebody else's token: every service-account token and every
             // foreign issuer's JWT lands here. The *unverified* `iss` tells those apart for free,
@@ -560,14 +616,14 @@ impl JwksVerifier {
                 self.cache.request_refresh(now);
             }
             return Err((TokenShape::Jwt, BearerResult::Unverifiable));
-        };
+        }
         // Alg confusion, closed here rather than trusted from the header: a token naming an
         // algorithm this gateway does not verify with is refused before a key is chosen, so
         // `none` and a symmetric algorithm whose key an attacker supplies are both unreachable.
         if !ALLOWED_ALGORITHMS.contains(&header.alg) {
             return Err((TokenShape::Jwt, BearerResult::Unverifiable));
         }
-        let Ok(key) = DecodingKey::from_jwk(jwk) else {
+        let KeyLookup::Found(key) = lookup else {
             return Err((TokenShape::Jwt, BearerResult::Unverifiable));
         };
         let mut validation = Validation::new(header.alg);
@@ -909,6 +965,9 @@ mod tests {
     impl Realm {
         fn new() -> Self {
             use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+
+            // Before the first token is minted: signing fixes the provider too.
+            crate::adapters::jwt_crypto::install();
 
             let rng = ring::rand::SystemRandom::new();
             let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
