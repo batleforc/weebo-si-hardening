@@ -348,7 +348,8 @@ it), `conditions` — `Ready`, and `Degraded` with one message per violation.
 `WeeboSiUser.status`: `observedGeneration`, `team`, `authentik: {name, state, message}`,
 `che: {application, namespace, state, message}`, `conditions`. `state` is one of `Off`, `Created`,
 `Adopted`, `Absent` (the target CRD is not installed, or the reference points at nothing), or
-`Conflict` (another `WeeboSiUser` claims the same target).
+`Conflict` (another `WeeboSiUser` claims the same target, or an older one already holds the same
+`username`).
 
 #### What leaves the schema
 

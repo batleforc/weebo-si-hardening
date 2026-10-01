@@ -31,7 +31,7 @@ use weebo_si_crd::{
 };
 use weebo_si_identity::application::{ObservedNamespace, report_team};
 use weebo_si_identity::port::{DesiredObject, ObjectOwner, ProvisionObserver, Provisioner};
-use weebo_si_identity::reconcile_target;
+use weebo_si_identity::{Claimant, reconcile_target, username_holder};
 
 /// How often each loop re-examines an object it already agreed with. Long, like every other sweep
 /// here: the interesting changes arrive as watch events, and this is the backstop for the ones
@@ -269,6 +269,49 @@ pub async fn reconcile_user(user: Arc<WeeboSiUser>, ctx: Arc<Ctx>) -> Result<Act
         return Ok(Action::requeue(REQUEUE));
     };
 
+    // A username somebody else already holds is refused before anything is observed or written:
+    // the target objects are named after the WeeboSiUser, so they would not collide — the login
+    // they create would, and that collision happens in Authentik and in `<username>-che`, where
+    // nothing reports it back.
+    let users = list_users(&ctx.client).await?;
+    let claimants: Vec<Claimant<'_>> = users
+        .iter()
+        .filter(|other| other.metadata.deletion_timestamp.is_none())
+        .filter_map(claimant)
+        .collect();
+    if let Some(holder) = claimant(&user).and_then(|me| username_holder(&me, &claimants)) {
+        let message = format!(
+            "username {} is already claimed by WeeboSiUser {}",
+            user.spec.username, holder.name
+        );
+        let conflict = |kind: &str, name: &str, namespace: Option<&String>| {
+            ctx.deps
+                .observer
+                .user_reconciled(kind, TargetState::Conflict);
+            TargetStatus {
+                name: name.to_string(),
+                namespace: namespace.cloned(),
+                state: TargetState::Conflict,
+                message: message.clone(),
+            }
+        };
+        let status = WeeboSiUserStatus {
+            observed_generation: generation,
+            team: team_name,
+            authentik: plan
+                .authentik
+                .as_ref()
+                .map(|plan| conflict(ctx.deps.authentik.kind(), &plan.name, None)),
+            che: plan
+                .application
+                .as_ref()
+                .map(|plan| conflict(ctx.deps.workspace.kind(), &plan.name, Some(&plan.namespace))),
+            conditions: vec![condition(false, generation, message.clone())],
+        };
+        patch_user_status(&api, &user.name_any(), &status).await?;
+        return Ok(Action::requeue(REQUEUE));
+    }
+
     let owner = ObjectOwner {
         api_version: OWNER_API_VERSION.to_string(),
         kind: "WeeboSiUser".to_string(),
@@ -375,6 +418,21 @@ async fn provision(
             None
         }
     }
+}
+
+/// The four facts [`username_holder`] decides on; `None` for an object missing a uid or a name,
+/// which cannot be told apart from anybody and so claims nothing.
+fn claimant(user: &WeeboSiUser) -> Option<Claimant<'_>> {
+    Some(Claimant {
+        name: user.metadata.name.as_deref()?,
+        uid: user.metadata.uid.as_deref()?,
+        username: user.spec.username.as_str(),
+        created: user
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|time| time.0.as_second()),
+    })
 }
 
 fn read_config(config: &Arc<RwLock<Option<IdentityConfig>>>) -> Option<IdentityConfig> {

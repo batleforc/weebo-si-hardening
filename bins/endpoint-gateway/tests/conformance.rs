@@ -61,6 +61,15 @@ const SESSION_KEYS: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
 const SUFFIX: &str = ".weebo.si";
 const ALICE_HOST: &str = "alice-ws-api.weebo.si";
 const BOB_HOST: &str = "bob-ws-api.weebo.si";
+/// A host outside the gated suffix, routed by Traefik to the same backend with no middleware —
+/// the control the gate's latency is measured against.
+const CONTROL_HOST: &str = "control.local";
+/// Requests per side for each row of the cost matrix, after the warm-up.
+const LAG_SAMPLES: usize = 300;
+/// Fresh credentials for the rows that time a first use — each one is one apiserver call.
+const COLD_SAMPLES: usize = 25;
+/// RFC 0009's *Request cost*: p99 under 5 ms for the auth round trip.
+const LAG_BUDGET: Duration = Duration::from_millis(5);
 const ALICE_POD_IP: &str = "10.42.0.7";
 const BOB_POD_IP: &str = "10.42.1.9";
 
@@ -178,11 +187,27 @@ fn traefik_dynamic(gateway: u16, backend: u16, cert: &Path, key: &Path) -> Strin
 http:
   routers:
     endpoint:
-      rule: "HostRegexp(`^.+{}$`)"
+      rule: "HostRegexp(`^.+{0}$`)"
       entryPoints: [websecure]
       service: backend
       middlewares: [endpoint-auth]
       tls: {{}}
+    control:
+      rule: "Host(`{CONTROL_HOST}`)"
+      entryPoints: [websecure]
+      service: backend
+      tls: {{}}
+    # The same two routes on a plain-HTTP entrypoint: the gate must refuse an endpoint served
+    # without TLS (its session cookie is `__Host-`), and the cost matrix times that refusal.
+    endpoint-plain:
+      rule: "HostRegexp(`^.+{0}$`)"
+      entryPoints: [web]
+      service: backend
+      middlewares: [endpoint-auth]
+    control-plain:
+      rule: "Host(`{CONTROL_HOST}`)"
+      entryPoints: [web]
+      service: backend
   services:
     backend:
       loadBalancer:
@@ -201,8 +226,8 @@ http:
           - __Host-weebo-endpoint
 tls:
   certificates:
-    - certFile: "{}"
-      keyFile: "{}"
+    - certFile: "{1}"
+      keyFile: "{2}"
 "#,
         // Two backslashes, because the rule is a Go regexp inside a YAML double-quoted scalar:
         // one belongs to the regexp and the other survives YAML unescaping. A single one is an
@@ -214,12 +239,14 @@ tls:
     )
 }
 
-fn traefik_static(entry: u16, dynamic: &Path) -> String {
+fn traefik_static(entry: u16, web: u16, dynamic: &Path) -> String {
     format!(
         r#"
 entryPoints:
   websecure:
     address: "127.0.0.1:{entry}"
+  web:
+    address: "127.0.0.1:{web}"
 providers:
   file:
     filename: "{}"
@@ -232,15 +259,51 @@ accessLog: {{}}
     )
 }
 
+/// RFC 6455's `Sec-WebSocket-Accept` for a client key.
+fn websocket_accept(key: &[u8]) -> String {
+    use base64::Engine as _;
+    let mut input = key.to_vec();
+    input.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &input);
+    base64::engine::general_purpose::STANDARD.encode(digest.as_ref())
+}
+
 /// A backend that answers `200` with the request's own headers as the body, so an assertion can
 /// be about *what the application was handed* rather than about what we hope Traefik forwarded.
+///
+/// A WebSocket handshake is answered `101` and the connection dropped once upgraded: the gate is
+/// consulted on the handshake only, so the handshake is all the cost matrix has to time.
 async fn spawn_backend() -> u16 {
     use axum::Router;
-    use axum::http::HeaderMap;
+    use axum::response::IntoResponse;
     use axum::routing::any;
 
     let port = free_port().expect("a free port");
-    let app = Router::new().fallback(any(|headers: HeaderMap| async move {
+    let app = Router::new().fallback(any(|mut request: axum::extract::Request| async move {
+        let headers = request.headers().clone();
+        if let Some(key) = headers
+            .get("sec-websocket-key")
+            .filter(|_| {
+                headers
+                    .get("upgrade")
+                    .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+            })
+            .map(|key| websocket_accept(key.as_bytes()))
+        {
+            let upgrade = hyper::upgrade::on(&mut request);
+            tokio::spawn(async move {
+                let _ = upgrade.await;
+            });
+            return (
+                axum::http::StatusCode::SWITCHING_PROTOCOLS,
+                [
+                    ("upgrade", "websocket".to_owned()),
+                    ("connection", "Upgrade".to_owned()),
+                    ("sec-websocket-accept", key),
+                ],
+            )
+                .into_response();
+        }
         let mut lines: Vec<String> = headers
             .iter()
             .map(|(name, value)| {
@@ -252,7 +315,7 @@ async fn spawn_backend() -> u16 {
             })
             .collect();
         lines.sort();
-        lines.join("\n")
+        lines.join("\n").into_response()
     }));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
@@ -583,6 +646,7 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gateway_port = free_port().expect("a free port");
     let entry_port = free_port().expect("a free port");
+    let web_port = free_port().expect("a free port");
     let backend_port = spawn_backend().await;
 
     let gateway_config = dir.path().join("gateway.yaml");
@@ -609,7 +673,7 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
     )
     .expect("dynamic config should be written");
     let static_path = dir.path().join("traefik.yaml");
-    std::fs::write(&static_path, traefik_static(entry_port, &dynamic))
+    std::fs::write(&static_path, traefik_static(entry_port, web_port, &dynamic))
         .expect("static config should be written");
 
     let traefik = Command::new("traefik")
@@ -637,6 +701,7 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         .danger_accept_invalid_certs(true)
         .resolve(ALICE_HOST, loopback)
         .resolve(BOB_HOST, loopback)
+        .resolve(CONTROL_HOST, loopback)
         .build()
         .expect("client should build");
     wait_for(
@@ -868,6 +933,516 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         200,
         "the open path must still be reachable when asked for literally"
     );
+
+    // --- what the gate costs, per credential and per protocol -------------------------------
+    // RFC 0009's *Request cost* promises p99 under 5 ms for the gate's round trip and says this
+    // step tracks it. Two views, because they answer different questions:
+    //
+    // - **through Traefik**, each row interleaved with the same request to the same backend on a
+    //   route with no middleware, so the column that matters is the *difference* and whatever
+    //   else the runner is doing lands on both sides alike;
+    // - **straight at `/auth`**, the gateway's own service time with no router in front — the
+    //   only way to time a credential Traefik cannot carry from a loopback client (a pod's own
+    //   address) and to separate the gateway's share from the router's.
+    //
+    // The rows needing a *user* identity (session cookie, OIDC bearer) cannot be produced here —
+    // see the module comment — and are timed in-process by the binary's own `cost` tests.
+    let matrix = cost_matrix(
+        &tree,
+        &admin,
+        gateway_port,
+        web_port,
+        &alice_token,
+        &bob_token,
+    )
+    .await;
+    matrix.report();
+    let open = matrix
+        .row("anonymous, open rule", "HTTPS h1")
+        .expect("the open-rule row is always measured");
+    assert!(
+        open.added_p99() < LAG_BUDGET,
+        "the gate adds {:?} at p99 on the open rule, over RFC 0009's {LAG_BUDGET:?} budget — a \
+         latency regression in front of every workspace endpoint",
+        open.added_p99(),
+    );
+    let service_account = matrix
+        .row("service-account token, cached", "HTTPS h1")
+        .expect("the service-account row is always measured");
+    assert!(
+        service_account.added_p99() < LAG_BUDGET,
+        "a cached service-account token costs {:?} at p99 over the ungated route",
+        service_account.added_p99(),
+    );
+}
+
+/// One row of the cost matrix: a credential, a protocol, the statuses the gate answered with,
+/// and latencies sorted ascending — through the gate, and around it where a control route exists.
+struct CostRow {
+    case: &'static str,
+    protocol: &'static str,
+    statuses: BTreeMap<u16, usize>,
+    gated: Vec<Duration>,
+    control: Option<Vec<Duration>>,
+}
+
+fn percentile(sorted: &[Duration], pct: usize) -> Duration {
+    sorted[(sorted.len() - 1) * pct / 100]
+}
+
+fn ms(duration: Duration) -> String {
+    format!("{:.3}", duration.as_secs_f64() * 1e3)
+}
+
+impl CostRow {
+    /// What the gate adds at `pct`: the difference from the ungated route where there is one,
+    /// the whole service time where there is not (the `/auth` rows).
+    fn added(&self, pct: usize) -> Duration {
+        let gated = percentile(&self.gated, pct);
+        self.control.as_ref().map_or(gated, |control| {
+            gated.saturating_sub(percentile(control, pct))
+        })
+    }
+
+    fn added_p99(&self) -> Duration {
+        self.added(99)
+    }
+
+    fn status(&self) -> String {
+        self.statuses
+            .iter()
+            .map(|(status, count)| {
+                if self.statuses.len() == 1 {
+                    status.to_string()
+                } else {
+                    format!("{status}×{count}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+struct CostMatrix {
+    rows: Vec<CostRow>,
+}
+
+impl CostMatrix {
+    fn row(&self, case: &str, protocol: &str) -> Option<&CostRow> {
+        self.rows
+            .iter()
+            .find(|row| row.case == case && row.protocol == protocol)
+    }
+
+    /// On stderr always, and in the job summary when GitHub Actions provides one, so the numbers
+    /// are read on every run rather than only on the one that fails.
+    fn report(&self) {
+        // The profile is in the title because it changes the numbers tenfold: CI runs this suite
+        // against a debug build, where the margin to the budget is the point, and `--release`
+        // gives the figures a production gateway would show.
+        let profile = if cfg!(debug_assertions) {
+            "debug build"
+        } else {
+            "release build"
+        };
+        let mut table = format!(
+            "### endpoint-auth cost, per credential and protocol (ms, {profile})\n\n\
+             | credential | path | status | gated p50 | gated p99 | ungated p50 | ungated p99 \
+             | added p50 | added p99 |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+        );
+        for row in &self.rows {
+            let (control50, control99) = row.control.as_ref().map_or_else(
+                || ("—".to_owned(), "—".to_owned()),
+                |control| (ms(percentile(control, 50)), ms(percentile(control, 99))),
+            );
+            table.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {control50} | {control99} | {} | {} |\n",
+                row.case,
+                row.protocol,
+                row.status(),
+                ms(percentile(&row.gated, 50)),
+                ms(percentile(&row.gated, 99)),
+                ms(row.added(50)),
+                ms(row.added(99)),
+            ));
+        }
+        table.push_str(&format!(
+            "\n{LAG_SAMPLES} requests per warm row, {COLD_SAMPLES} per first-use row. \"added\" is \
+             gated minus ungated through Traefik, and the whole service time on the `/auth` rows. \
+             Budget: p99 added under {} ms (RFC 0009, *Request cost*).\n",
+            LAG_BUDGET.as_millis()
+        ));
+        eprintln!("{table}");
+        if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {
+            use std::io::Write as _;
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary) {
+                let _ = file.write_all(table.as_bytes());
+            }
+        }
+    }
+}
+
+async fn timed(request: reqwest::RequestBuilder) -> (u16, Duration) {
+    let start = Instant::now();
+    let response = request
+        .send()
+        .await
+        .expect("the request should be answered");
+    let status = response.status().as_u16();
+    // The body is part of the answer a caller waits for; reading it also returns the connection
+    // to the pool, so the next request reuses it the way a browser would.
+    let _ = response.bytes().await;
+    (status, start.elapsed())
+}
+
+/// One row: `warmup` unrecorded rounds, then `samples` recorded ones, each gated request
+/// followed by the same request on the control route when there is one. `gated` is given the
+/// round's index, which is how a first-use row hands every request a credential of its own.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a row is these seven facts; a struct for them would be a struct used once"
+)]
+async fn series(
+    case: &'static str,
+    protocol: &'static str,
+    expected: u16,
+    warmup: usize,
+    samples: usize,
+    gated: &dyn Fn(usize) -> reqwest::RequestBuilder,
+    control: Option<&dyn Fn() -> reqwest::RequestBuilder>,
+) -> CostRow {
+    for round in 0..warmup {
+        timed(gated(round)).await;
+        if let Some(control) = control {
+            timed(control()).await;
+        }
+    }
+    let mut statuses = BTreeMap::new();
+    let mut times = Vec::with_capacity(samples);
+    let mut control_times = control.map(|_| Vec::with_capacity(samples));
+    for round in 0..samples {
+        let (status, elapsed) = timed(gated(warmup + round)).await;
+        *statuses.entry(status).or_insert(0) += 1;
+        times.push(elapsed);
+        if let (Some(control), Some(control_times)) = (control, control_times.as_mut()) {
+            let (status, elapsed) = timed(control()).await;
+            assert!(
+                status < 400,
+                "{case} over {protocol}: the ungated control answered {status}, so its time is \
+                 not a baseline"
+            );
+            control_times.push(elapsed);
+        }
+    }
+    times.sort_unstable();
+    if let Some(control_times) = control_times.as_mut() {
+        control_times.sort_unstable();
+    }
+    let row = CostRow {
+        case,
+        protocol,
+        statuses,
+        gated: times,
+        control: control_times,
+    };
+    assert_eq!(
+        row.statuses.keys().copied().collect::<Vec<_>>(),
+        vec![expected],
+        "{case} over {protocol}: the gate should answer {expected} every time, answered {}",
+        row.status()
+    );
+    row
+}
+
+/// A token the apiserver issues for `name` in `namespace` — a new one on every call, so the
+/// gateway has never seen it and must ask for a `TokenReview`.
+async fn fresh_token(client: kube::Client, namespace: &str, name: &str) -> String {
+    let accounts: Api<ServiceAccount> = Api::namespaced(client, namespace);
+    let request = serde_json::json!({
+        "apiVersion": "authentication.k8s.io/v1",
+        "kind": "TokenRequest",
+        "spec": { "audiences": ["https://kubernetes.default.svc"], "expirationSeconds": 3600 }
+    });
+    accounts
+        .create_subresource::<serde_json::Value, serde_json::Value>(
+            "token",
+            name,
+            &PostParams::default(),
+            &request,
+        )
+        .await
+        .expect("a token should be issued")
+        .pointer("/status/token")
+        .and_then(serde_json::Value::as_str)
+        .expect("the token request should carry a token")
+        .to_owned()
+}
+
+/// A token shaped like this cluster's service-account tokens — same issuer, the Kubernetes claim,
+/// an expiry in the future — and signed by nobody. It passes every free check, so each fresh one
+/// costs the gateway a `TokenReview` until its limits refuse to ask: the flood a caller can aim at
+/// the apiserver through the gate.
+fn forged_token(like: &str, nonce: usize) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let issuer = like
+        .split('.')
+        .nth(1)
+        .and_then(|payload| b64.decode(payload).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|claims| claims.get("iss").cloned())
+        .expect("a real service-account token names its issuer");
+    let header = b64.encode(br#"{"alg":"RS256","kid":"forged"}"#);
+    let payload = b64.encode(
+        serde_json::json!({
+            "iss": issuer,
+            "sub": "system:serviceaccount:user-alice:workspace",
+            "aud": ["https://kubernetes.default.svc"],
+            "exp": 4_102_444_800_u64,
+            "jti": format!("forged-{nonce}"),
+            "kubernetes.io": { "namespace": "user-alice", "serviceaccount": { "name": "workspace" } },
+        })
+        .to_string(),
+    );
+    format!("{header}.{payload}.{}", b64.encode(b"not-a-signature"))
+}
+
+/// Every row of the matrix. Statuses are asserted as well as timed: a fast `500` is not a fast
+/// gate, and a row that silently changed answer would be timing something else.
+async fn cost_matrix(
+    tree: &Tree,
+    admin: &kube::Client,
+    gateway_port: u16,
+    web_port: u16,
+    alice_token: &str,
+    bob_token: &str,
+) -> CostMatrix {
+    let loopback: std::net::SocketAddr = format!("127.0.0.1:{}", tree.entry)
+        .parse()
+        .expect("a loopback address");
+    let build = |builder: reqwest::ClientBuilder| {
+        builder
+            .danger_accept_invalid_certs(true)
+            .resolve(ALICE_HOST, loopback)
+            .resolve(CONTROL_HOST, loopback)
+            .build()
+            .expect("client should build")
+    };
+    let h1 = build(reqwest::Client::builder().http1_only());
+    let h2 = build(reqwest::Client::builder().http2_prior_knowledge());
+    // A WebSocket handshake ends its connection's life as HTTP, so nothing is pooled.
+    let ws = build(
+        reqwest::Client::builder()
+            .http1_only()
+            .pool_max_idle_per_host(0),
+    );
+    let plain = reqwest::Client::builder()
+        .http1_only()
+        .build()
+        .expect("client should build");
+    let entry = tree.entry;
+    let https = |client: &reqwest::Client, host: &str, path: &str| {
+        client.get(format!("https://{host}:{entry}{path}"))
+    };
+    let bearer = |token: &str| format!("Bearer {token}");
+    let mut rows = Vec::new();
+
+    // --- through Traefik, each request next to the same one on an ungated route --------------
+    for (protocol, client) in [("HTTPS h1", &h1), ("HTTPS h2", &h2)] {
+        rows.push(
+            series(
+                "anonymous, open rule",
+                protocol,
+                200,
+                30,
+                LAG_SAMPLES,
+                &|_| https(client, ALICE_HOST, "/healthz"),
+                Some(&|| https(client, CONTROL_HOST, "/healthz")),
+            )
+            .await,
+        );
+        rows.push(
+            series(
+                "service-account token, cached",
+                protocol,
+                200,
+                30,
+                LAG_SAMPLES,
+                &|_| https(client, ALICE_HOST, "/api").header("authorization", bearer(alice_token)),
+                Some(&|| {
+                    https(client, CONTROL_HOST, "/api").header("authorization", bearer(alice_token))
+                }),
+            )
+            .await,
+        );
+    }
+    rows.push(
+        series(
+            "anonymous, challenged",
+            "HTTPS h1",
+            401,
+            30,
+            LAG_SAMPLES,
+            &|_| https(&h1, ALICE_HOST, "/api").header("accept", "application/json"),
+            Some(&|| https(&h1, CONTROL_HOST, "/api").header("accept", "application/json")),
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "another workspace's token, denied",
+            "HTTPS h1",
+            403,
+            30,
+            LAG_SAMPLES,
+            &|_| https(&h1, ALICE_HOST, "/api").header("authorization", bearer(bob_token)),
+            Some(&|| https(&h1, CONTROL_HOST, "/api").header("authorization", bearer(bob_token))),
+        )
+        .await,
+    );
+    let handshake = |client: &reqwest::Client, host: &str| {
+        https(client, host, "/ws")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("authorization", bearer(alice_token))
+    };
+    rows.push(
+        series(
+            "service-account token, cached",
+            "WebSocket handshake",
+            101,
+            10,
+            LAG_SAMPLES,
+            &|_| handshake(&ws, ALICE_HOST),
+            Some(&|| handshake(&ws, CONTROL_HOST)),
+        )
+        .await,
+    );
+    let web = |host: &str| {
+        plain
+            .get(format!("http://127.0.0.1:{web_port}/healthz"))
+            .header("host", host.to_owned())
+    };
+    rows.push(
+        series(
+            "anonymous, open rule",
+            "plain HTTP (refused)",
+            421,
+            30,
+            LAG_SAMPLES,
+            &|_| web(ALICE_HOST),
+            Some(&|| web(CONTROL_HOST)),
+        )
+        .await,
+    );
+
+    // --- straight at /auth: the gateway's own service time --------------------------------------
+    let direct = reqwest::Client::builder()
+        .http1_only()
+        .build()
+        .expect("client should build");
+    let auth = |path: &str| {
+        direct
+            .get(format!("http://127.0.0.1:{gateway_port}/auth"))
+            .header("x-forwarded-host", ALICE_HOST)
+            .header("x-forwarded-uri", path.to_owned())
+            .header("x-forwarded-method", "GET")
+            .header("x-forwarded-proto", "https")
+    };
+    rows.push(
+        series(
+            "anonymous, open rule",
+            "/auth direct",
+            200,
+            30,
+            LAG_SAMPLES,
+            &|_| auth("/healthz"),
+            None,
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "service-account token, cached",
+            "/auth direct",
+            200,
+            30,
+            LAG_SAMPLES,
+            &|_| auth("/api").header("authorization", bearer(alice_token)),
+            None,
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "pod's own address",
+            "/auth direct",
+            200,
+            30,
+            LAG_SAMPLES,
+            &|_| auth("/api").header("x-real-ip", ALICE_POD_IP),
+            None,
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "anonymous, challenged",
+            "/auth direct",
+            401,
+            30,
+            LAG_SAMPLES,
+            &|_| auth("/api").header("accept", "application/json"),
+            None,
+        )
+        .await,
+    );
+    let mut fresh = Vec::with_capacity(COLD_SAMPLES);
+    for _ in 0..COLD_SAMPLES {
+        fresh.push(fresh_token(admin.clone(), "user-alice", "workspace").await);
+    }
+    rows.push(
+        series(
+            "service-account token, first use",
+            "/auth direct",
+            200,
+            0,
+            COLD_SAMPLES,
+            &|round| auth("/api").header("authorization", bearer(&fresh[round])),
+            None,
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "forged service-account token, fresh each",
+            "/auth direct",
+            401,
+            0,
+            COLD_SAMPLES,
+            &|round| {
+                auth("/api").header("authorization", bearer(&forged_token(alice_token, round)))
+            },
+            None,
+        )
+        .await,
+    );
+    rows.push(
+        series(
+            "opaque bearer, fresh each",
+            "/auth direct",
+            401,
+            0,
+            COLD_SAMPLES,
+            &|round| auth("/api").header("authorization", bearer(&format!("opaque-{round}"))),
+            None,
+        )
+        .await,
+    );
+    CostMatrix { rows }
 }
 
 /// One request with the path exactly as written, and nothing normalising it on the way out.

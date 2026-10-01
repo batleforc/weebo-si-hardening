@@ -51,6 +51,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] 
 # RFC 0009's dialect conformance suite, behind the `conformance` feature: it needs a real
 # apiserver for the gateway's own informers, and a real Traefik in front of it.
 weebo-si-envtest-support = { version = "0.1.0", path = "../../crates/weebo-si-envtest-support" }
+# The cost matrix times the gate over HTTP/2 as well as HTTP/1.1; the gateway itself never needs
+# an HTTP/2 client, so the feature stays out of the binary.
+reqwest = { workspace = true, features = ["http2"] }
 
 [features]
 # The dialect conformance suite — a real Traefik and a real kube-apiserver, neither of which a

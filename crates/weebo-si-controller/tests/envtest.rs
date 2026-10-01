@@ -1046,6 +1046,80 @@ async fn a_dry_run_reports_what_it_would_create_and_creates_nothing() {
     );
 }
 
+/// Two people asking for one username: the first object keeps the login, the second writes
+/// nothing and is `Degraded` — whichever of the two the loop happens to reconcile first.
+#[tokio::test]
+async fn a_second_person_claiming_a_taken_username_writes_nothing() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_identity_crds(client.clone(), &[AUTHENTIK_USER_CRD]).await;
+
+    let users: Api<WeeboSiUser> = Api::all(client.clone());
+    let mut created = Vec::new();
+    for name in ["ivan-one", "ivan-two"] {
+        let value = serde_json::json!({
+            "apiVersion": "hardening.weebo.io/v1alpha1",
+            "kind": "WeeboSiUser",
+            "metadata": { "name": name },
+            "spec": { "username": "ivan", "email": "ivan@weebo.io", "authentik": { "mode": "Ensure" } },
+        });
+        let user = users
+            .create(
+                &PostParams::default(),
+                &serde_json::from_value(value).expect("the user should deserialize"),
+            )
+            .await
+            .expect("the user should be accepted by the real schema");
+        created.push(Arc::new(user));
+    }
+
+    // The duplicate first: holding a username is decided by who claimed it, not by who the loop
+    // reaches first. Created in the same second, the two tie and the lower name holds it.
+    for user in created.iter().rev() {
+        reconcile_user(
+            Arc::clone(user),
+            identity_ctx(client.clone(), FeatureMode::Enforce),
+        )
+        .await
+        .expect("the pass should complete");
+    }
+
+    let accounts = authentik_users(client.clone());
+    accounts
+        .get("ivan-one")
+        .await
+        .expect("the first claimant's AuthentikUser should exist");
+    assert!(
+        accounts
+            .get_opt("ivan-two")
+            .await
+            .expect("reading should succeed")
+            .is_none(),
+        "the second claimant must write nothing"
+    );
+
+    let status = users
+        .get_status("ivan-two")
+        .await
+        .expect("status should be readable")
+        .status
+        .expect("status should have been written");
+    let authentik = status.authentik.expect("the authentik half should report");
+    assert_eq!(authentik.state, TargetState::Conflict);
+    assert_eq!(
+        authentik.message,
+        "username ivan is already claimed by WeeboSiUser ivan-one"
+    );
+    assert!(
+        status
+            .conditions
+            .iter()
+            .any(|condition| condition.type_ == "Degraded" && condition.status == "True"),
+        "{:?}",
+        status.conditions
+    );
+}
+
 /// An object somebody else made is referenced, never written — RFC 0011's `Adopted`.
 #[tokio::test]
 async fn an_object_owned_by_somebody_else_is_adopted_and_left_alone() {

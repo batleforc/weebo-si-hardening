@@ -57,7 +57,7 @@ tasks:
       # `cargo test --workspace --all-features` stay green on a machine with neither — but a
       # suite that only ever skips is a suite nobody runs, so this task exists to run it on
       # purpose.
-      - cargo test -p endpoint-gateway --features conformance --test conformance -- --test-threads=1
+      - cargo test -p endpoint-gateway --features conformance --test conformance -- --test-threads=1 --nocapture
 
   clean:
     desc: "Remove the downloaded envtest binaries"

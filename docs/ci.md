@@ -63,6 +63,24 @@ rule, and Traefik by the same check written into the suite. It is the only place
 somebody else's proxy, and it is there because two of RFC 0009's security
 properties are claims about what Traefik does rather than about what we do.
 
+**The conformance suite also measures what the gate costs**, per credential and
+per protocol. Its last step times each row through Traefik next to the same
+request on a route with no middleware — anonymous on an open rule, a cached
+service-account token, a challenge, a denial, over HTTP/1.1, HTTP/2, a WebSocket
+handshake and plain HTTP — and times `/auth` directly for what Traefik cannot
+carry from a loopback client: a pod's own address, a service-account token on
+first use (one `TokenReview`), and fresh forged or opaque bearers. It fails if
+the gate adds more than RFC 0009's 5 ms at p99 on the open rule or with a cached
+service-account token, and the full table lands in the job summary of every
+`envtest` run. User identities (session cookie, OIDC bearer) need a sign-in this
+suite cannot perform; the binary's own `cost` test times them in-process, step by
+step (`cargo test --release -p endpoint-gateway --bin endpoint-gateway cost --
+--ignored --nocapture`). All of it is loopback: it catches regressions in the
+gateway's path, not the in-cluster hop a real controller pays on top. CI runs
+the matrix against a debug build, about ten times slower than release — the
+table's title says which — so read CI's numbers as a margin to the budget and
+`--release` locally for the figures a production gateway shows.
+
 **The daily schedules are the point, not padding.** A CVE disclosed against a
 base image or a dependency *after* the last commit has to trip something, and a
 workflow that only fires on push never will.

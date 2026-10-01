@@ -80,6 +80,45 @@ pub fn decide(desired: &DesiredObject, observation: &Observation, owner_uid: &st
     }
 }
 
+/// One `WeeboSiUser` as the username claim sees it — the four facts that decide who holds a
+/// username, and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Claimant<'a> {
+    /// `metadata.name`, for the message and as the tie-break.
+    pub name: &'a str,
+    /// `metadata.uid` — how the person is told apart from everybody else, never by name.
+    pub uid: &'a str,
+    /// `spec.username`.
+    pub username: &'a str,
+    /// `metadata.creationTimestamp`, in seconds. `None` sorts last: an object the apiserver has
+    /// not stamped yet has not claimed anything before anybody.
+    pub created: Option<i64>,
+}
+
+impl Claimant<'_> {
+    fn order(&self) -> (i64, &str) {
+        (self.created.unwrap_or(i64::MAX), self.name)
+    }
+}
+
+/// The person who already holds `me`'s username, if somebody does.
+///
+/// Two `WeeboSiUser` objects naming one username are two people asking for one login: in
+/// Authentik that is two accounts one of which the provider refuses or merges, and in Che two
+/// people writing one `<username>-che` namespace. The first to claim it keeps it — the oldest
+/// object, then the lowest name — so a duplicate added later never takes a working login away
+/// from the person who had it. Compared without case, because the identity providers this feeds
+/// treat `Ivan` and `ivan` as one login.
+pub fn username_holder<'a>(me: &Claimant<'_>, everybody: &[Claimant<'a>]) -> Option<Claimant<'a>> {
+    everybody
+        .iter()
+        .filter(|other| other.uid != me.uid)
+        .filter(|other| other.username.eq_ignore_ascii_case(me.username))
+        .filter(|other| other.order() < me.order())
+        .min_by(|left, right| left.order().cmp(&right.order()))
+        .copied()
+}
+
 /// Observe, decide, write when asked to, and report — one object, one pass.
 ///
 /// `enforce` is the feature's mode with `Off` already handled by the caller: `false` is
@@ -324,6 +363,44 @@ mod tests {
             spec: serde_json::json!({"username": "max"}),
         };
         assert_eq!(decide(&desired(), &observation, "uid-1"), Action::Conflict);
+    }
+
+    fn claimant<'a>(name: &'a str, username: &'a str, created: Option<i64>) -> Claimant<'a> {
+        Claimant {
+            name,
+            uid: name,
+            username,
+            created,
+        }
+    }
+
+    #[test]
+    fn the_first_to_claim_a_username_keeps_it() {
+        let one = claimant("ivan-one", "ivan", Some(100));
+        let two = claimant("ivan-two", "ivan", Some(200));
+        let everybody = [one, two];
+        assert_eq!(username_holder(&one, &everybody), None);
+        assert_eq!(username_holder(&two, &everybody), Some(one));
+    }
+
+    #[test]
+    fn a_username_claim_ignores_case_and_breaks_ties_by_name() {
+        let upper = claimant("b-ivan", "Ivan", Some(100));
+        let lower = claimant("a-ivan", "ivan", Some(100));
+        let everybody = [upper, lower];
+        assert_eq!(username_holder(&upper, &everybody), Some(lower));
+        assert_eq!(username_holder(&lower, &everybody), None);
+    }
+
+    #[test]
+    fn an_unstamped_object_holds_nothing_and_distinct_usernames_never_clash() {
+        let stamped = claimant("ivan-one", "ivan", Some(100));
+        let unstamped = claimant("ivan-two", "ivan", None);
+        let other = claimant("judy", "judy", Some(1));
+        let everybody = [stamped, unstamped, other];
+        assert_eq!(username_holder(&unstamped, &everybody), Some(stamped));
+        assert_eq!(username_holder(&stamped, &everybody), None);
+        assert_eq!(username_holder(&other, &everybody), None);
     }
 
     #[test]

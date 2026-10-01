@@ -366,45 +366,49 @@ fn dry_run_says_what_it_would_create_and_creates_nothing() {
 }
 
 #[test]
-fn a_second_person_claiming_a_taken_account_is_in_conflict() {
+fn a_second_person_claiming_a_taken_username_is_in_conflict() {
     set_features(json!({ "identity": identity("Enforce") }));
     let _one = user(
         "ivan-one",
-        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure", "name": "ivan" } }),
+        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure" } }),
     );
     let _two = user(
         "ivan-two",
-        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure", "name": "ivan" } }),
+        json!({ "username": "ivan", "email": "ivan@weebo.si", "authentik": { "mode": "Ensure" } }),
     );
-    // The target is the AuthentikUser *object*, named after the WeeboSiUser unless
-    // `authentik.name` says otherwise — so both name it, or there are two targets and no claim to
-    // contest. Whichever is reconciled first creates it and keeps it; the other finds it owned by
-    // a different WeeboSiUser and is refused (docs/weebosiuser.md: nobody's object is taken
-    // over). Which of the two wins is the reconcile order's to decide, so the test does not.
-    let states = wait_until("one owner and one conflict", RECONCILE, || {
-        let states = ["ivan-one", "ivan-two"].map(|name| {
-            get(&["weebosiuser", name])
-                .map(|object| text(&object, "/status/authentik/state"))
-                .unwrap_or_default()
-        });
-        let mut sorted = states.clone();
-        sorted.sort();
-        if sorted == ["Conflict", "Created"] {
-            Ok(states)
-        } else {
-            Err(format!("{states:?}"))
-        }
-    });
-    let loser = if states[0] == "Conflict" {
-        "ivan-one"
-    } else {
-        "ivan-two"
-    };
-    let object = get(&["weebosiuser", loser]).unwrap();
+    // Two AuthentikUser objects would not collide — they are named after each WeeboSiUser — but
+    // the one login they ask for would. The first to claim the username keeps it: ivan-one is
+    // created first, and on a tie within the second the lower name holds it anyway.
+    wait_until(
+        "ivan-one to hold ivan and ivan-two to be refused",
+        RECONCILE,
+        || {
+            let states = ["ivan-one", "ivan-two"].map(|name| {
+                get(&["weebosiuser", name])
+                    .map(|object| text(&object, "/status/authentik/state"))
+                    .unwrap_or_default()
+            });
+            if states == ["Created", "Conflict"] {
+                Ok(())
+            } else {
+                Err(format!("{states:?}"))
+            }
+        },
+    );
+    let object = get(&["weebosiuser", "ivan-two"]).unwrap();
     assert_eq!(
         condition(&object, "Degraded").map(|c| text(&c, "/status")),
         Some("True".to_string()),
         "the person in conflict must be Degraded: {object}"
+    );
+    assert!(
+        text(&object, "/status/authentik/message")
+            .contains("already claimed by WeeboSiUser ivan-one"),
+        "{object}"
+    );
+    assert!(
+        get(&["authentikuser", "ivan-two"]).is_none(),
+        "the second claimant must write nothing"
     );
     let _ = kubectl(&["get", "weebosiusers"]);
 }

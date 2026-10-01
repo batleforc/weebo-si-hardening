@@ -203,7 +203,7 @@ are answers rather than failures, and both need somebody:
 | `Created` | This operator created it and owns it. | Nothing. Deleting the person deletes it. |
 | `Adopted` | It already existed, owned by somebody else. Referenced, **never written**. | Nothing, or take ownership deliberately by deleting the foreign object and letting the loop recreate it. |
 | `Absent` | The kind is not served by this cluster. | Install the Authentik operator or Argo CD, or set that half to `Off`. |
-| `Conflict` | Another `WeeboSiUser` owns the same target. | Two people claim one object; decide which one keeps it and rename the other's target. |
+| `Conflict` | Another `WeeboSiUser` owns the same target, or an older one already holds the same `username`. | Two people claim one object or one login; the message names the holder. Decide which one keeps it and rename the other's username or target. |
 
 ## Rollback
 

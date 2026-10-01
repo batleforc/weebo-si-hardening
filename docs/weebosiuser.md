@@ -243,6 +243,15 @@ half, it looks the target object up by name and decides:
 | An object with no `WeeboSiUser` owner | `Adopted` | **Never.** Referenced — an object an admin made is not this loop's to take over. |
 | An object owned by a *different* `WeeboSiUser` | `Conflict` | Never. Two people claim one target; neither wins. |
 
+**A username is held by one person.** Before either half is looked at, the loop checks whether
+an older `WeeboSiUser` — earliest `creationTimestamp`, then lowest name, compared without case —
+already names the same `spec.username`. If one does, both halves report `Conflict` with
+`username <u> is already claimed by WeeboSiUser <name>`, the person is `Degraded`, and nothing is
+written. The target objects are named after each `WeeboSiUser` and would not collide; the login
+they ask for would, in Authentik and in `<username>-che`, where nothing reports it back. The
+holder is never disturbed by a duplicate added later, and the duplicate is picked up within one
+five-minute pass once the holder is deleted or renamed.
+
 Ownership is compared by `uid`, never by name, so a person deleted and recreated under the same
 name does not inherit the first one's objects — the old ones are garbage-collected and new ones
 created. The operator holds no `delete` verb on either kind.

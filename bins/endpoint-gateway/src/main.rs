@@ -12,6 +12,8 @@
 
 mod adapters;
 mod config;
+#[cfg(test)]
+mod cost;
 mod http;
 mod outbound;
 mod probe;

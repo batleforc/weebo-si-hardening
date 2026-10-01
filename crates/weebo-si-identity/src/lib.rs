@@ -15,7 +15,7 @@
 pub mod application;
 pub mod port;
 
-pub use application::{Action, decide, reconcile_target};
+pub use application::{Action, Claimant, decide, reconcile_target, username_holder};
 pub use port::{DesiredObject, ObjectOwner, Observation, ProvisionObserver, Provisioner};
 
 #[cfg(any(test, feature = "testing"))]

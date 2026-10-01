@@ -87,19 +87,19 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 /// The four inputs, from headers or from the query, never from both.
-struct Forwarded {
+pub(crate) struct Forwarded {
     host: String,
     uri: String,
     method: String,
     proto: String,
 }
 
-enum ForwardedError {
+pub(crate) enum ForwardedError {
     Missing,
     Mixed,
 }
 
-fn forwarded(
+pub(crate) fn forwarded(
     headers: &HeaderMap,
     query: &HashMap<String, String>,
 ) -> Result<Forwarded, ForwardedError> {

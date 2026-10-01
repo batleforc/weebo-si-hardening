@@ -151,7 +151,8 @@ pub enum TargetState {
     Adopted,
     /// The target CRD is not installed, or the reference names nothing.
     Absent,
-    /// Another `WeeboSiUser` claims the same target.
+    /// Another `WeeboSiUser` claims the same target, or an older one already holds the same
+    /// `username`.
     Conflict,
 }
 
