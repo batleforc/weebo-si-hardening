@@ -327,6 +327,33 @@ pub fn metric_sum(component: &str, name: &str, labels: &[(&str, &str)]) -> f64 {
         .sum()
 }
 
+/// The sum of `name{labels}` across every endpoint-gateway replica, read from each pod's metrics
+/// port (the chart's `metrics.port`, 9090) through the apiserver's pod proxy.
+pub fn gateway_metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    get(&[
+        "pods",
+        "-n",
+        OPERATOR_NAMESPACE,
+        "-l",
+        "app.kubernetes.io/name=endpoint-gateway",
+        "--field-selector=status.phase=Running",
+    ])
+    .and_then(|list| list.get("items").and_then(Value::as_array).cloned())
+    .unwrap_or_default()
+    .iter()
+    .map(|pod| text(pod, "/metadata/name"))
+    .filter_map(|pod| {
+        kubectl(&[
+            "get",
+            "--raw",
+            &format!("/api/v1/namespaces/{OPERATOR_NAMESPACE}/pods/http:{pod}:9090/proxy/metrics"),
+        ])
+        .ok()
+        .and_then(|body| sample(&body, name, labels))
+    })
+    .sum()
+}
+
 /// Parse one sample out of a Prometheus text exposition.
 pub fn sample(body: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
     body.lines()

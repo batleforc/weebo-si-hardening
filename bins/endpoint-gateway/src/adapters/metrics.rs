@@ -28,6 +28,7 @@ pub struct GatewayMetrics {
     bearer_verifications_throttled: prometheus::IntCounter,
     log_lines_suppressed: prometheus::IntCounter,
     token_reviews_avoided: prometheus::IntCounter,
+    connections_accepted: prometheus::IntCounter,
     /// Serialises [`Self::token_reviews_throttled`]'s read-then-add, which two overlapping
     /// scrapes would otherwise both apply in full. Shared by every clone, as the counter is.
     token_reviews_throttled_sync: std::sync::Arc<std::sync::Mutex<()>>,
@@ -125,6 +126,11 @@ impl GatewayMetrics {
             "weebo_si_endpoint_auth_bearer_verifications_throttled_total",
             "Bearer signatures not verified because a limit refused them (the bearer failed closed)",
         )?;
+        let connections_accepted = prometheus::IntCounter::new(
+            "weebo_si_endpoint_auth_connections_accepted_total",
+            "Connections accepted on the main listener — rising with the request rate means the \
+             ingress controller is not reusing them",
+        )?;
         let token_reviews_avoided = prometheus::IntCounter::new(
             "weebo_si_endpoint_auth_token_reviews_avoided_total",
             "Service-account tokens refused on their signature alone, with no TokenReview",
@@ -164,6 +170,7 @@ impl GatewayMetrics {
             Box::new(bearer_verifications_throttled.clone()),
             Box::new(log_lines_suppressed.clone()),
             Box::new(token_reviews_avoided.clone()),
+            Box::new(connections_accepted.clone()),
             Box::new(policy_compile_seconds.clone()),
             Box::new(observed_only.clone()),
         ] {
@@ -189,6 +196,7 @@ impl GatewayMetrics {
             bearer_verifications_throttled,
             log_lines_suppressed,
             token_reviews_avoided,
+            connections_accepted,
             token_reviews_throttled_sync: std::sync::Arc::default(),
             policy_compile_seconds,
             observed_only,
@@ -291,6 +299,11 @@ impl GatewayMetrics {
     }
 
     /// Bring the throttled-review counter up to the reviewer's own running total.
+    /// The accepted-connections counter, for the listener to increment.
+    pub fn connections_accepted(&self) -> prometheus::IntCounter {
+        self.connections_accepted.clone()
+    }
+
     /// One deny or challenge line not written.
     pub fn log_line_suppressed(&self) {
         self.log_lines_suppressed.inc();

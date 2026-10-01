@@ -333,6 +333,10 @@ fn match_template(template: &str, stem: &str) -> Option<String> {
     if rest.is_empty() { user } else { None }
 }
 
+/// Idle connections each ingress-nginx worker keeps to the gateway for auth subrequests — enough
+/// for a browser's six parallel asset requests on several hosts at once, and cheap to hold.
+pub const NGINX_AUTH_KEEPALIVE: &str = "32";
+
 /// Where the gateway is, and how the routing object is told to consult it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -579,6 +583,17 @@ impl Dialect {
                 annotations.insert(
                     "nginx.ingress.kubernetes.io/auth-always-set-cookie".to_owned(),
                     "true".to_owned(),
+                );
+                // Connection reuse is part of RFC 0009's contract (*Where the milliseconds
+                // actually are*, rule 1), and ingress-nginx's default is the opposite: with
+                // `auth-keepalive` at `0`, every gated request opens a fresh connection to the
+                // gateway — a handshake where a round trip was promised, and a socket in
+                // TIME_WAIT per asset. It applies because nothing in `auth-url`'s *host* is a
+                // variable (the request travels in the query), which is the one condition
+                // ingress-nginx sets for it.
+                annotations.insert(
+                    "nginx.ingress.kubernetes.io/auth-keepalive".to_owned(),
+                    NGINX_AUTH_KEEPALIVE.to_owned(),
                 );
             }
             Self::HaproxyIngress => {
@@ -1289,6 +1304,11 @@ mod tests {
         }
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-response-headers"));
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-signin"));
+        // Without it ingress-nginx opens a fresh connection to the gateway per gated request.
+        assert_eq!(
+            annotations["nginx.ingress.kubernetes.io/auth-keepalive"],
+            NGINX_AUTH_KEEPALIVE
+        );
 
         // The sliding re-mint's cookie is forwarded only when the *application's* own answer was
         // `2xx` unless this is set — established against ingress-nginx v1.15.1 by the ground-truth

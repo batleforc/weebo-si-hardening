@@ -231,6 +231,7 @@ http:
           - X-Auth-Request-Email
         addAuthCookiesToResponse:
           - __Host-weebo-endpoint
+        maxResponseBodySize: 65536
 tls:
   certificates:
     - certFile: "{1}"
@@ -1046,6 +1047,8 @@ impl CostRow {
 
 struct CostMatrix {
     rows: Vec<CostRow>,
+    /// Connections Traefik opened to the gateway for one burst, by how the burst was sent.
+    connections: Vec<(String, f64)>,
 }
 
 impl CostMatrix {
@@ -1087,6 +1090,15 @@ impl CostMatrix {
                 ms(row.added(50)),
                 ms(row.added(99)),
             ));
+        }
+        if !self.connections.is_empty() {
+            table.push_str(&format!(
+                "\n| connections Traefik opened to the gateway for {BURST} gated requests | count |\n\
+                 | --- | ---: |\n"
+            ));
+            for (burst, count) in &self.connections {
+                table.push_str(&format!("| {burst} | {count} |\n"));
+            }
         }
         table.push_str(&format!(
             "\n{LAG_SAMPLES} requests per warm row, {COLD_SAMPLES} per first-use row. \"added\" is \
@@ -1652,7 +1664,62 @@ async fn cost_matrix(
             > 0.0,
         "a loop of refused requests must not be a log line per request"
     );
-    CostMatrix { rows }
+    // Connection reuse, RFC 0009's rule 1: the router keeps its connections to the gateway, so a
+    // burst costs a round trip per request rather than a handshake. Counted at the gateway's own
+    // listener, for a burst sent one at a time, as a browser does (six at once), and harder.
+    let mut connections = Vec::new();
+    for concurrency in [1, 6, 50] {
+        let opened = connections_for_burst(&h1, entry, &direct, gateway_port, concurrency).await;
+        connections.push((
+            if concurrency == 1 {
+                "one at a time".to_owned()
+            } else {
+                format!("{concurrency} at once")
+            },
+            opened,
+        ));
+    }
+    // Asserted where Traefik can keep its promise, reported where it cannot: `forwardAuth` uses
+    // Go's default transport, which keeps two idle connections per host and closes the rest, so
+    // a burst more than two wide re-dials for most of its requests — a property of Traefik with no
+    // setting to change it, recorded in docs/endpoint-auth-performance.md rather than asserted.
+    let sequential = connections[0].1;
+    assert!(
+        sequential <= 2.0,
+        "{BURST} gated requests sent one at a time opened {sequential} connections to the \
+         gateway — the router should be reusing one"
+    );
+    CostMatrix { rows, connections }
+}
+
+/// Gated requests in one connection-reuse burst — RFC 0009's page of two hundred assets.
+const BURST: usize = 200;
+
+/// How many connections the gateway accepted while [`BURST`] gated requests went through
+/// Traefik, `concurrency` at a time.
+async fn connections_for_burst(
+    client: &reqwest::Client,
+    entry: u16,
+    direct: &reqwest::Client,
+    gateway_port: u16,
+    concurrency: usize,
+) -> f64 {
+    use futures_util::StreamExt as _;
+
+    let counter = "weebo_si_endpoint_auth_connections_accepted_total";
+    let before = gateway_metric(direct, gateway_port, counter).await;
+    futures_util::stream::iter(0..BURST)
+        .for_each_concurrent(concurrency, |_| async move {
+            let response = client
+                .get(format!("https://{ALICE_HOST}:{entry}/healthz"))
+                .send()
+                .await
+                .expect("Traefik should answer");
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            let _ = response.bytes().await;
+        })
+        .await;
+    gateway_metric(direct, gateway_port, counter).await - before
 }
 
 /// One request with the path exactly as written, and nothing normalising it on the way out.

@@ -34,6 +34,10 @@ use weebo_si_crd::{
 };
 
 /// This feature's identifier, as the gate and the log lines name it.
+/// The largest auth response body Traefik will read from the gate, in bytes — two orders of
+/// magnitude above what the gate sends.
+const TRAEFIK_MAX_AUTH_BODY: u64 = 65_536;
+
 const FEATURE: &str = "endpoint-auth";
 
 /// How often the sweep re-examines an object it already agreed with — long, because every
@@ -303,7 +307,11 @@ pub async fn ensure_middleware(
                     // possible at all: without it a `Set-Cookie` on the gate's own `200` never
                     // reaches the browser, and an endpoint in continuous use would still expire
                     // under the person using it.
-                    "addAuthCookiesToResponse": ["__Host-weebo-endpoint"]
+                    "addAuthCookiesToResponse": ["__Host-weebo-endpoint"],
+                    // Traefik reads a non-2xx auth answer's body to return it, and without this
+                    // bound reads it whole — it warns as much on every middleware it loads. The
+                    // gate's own bodies (a sign-in page, a refusal) are a few hundred bytes.
+                    "maxResponseBodySize": TRAEFIK_MAX_AUTH_BODY
                 }
             }
         }),

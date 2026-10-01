@@ -679,6 +679,12 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
 
     // `ConnectInfo`, because the reverse-proxy shell decides whether to believe a client-address
     // header from the *connection* rather than from the header.
+    //
+    // Every accepted connection is counted: RFC 0009's *Where the milliseconds actually are*
+    // makes connection reuse part of the contract, and a count that climbs with the request rate
+    // is the controller re-dialling — a handshake per request where a round trip was promised.
+    let accepted = state.metrics.connections_accepted();
+    let listener = axum::serve::ListenerExt::tap_io(listener, move |_| accepted.inc());
     let served = serve_until(listener, http::router(state), stop_rx, DRAIN_TIMEOUT).await;
     if let Some(metrics_server) = metrics_server {
         metrics_server.abort();
@@ -783,12 +789,16 @@ async fn termination() {
 
 /// Serve `router` until `stop` turns true, then stop accepting and give in-flight requests up to
 /// `drain` to finish.
-async fn serve_until(
-    listener: tokio::net::TcpListener,
+async fn serve_until<L>(
+    listener: L,
     router: axum::Router,
     mut stop: tokio::sync::watch::Receiver<bool>,
     drain: Duration,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    L: axum::serve::Listener<Addr = SocketAddr>,
+    for<'a> SocketAddr: axum::extract::connect_info::Connected<axum::serve::IncomingStream<'a, L>>,
+{
     let mut stopped = stop.clone();
     let server = axum::serve(
         listener,

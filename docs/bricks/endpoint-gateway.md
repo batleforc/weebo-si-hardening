@@ -317,7 +317,15 @@ the controller), `weebo_si_endpoint_auth_identity_cache_total{kind,result}`,
 `weebo_si_endpoint_auth_token_reviews_throttled_total`,
 `weebo_si_endpoint_auth_bearer_verifications_throttled_total`,
 `weebo_si_endpoint_auth_log_lines_suppressed_total`,
+`weebo_si_endpoint_auth_connections_accepted_total`,
 `weebo_si_endpoint_auth_insecure_hosts`, `weebo_si_endpoint_auth_bypassed`.
+
+**Connections are meant to be reused.** `connections_accepted_total` rising with the request rate
+means the ingress controller re-dials for each auth request. On ingress-nginx the controller
+writes `nginx.ingress.kubernetes.io/auth-keepalive: "32"` on every gated `Ingress` — its default is
+`0`, a fresh connection per gated request. On Traefik, `forwardAuth` keeps two idle connections
+per gateway address and re-dials past that, with no setting to change it; the `Middleware` the
+controller writes bounds the auth body it will read (`maxResponseBodySize: 65536`).
 
 **The decision log is bounded.** Allows are one line when a session first reaches a host
 (`logging.first_allow_per_host`). Deny and challenge lines are limited to

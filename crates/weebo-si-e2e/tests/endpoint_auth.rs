@@ -20,7 +20,8 @@
 
 use weebo_si_e2e::{
     Cleanup, DOMAIN, Endpoint, Ingress, Namespace, OPERATOR_NAMESPACE, RECONCILE, Value, Workspace,
-    WorkspaceSpec, apply, get, json, kubectl, must, set_features, team, text, wait_until,
+    WorkspaceSpec, apply, gateway_metric_sum, get, json, kubectl, must, set_features, team, text,
+    wait_until,
 };
 
 fn endpoint_auth() -> Value {
@@ -40,7 +41,7 @@ fn endpoint_auth() -> Value {
         "hosts": {
             "suffix": format!(".{DOMAIN}"),
             "ownership": [{ "template": "{user}-{workspace}-{endpoint}" }],
-            "exclude": [DOMAIN, format!("auth.{DOMAIN}"), format!("sso.{DOMAIN}"), format!("eclipse-che.{DOMAIN}")],
+            "exclude": [DOMAIN, format!("auth.{DOMAIN}"), format!("sso.{DOMAIN}"), format!("eclipse-che.{DOMAIN}"), format!("control.{DOMAIN}")],
         },
         "catalog": [{ "key": "private", "delegation": [] }],
         "default": "private",
@@ -524,4 +525,148 @@ fn preauth_proxy_logs_in_once_injects_the_credential_and_renews_it_on_a_401() {
         "{logs}"
     );
     let _ = std::fs::remove_file(values);
+}
+
+/// RFC 0009's *Request cost*, in the cluster rather than on loopback: the same workspace reached
+/// through ingress-nginx with the gate and without it, interleaved, so the difference is the
+/// gate's in-cluster hop — the `auth-url` subrequest, the gateway's decision and the way back.
+/// And RFC 0009's rule 1, *connection reuse is part of the contract*: a burst of gated requests
+/// costs the gateway a handful of connections, not one per request, which on ingress-nginx is
+/// the `auth-keepalive` annotation the controller writes.
+#[test]
+fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
+    const SAMPLES: usize = 200;
+    let _team = setup();
+    let ns = Namespace::workspace("alice", "gate-cost", Some("payments"));
+    let served = serve(
+        &ns,
+        "cost",
+        json!({ "hardening.weebo.io/rules": "- { path: /healthz, match: exact, access: open }" }),
+    );
+
+    // The ungated control: an Ingress outside the webhook's scope, on a host the gate excludes,
+    // pointed at the same workspace `Service` through an ExternalName.
+    let backend = get(&[
+        "ingress",
+        "-n",
+        &ns.name,
+        "-l",
+        &format!(
+            "controller.devfile.io/devworkspace_id={}",
+            served.workspace.id()
+        ),
+    ])
+    .and_then(|list| {
+        list.pointer("/items/0/spec/rules/0/http/paths/0/backend/service")
+            .cloned()
+    })
+    .expect("the gated Ingress names its backend");
+    let (service, port) = (
+        text(&backend, "/name"),
+        backend
+            .pointer("/port/number")
+            .and_then(Value::as_u64)
+            .expect("the backend names a port number"),
+    );
+    let control_ns = format!("{}-control", ns.name);
+    let control_host = format!("control.{DOMAIN}");
+    apply(
+        &json!({
+            "apiVersion": "v1", "kind": "Namespace",
+            "metadata": { "name": control_ns, "labels": { "hardening.weebo.io/exclude": "true" } },
+        })
+        .to_string(),
+    );
+    let _control = Cleanup::new(&["namespace", &control_ns]);
+    apply(
+        &json!({
+            "apiVersion": "v1", "kind": "Service",
+            "metadata": { "name": "workspace", "namespace": control_ns },
+            "spec": {
+                "type": "ExternalName",
+                "externalName": format!("{service}.{}.svc.cluster.local", ns.name),
+                "ports": [{ "port": port }],
+            },
+        })
+        .to_string(),
+    );
+    apply(
+        &json!({
+            "apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
+            "metadata": { "name": "control", "namespace": control_ns },
+            "spec": {
+                "ingressClassName": "nginx",
+                "tls": [{ "hosts": [control_host] }],
+                "rules": [{ "host": control_host, "http": { "paths": [{
+                    "path": "/", "pathType": "Prefix",
+                    "backend": { "service": { "name": "workspace", "port": { "number": port } } },
+                }] } }],
+            },
+        })
+        .to_string(),
+    );
+
+    let ingress = Ingress::open();
+    wait_until("the ungated control route", RECONCILE, || {
+        let (code, _, _) = status(&ingress, &control_host, "/healthz", None);
+        if code == 200 {
+            Ok(())
+        } else {
+            Err(format!("{code}"))
+        }
+    });
+    let timed = |host: &str| {
+        let start = std::time::Instant::now();
+        let (code, _, _) = status(&ingress, host, "/healthz", None);
+        assert_eq!(code, 200, "{host}/healthz");
+        start.elapsed()
+    };
+    for _ in 0..20 {
+        timed(&served.host);
+        timed(&control_host);
+    }
+
+    let accepted = "weebo_si_endpoint_auth_connections_accepted_total";
+    let before = gateway_metric_sum(accepted, &[]);
+    let mut gated = Vec::with_capacity(SAMPLES);
+    let mut ungated = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        gated.push(timed(&served.host));
+        ungated.push(timed(&control_host));
+    }
+    let opened = gateway_metric_sum(accepted, &[]) - before;
+
+    gated.sort_unstable();
+    ungated.sort_unstable();
+    let at = |sorted: &[std::time::Duration], pct: usize| sorted[(sorted.len() - 1) * pct / 100];
+    let added = |pct: usize| at(&gated, pct).saturating_sub(at(&ungated, pct));
+    let report = format!(
+        "### endpoint-auth, in-cluster hop through ingress-nginx ({SAMPLES} requests per side)\n\n\
+         | | gated | ungated | added |\n| --- | --- | --- | --- |\n\
+         | p50 | {:?} | {:?} | {:?} |\n| p99 | {:?} | {:?} | {:?} |\n\n\
+         Connections the gateway accepted for {SAMPLES} gated requests: {opened}.\n",
+        at(&gated, 50),
+        at(&ungated, 50),
+        added(50),
+        at(&gated, 99),
+        at(&ungated, 99),
+        added(99),
+    );
+    eprintln!("{report}");
+    if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY")
+        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary)
+    {
+        let _ = std::io::Write::write_all(&mut file, report.as_bytes());
+    }
+
+    assert!(
+        added(50) < std::time::Duration::from_millis(5),
+        "the gate adds {:?} at p50 in the cluster — over RFC 0009's 5 ms budget",
+        added(50)
+    );
+    assert!(
+        opened <= 16.0,
+        "{SAMPLES} gated requests opened {opened} connections to the gateway — ingress-nginx is \
+         not keeping its auth connections (`nginx.ingress.kubernetes.io/auth-keepalive`)"
+    );
 }
