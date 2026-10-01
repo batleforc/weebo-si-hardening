@@ -124,15 +124,18 @@ pub(crate) async fn serve(
         &headers,
     );
 
-    let presented = presented_from(&state, &headers, peer);
+    let mut presented = presented_from(&state, &headers, peer);
     // The same `TokenReview` pre-step the `/auth` handler makes, for the same reason: the
     // decision may not do I/O, so the one call this mechanism needs happens above it.
-    state
+    if !state
         .prewarm_bearer(
             presented.bearer.as_deref(),
             Some(&state.limit_key(&headers, peer)),
         )
-        .await;
+        .await
+    {
+        presented.bearer = None;
+    }
 
     state.drop_identities_on_key_rotation();
     let authorized = state.gateway().authorize_resolved(&auth, &presented);

@@ -24,6 +24,26 @@ use crate::adapters::metrics::GatewayMetrics;
 use crate::adapters::oidc::{JwksVerifier, OidcClient};
 use crate::adapters::session::{Binding, SealedCodec};
 use crate::config::GatewayConfig;
+use crate::ratelimit::Rate;
+
+/// Bearer signature verifications per client key — what one caller may make the gateway check.
+///
+/// A person's token is verified once and then served from the cache until it expires, and a
+/// script reuses its token, so a legitimate client needs a handful a minute; this is far above
+/// that. What it stops is one caller minting a fresh token per request: past the burst, a fresh
+/// bearer from that client is not an identity until the bucket refills.
+pub const BEARER_VERIFY_PER_CLIENT: Rate = Rate {
+    burst: 20,
+    per_minute: 120,
+};
+
+/// Bearer signature verifications for every caller together — the ceiling on the CPU unique
+/// signed tokens can spend: at ~45 µs each (ES256 with `ring`), the refill rate is well under a
+/// percent of one core, and the burst a few milliseconds of work.
+pub const BEARER_VERIFY_GLOBAL: Rate = Rate {
+    burst: 500,
+    per_minute: 6_000,
+};
 
 /// Every bounded map this process keeps, built together so their sizes come from one place.
 pub struct Caches {
@@ -108,6 +128,14 @@ pub struct GatewayState {
     /// a surface*. `/auth` is exempt: it is the hot path, the ingress controller is its only
     /// caller, and the peer check of *Checking that assumption* is what protects it instead.
     pub login_limiter: crate::ratelimit::RateLimiter,
+    /// Deny and challenge lines per host and reason — `logging.deny_per_minute`.
+    pub deny_log_limiter: crate::ratelimit::RateLimiter,
+    /// Deny and challenge lines suppressed since the last one written, reported on that line.
+    pub suppressed_lines: std::sync::atomic::AtomicU64,
+    /// The limits in front of bearer signature verification — see [`BEARER_VERIFY_PER_CLIENT`].
+    pub verify_per_client: crate::ratelimit::RateLimiter,
+    /// See [`BEARER_VERIFY_GLOBAL`].
+    pub verify_global: crate::ratelimit::RateLimiter,
     /// `/oidc/backchannel-logout`'s own limiter — every call comes from the identity provider's
     /// egress address, so it cannot share the sign-in bucket.
     pub logout_limiter: crate::ratelimit::RateLimiter,
@@ -170,11 +198,46 @@ impl GatewayState {
     /// a request, it happens once per token rather than once per request, and it is here — in
     /// the handler, where a reader trips over it — rather than inside `decide()`, which may not
     /// do any.
-    pub async fn prewarm_bearer(&self, token: Option<&str>, address: Option<&str>) {
+    /// Whether a bearer that would cost a signature verification on this request may have one.
+    ///
+    /// Only a token that names this gateway's issuer and is not already cached is a
+    /// verification — every other bearer is resolved for free or by the service-account branch,
+    /// which has limits of its own. Those are the requests a caller can multiply by sending a
+    /// fresh token each time, and each costs tens of microseconds of signature arithmetic
+    /// whether the signature turns out good or not: the limit is in front of the cryptography
+    /// for the same reason the login surface's is.
+    fn may_verify_signature(&self, token: &str, client: &str, now: Timestamp) -> bool {
+        if self.verifier.rules().is_none()
+            || self
+                .bearer_cache
+                .get(&Fingerprint::of(token), now)
+                .is_some()
+            || crate::adapters::oidc::unverified_issuer(token).as_deref()
+                != Some(self.verifier.issuer())
+        {
+            return true;
+        }
+        let allowed = (client.is_empty() || self.verify_per_client.allow(client, now))
+            && self.verify_global.allow("*", now);
+        if !allowed {
+            self.metrics.bearer_verification_throttled();
+        }
+        allowed
+    }
+
+    /// Everything a bearer may cost before the decision, done here where a reader can see it.
+    ///
+    /// Returns whether the bearer may be used on this request at all: `false` when it would need a
+    /// signature verification and a verification limit refused one — the caller then decides as
+    /// if no bearer had been sent, which is failing closed for that credential and nothing else.
+    pub async fn prewarm_bearer(&self, token: Option<&str>, address: Option<&str>) -> bool {
         let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
-            return;
+            return true;
         };
         let now = self.now();
+        if !self.may_verify_signature(token, address.unwrap_or_default(), now) {
+            return false;
+        }
         // A token the reviewer already answered for is done: looked up first, because the shape
         // check below decodes the payload twice and parses it, and a workspace calling another
         // repeats the same token on every request.
@@ -185,7 +248,7 @@ impl GatewayState {
         )
         .is_some()
         {
-            return;
+            return true;
         }
         // Shape, claimed issuer and claimed expiry — all unverified, all free — decide whether a
         // `TokenReview` is worth asking for; the reviewer's own limits bound how many are.
@@ -202,16 +265,16 @@ impl GatewayState {
                     weebo_si_endpoint_auth::bearer::BearerResult::Unverifiable
                 },
             );
-            return;
+            return true;
         }
         // The second thing that genuinely needs an API call on this path, and it goes where the
         // first one does: above `decide()`, once per token, visible to a reader. A JWT never
         // reaches it — `is_opaque` is a header decode, not a round trip.
         let Some(introspector) = self.introspector.as_ref() else {
-            return;
+            return true;
         };
         if !Introspector::is_opaque(token) {
-            return;
+            return true;
         }
         if let Some(introspected) = introspector
             .prewarm(
@@ -226,6 +289,7 @@ impl GatewayState {
             self.metrics
                 .bearer(Introspector::shape(), introspected.result);
         }
+        true
     }
 
     /// What the per-address limiter keys on — see [`limit_key`].
@@ -477,12 +541,34 @@ impl GatewayState {
         let path = request.raw_path.split('?').next().unwrap_or("/");
         match outcome.decision.verdict {
             Verdict::Deny | Verdict::Challenge(_) => {
+                use std::sync::atomic::Ordering;
+
+                let reason = outcome.decision.reason.label();
+                // One bucket per host and reason: a loop of refused requests is one burst of
+                // lines and then silence, while a *different* refusal — another host, another
+                // reason — still gets its line straight away.
+                if self.config.logging.deny_per_minute != 0
+                    && !self
+                        .deny_log_limiter
+                        .allow(&format!("{}|{reason}", request.host), self.now())
+                {
+                    self.suppressed_lines.fetch_add(1, Ordering::Relaxed);
+                    self.metrics.log_line_suppressed();
+                    return;
+                }
+                // The next line written says how many were not, so the gap in the log is
+                // visible in the log.
+                let suppressed = self.suppressed_lines.swap(0, Ordering::Relaxed);
+                let suppressed = if suppressed == 0 {
+                    String::new()
+                } else {
+                    format!(" suppressed_since_last={suppressed}")
+                };
                 println!(
-                    "endpoint-gateway: {} host={} path={} reason={}{observed}",
+                    "endpoint-gateway: {} host={} path={} reason={reason}{observed}{suppressed}",
                     outcome.decision.verdict_label(),
                     request.host,
                     path,
-                    outcome.decision.reason.label(),
                 );
             }
             Verdict::Allow => self.log_allow(request, outcome, presented, path, observed),
@@ -504,7 +590,10 @@ impl GatewayState {
         let first = self.config.logging.first_allow_per_host
             && match presented.cookie.as_deref().or(presented.bearer.as_deref()) {
                 Some(credential) => {
-                    let key = Fingerprint::of(&format!("{credential}@{}", request.host));
+                    // The same scoped hash the session cache keys on — no string built per
+                    // request, and length-prefixed, so no credential and host can collide with
+                    // another pair by moving bytes across the boundary.
+                    let key = Fingerprint::scoped(request.host.as_str(), credential);
                     let unseen = self.logged.get(&key, now).is_none();
                     if unseen {
                         self.logged.insert(

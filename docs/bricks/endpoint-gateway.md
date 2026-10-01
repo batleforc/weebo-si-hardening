@@ -123,8 +123,18 @@ disabled is effectively `Off`, and says so at startup.
 must be this cluster's service-account issuer (read from the gateway's own mounted token; skipped
 if unknown) and a claimed `exp` must be in the future; concurrent requests with one token share a
 single call; at most 16 reviews are in flight, 300/min (burst 100) cluster-wide and 30/min
-(burst 10) per client key. Over a limit the token is simply not an identity — nothing is asked
-and nothing is cached. Counted in `weebo_si_endpoint_auth_token_reviews_throttled_total`.
+(burst 10) per client key. Past the cluster-wide bucket, a client that has had a token accepted in
+the last day may still draw on a reserve of 100/min (burst 30) that strangers cannot reach — so a
+caller rotating addresses to spend the shared budget cannot make every workspace's next token
+fail closed. Over a limit the token is simply not an identity — nothing is asked and nothing is
+cached. Counted in `weebo_si_endpoint_auth_token_reviews_throttled_total`.
+
+**Bearer signatures are limited the same way.** Only a bearer naming this gateway's issuer and
+not already cached costs a verification (~45 µs of ES256 with `ring`), and a caller can mint a
+fresh one per request: 120/min (burst 20) per client key and 6 000/min (burst 500) cluster-wide.
+Over a limit the bearer is dropped for that request — decided as if it had not been sent, so a
+cookie or a pod address on the same request still counts. Counted in
+`weebo_si_endpoint_auth_bearer_verifications_throttled_total`.
 
 **Rate-limit keys.** The login surface's limiter keys on the client-address header only when the
 connection comes from a peer `trusted_proxy` admits; otherwise on the connection's own address.
@@ -295,7 +305,16 @@ the controller), `weebo_si_endpoint_auth_identity_cache_total{kind,result}`,
 `weebo_si_endpoint_auth_revocations_refused_total{reason}`,
 `weebo_si_endpoint_auth_self_origin_probe_total{result}`,
 `weebo_si_endpoint_auth_token_reviews_throttled_total`,
+`weebo_si_endpoint_auth_bearer_verifications_throttled_total`,
+`weebo_si_endpoint_auth_log_lines_suppressed_total`,
 `weebo_si_endpoint_auth_insecure_hosts`, `weebo_si_endpoint_auth_bypassed`.
+
+**The decision log is bounded.** Allows are one line when a session first reaches a host
+(`logging.first_allow_per_host`). Deny and challenge lines are limited to
+`logging.deny_per_minute` (default `120`, `0` for every one) per host and reason, so a loop of
+refused requests is a burst of lines and then silence, while a different host or reason still
+logs at once; the next line written carries `suppressed_since_last=<n>`, and every suppressed
+line is counted. The decisions themselves are always all in `decisions_total`.
 
 Every label's value set is closed, and **no label carries a namespace, a host or a workspace
 id** — which host is in conflict is a `WARN`, not a series.

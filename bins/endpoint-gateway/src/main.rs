@@ -514,6 +514,7 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     // handler checks the configured value rather than asking the limiter.
     let state_rate = config.rate_limit.login_per_address_per_minute.max(1);
     let logout_rate = config.rate_limit.backchannel_logout_per_minute.max(1);
+    let deny_log_rate = config.logging.deny_per_minute;
     // Derived from the keys every replica holds, so any replica can answer any replica's probe.
     let selftest_tokens =
         adapters::session::selftest_tokens(&keys).map_err(|err| err.to_string())?;
@@ -552,6 +553,16 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
             },
             10_000,
         ),
+        deny_log_limiter: RateLimiter::new(
+            Rate {
+                burst: deny_log_rate,
+                per_minute: deny_log_rate,
+            },
+            10_000,
+        ),
+        suppressed_lines: std::sync::atomic::AtomicU64::new(0),
+        verify_per_client: RateLimiter::new(state::BEARER_VERIFY_PER_CLIENT, 10_000),
+        verify_global: RateLimiter::new(state::BEARER_VERIFY_GLOBAL, 1),
         logout_limiter: RateLimiter::new(
             Rate {
                 burst: logout_rate,

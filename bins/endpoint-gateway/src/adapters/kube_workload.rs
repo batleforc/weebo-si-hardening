@@ -111,7 +111,16 @@ pub struct ReviewLimits {
     pub global: Rate,
     /// Reviews per minute per client key (the address the limiter keys on).
     pub per_client: Rate,
+    /// Reviews per minute, all callers together, that only a **known** client may draw on once
+    /// `global` is spent — one that has had a token accepted within [`KNOWN_CLIENT_TTL_SECS`].
+    /// `global` is shared, so a caller rotating addresses could otherwise spend it and make every
+    /// legitimate workspace's next new token fail closed; this is the part they cannot reach.
+    pub reserved: Rate,
 }
+
+/// How long a client that had a service-account token accepted counts as known for the
+/// [`ReviewLimits::reserved`] budget — a day, so a workspace's hourly token rotation keeps it known.
+pub const KNOWN_CLIENT_TTL_SECS: u64 = 86_400;
 
 impl Default for ReviewLimits {
     fn default() -> Self {
@@ -127,6 +136,10 @@ impl Default for ReviewLimits {
             per_client: Rate {
                 burst: 10,
                 per_minute: 30,
+            },
+            reserved: Rate {
+                burst: 30,
+                per_minute: 100,
             },
         }
     }
@@ -161,6 +174,10 @@ pub struct TokenReviewer {
     permits: tokio::sync::Semaphore,
     global: RateLimiter,
     per_client: RateLimiter,
+    /// See [`ReviewLimits::reserved`].
+    reserved: RateLimiter,
+    /// Client keys that have had a token accepted, by hash — who may draw on `reserved`.
+    known: IdentityCache<()>,
     throttled: std::sync::atomic::AtomicU64,
 }
 
@@ -238,6 +255,8 @@ impl TokenReviewer {
             permits: tokio::sync::Semaphore::new(limits.concurrency.max(1)),
             global: RateLimiter::new(limits.global, 1),
             per_client: RateLimiter::new(limits.per_client, 10_000),
+            reserved: RateLimiter::new(limits.reserved, 1),
+            known: IdentityCache::new(CacheKind::TokenReview, 10_000, KNOWN_CLIENT_TTL_SECS),
             throttled: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -313,8 +332,13 @@ impl TokenReviewer {
     ) -> Option<NamespaceName> {
         // In front of the call, in this order: the cheapest refusal first, and a client's own
         // bucket before the one everybody shares, so one noisy caller drains only its own.
+        // The global bucket first; past it, only a client already known to hold good tokens may
+        // draw on the reserve. The per-client bucket applies to everybody either way.
+        let known =
+            || !client.is_empty() && self.known.get(&Fingerprint::of(client), now).is_some();
         let within = (client.is_empty() || self.per_client.allow(client, now))
-            && self.global.allow(GLOBAL_KEY, now);
+            && (self.global.allow(GLOBAL_KEY, now)
+                || (known() && self.reserved.allow(GLOBAL_KEY, now)));
         let permit = within.then(|| self.permits.try_acquire().ok()).flatten();
         let Some(_permit) = permit else {
             let throttled = self.throttled.fetch_add(1, Ordering::Relaxed);
@@ -358,6 +382,14 @@ impl TokenReviewer {
         // the apiserver just made, and the token is re-reviewed after it.
         self.reviews
             .insert(key, namespace.clone(), now.plus_secs(3_600), now);
+        if !client.is_empty() {
+            self.known.insert(
+                Fingerprint::of(client),
+                (),
+                now.plus_secs(KNOWN_CLIENT_TTL_SECS),
+                now,
+            );
+        }
         Some(namespace)
     }
 }
@@ -720,7 +752,66 @@ mod tests {
                 burst: per_client,
                 per_minute: per_client,
             },
+            reserved: Rate {
+                burst: 0,
+                per_minute: 0,
+            },
         }
+    }
+
+    /// Second-pass gap: the global bucket is shared, so strangers rotating addresses could spend
+    /// it and leave a workspace that already proved itself failing closed on its next token. The
+    /// reserve is the share they cannot reach.
+    #[tokio::test]
+    async fn a_known_client_keeps_a_reserve_when_strangers_spend_the_global_budget() {
+        let (client, _calls) = fake_apiserver(Duration::ZERO, true).await;
+        let mut budget = limits(16, 3, 100);
+        budget.reserved = Rate {
+            burst: 2,
+            per_minute: 2,
+        };
+        let reviewer = TokenReviewer::with_limits(client, true, 100, TOKEN_REVIEW_TIMEOUT, budget);
+        let now = Timestamp::from_secs(1_000);
+        // A workspace proves itself once: it is known from here on.
+        assert!(
+            reviewer
+                .review(&sa_token(0), "10.0.0.1", now)
+                .await
+                .is_some()
+        );
+        // Strangers, one address each, spend what is left of the global bucket and then some.
+        for n in 1..20 {
+            let _ = reviewer
+                .review(&sa_token(n), &format!("198.51.100.{n}"), now)
+                .await;
+        }
+        // A newcomer is out of luck — the global bucket is empty and the reserve is not theirs.
+        assert!(
+            reviewer
+                .review(&sa_token(100), "203.0.113.1", now)
+                .await
+                .is_none()
+        );
+        // The known workspace's next token is still reviewed, out of the reserve...
+        assert!(
+            reviewer
+                .review(&sa_token(101), "10.0.0.1", now)
+                .await
+                .is_some()
+        );
+        assert!(
+            reviewer
+                .review(&sa_token(102), "10.0.0.1", now)
+                .await
+                .is_some()
+        );
+        // ...which is finite too.
+        assert!(
+            reviewer
+                .review(&sa_token(103), "10.0.0.1", now)
+                .await
+                .is_none()
+        );
     }
 
     /// Second-pass finding 1: concurrent requests carrying one uncached token each asked the

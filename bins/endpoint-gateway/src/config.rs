@@ -161,6 +161,16 @@ pub struct LoggingConfig {
     /// default and the only value a production cluster should run.
     #[serde(default)]
     pub allow_sample: u32,
+    /// Deny and challenge lines per minute for one host and one reason, as a token bucket of
+    /// the same size. Every decision is still counted in `weebo_si_endpoint_auth_decisions_total`;
+    /// what this bounds is the log itself, which a caller sending refused requests in a loop
+    /// would otherwise turn into a line — and a stdout lock — per request. `0` logs every one.
+    #[serde(default = "default_deny_per_minute")]
+    pub deny_per_minute: u32,
+}
+
+const fn default_deny_per_minute() -> u32 {
+    120
 }
 
 impl Default for LoggingConfig {
@@ -168,6 +178,7 @@ impl Default for LoggingConfig {
         Self {
             first_allow_per_host: true,
             allow_sample: 0,
+            deny_per_minute: default_deny_per_minute(),
         }
     }
 }

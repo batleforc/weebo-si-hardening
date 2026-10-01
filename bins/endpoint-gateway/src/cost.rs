@@ -334,10 +334,10 @@ fn what_each_step_of_an_auth_request_costs() {
     let logged: IdentityCache<()> = IdentityCache::new(CacheKind::Session, 10_000, 3_600);
     rows.push(time(
         "side",
-        "allow log dedup: format + SHA-256 + get",
+        "allow log dedup: scoped SHA-256 + get",
         16,
         || {
-            let key = Fingerprint::of(&format!("{}@{HOST}", black_box(&sealed)));
+            let key = Fingerprint::scoped(HOST, black_box(&sealed));
             black_box(logged.get(&key, now));
         },
     ));

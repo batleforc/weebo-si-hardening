@@ -25,6 +25,8 @@ pub struct GatewayMetrics {
     revocations_refused: IntCounterVec,
     self_origin_probe: IntCounterVec,
     token_reviews_throttled: prometheus::IntCounter,
+    bearer_verifications_throttled: prometheus::IntCounter,
+    log_lines_suppressed: prometheus::IntCounter,
     /// Serialises [`Self::token_reviews_throttled`]'s read-then-add, which two overlapping
     /// scrapes would otherwise both apply in full. Shared by every clone, as the counter is.
     token_reviews_throttled_sync: std::sync::Arc<std::sync::Mutex<()>>,
@@ -118,6 +120,14 @@ impl GatewayMetrics {
             "weebo_si_endpoint_auth_token_reviews_throttled_total",
             "TokenReviews not asked because a limit refused them (the token failed closed)",
         )?;
+        let bearer_verifications_throttled = prometheus::IntCounter::new(
+            "weebo_si_endpoint_auth_bearer_verifications_throttled_total",
+            "Bearer signatures not verified because a limit refused them (the bearer failed closed)",
+        )?;
+        let log_lines_suppressed = prometheus::IntCounter::new(
+            "weebo_si_endpoint_auth_log_lines_suppressed_total",
+            "Deny and challenge lines not written because logging.deny_per_minute refused them",
+        )?;
         let policy_compile_seconds = Histogram::with_opts(HistogramOpts::new(
             "weebo_si_endpoint_auth_policy_compile_seconds",
             "Time to rebuild the whole host index — the write-side cost",
@@ -146,6 +156,8 @@ impl GatewayMetrics {
             Box::new(revocations_refused.clone()),
             Box::new(self_origin_probe.clone()),
             Box::new(token_reviews_throttled.clone()),
+            Box::new(bearer_verifications_throttled.clone()),
+            Box::new(log_lines_suppressed.clone()),
             Box::new(policy_compile_seconds.clone()),
             Box::new(observed_only.clone()),
         ] {
@@ -168,6 +180,8 @@ impl GatewayMetrics {
             revocations_refused,
             self_origin_probe,
             token_reviews_throttled,
+            bearer_verifications_throttled,
+            log_lines_suppressed,
             token_reviews_throttled_sync: std::sync::Arc::default(),
             policy_compile_seconds,
             observed_only,
@@ -270,6 +284,16 @@ impl GatewayMetrics {
     }
 
     /// Bring the throttled-review counter up to the reviewer's own running total.
+    /// One deny or challenge line not written.
+    pub fn log_line_suppressed(&self) {
+        self.log_lines_suppressed.inc();
+    }
+
+    /// One bearer whose signature was not checked because a verification limit refused it.
+    pub fn bearer_verification_throttled(&self) {
+        self.bearer_verifications_throttled.inc();
+    }
+
     pub fn token_reviews_throttled(&self, total: u64) {
         // A poisoned lock only means another scrape panicked mid-update; the counter itself is
         // still consistent, so carry on under it.

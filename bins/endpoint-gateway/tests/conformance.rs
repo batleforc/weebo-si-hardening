@@ -73,6 +73,8 @@ const COLD_SAMPLES: usize = 25;
 const FLOOD_SAMPLES: usize = 40;
 /// The per-client `TokenReview` burst (`kube_workload::ReviewLimits`' default).
 const PER_CLIENT_REVIEW_BURST: usize = 10;
+/// The per-client bearer verification burst (`state::BEARER_VERIFY_PER_CLIENT`).
+const PER_CLIENT_VERIFY_BURST: usize = 20;
 /// RFC 0009's *Request cost*: p99 under 5 ms for the auth round trip.
 const LAG_BUDGET: Duration = Duration::from_millis(5);
 const ALICE_POD_IP: &str = "10.42.0.7";
@@ -1217,6 +1219,26 @@ async fn fresh_token(client: kube::Client, namespace: &str, name: &str) -> Strin
         .to_owned()
 }
 
+/// A JWT naming this gateway's own issuer (`gateway_yaml`'s), unique per `nonce` and signed by
+/// nobody — the token that costs a signature verification on every first sight.
+fn forged_oidc_bearer(nonce: usize) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "{}.{}.{}",
+        b64.encode(br#"{"alg":"ES256","kid":"forged"}"#),
+        b64.encode(
+            serde_json::json!({
+                "iss": "https://sso.invalid.example/realms/weebo",
+                "sub": "nobody",
+                "jti": format!("forged-{nonce}"),
+            })
+            .to_string()
+        ),
+        b64.encode([0_u8; 64]),
+    )
+}
+
 /// A token shaped like this cluster's service-account tokens — same issuer, the Kubernetes claim,
 /// an expiry in the future — and signed by nobody. It passes every free check, so each fresh one
 /// costs the gateway a `TokenReview` until its limits refuse to ask: the flood a caller can aim at
@@ -1519,6 +1541,46 @@ async fn cost_matrix(
         percentile(&flood.gated, 50)
     );
     rows.push(flood);
+
+    // The same for bearer signatures: fresh tokens naming *this gateway's* issuer are the ones
+    // that cost a signature verification, so one client sending them past the per-client burst
+    // must stop being verified. (The issuer here is never reached, so every one is refused
+    // either way — what is asserted is that the gateway stopped trying.)
+    let verified_before = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_bearer_verifications_throttled_total",
+    )
+    .await;
+    rows.push(
+        series(
+            "forged OIDC bearer, one client flooding",
+            "/auth direct",
+            401,
+            0,
+            FLOOD_SAMPLES,
+            &|round| {
+                auth("/api")
+                    .header("x-real-ip", "203.0.113.9")
+                    .header("authorization", bearer(&forged_oidc_bearer(round)))
+            },
+            None,
+        )
+        .await,
+    );
+    let refused = gateway_metric(
+        &direct,
+        gateway_port,
+        "weebo_si_endpoint_auth_bearer_verifications_throttled_total",
+    )
+    .await
+        - verified_before;
+    assert!(
+        refused >= (FLOOD_SAMPLES - PER_CLIENT_VERIFY_BURST) as f64 - 2.0,
+        "one client sent {FLOOD_SAMPLES} fresh bearers naming this gateway's issuer and only \
+         {refused} were refused a verification — the per-client limit (burst \
+         {PER_CLIENT_VERIFY_BURST}) is not holding"
+    );
     rows.push(
         series(
             "opaque bearer, fresh each",
@@ -1530,6 +1592,18 @@ async fn cost_matrix(
             None,
         )
         .await,
+    );
+    // Hundreds of challenges to one host for one reason went by above: the decision log must
+    // have stopped writing a line for each of them (`logging.deny_per_minute`).
+    assert!(
+        gateway_metric(
+            &direct,
+            gateway_port,
+            "weebo_si_endpoint_auth_log_lines_suppressed_total",
+        )
+        .await
+            > 0.0,
+        "a loop of refused requests must not be a log line per request"
     );
     CostMatrix { rows }
 }

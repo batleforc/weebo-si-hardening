@@ -474,6 +474,11 @@ impl JwksVerifier {
         }
     }
 
+    /// The issuer a bearer must name to be ours — and so to cost a signature verification.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// The generation the keys are at — the value the identity cache is invalidated on.
     pub fn generation(&self) -> u64 {
         self.cache.generation()

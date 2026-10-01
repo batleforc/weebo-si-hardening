@@ -326,19 +326,24 @@ async fn auth(
         return redeem(&state, &host, grant, &forwarded.uri);
     }
 
-    let presented = presented_from(&state, &headers, None);
+    let mut presented = presented_from(&state, &headers, None);
 
     // The only I/O on this path, and it is deliberately *outside* the decision: a service-account
     // token that is not cached yet costs one `TokenReview`, and an opaque one costs one
     // introspection — both here, where a reader can see them, never inside `decide()`. Each is
     // once per token rather than once per request, which is what makes a page load of two hundred
     // assets pay for neither.
-    state
+    // A bearer a verification limit refused is dropped rather than verified: the request is
+    // decided as if it had not been sent, which fails closed for that credential alone.
+    if !state
         .prewarm_bearer(
             presented.bearer.as_deref(),
             Some(&state.limit_key(&headers, None)),
         )
-        .await;
+        .await
+    {
+        presented.bearer = None;
+    }
 
     // A key rotation invalidates every cached bearer: the claims in the cache were verified
     // against keys this issuer no longer publishes, and a cache is not allowed to be the reason
