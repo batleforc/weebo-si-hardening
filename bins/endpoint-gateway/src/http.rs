@@ -1397,6 +1397,7 @@ mod tests {
         )));
         // The escaped form carries the same text inside one value.
         assert!(!repeats_an_input(&pairs(
+            // cspell:disable-next-line
             "host=victim.weebo.si&uri=%2Fadmin%3F%26host%3Dattacker&method=GET&proto=https"
         )));
     }
@@ -1411,6 +1412,7 @@ mod tests {
             );
         }
         assert_eq!(bearer(&headers(&[("authorization", "Basic abc")])), None);
+        // cspell:disable-next-line
         assert_eq!(bearer(&headers(&[("authorization", "Bearerabc")])), None);
     }
 
