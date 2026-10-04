@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.1.1](https://github.com/batleforc/weebo-si-hardening/compare/f8b1dc4fc7632e408a335cb3f33680cf261538f7..v0.1.1) - 2026-10-04
+#### Bug Fixes
+- test - ([f8b1dc4](https://github.com/batleforc/weebo-si-hardening/commit/f8b1dc4fc7632e408a335cb3f33680cf261538f7)) - Max Batleforc
+
+- - -
+
 ## [v0.1.0](https://github.com/batleforc/weebo-si-hardening/compare/064f9f4c9c45367e15823b1f655cdafee6c51a9f..v0.1.0) - 2026-10-04
 #### Features
 - make it more easy to run - ([223d23c](https://github.com/batleforc/weebo-si-hardening/commit/223d23c3c91f361535e5491fc76f5faa06bcb0d0)) - Max Batleforc
