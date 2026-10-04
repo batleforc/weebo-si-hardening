@@ -400,10 +400,7 @@ impl IdentityConfig {
                 // is refused outright: it is how `https://git/org/{USERNAME}` becomes
                 // `https://git/org/x/../../other` and still passes a prefix check.
                 let rendered = &application.source.repo_url;
-                let escapes = rendered
-                    .split(['/', '?', '#'])
-                    .any(|segment| segment == "..");
-                if escapes || !allow_listed(&self.che.allowed_repo_urls, rendered) {
+                if climbs_out(rendered) || !allow_listed(&self.che.allowed_repo_urls, rendered) {
                     violations.push(IdentityConfigViolation::RepoUrlNotAllowed {
                         team: team.team_name(),
                         repo_url: rendered.clone(),
@@ -526,6 +523,62 @@ pub fn allow_listed(patterns: &[String], value: &str) -> bool {
             Some(prefix) => value.starts_with(prefix),
             None => pattern == value,
         })
+}
+
+/// How many times [`climbs_out`] percent-decodes before giving up and refusing. A git server
+/// decodes once; anything still encoded after this many passes has no honest reason to be.
+const MAX_DECODE_PASSES: usize = 4;
+
+/// Whether a rendered repository URL contains a `..` segment in any spelling a server might
+/// resolve: literal, percent-encoded (`%2e%2e`, `.%2E`), encoded again (`%252e`), or split by an
+/// encoded or backslash separator (`x%2f..`, `x\..`). The prefix allow-list compares spellings,
+/// so every spelling of "up one level" has to be refused before it runs.
+fn climbs_out(url: &str) -> bool {
+    let mut current = url.as_bytes().to_vec();
+    for _ in 0..MAX_DECODE_PASSES {
+        if has_dot_dot_segment(&current) {
+            return true;
+        }
+        let decoded = percent_decode(&current);
+        if decoded == current {
+            return false;
+        }
+        current = decoded;
+    }
+    // Still decoding after every pass: refused rather than interpreted.
+    true
+}
+
+fn has_dot_dot_segment(bytes: &[u8]) -> bool {
+    bytes
+        .split(|byte| matches!(byte, b'/' | b'\\' | b'?' | b'#'))
+        .any(|segment| segment == b"..")
+}
+
+/// One pass of percent-decoding. A `%` not followed by two hex digits is kept as it is.
+fn percent_decode(bytes: &[u8]) -> Vec<u8> {
+    let hex = |byte: u8| char::from(byte).to_digit(16);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let (Some(high), Some(low)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
+        {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "two hex digits are at most 0xff"
+            )]
+            out.push((high * 16 + low) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -715,15 +768,41 @@ mod tests {
         honest.spec.username = Username::new("max");
         assert!(config.plan_for(&honest, Some(&team)).is_ok());
 
-        let mut hostile = user(None, ensure_che());
-        hostile.spec.username = Username::new("x/../../other");
-        assert!(matches!(
-            config
-                .plan_for(&hostile, Some(&team))
-                .unwrap_err()
-                .as_slice(),
-            [IdentityConfigViolation::RepoUrlNotAllowed { .. }]
-        ));
+        for name in [
+            "x/../../other",
+            "x/%2e%2e/%2e%2e/other",
+            "x/%2E%2E/%2E%2E/other",
+            "x/.%2e/.%2e/other",
+            "x/%252e%252e/%252e%252e/other",
+            "x%2f..%2f..%2fother",
+            "x\\..\\..\\other",
+            "x/%25252525252e%25252525252e/other",
+        ] {
+            let mut hostile = user(None, ensure_che());
+            hostile.spec.username = Username::new(name);
+            assert!(
+                matches!(
+                    config
+                        .plan_for(&hostile, Some(&team))
+                        .unwrap_err()
+                        .as_slice(),
+                    [IdentityConfigViolation::RepoUrlNotAllowed { .. }]
+                ),
+                "{name} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn dots_that_do_not_climb_are_not_refused() {
+        for url in [
+            "https://git.example.test/org/max.leriche",
+            "https://git.example.test/org/..max",
+            "https://git.example.test/org/max%20x",
+            "https://git.example.test/org/100%",
+        ] {
+            assert!(!climbs_out(url), "{url} should not climb");
+        }
     }
 
     #[test]
