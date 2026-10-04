@@ -101,14 +101,18 @@ fn condition(object: &Value, kind: &str) -> Option<Value> {
 
 /// Ask the real Authentik about a username, with the bootstrap token, from inside the cluster —
 /// the workspace image carries curl and is already loaded on the node.
+///
+/// The pod runs detached and its answer is read from its logs once it has finished, rather than
+/// through `kubectl run -i --rm`: when the container exits before the attach settles, kubectl
+/// replays the logs on top of what it already streamed, and the body arrives twice.
 fn authentik_user(username: &str) -> Value {
-    let out = must(&[
+    let pod = format!("ask-{}", std::process::id());
+    let _pod = Cleanup::new(&["pod", "-n", "authentik", &pod]);
+    must(&[
         "run",
         "-n",
         "authentik",
-        &format!("ask-{}", std::process::id()),
-        "--rm",
-        "-i",
+        &pod,
         "--quiet",
         "--restart=Never",
         &format!("--image={WORKSPACE_IMAGE}"),
@@ -123,6 +127,15 @@ fn authentik_user(username: &str) -> Value {
             "http://authentik-server.authentik.svc:9000/api/v3/core/users/?username={username}&include_groups=true"
         ),
     ]);
+    must(&[
+        "wait",
+        "-n",
+        "authentik",
+        &format!("pod/{pod}"),
+        "--for=jsonpath={.status.phase}=Succeeded",
+        "--timeout=120s",
+    ]);
+    let out = must(&["logs", "-n", "authentik", &pod]);
     serde_json::from_str(&out).unwrap_or_else(|err| panic!("authentik answered {out:?}: {err}"))
 }
 
