@@ -171,7 +171,7 @@ fn a_teams_own_dwoc_is_reached_through_the_namespace_annotation_and_the_lower_pr
     let refused = Workspace::try_create(&ns.name, "refused", &WorkspaceSpec::default());
     let err = refused.expect_err("a key outside the grant must be refused under Deny");
     assert!(
-        err.contains("names a catalogue key outside this namespace's grant: other"),
+        err.contains("names a catalogue key outside this namespace's grant: \"other\""),
         "{err}"
     );
 }

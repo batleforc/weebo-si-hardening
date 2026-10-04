@@ -164,7 +164,7 @@ decision was made on — never re-derived — so a revoked session, a grant or a
 the same request can never be what the application is told about.
 
 `/auth` accepts **any** method and never reads the one it was called with: Traefik replays the
-original method while nginx's `auth_request` always sends `GET`, so the method under decision is
+original method, but a controller is free to always send `GET`, so the method under decision is
 `X-Forwarded-Method`. The four inputs arrive either as those headers or as query parameters —
 never both, because "the header says one path and the query says another" is a path-confusion
 bypass.
@@ -325,11 +325,10 @@ the controller), `weebo_si_endpoint_auth_identity_cache_total{kind,result}`,
 `weebo_si_endpoint_auth_insecure_hosts`, `weebo_si_endpoint_auth_bypassed`.
 
 **Connections are meant to be reused.** `connections_accepted_total` rising with the request rate
-means the ingress controller re-dials for each auth request. On ingress-nginx the controller
-writes `nginx.ingress.kubernetes.io/auth-keepalive: "32"` on every gated `Ingress` — its default is
-`0`, a fresh connection per gated request. On Traefik, `forwardAuth` keeps two idle connections
-per gateway address and re-dials past that, with no setting to change it; the `Middleware` the
-controller writes bounds the auth body it will read (`maxResponseBodySize: 65536`).
+means the ingress controller re-dials for each auth request. On Traefik, `forwardAuth` keeps two
+idle connections per gateway address and re-dials past that, with no setting to change it; the
+`Middleware` the controller writes bounds the auth body it will read
+(`maxResponseBodySize: 65536`).
 
 **The decision log is bounded.** Allows are one line when a session first reaches a host
 (`logging.first_allow_per_host`). Deny and challenge lines are limited to
@@ -365,7 +364,7 @@ reconnects.
 
 Three things change with it, and none of them is a detail:
 
-| | `ForwardAuth` (Traefik, Nginx, HAProxy) | `ReverseProxy` (OpenShift) |
+| | `ForwardAuth` (Traefik, HAProxy) | `ReverseProxy` (OpenShift) |
 | --- | --- | --- |
 | On the data path | no | **yes** — WebSockets, uploads, streamed responses |
 | A bug here can | answer wrongly | corrupt an application response |
@@ -383,15 +382,15 @@ ownership label, so `policy-guard`'s original three-row table refuses a develope
 
 ## Ground truth
 
-RFC 0009 takes a set of facts about Eclipse Che, DevWorkspace Operator and three ingress
+RFC 0009 takes a set of facts about Eclipse Che, DevWorkspace Operator and the ingress
 controllers from documentation. These are the same facts read back from a cluster, with the
 command that established each one — `scripts/spike-0009.sh`, which `task spike:live` runs. Every
 row here is reproducible: `task spike:up` builds the cluster the controller rows need, and the
 script runs unchanged against a real Che installation for the rows a laptop cannot answer.
 
-Established 2026-09-24 against Kubernetes v1.35.0 with ingress-nginx v1.15.1, Traefik v3.7.13,
-community haproxy-ingress v0.16.2 and DevWorkspace Operator v0.43.0. The Che rows come from a
-second rig — `task spike:che:up`, `scripts/kind-che.yaml` — running Eclipse Che against a Keycloak
+Established 2026-09-24 against Kubernetes v1.35.0 with Traefik v3.7.13, community haproxy-ingress
+v0.16.2 and DevWorkspace Operator v0.43.0. The Che rows come from a second rig —
+`task spike:che:up`, `scripts/kind-che.yaml` — running Eclipse Che against a Keycloak
 realm this repo writes. That realm is *shaped* like Che's and is not yours: rows 7 and 8 say the
 gateway's assumptions hold against a Keycloak, and the same two commands re-run them against the
 real one.
@@ -410,16 +409,13 @@ real one.
 | 5b | a caller-stated host on haproxy | **`differs`** on a default install, `settled` with the prerequisite | `X-Forwarded-Host: forged.example.test` from the client reaches `/auth` verbatim; the prerequisite's `set-header` overwrites it with the host that actually routed the request |
 | 5c | identity headers on haproxy | **`differs`** on a default install, `settled` with the prerequisite | a caller's own `X-Auth-Request-User` reaches the application whenever the auth response does not itself carry one — the lua overwrites only the headers the response returned. The prerequisite's `del-header` lines strip it before anything else runs |
 | 5d | a `302` challenge on haproxy | `settled` | passed through with its `Location` and `Set-Cookie` |
-| 6 | nginx variables in `auth-url` | `settled` | `$host`, `$request_uri`, `$request_method` and `$scheme` all interpolate (the dialect now sends `$escaped_request_uri`, which this spike did not exercise — re-run it against ingress-nginx before relying on the sign-in redirect), with `allow-snippet-annotations` off — the dialect's whole reason for carrying the request in the URL holds |
-| 6a | a refusal reaching the caller on nginx | **`differs`** | the status and `WWW-Authenticate` survive; the **body and the `Set-Cookie` do not**. `auth_request` discards the subrequest's body and headers |
-| 6b | a `302` challenge on nginx | **`differs`** | the caller gets **`500`**. `auth_request` accepts `2xx`, `401` and `403` and treats everything else as a server error |
-| 6c | `auth-signin` and the challenge shape | **`differs`** | with the `auth-signin` the dialect writes, a `POST` from `curl` is answered `302` to the sign-in URL. The gateway's three-shape challenge selection collapses to one shape on this dialect |
-| 6d | `Set-Cookie` on an allow (sliding re-mint) | `settled`, once the dialect was fixed | reaches the caller when the application answers `2xx`, and is **dropped when it does not** — so a developer working against an endpoint returning 404s was quietly signed out mid-task. `nginx.ingress.kubernetes.io/auth-always-set-cookie: "true"` restores it, proven both ways, and the dialect now writes it |
-| 6e | identity headers on nginx | `settled` | a caller's own `X-Auth-Request-User` is stripped, as on Traefik |
 | 7 | the Che OIDC client's discovery document | `settled` | `backchannel_logout=true`, `backchannel_logout_session=true`, an `introspection_endpoint`, and `refresh_token` in `grant_types_supported` — so *Revocation*'s primary mechanism is the primary one, and the fallback stays a fallback |
 | 7a | `groups` in `claims_supported` | `noted` | absent from the discovery document, present in the token. `claims_supported` is advisory and incomplete on Keycloak; the gateway only checks `claims.username` against it, and warns rather than refusing |
 | 8 | the shape of a token a developer can fetch | `settled` | a JWT: `aud=endpoint-gateway`, `azp=endpoint-gateway`, 300s lifetime, no `nonce`, no `at_hash`, and a `sid` — so `bearer.audiences` is satisfiable, `authorized_parties` is not needed, `introspection.enabled` can stay off, and the `sid` revocation check has something to check |
 | 9 | Traefik returning a refusal verbatim | `settled` | `401` with its body, its `Set-Cookie` **and** its `WWW-Authenticate` intact — the row the conformance suite could not reach without an identity provider |
+
+Rows 6 to 6e covered ingress-nginx. They were dropped with the `Nginx` dialect: ingress-nginx is
+archived upstream, and this operator no longer supports it.
 
 ### What the differing rows mean
 
@@ -444,19 +440,6 @@ to look at rather than a default to copy.
 fix and the most expensive to leave: a developer copying RFC 0009's snippet gets their workspace
 refused by the apiserver, with an error that names the field and not the document that told them
 to write it.
-
-**The `Nginx` dialect does not satisfy the dialect contract's properties 3 and 4.** RFC 0009 knew
-this was the risk and named the remedy — lift the cookie with `auth_request_set`, re-emit it with
-`add_header` — which needs a snippet annotation the implementation deliberately does not use. So
-today: the gate's explanatory body never reaches a developer (6a), its navigation challenge is a
-`500` (6b), and `auth-signin` answers every caller with a redirect including the ones that asked
-for JSON (6c).
-
-**6d is fixed**: the dialect now writes `auth-always-set-cookie: "true"`, so a session in
-continuous use keeps sliding even while the application is answering 404s. It was the one failure
-of the four that cost a single annotation, and the one with the worst shape — not an error a
-developer could see and work around, but being signed out partway through a working day by a rule
-about somebody else's status codes.
 
 **The `HaproxyIngress` dialect needs a prerequisite this operator cannot write.** On a default
 install it fails properties 1 and 2 outright: the gate is handed no host and no path (5a), a caller
@@ -507,17 +490,11 @@ Honest list, kept here rather than in the RFC's prose:
   above about `reverseProxy` is code without a cluster behind it: the dialect, the `Route` sweep,
   the companion objects and the proxy shell are written and tested in isolation, and none of it
   has met a real router. The dialect this page describes working is
-  `Traefik`; `Custom` is whatever the admin asserts it is; `Nginx` and `HaproxyIngress` are the
-  next bullet.
+  `Traefik`; `Custom` is whatever the admin asserts it is; `HaproxyIngress` is the next bullet.
 - **`HaproxyIngress` requires the controller prerequisite** in *Ground truth* above, and nothing
   in this repo installs it or can detect its absence. What exists is the assertion —
   `gateway.haproxyPrerequisite`, `Degraded` while it is unset — which is a promise recorded, not a
   property verified.
-- **`Nginx` loses two of the contract's properties** (rows 6a–6c): the gate's message body, and
-  its navigation challenge — which `auth_request` answers `500` rather than reshaping, so
-  `auth-signin` redirects every caller including `curl`. Both need the snippet annotation this
-  dialect was designed to avoid. The fourth failure the spike found, the sliding re-mint's cookie,
-  is fixed.
 - **The Che half of the ground-truth spike** — the user-namespace label, the OIDC client's
   discovery document and the shape of a token that realm mints. `scripts/spike-0009.sh` runs those
   rows against the Che cluster unchanged; nobody has run it there yet.

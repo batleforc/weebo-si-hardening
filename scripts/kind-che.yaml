@@ -22,9 +22,10 @@
 #     what breaks this cluster under rootless podman. A `hostPort` of 443 makes the CNI's portmap
 #     rules claim port 443 *inside the node*, so a pod's connection to `kubernetes.default` (a
 #     ClusterIP on 443) is refused and everything holding an in-cluster API client dies at startup
-#     with no error of its own: ingress-nginx stops at "Creating API client", local-path-provisioner
-#     reports `dial tcp 10.96.0.1:443: connect: connection refused`. Measured both ways — `200`
-#     from that same pod within fifteen seconds of scaling the ingress controller to zero.
+#     with no error of its own: the ingress controller stops at "Creating API client",
+#     local-path-provisioner reports `dial tcp 10.96.0.1:443: connect: connection refused`.
+#     Measured both ways — `200` from that same pod within fifteen seconds of scaling the ingress
+#     controller to zero.
 #
 #     So the ingress controller is an ordinary ClusterIP Service, the apiserver reaches the issuer
 #     through one `/etc/hosts` entry on the node pointing at that ClusterIP, and pods reach it
@@ -53,12 +54,6 @@ name: weebo-che
 nodes:
   - role: control-plane
     kubeadmConfigPatches:
-      # ingress-nginx's kind manifest schedules on this label and claims the node's 80/443.
-      - |
-        kind: InitConfiguration
-        nodeRegistration:
-          kubeletExtraArgs:
-            node-labels: "ingress-ready=true"
       # The apiserver as an OIDC relying party. `username-claim: email` matches what the realm
       # `spike-0009-che.sh` imports puts in its tokens, and it is also what Che derives a user
       # namespace name from — so changing it here changes the namespaces the spike then reads.

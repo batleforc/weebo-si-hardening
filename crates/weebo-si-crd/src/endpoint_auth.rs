@@ -459,10 +459,6 @@ fn template_users(template: &str, stem: &str) -> std::collections::BTreeSet<Stri
     out
 }
 
-/// Idle connections each ingress-nginx worker keeps to the gateway for auth subrequests — enough
-/// for a browser's six parallel asset requests on several hosts at once, and cheap to hold.
-pub const NGINX_AUTH_KEEPALIVE: &str = "32";
-
 /// Where the gateway is, and how the routing object is told to consult it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -474,8 +470,8 @@ pub struct GatewayRef {
     /// The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.
     ///
     /// Qualified rather than left to the search path because not every router resolves through
-    /// it: ingress-nginx hands `auth-url` to nginx's own resolver, which applies no search
-    /// domains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`.
+    /// it: a proxy with its own resolver applies no search domains, so `<name>.<ns>.svc` is
+    /// `Host not found` and every gated request a `500`.
     #[serde(default = "default_cluster_domain")]
     pub cluster_domain: String,
     /// Which router this cluster runs.
@@ -633,8 +629,6 @@ impl RoutingKind {
 pub enum Dialect {
     /// Traefik, via one shared `forwardAuth` `Middleware`.
     Traefik,
-    /// ingress-nginx, carrying the request in `auth-url` nginx variables.
-    Nginx,
     /// The community `haproxy-ingress` controller.
     HaproxyIngress,
     /// OpenShift's router, which has no external-auth hook at all.
@@ -677,53 +671,6 @@ impl Dialect {
                 annotations.insert(
                     "traefik.ingress.kubernetes.io/router.middlewares".to_owned(),
                     chain.join(","),
-                );
-            }
-            Self::Nginx => {
-                // `$escaped_request_uri`, never `$request_uri`: the raw value carries the caller's
-                // own `?` and `&`, so `/x?&host=other` would otherwise state a second `host` in
-                // this URL and the gateway would decide about a host the caller chose.
-                //
-                // The request travels in the URL, not in a snippet: `allow-snippet-annotations`
-                // has been false by default since ingress-nginx 1.9, and turning it back on
-                // would trade one hardening control for another.
-                annotations.insert(
-                    "nginx.ingress.kubernetes.io/auth-url".to_owned(),
-                    format!(
-                        "{url}/auth?host=$host&uri=$escaped_request_uri&method=$request_method&proto=$scheme"
-                    ),
-                );
-                annotations.insert(
-                    "nginx.ingress.kubernetes.io/auth-response-headers".to_owned(),
-                    "X-Auth-Request-User,X-Auth-Request-Groups,X-Auth-Request-Email".to_owned(),
-                );
-                annotations.insert(
-                    "nginx.ingress.kubernetes.io/auth-signin".to_owned(),
-                    format!(
-                        "{}/oidc/start?rd=$scheme://$host$escaped_request_uri",
-                        gateway.external_url
-                    ),
-                );
-                // The sliding re-mint, which *Developer continuity* rests on: "an endpoint in
-                // continuous use never expires under the person using it". Without this, this
-                // controller forwards the gate's `Set-Cookie` only when the *application's* own
-                // answer was `2xx` — so a developer whose SPA is pulling 404s while they work
-                // stops having their session extended, and is signed out mid-task by a rule
-                // about somebody else's status codes.
-                annotations.insert(
-                    "nginx.ingress.kubernetes.io/auth-always-set-cookie".to_owned(),
-                    "true".to_owned(),
-                );
-                // Connection reuse is part of RFC 0009's contract (*Where the milliseconds
-                // actually are*, rule 1), and ingress-nginx's default is the opposite: with
-                // `auth-keepalive` at `0`, every gated request opens a fresh connection to the
-                // gateway — a handshake where a round trip was promised, and a socket in
-                // TIME_WAIT per asset. It applies because nothing in `auth-url`'s *host* is a
-                // variable (the request travels in the query), which is the one condition
-                // ingress-nginx sets for it.
-                annotations.insert(
-                    "nginx.ingress.kubernetes.io/auth-keepalive".to_owned(),
-                    NGINX_AUTH_KEEPALIVE.to_owned(),
                 );
             }
             Self::HaproxyIngress => {
@@ -1501,46 +1448,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nginx_carries_the_request_in_the_url_because_snippets_are_off_by_default() {
-        let annotations = Dialect::Nginx.annotations(&gateway(Dialect::Nginx));
-        let url = &annotations["nginx.ingress.kubernetes.io/auth-url"];
-        for variable in [
-            "$host",
-            "$escaped_request_uri",
-            "$request_method",
-            "$scheme",
-        ] {
-            assert!(url.contains(variable), "{url}");
-        }
-        // The raw variable would let a caller's own `&host=` state a second `host`.
-        assert!(!url.contains("$request_uri"), "{url}");
-        assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-response-headers"));
-        assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-signin"));
-        // Without it ingress-nginx opens a fresh connection to the gateway per gated request.
-        assert_eq!(
-            annotations["nginx.ingress.kubernetes.io/auth-keepalive"],
-            NGINX_AUTH_KEEPALIVE
-        );
-
-        // The sliding re-mint's cookie is forwarded only when the *application's* own answer was
-        // `2xx` unless this is set — established against ingress-nginx v1.15.1 by the ground-truth
-        // spike, which watched a re-minted cookie vanish because the backend said 404. Without it
-        // a developer working against an endpoint that is answering 404s is quietly signed out
-        // partway through, which is the failure *Developer continuity* exists to prevent.
-        assert_eq!(
-            annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"], "true",
-            "a session extended only on 2xx is not extended on a working day"
-        );
-
-        // And every key this dialect writes is guarded: the mutation and the guard learn the set
-        // from the same place, so a new annotation cannot become an unpinned one.
-        let managed = Dialect::Nginx.managed_keys(&gateway(Dialect::Nginx));
-        for key in annotations.keys() {
-            assert!(managed.contains(key), "{key} is written but not guarded");
-        }
-    }
-
     #[ignore = "OpenShift's ReverseProxy dialect is deferred (RFC 0009): the code is here, nothing has run it against a router, and the base suite does not assert it. Run this tier with `task test:openshift`."]
     #[test]
     fn the_openshift_dialect_retargets_instead_of_annotating() {
@@ -1606,13 +1513,13 @@ mod tests {
     }
 
     #[test]
-    fn the_nginx_auth_url_is_qualified_with_the_cluster_domain() {
-        // nginx resolves `auth-url` without a search path, so a bare `.svc` never resolves.
-        let mut gateway = gateway(Dialect::Nginx);
+    fn the_auth_url_is_qualified_with_the_cluster_domain() {
+        // A router with its own resolver applies no search path, so a bare `.svc` never resolves.
+        let mut gateway = gateway(Dialect::HaproxyIngress);
         gateway.cluster_domain = "corp.internal.".to_owned();
-        let annotations = Dialect::Nginx.annotations(&gateway);
+        let annotations = Dialect::HaproxyIngress.annotations(&gateway);
         assert!(
-            annotations["nginx.ingress.kubernetes.io/auth-url"]
+            annotations["haproxy-ingress.github.io/auth-url"]
                 .starts_with("http://endpoint-gateway.weebo-si-hardening.svc.corp.internal:4180/"),
             "{annotations:?}"
         );
@@ -1703,15 +1610,12 @@ mod tests {
                 .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted)
         );
 
-        // And it is this dialect's condition alone: the others have nothing to assert.
-        for dialect in [Dialect::Traefik, Dialect::Nginx] {
-            assert!(
-                !config(dialect)
-                    .validate(&[])
-                    .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted),
-                "{dialect:?}"
-            );
-        }
+        // And it is this dialect's condition alone: Traefik has nothing to assert.
+        assert!(
+            !config(Dialect::Traefik)
+                .validate(&[])
+                .contains(&EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted)
+        );
     }
 
     #[test]
@@ -1763,10 +1667,10 @@ mod tests {
 
     #[test]
     fn the_dialect_decides_which_kinds_the_guard_must_cover() {
-        // The three dialects this repo actually supports today. `guarded_kinds()` is the part
+        // The two dialects this repo actually supports today. `guarded_kinds()` is the part
         // that is easy to forget and expensive to omit: a dialect that puts the gate in a side
         // object has moved the thing a developer can edit, and the guard has to follow it there.
-        for dialect in [Dialect::Traefik, Dialect::Nginx, Dialect::HaproxyIngress] {
+        for dialect in [Dialect::Traefik, Dialect::HaproxyIngress] {
             assert_eq!(dialect.guarded_kinds(), &["ingresses"], "{dialect:?}");
             assert_eq!(dialect.target_kind(), RoutingKind::Ingress, "{dialect:?}");
             assert_eq!(dialect.mode(), AttachmentMode::ForwardAuth, "{dialect:?}");

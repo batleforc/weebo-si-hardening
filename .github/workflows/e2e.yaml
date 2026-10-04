@@ -1,7 +1,7 @@
 name: E2E
 # The end-to-end tier: every feature against a kind cluster running real Eclipse Che, real
 # DevWorkspace Operator and a real identity provider — the one place a workspace actually starts,
-# a NetworkPolicy actually drops a packet, a request actually crosses ingress-nginx and the gate,
+# a NetworkPolicy actually drops a packet, a request actually crosses Traefik and the gate,
 # and a WeeboSiUser actually becomes an Authentik account and an Argo CD sync.
 #
 # Nightly and on demand, never on a pull request: one run stands up four Che clusters and pulls

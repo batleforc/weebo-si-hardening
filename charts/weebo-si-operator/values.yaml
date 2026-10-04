@@ -238,7 +238,8 @@ endpointAuth:
   rbac:
     enabled: false
   failurePolicy: Fail
-  # Which router this cluster runs: Traefik | Nginx | HaproxyIngress | Custom.
+  # Which router this cluster runs: Traefik | HaproxyIngress | Custom. ingress-nginx is not
+  # supported: it is archived upstream, and its `Nginx` dialect was removed.
   # It decides which *kind* the webhook rules are rendered for — a cluster whose apiserver does
   # not serve `route.openshift.io/v1` must not carry a rule for it. The dialect the gateway
   # itself attaches with is `spec.features.endpointAuth.gateway.dialect`; keep the two the same.
@@ -246,12 +247,6 @@ endpointAuth:
   # `OpenShiftRoute` exists and is **deferred**: the code is written and its tests are a tier the
   # base suite skips (`task test:openshift`), but nothing has run it against a real OpenShift
   # router. Do not select it on a cluster you care about yet.
-  #
-  # `Nginx` is **partial** and supported that way: the gate holds, identity is not forgeable and
-  # the sliding session works, but a refused caller sees a bare 401 instead of the gate's
-  # explanation, and a browser is redirected by `auth-signin` rather than by the gate's own
-  # challenge. Fixing either needs `allow-snippet-annotations`, which is a cluster-wide hardening
-  # control ingress-nginx disabled by default in 1.9 — see RFC 0009's *Future work*.
   #
   # `HaproxyIngress` needs seven lines in the haproxy-ingress controller's *own* ConfigMap before it
   # is safe: that controller builds its auth request by copying the caller's headers, so without

@@ -79,8 +79,8 @@ terminationGracePeriodSeconds: 30
 # `traefik` and a scraper in namespace `monitoring` — then set `enabled: true`:
 #
 #   ingressController   the pods that call `/auth` and carry the login paths: e.g.
-#                       `kubernetes.io/metadata.name: ingress-nginx` for ingress-nginx, or
-#                       `openshift-ingress` for the OpenShift router; narrow with `podSelector`
+#                       `kubernetes.io/metadata.name: haproxy-ingress` for haproxy-ingress,
+#                       or `openshift-ingress` for the OpenShift router; narrow with `podSelector`
 #                       (e.g. `app.kubernetes.io/name: traefik`) if that namespace runs more.
 #   monitoring          your Prometheus (or other scraper) namespace and pods.
 #

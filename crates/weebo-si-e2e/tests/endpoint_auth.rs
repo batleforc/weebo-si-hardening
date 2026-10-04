@@ -1,11 +1,11 @@
-//! The endpoint-auth suite: the `Nginx` dialect, the real endpoint gateway and the rig's
+//! The endpoint-auth suite: the `Traefik` dialect, the real endpoint gateway and the rig's
 //! Keycloak, asserted over HTTPS through the real ingress controller against a workspace Che
 //! actually started — the path a developer's browser takes, minus the browser.
 //!
-//! What the `Nginx` dialect cannot do is not asserted as if it could: a refusal reaches the caller
-//! without its body (ground-truth row 6a), and a challenge to a non-browser caller is the `302`
-//! `auth-signin` writes (row 6c). docs/bricks/endpoint-gateway.md *Ground truth* is the reference
-//! for every expected status below.
+//! Traefik hands the gate's answer back verbatim (ground-truth row 9), so both challenge shapes
+//! are asserted: a navigation is redirected to sign in, anything else is a `401` naming the
+//! scheme. docs/bricks/endpoint-gateway.md *Ground truth* is the reference for every expected
+//! status below.
 //!
 //! People: alice owns the workspaces; carol shares alice's team; bob is in no team with either.
 
@@ -30,7 +30,7 @@ fn endpoint_auth() -> Value {
         "gateway": {
             "externalUrl": format!("https://auth.{DOMAIN}"),
             "service": { "name": "endpoint-gateway", "namespace": OPERATOR_NAMESPACE, "port": 4180 },
-            "dialect": "Nginx",
+            "dialect": "Traefik",
         },
         "owner": {
             "namespaceAnnotation": "che.eclipse.org/username",
@@ -122,12 +122,7 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
                     ) == "web"
                 })
                 .ok_or("no Ingress for endpoint web yet")?;
-            if text(
-                &web,
-                "/metadata/annotations/nginx.ingress.kubernetes.io~1auth-url",
-            )
-            .is_empty()
-            {
+            if text(&web, MIDDLEWARES).is_empty() {
                 return Err(format!(
                     "not gated yet: {}",
                     web.pointer("/metadata/annotations")
@@ -138,22 +133,10 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
             Ok(web)
         },
     );
-    let auth_url = text(
-        &ingress,
-        "/metadata/annotations/nginx.ingress.kubernetes.io~1auth-url",
-    );
-    assert!(
-        auth_url.starts_with(&format!(
-            "http://endpoint-gateway.{OPERATOR_NAMESPACE}.svc.cluster.local:4180/auth?"
-        )),
-        "auth-url {auth_url}"
-    );
+    // The chain is pinned by value: the shared `Middleware` in the operator's namespace, alone.
     assert_eq!(
-        text(
-            &ingress,
-            "/metadata/annotations/nginx.ingress.kubernetes.io~1auth-always-set-cookie"
-        ),
-        "true"
+        text(&ingress, MIDDLEWARES),
+        format!("{OPERATOR_NAMESPACE}-weebo-si-endpoint-auth@kubernetescrd")
     );
     Served {
         workspace,
@@ -161,15 +144,18 @@ fn serve(ns: &Namespace, name: &str, annotation: Value) -> Served {
     }
 }
 
-/// Send a request, sending it again while ingress-nginx answers 503.
+/// Where the `Traefik` dialect attaches the gate, as a JSON pointer into an `Ingress`.
+const MIDDLEWARES: &str = "/metadata/annotations/traefik.ingress.kubernetes.io~1router.middlewares";
+
+/// Send a request, sending it again while Traefik has not routed the host yet.
 ///
-/// ingress-nginx answers 503 — before any auth subrequest — until a reload has picked up an
-/// Ingress it has just seen or a backend has endpoints; no row here expects one, so it is waited
-/// out rather than asserted on.
+/// Traefik answers 404 until it has loaded an Ingress it has just seen — and the `Middleware` that
+/// Ingress names — and 503 while a backend has no endpoints; no row here expects either, so they
+/// are waited out rather than asserted on.
 fn settled(send: impl Fn() -> reqwest::blocking::Response) -> reqwest::blocking::Response {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let mut response = send();
-    while response.status().as_u16() == 503 && std::time::Instant::now() < deadline {
+    while matches!(response.status().as_u16(), 404 | 503) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_secs(3));
         response = send();
     }
@@ -201,6 +187,43 @@ fn status(
     (code, location, response.text().unwrap_or_default())
 }
 
+/// An anonymous `GET` shaped like a browser navigation: the status and the `Location`.
+fn navigate(ingress: &Ingress, host: &str, path: &str) -> (u16, String) {
+    let response = settled(|| {
+        ingress
+            .client
+            .get(ingress.url(host, path))
+            .header("Accept", "text/html,application/xhtml+xml")
+            .send()
+            .unwrap_or_else(|err| panic!("GET https://{host}{path}: {err}"))
+    });
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (response.status().as_u16(), location)
+}
+
+/// An anonymous `GET` that is not a navigation: the status and the `WWW-Authenticate`.
+fn unauthenticated(ingress: &Ingress, host: &str, path: &str) -> (u16, String) {
+    let response = settled(|| {
+        ingress
+            .client
+            .get(ingress.url(host, path))
+            .send()
+            .unwrap_or_else(|err| panic!("GET https://{host}{path}: {err}"))
+    });
+    let authenticate = response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (response.status().as_u16(), authenticate)
+}
+
 fn setup() -> Cleanup {
     let team = payments_team();
     set_features(json!({ "endpointAuth": endpoint_auth() }));
@@ -214,11 +237,20 @@ fn the_owner_opens_their_endpoint_and_nobody_else_does() {
     let served = serve(&ns, "private", json!({}));
     let ingress = Ingress::open();
 
-    let (code, location, _) = status(&ingress, &served.host, "/", None);
-    assert_eq!(code, 302, "an anonymous caller is sent to sign in");
+    let (code, location) = navigate(&ingress, &served.host, "/");
+    assert_eq!(code, 302, "an anonymous browser is sent to sign in");
     assert!(
-        location.starts_with(&format!("https://auth.{DOMAIN}/oidc/start?rd=")),
+        location.starts_with(&format!("https://auth.{DOMAIN}/host-session?rd=")),
         "location {location}"
+    );
+    let (code, authenticate) = unauthenticated(&ingress, &served.host, "/");
+    assert_eq!(
+        code, 401,
+        "an anonymous non-browser caller is told how to authenticate"
+    );
+    assert!(
+        authenticate.starts_with("Bearer realm=\"weebo\""),
+        "WWW-Authenticate {authenticate}"
     );
 
     let (code, _, body) = status(&ingress, &served.host, "/", Some(&ingress.token("alice")));
@@ -267,8 +299,8 @@ fn an_open_rule_serves_one_path_to_anybody_and_nothing_else() {
 
     let (code, _, body) = status(&ingress, &served.host, "/healthz", None);
     assert_eq!((code, body.as_str()), (200, "ok\n"));
-    let (code, _, _) = status(&ingress, &served.host, "/", None);
-    assert_eq!(code, 302, "every other path stays behind the gate");
+    let (code, _) = unauthenticated(&ingress, &served.host, "/");
+    assert_eq!(code, 401, "every other path stays behind the gate");
     let (code, _, _) = status(&ingress, &served.host, "/healthz/../", None);
     assert_ne!(
         code, 200,
@@ -367,8 +399,8 @@ fn a_developer_cannot_take_the_gate_off_their_own_endpoint() {
     for (key, value) in [
         ("hardening.weebo.io/endpoint-auth", "bypass"),
         (
-            "nginx.ingress.kubernetes.io/auth-url",
-            "http://nowhere.invalid/",
+            "traefik.ingress.kubernetes.io/router.middlewares",
+            "default-nothing@kubernetescrd",
         ),
     ] {
         let err = kubectl(&[
@@ -528,11 +560,11 @@ fn preauth_proxy_logs_in_once_injects_the_credential_and_renews_it_on_a_401() {
 }
 
 /// RFC 0009's *Request cost*, in the cluster rather than on loopback: the same workspace reached
-/// through ingress-nginx with the gate and without it, interleaved, so the difference is the
-/// gate's in-cluster hop — the `auth-url` subrequest, the gateway's decision and the way back.
-/// And RFC 0009's rule 1, *connection reuse is part of the contract*: a burst of gated requests
-/// costs the gateway a handful of connections, not one per request, which on ingress-nginx is
-/// the `auth-keepalive` annotation the controller writes.
+/// through Traefik with the gate and without it, interleaved, so the difference is the gate's
+/// in-cluster hop — the `forwardAuth` call, the gateway's decision and the way back. And RFC
+/// 0009's rule 1, *connection reuse is part of the contract*: a burst of gated requests costs the
+/// gateway a handful of connections, not one per request. Traefik keeps two idle connections per
+/// gateway address and these requests go one at a time, so a burst rides one or two of them.
 #[test]
 fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
     const SAMPLES: usize = 200;
@@ -595,7 +627,7 @@ fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
             "apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
             "metadata": { "name": "control", "namespace": control_ns },
             "spec": {
-                "ingressClassName": "nginx",
+                "ingressClassName": "traefik",
                 "tls": [{ "hosts": [control_host] }],
                 "rules": [{ "host": control_host, "http": { "paths": [{
                     "path": "/", "pathType": "Prefix",
@@ -641,7 +673,7 @@ fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
     let at = |sorted: &[std::time::Duration], pct: usize| sorted[(sorted.len() - 1) * pct / 100];
     let added = |pct: usize| at(&gated, pct).saturating_sub(at(&ungated, pct));
     let report = format!(
-        "### endpoint-auth, in-cluster hop through ingress-nginx ({SAMPLES} requests per side)\n\n\
+        "### endpoint-auth, in-cluster hop through Traefik ({SAMPLES} requests per side)\n\n\
          | | gated | ungated | added |\n| --- | --- | --- | --- |\n\
          | p50 | {:?} | {:?} | {:?} |\n| p99 | {:?} | {:?} | {:?} |\n\n\
          Connections the gateway accepted for {SAMPLES} gated requests: {opened}.\n",
@@ -664,9 +696,11 @@ fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
         "the gate adds {:?} at p50 in the cluster — over RFC 0009's 5 ms budget",
         added(50)
     );
+    // Two is Traefik's idle pool; the slack is for a gateway pod closing an idle connection
+    // mid-burst, not for re-dialling per request.
     assert!(
-        opened <= 16.0,
-        "{SAMPLES} gated requests opened {opened} connections to the gateway — ingress-nginx is \
-         not keeping its auth connections (`nginx.ingress.kubernetes.io/auth-keepalive`)"
+        opened <= 4.0,
+        "{SAMPLES} gated requests opened {opened} connections to the gateway — Traefik is not \
+         keeping its `forwardAuth` connections"
     );
 }

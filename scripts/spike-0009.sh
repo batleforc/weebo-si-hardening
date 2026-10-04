@@ -4,7 +4,7 @@
 #
 #   scripts/spike-0009.sh                  the read-only rows, against the current kube context
 #   scripts/spike-0009.sh --live           also the router rows, which create objects
-#   scripts/spike-0009.sh --row 6          one row
+#   scripts/spike-0009.sh --row 5          one row
 #   scripts/spike-0009.sh --issuer URL     row 7, against an OIDC discovery document
 #   scripts/spike-0009.sh --token FILE     row 8, against a token a developer can fetch ("-": stdin)
 #   scripts/spike-0009.sh --markdown       the record block for docs/bricks/endpoint-gateway.md
@@ -20,7 +20,7 @@
 #
 # The read-only rows are safe against a real Che installation and create nothing. --live creates a
 # namespace (default: weebo-spike), a stub, and one Ingress per ingress controller it finds; it is
-# how rows 5, 6 and 9 get answered, and it is why they are not the default.
+# how rows 5 and 9 get answered, and it is why they are not the default.
 set -eu
 
 # What RFC 0009 assumes. Kept as constants so a row that DIFFERS names both values, and so the
@@ -635,249 +635,6 @@ spec:
 INGRESS
 }
 
-# --- row 6 · ingress-nginx -----------------------------------------------------------------------
-#
-# The RFC's bullet is 6: do the nginx variables interpolate in auth-url without
-# allow-snippet-annotations. They do. 6a..6d are the consequences of *how* this controller
-# implements auth_request, and three of them contradict something RFC 0009 says elsewhere.
-
-row_6() {
-  wanted 6 || return 0
-  heading 6 "ingress-nginx: variables in auth-url, and what the controller does with the answer"
-  shown assumption "\$host, \$request_uri, \$request_method and \$scheme interpolate without allow-snippet-annotations"
-  class=$(k get ingressclass -o json 2>/dev/null |
-    jq -r '.items[] | select(.spec.controller | test("ingress-nginx")) | .metadata.name' | head -1)
-  if [ -z "$class" ]; then
-    record 6 "ingress-nginx" SKIPPED "no ingress-nginx IngressClass in this cluster"
-    return 0
-  fi
-  svc=$(controller_service nginx "app.kubernetes.io/name=ingress-nginx")
-  if [ -z "$svc" ]; then
-    record 6 "ingress-nginx" SKIPPED "ingress-nginx IngressClass $class, but no Service to call"
-    return 0
-  fi
-  ran "kubectl apply -f - <<< 'Ingress with nginx.ingress.kubernetes.io/auth-url=...?host=\$host&...' ; curl via $svc"
-  nginx_ingresses "$class"
-  sleep 12
-
-  response=$(fetch "http://$svc/actuator/health" spike-nginx-nosignin.example.test -X POST)
-  code=$(status_of "$response")
-  seen=$(last_authreq)
-  shown status "$code (no auth-signin)"
-  shown auth-saw "${seen:-nothing — the annotation did not reach the controller}"
-  if [ -z "$seen" ]; then
-    record 6 "ingress-nginx" DIFFERS "auth-url never reached the stub — annotation refused or unsupported"
-    return 0
-  fi
-  interpolated=$(printf '%s' "$seen" |
-    jq -r '"host=\(.arg_host) uri=\(.arg_uri) method=\(.arg_method) proto=\(.arg_proto)"')
-  shown variables "$interpolated"
-  case "$interpolated" in
-    *'host=spike-nginx-nosignin.example.test'*'uri=/actuator/health'*'method=POST'*)
-      record 6 "ingress-nginx auth-url" SETTLED "$interpolated" ;;
-    *)
-      record 6 "ingress-nginx auth-url" DIFFERS "auth-url reached the stub but carried $interpolated" ;;
-  esac
-
-  # 6a — what of the refusal reaches the caller. Only the header does.
-  body=no; cookie=no; challenge=no
-  printf '%s' "$response" | grep -q "$BODY_MARKER" && body=yes
-  has_header "$response" set-cookie "$COOKIE_MARKER" && cookie=yes
-  has_header "$response" www-authenticate Bearer && challenge=yes
-  shown verbatim "body=$body cookie=$cookie www-authenticate=$challenge"
-  if [ "$body" = yes ] && [ "$challenge" = yes ]; then
-    record 6a "a refusal, verbatim" SETTLED "body=$body cookie=$cookie www-authenticate=$challenge"
-  else
-    record 6a "a refusal, verbatim" DIFFERS "body=$body cookie=$cookie www-authenticate=$challenge"
-  fi
-
-  # 6b — a 302 from the gate. nginx's auth_request accepts 2xx, 401 and 403 and calls everything
-  # else a server error, which is why auth-signin exists at all.
-  redirect=$(fetch "http://$svc/x" spike-nginx-302.example.test)
-  rcode=$(status_of "$redirect")
-  shown challenge-302 "the caller got $rcode"
-  if [ "$rcode" = 302 ]; then
-    record 6b "a 302 from the gate" SETTLED "passed through"
-  else
-    record 6b "a 302 from the gate" DIFFERS "the caller got $rcode, not the gate's redirect"
-  fi
-
-  # 6c — and with auth-signin, which the dialect writes, the gate's 401 becomes a redirect for
-  # every caller, curl included.
-  signin=$(fetch "http://$svc/actuator/health" spike-nginx.example.test -X POST)
-  scode=$(status_of "$signin")
-  location=$(printf '%s\n' "$signin" | grep -i '^location:' | head -1 | tr -d '\r')
-  shown with-signin "$scode ${location:-no Location}"
-  if [ "$scode" = 401 ]; then
-    record 6c "auth-signin and the challenge" SETTLED "a POST still gets 401"
-  else
-    record 6c "auth-signin and the challenge" DIFFERS "a POST gets $scode — the gate's challenge shape is overridden"
-  fi
-
-  # 6d — the sliding re-mint, which needs a Set-Cookie on an *allow* to reach the browser. It does,
-  # unless the application's own answer is not 2xx.
-  ok=$(fetch "http://$svc/x" spike-nginx-ok.example.test)
-  ok404=$(fetch "http://$svc/nope" spike-nginx-ok404.example.test)
-  always=$(fetch "http://$svc/nope" spike-nginx-ok404-always.example.test)
-  remint=no; remint404=no; remint_always=no
-  has_header "$ok" set-cookie "spike_session=remint" && remint=yes
-  has_header "$ok404" set-cookie "spike_session=remint" && remint404=yes
-  has_header "$always" set-cookie "spike_session=remint" && remint_always=yes
-  shown re-mint "application 2xx: $remint / 404: $remint404 / 404 with auth-always-set-cookie: $remint_always"
-  # Two claims, not one: that the default drops the cookie, and that the annotation the dialect
-  # writes is what puts it back. The second is the one that would rot silently if this row only
-  # ever measured the default.
-  if [ "$remint" = yes ] && [ "$remint_always" = yes ]; then
-    record 6d "Set-Cookie on an allow" SETTLED \
-      "reaches the caller on a 2xx; on a 404 the default drops it (non-2xx=$remint404) and auth-always-set-cookie restores it"
-  else
-    record 6d "Set-Cookie on an allow" DIFFERS \
-      "2xx=$remint non-2xx=$remint404 non-2xx with auth-always-set-cookie=$remint_always"
-  fi
-
-  # 6e — the injection Traefik's conformance run proves for Traefik.
-  echoed=$(fetch "http://$svc/x" spike-nginx-bare.example.test -H "X-Auth-Request-User: forged-admin")
-  shown application "$(printf '%s' "$echoed" | tail -1)"
-  if printf '%s' "$echoed" | grep -q "user=forged-admin"; then
-    record 6e "identity header injection" DIFFERS "a caller's X-Auth-Request-User reaches the application"
-  else
-    record 6e "identity header injection" SETTLED "a caller's X-Auth-Request-User is stripped"
-  fi
-}
-
-nginx_ingresses() { # nginx_ingresses <class>
-  auth="http://spike-auth.$NS.svc.cluster.local:8080/auth?host=\$host&uri=\$request_uri&method=\$request_method&proto=\$scheme"
-  headers="X-Auth-Request-User,X-Auth-Request-Groups,X-Auth-Request-Email"
-  cat <<INGRESS | k apply -f - >/dev/null
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "$auth"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-    nginx.ingress.kubernetes.io/auth-signin: "http://spike-auth.$NS.svc.cluster.local:8080/oidc/start?rd=\$scheme://\$host\$request_uri"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-backend, port: { number: 8081 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-nosignin
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "$auth"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-nosignin.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-backend, port: { number: 8081 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-302
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "http://spike-auth.$NS.svc.cluster.local:8082/auth-302"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-302.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-backend, port: { number: 8081 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-ok
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "http://spike-auth.$NS.svc.cluster.local:8082/auth-ok"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-ok.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-backend, port: { number: 8081 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-ok404
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "http://spike-auth.$NS.svc.cluster.local:8082/auth-ok"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-ok404.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-auth, port: { number: 8080 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-ok404-always
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "http://spike-auth.$NS.svc.cluster.local:8082/auth-ok"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-    nginx.ingress.kubernetes.io/auth-always-set-cookie: "true"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-ok404-always.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-auth, port: { number: 8080 } } }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spike-nginx-bare
-  namespace: $NS
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "http://spike-auth.$NS.svc.cluster.local:8082/auth-bare"
-    nginx.ingress.kubernetes.io/auth-response-headers: "$headers"
-spec:
-  ingressClassName: $1
-  rules:
-    - host: spike-nginx-bare.example.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: { service: { name: spike-backend, port: { number: 8083 } } }
-INGRESS
-}
-
 # --- row 9 · Traefik -----------------------------------------------------------------------------
 #
 # The one property the two-cookie design cannot work without: a non-2xx from forwardAuth reaching
@@ -1054,17 +811,15 @@ row_7
 row_8
 
 if [ "$live" = 1 ]; then
-  if wanted 5 || wanted 6 || wanted 9; then
+  if wanted 5 || wanted 9; then
     [ "$markdown" = 1 ] || printf '\n\033[2mstanding up the live rig in namespace %s\033[0m\n' "$NS"
     live_setup
     trap 'live_teardown; cleanup_tmp' EXIT
     row_5
-    row_6
     row_9
   fi
 else
   wanted 5 && record 5 "haproxy-ingress" SKIPPED "needs --live"
-  wanted 6 && record 6 "ingress-nginx" SKIPPED "needs --live"
   wanted 9 && record 9 "traefik refusal" SKIPPED "needs --live"
 fi
 

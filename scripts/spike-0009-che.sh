@@ -22,6 +22,8 @@
 set -eu
 
 CLUSTER=weebo-che
+# Traefik chart 41.6.1 is Traefik v3.7.13.
+TRAEFIK_CHART=41.6.1
 DOMAIN=127.0.0.1.nip.io
 SSO_HOST="sso.$DOMAIN"
 ISSUER="https://$SSO_HOST/realms/che"
@@ -247,10 +249,8 @@ kind: Ingress
 metadata:
   name: keycloak
   namespace: sso
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-buffer-size: 16k
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   tls:
     - hosts: ["$SSO_HOST"]
       secretName: sso-tls
@@ -266,10 +266,9 @@ MANIFEST
   printf 'identity provider at %s\n' "$ISSUER"
 }
 
-# `*.127.0.0.1.nip.io` resolves to 127.0.0.1, which is the right answer for the apiserver — it
-# runs on the node's own network namespace, where ingress-nginx holds 80 and 443 — and the wrong
-# answer for every pod, whose 127.0.0.1 is its own. One rewrite fixes all of Che's hostnames at
-# once, including the per-workspace endpoint hosts nobody can enumerate in advance, which is why
+# `*.127.0.0.1.nip.io` resolves to 127.0.0.1, which is the wrong answer for every pod: its
+# 127.0.0.1 is its own, and Traefik is not listening there. One rewrite, to Traefik's Service,
+# fixes all of Che's hostnames at once, including the per-workspace endpoint hosts nobody can enumerate in advance, which is why
 # this is a wildcard rewrite rather than a list of hosts entries.
 cluster_dns() {
   kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' > "$WORK/Corefile"
@@ -280,7 +279,7 @@ cluster_dns() {
   awk '
     /^[[:space:]]*kubernetes / && !done {
       print "        rewrite stop {"
-      print "          name regex ^(.*\\.)?127\\.0\\.0\\.1\\.nip\\.io\\.?$ ingress-nginx-controller.ingress-nginx.svc.cluster.local"
+      print "          name regex ^(.*\\.)?127\\.0\\.0\\.1\\.nip\\.io\\.?$ traefik.traefik.svc.cluster.local"
       print "          answer auto"
       print "        }"
       done = 1
@@ -300,8 +299,8 @@ cluster_dns() {
 # which node-originated traffic can reach through the same kube-proxy rules a pod uses. This is
 # what replaces the hostPort that would otherwise break `kubernetes.default` for every pod.
 node_hosts() {
-  ip=$(kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.spec.clusterIP}')
-  [ -n "$ip" ] || { printf 'no ingress-nginx ClusterIP yet\n' >&2; exit 1; }
+  ip=$(kubectl -n traefik get svc traefik -o jsonpath='{.spec.clusterIP}')
+  [ -n "$ip" ] || { printf 'no traefik ClusterIP yet\n' >&2; exit 1; }
   # Rewritten in place rather than with `sed -i`: /etc/hosts is a bind mount inside the node, so
   # the rename sed does is "Device or resource busy".
   podman exec "$CLUSTER-control-plane" sh -c \
@@ -316,24 +315,21 @@ up() {
     kind create cluster --config "$WORK/kind-che.yaml" --wait 300s
   fi
 
-  printf 'installing ingress-nginx\n'
-  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
-  helm repo update ingress-nginx >/dev/null
+  printf 'installing traefik %s\n' "$TRAEFIK_CHART"
   # **No hostPort**, and this is the one setting on this rig that is not a preference. A hostPort
   # of 443 makes the CNI's portmap rules claim port 443 for the ingress pod *inside the node*, so
   # every pod's connection to `kubernetes.default` — a ClusterIP on 443 — is refused, and anything
   # holding an in-cluster API client dies at startup with no error of its own. Measured both ways
   # on this cluster: with the hostPort a pod gets `Connection refused` from `10.96.0.1:443`, and
   # `200` within fifteen seconds of scaling the controller to zero. The apiserver reaches the
-  # ingress through the node's /etc/hosts instead — see `node_hosts` below.
+  # ingress through the node's /etc/hosts instead — see `node_hosts` below. The chart sets no
+  # hostPort by default, and the Service is ClusterIP rather than the chart's LoadBalancer.
   #
-  # Two nginx workers because rootless podman's pids limit stops `worker_processes auto` coming up.
-  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-    -n ingress-nginx --create-namespace \
-    --set controller.service.type=ClusterIP \
-    --set controller.ingressClassResource.default=true \
-    --set controller.config.worker-processes="2" \
-    --set controller.admissionWebhooks.enabled=false \
+  # The default IngressClass, so an Ingress written without a class still lands on Traefik.
+  helm upgrade --install traefik traefik --repo https://traefik.github.io/charts --version "$TRAEFIK_CHART" \
+    -n traefik --create-namespace \
+    --set service.spec.type=ClusterIP \
+    --set ingressClass.isDefaultClass=true \
     --wait --timeout 10m >/dev/null
 
   printf 'pointing cluster DNS and the node at the ingress controller\n'
@@ -397,6 +393,12 @@ metadata:
 spec:
   networking:
     domain: $DOMAIN
+    # che-operator writes \`kubernetes.io/ingress.class: nginx\` and its nginx annotations on every
+    # Ingress unless this map is non-empty, and a workspace Ingress carries only that annotation —
+    # no ingressClassName. Naming Traefik here is what puts Che's routes on the controller this
+    # rig actually runs.
+    annotations:
+      kubernetes.io/ingress.class: traefik
     auth:
       identityProviderURL: "$ISSUER"
       oAuthClientName: che-client

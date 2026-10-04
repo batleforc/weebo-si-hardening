@@ -242,7 +242,7 @@ window.WEEBO_CRDS = [
                       },
                       "clusterDomain": {
                         "default": "cluster.local",
-                        "description": "The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.\n\nQualified rather than left to the search path because not every router resolves through\nit: ingress-nginx hands `auth-url` to nginx's own resolver, which applies no search\ndomains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`.",
+                        "description": "The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.\n\nQualified rather than left to the search path because not every router resolves through\nit: a proxy with its own resolver applies no search domains, so `<name>.<ns>.svc` is\n`Host not found` and every gated request a `500`.",
                         "type": "string"
                       },
                       "custom": {
@@ -274,7 +274,6 @@ window.WEEBO_CRDS = [
                         "description": "Which router this cluster runs.",
                         "enum": [
                           "Traefik",
-                          "Nginx",
                           "HaproxyIngress",
                           "OpenShiftRoute",
                           "Custom"

@@ -7,7 +7,7 @@ podDisruptionBudget:
   minAvailable: 1
 priorityClassName: ""
 ingress:
-  className: nginx
+  className: traefik
   host: auth.127.0.0.1.nip.io
   annotations:
     cert-manager.io/cluster-issuer: e2e-ca
@@ -18,7 +18,7 @@ extraCa:
   configMap: e2e-ca
   key: ca.crt
 errorPage:
-  # A Traefik middleware; this rig runs ingress-nginx.
+  # A Traefik `errors` middleware in front of a static error-page Service this rig does not run.
   enabled: false
 config:
   issuer: https://sso.127.0.0.1.nip.io/realms/che

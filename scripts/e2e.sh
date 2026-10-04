@@ -6,7 +6,7 @@
 # the code; this proves the code meets the platform it was written for.
 #
 #   scripts/e2e.sh build                 build every image the suites need, tagged :e2e
-#   scripts/e2e.sh up                    cluster + ingress + Keycloak + cert-manager + DWO + Che
+#   scripts/e2e.sh up                    cluster + Traefik + Keycloak + cert-manager + DWO + Che
 #   scripts/e2e.sh addons <suite>        what one suite needs on top (kubearmor, identity, ...)
 #   scripts/e2e.sh deploy <suite>        load the :e2e images, install the charts for one suite
 #   scripts/e2e.sh diag [dir]            dump every pod, event and log worth reading after a failure
@@ -39,7 +39,7 @@ NAMESPACE=weebo-si-hardening
 REPO_ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
 # --- pins -------------------------------------------------------------------------------------------
-INGRESS_NGINX_CHART=4.15.1
+TRAEFIK_CHART=41.6.1 # Traefik v3.7.13
 CERT_MANAGER_VERSION=v1.21.2
 KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:26.4
 DWO_VERSION=v0.43.0
@@ -250,9 +250,8 @@ kind: Ingress
 metadata:
   name: keycloak
   namespace: sso
-  annotations: { nginx.ingress.kubernetes.io/proxy-buffer-size: 16k }
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   tls: [{ hosts: ["$SSO_HOST"], secretName: sso-tls }]
   rules:
     - host: $SSO_HOST
@@ -274,7 +273,7 @@ cluster_dns() {
   awk '
     /^[[:space:]]*kubernetes / && !done {
       print "        rewrite stop {"
-      print "          name regex ^(.*\\.)?127\\.0\\.0\\.1\\.nip\\.io\\.?$ ingress-nginx-controller.ingress-nginx.svc.cluster.local"
+      print "          name regex ^(.*\\.)?127\\.0\\.0\\.1\\.nip\\.io\\.?$ traefik.traefik.svc.cluster.local"
       print "          answer auto"
       print "        }"
       done = 1
@@ -288,8 +287,8 @@ cluster_dns() {
 }
 
 node_hosts() {
-  ip=$(kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.spec.clusterIP}')
-  [ -n "$ip" ] || die "no ingress-nginx ClusterIP yet"
+  ip=$(kubectl -n traefik get svc traefik -o jsonpath='{.spec.clusterIP}')
+  [ -n "$ip" ] || die "no Traefik ClusterIP yet"
   "$E2E_RUNTIME" exec "$CLUSTER-control-plane" sh -c \
     "t=\$(mktemp) && grep -v ' $SSO_HOST\$' /etc/hosts > \"\$t\" && cat \"\$t\" > /etc/hosts && rm -f \"\$t\" && echo '$ip $SSO_HOST' >> /etc/hosts"
 }
@@ -310,10 +309,10 @@ spec: { ca: { secretName: e2e-ca } }
 ISSUER"
 }
 
-# `*.127.0.0.1.nip.io` from the rig CA, in the two places that serve it: ingress-nginx's default
+# `*.127.0.0.1.nip.io` from the rig CA, in the two places that serve it: Traefik's default
 # certificate, and Che's own `tlsSecretName`.
 wildcard_certificate() {
-  for ns in ingress-nginx eclipse-che; do
+  for ns in traefik eclipse-che; do
     kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
     kubectl apply -f - >/dev/null <<CERT
 apiVersion: cert-manager.io/v1
@@ -372,6 +371,10 @@ spec:
   networking:
     domain: $DOMAIN
     tlsSecretName: che-tls
+    # Without annotations of its own, che-operator writes ingress-nginx ones on every Ingress,
+    # including the nginx ingress class, which Traefik skips. A workspace Ingress carries no
+    # ingressClassName, so this annotation is the only class it gets.
+    annotations: { kubernetes.io/ingress.class: traefik }
     auth:
       identityProviderURL: '$ISSUER'
       oAuthClientName: che-client
@@ -409,20 +412,20 @@ up() {
   say "a wildcard certificate for every rig host"
   wildcard_certificate
 
-  say "ingress-nginx $INGRESS_NGINX_CHART"
-  # ClusterIP and no hostPort — see scripts/kind-che.yaml, point 3. Two workers because rootless
-  # podman's pids limit stops `worker_processes auto` coming up. The default certificate is the
+  say "Traefik (chart $TRAEFIK_CHART)"
+  # ClusterIP and no hostPort — see scripts/kind-che.yaml, point 3. The default certificate is the
   # rig's wildcard, so a workspace Ingress Che writes without a TLS secret of its own still chains
-  # to the one CA the suites trust.
-  retry helm upgrade --install ingress-nginx ingress-nginx \
-    --repo https://kubernetes.github.io/ingress-nginx --version "$INGRESS_NGINX_CHART" \
-    -n ingress-nginx --create-namespace \
-    --set controller.service.type=ClusterIP \
-    --set controller.ingressClassResource.default=true \
-    --set controller.config.worker-processes="2" \
-    --set controller.allowSnippetAnnotations=false \
-    --set controller.admissionWebhooks.enabled=false \
-    --set controller.extraArgs.default-ssl-certificate=ingress-nginx/wildcard-tls \
+  # to the one CA the suites trust. `allowCrossNamespace` is what the `Traefik` dialect needs: one
+  # shared `Middleware` in the operator's namespace, named from every workspace namespace (RFC
+  # 0009). ExternalName services are for the endpoint-auth suite's ungated control route.
+  retry helm upgrade --install traefik traefik \
+    --repo https://traefik.github.io/charts --version "$TRAEFIK_CHART" \
+    -n traefik --create-namespace \
+    --set service.spec.type=ClusterIP \
+    --set ingressClass.isDefaultClass=true \
+    --set providers.kubernetesCRD.allowCrossNamespace=true \
+    --set providers.kubernetesIngress.allowExternalNameServices=true \
+    --set tlsStore.default.defaultCertificate.secretName=wildcard-tls \
     --wait --timeout 10m >/dev/null
   cluster_dns
   node_hosts
@@ -691,7 +694,7 @@ deploy_operator() {
   case "$suite" in
     workspace) set -- "$@" --set registryConfig.rbac.enabled=true ;;
     kubearmor) set -- "$@" --set kubearmorPolicy.rbac.enabled=true ;;
-    endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Nginx ;;
+    endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Traefik ;;
     identity) set -- "$@" --set identity.rbac.enabled=true --set identity.argoNamespace=argocd ;;
   esac
   # Helm needs the namespace to exist before it can store the release, and the chart's own
@@ -762,7 +765,7 @@ diag() {
   # refusing a process explains itself.
   { sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null; } | grep -i apparmor | tail -n 500 > "$out/dmesg-apparmor.txt" || true
   for ns in "$NAMESPACE" eclipse-che devworkspace-controller sso kubearmor authentik weebo-authentik argocd \
-    ingress-nginx kube-system; do
+    traefik kube-system; do
     kubectl get namespace "$ns" >/dev/null 2>&1 || continue
     for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
       kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 \

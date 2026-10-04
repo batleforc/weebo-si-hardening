@@ -671,7 +671,7 @@ impl Drop for Workspace {
 
 /// `kubectl port-forward` to the ingress controller, and a client that sends every rig hostname
 /// through it and trusts the rig's CA — so a request here crosses exactly the path a browser's
-/// would: ingress-nginx, its `auth-url` subrequest, the gateway, the workspace.
+/// would: Traefik, its `forwardAuth` call to the gateway, the workspace.
 pub struct Ingress {
     forward: Child,
     /// The local port the forward listens on.
@@ -705,8 +705,8 @@ impl Ingress {
             .args([
                 "port-forward",
                 "-n",
-                "ingress-nginx",
-                "svc/ingress-nginx-controller",
+                "traefik",
+                "svc/traefik",
                 &format!("{port}:443"),
             ])
             .stdout(Stdio::null())

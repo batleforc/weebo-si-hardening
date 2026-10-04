@@ -90,7 +90,7 @@ workflow that only fires on push never will.
 ## End to end
 
 `e2e` is the one workflow that runs the platform rather than the code: a kind
-cluster with real Eclipse Che, real DevWorkspace Operator, ingress-nginx, a
+cluster with real Eclipse Che, real DevWorkspace Operator, Traefik, a
 Keycloak realm, and this repo's images and charts on top. `scripts/e2e.sh`
 builds the rig; `crates/weebo-si-e2e/tests/<suite>.rs` asserts against it. The
 images and test binaries are built once, then each suite gets its **own**
@@ -100,7 +100,7 @@ cluster, so one suite's addons never change another's answer.
 | --- | --- | --- |
 | `workspace` | — | `dwoc-pin` pins a config DevWorkspace Operator **runs with** (read off the pod); team priority and namespace annotations; `image-policy` at the devfile and at the pod floor, dry run included; `network-profiles` dropping real traffic and a granted profile opening exactly its own path; `policy-guard` refusing a cluster admin; `registry-config` copies DevWorkspace Operator actually mounts; passwd-append under an arbitrary UID; team status and conflicts; the webhook failing closed |
 | `kubearmor` | KubeArmor | the baseline and posture on every namespace in scope; the guard on managed `KubeArmorPolicy` objects. A granted profile **blocking a process** in its own workspace and not the neighbour's is written but `#[ignore]`d — see *Known gaps* |
-| `endpoint-auth` | endpoint-gateway | the gate on the Ingress Che generates; owner, teammate, stranger and anonymous over HTTPS through ingress-nginx; an `open` rule; a workspace's own service-account token; a forged identity header stripped; a developer unable to take the gate off; preauth-proxy logging in, stripping the upstream session and renewing on a `401`; the gate's in-cluster hop against an ungated route to the same workspace, and a 200-request burst costing the gateway at most 16 connections (`auth-keepalive`) |
+| `endpoint-auth` | endpoint-gateway | the gate on the Ingress Che generates; owner, teammate, stranger and anonymous over HTTPS through Traefik, with both challenge shapes (a navigation redirected to sign in, anything else a `401`); an `open` rule; a workspace's own service-account token; a forged identity header stripped; a developer unable to take the gate off; preauth-proxy logging in, stripping the upstream session and renewing on a `401`; the gate's in-cluster hop against an ungated route to the same workspace, and a 200-request burst costing the gateway at most 4 connections |
 | `identity` | Authentik, weebo-authentik, Argo CD, an in-cluster chart repository | a `WeeboSiUser` becoming a real Authentik account in the right groups and leaving with its object; an `Application` Argo CD syncs with the person's own values; adoption of a hand-made account; the allow-list refusing a whole person; dry run; a username conflict |
 
 **Every upstream is pinned** in `scripts/e2e.sh` (charts, manifests, images) and
@@ -110,7 +110,7 @@ uploads `diag-<suite>`**: every pod, event and log worth reading, the operator's
 objects and the DevWorkspaces.
 
 **The rig has one certificate authority**, and everything chains to it: Keycloak,
-the wildcard certificate ingress-nginx and Che serve, and the bundle the
+the wildcard certificate Traefik and Che serve, and the bundle the
 endpoint gateway trusts through its chart's `extraCa`. That is deliberate — it
 is how the suite proves the gateway reaches an identity provider behind a
 private CA, instead of turning TLS verification off to get a green run.
@@ -299,8 +299,7 @@ of at least 512 on the host.
   Run it by hand against a cluster whose nodes report `kubearmor.io/enforcer`:
   `task e2e:test SUITE=kubearmor -- --ignored`. Everything up to the policy object
   KubeArmor reads is still asserted nightly.
-- **Three upstreams float inside their pins.** The KubeArmor chart's images are
-  pinned by `--set` because the chart itself tracks `stable`/`latest`;
-  ingress-nginx is archived upstream, and `4.15.1` is its last chart; and the
+- **Two upstreams float inside their pins.** The KubeArmor chart's images are
+  pinned by `--set` because the chart itself tracks `stable`/`latest`; and the
   DevWorkspace Operator and che-operator manifests are fetched by tag from
   `raw.githubusercontent.com`, which pins the file but not the images it names.

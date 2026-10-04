@@ -5,21 +5,18 @@
 #   scripts/spike-0009-rig.sh down   delete it
 #
 # What this rig can and cannot settle is the point of it. It answers the DevWorkspace Operator
-# rows and the three ingress-controller rows, because those are somebody else's software behaving
+# rows and the two ingress-controller rows, because those are somebody else's software behaving
 # the way it behaves whether or not Che is in front of it. It cannot answer the Che rows (the user
 # namespace's label, the OIDC client, the shape of a token) or the OpenShift row: those need the
 # cluster the feature is actually for, and `scripts/spike-0009.sh` is written to run there too.
 #
-# Two deliberate choices worth knowing about:
+# One deliberate choice worth knowing about:
 #
 #   - DevWorkspace Operator is installed standalone, with `basic` routing, not the `che` routing
 #     class. That is why the rows it answers are about DWO's own behaviour — one object per
 #     endpoint, the devfile field's spelling, the annotations surviving — and never about which
 #     ingress class or host suffix a workspace ends up with, which Che decides and this rig does
 #     not model.
-#   - ingress-nginx is pinned to two worker processes. Under rootless podman the kind node hits a
-#     pids limit and nginx's `worker_processes auto` never comes up. That is a property of the
-#     laptop, not of ingress-nginx, and it changes nothing any row reads.
 set -eu
 
 CLUSTER="${SPIKE_CLUSTER:-weebo-spike}"
@@ -35,20 +32,9 @@ up() {
   kind get clusters 2>/dev/null | grep -qx "$CLUSTER" ||
     kind create cluster --name "$CLUSTER" --wait 180s
 
-  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
   helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
   helm repo add haproxy-ingress https://haproxy-ingress.github.io/charts >/dev/null 2>&1 || true
   helm repo update >/dev/null
-
-  printf 'installing ingress-nginx\n'
-  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-    -n ingress-nginx --create-namespace \
-    --set controller.service.type=ClusterIP \
-    --set controller.ingressClassResource.name=nginx \
-    --set controller.ingressClassResource.default=false \
-    --set controller.publishService.enabled=false \
-    --set controller.config.worker-processes="2" \
-    --wait --timeout 10m >/dev/null
 
   printf 'installing traefik\n'
   helm upgrade --install traefik traefik/traefik -n traefik --create-namespace \
