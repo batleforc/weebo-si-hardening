@@ -67,13 +67,15 @@ impl Feature<Workspace> for DwocPin {
         ) {
             Ok(provenance) => provenance,
             Err(unknown) => {
+                // The annotation is written by whoever can edit the namespace, and this text reaches
+                // the API error and the log line: escaped and bounded, never echoed raw.
+                let value = escape_annotation_value(&unknown.annotation_value);
                 return Ok(Decision::deny(
                     format!(
-                        "the namespace annotation names a catalogue key outside this namespace's grant: {}",
-                        unknown.annotation_value
+                        "the namespace annotation names a catalogue key outside this namespace's grant: {value}"
                     ),
                     unknown.team,
-                    Some(format!("unreachable key {}", unknown.annotation_value)),
+                    Some(format!("unreachable key {value}")),
                     "unknown_key",
                 ));
             }
@@ -173,6 +175,35 @@ fn decide(
             },
         ],
     )
+}
+
+/// The longest annotation value echoed into a message.
+const MAX_ECHOED_VALUE: usize = 128;
+
+/// A namespace annotation value, quoted, escaped and length-bounded for a message.
+///
+/// The annotation is written by whoever can edit the namespace, and the message reaches the API
+/// error and the operator's log line: a newline or a terminal escape sequence in it would be a way
+/// to forge a log line or drive a reader's terminal. Same treatment `image-policy` gives a
+/// reference (`escape_reference`), restated here because this crate does not depend on that one.
+fn escape_annotation_value(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars().take(MAX_ECHOED_VALUE) {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:04x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    if value.chars().count() > MAX_ECHOED_VALUE {
+        out.push_str("…(truncated)");
+    }
+    out
 }
 
 /// Builds `hardening.weebo.io/dwoc-pin`'s value: a verb followed by `;`-separated `k=v` pairs.
@@ -474,6 +505,21 @@ mod tests {
         let decision = feature.evaluate(&subject, &ctx).unwrap();
         assert_eq!(decision.result, "unknown_key");
         assert!(decision.denial.is_some());
+    }
+
+    #[test]
+    fn an_annotation_value_is_escaped_and_bounded_before_it_reaches_a_message() {
+        let escaped = escape_annotation_value("gpu\n2026-01-01 forged line\u{1b}[31m\"");
+        assert!(!escaped.contains('\n'));
+        assert!(!escaped.contains('\u{1b}'));
+        assert!(escaped.starts_with('"') && escaped.ends_with('"'));
+        assert!(escaped.contains("\\n"));
+        assert!(escaped.contains("\\\""));
+
+        let long = "a".repeat(MAX_ECHOED_VALUE + 50);
+        let escaped = escape_annotation_value(&long);
+        assert!(escaped.ends_with("…(truncated)"));
+        assert!(escaped.chars().count() < MAX_ECHOED_VALUE + 20);
     }
 
     #[test]

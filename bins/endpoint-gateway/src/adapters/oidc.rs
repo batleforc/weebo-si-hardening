@@ -668,6 +668,16 @@ impl JwksVerifier {
     }
 }
 
+/// The `exp` a JWT *claims*, read without verifying anything — good for capping how long a
+/// cached answer may live, never for trusting the token. `None` for anything not a JWT payload
+/// with a non-negative integer `exp`.
+pub fn unverified_exp(token: &str) -> Option<u64> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = B64.decode(payload.trim_end_matches('=')).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("exp")?.as_u64()
+}
+
 /// The `iss` a JWT *claims*, read without verifying anything — good for deciding whether a token
 /// is worth any further work, and for nothing else.
 pub fn unverified_issuer(token: &str) -> Option<String> {

@@ -80,7 +80,8 @@ nodes:
               pathType: File
     extraMounts:
       # Written by scripts/spike-0009-che.sh before the cluster is created. kind does not expand
-      # environment variables in this file, so the path is literal on both sides.
+      # environment variables in this file, so this path is a placeholder: the script substitutes
+      # $SPIKE_CHE_STATE/sso-ca.crt into a per-run copy (see kind_config in that script).
       - hostPath: /tmp/weebo-si-che/sso-ca.crt
         containerPath: /etc/kubernetes/pki/sso-ca.crt
         readOnly: true

@@ -151,15 +151,33 @@ fn strip_service_cookies(headers: &mut HeaderMap, config: &Config, credential: &
 
 /// Whether the passthrough marker is present in the configured header.
 ///
-/// A coarse substring test, exactly as the contract says. Suppressing injection only ever costs
-/// the caller its own session — the upstream challenges them — so a false positive here is
-/// fail-closed.
+/// A substring test for every header but `Cookie`. Suppressing injection only ever costs the
+/// caller its own session — the upstream challenges them — so a false positive here is
+/// fail-closed for that caller.
+///
+/// **`Cookie` is the exception, and it is matched per cookie.** The value is a `;`-delimited list,
+/// so a bare substring over the whole value lets `contains: "session="` match a cookie *named*
+/// `_gw_session`, or one whose value merely contains the text — and a cookie the forward-auth
+/// gateway sets on every user would then switch injection off for everyone. Each `name=value`
+/// pair is instead tested for *starting with* the configured text, so `session=` means a cookie
+/// named `session` and `_gw_session=abc` does not match. Every line of the header is read, not
+/// the first.
 pub fn marker_present(headers: &HeaderMap, config: &Config) -> bool {
+    let marker = config.passthrough.contains.as_str();
+    let per_cookie = config.passthrough.header == http::header::COOKIE;
     headers
         .get_all(&config.passthrough.header)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .any(|value| value.contains(&config.passthrough.contains))
+        .any(|value| {
+            if per_cookie {
+                value
+                    .split(';')
+                    .any(|pair| pair.trim_start().starts_with(marker))
+            } else {
+                value.contains(marker)
+            }
+        })
 }
 
 /// The separator used when appending to an existing header value.
@@ -183,16 +201,28 @@ fn inject(
     let name = &config.inject.header;
     let combined = match config.inject.mode {
         InjectMode::Set => credential.expose().to_owned(),
-        InjectMode::Append => match headers.get(name).and_then(|v| v.to_str().ok()) {
-            Some(existing) if !existing.is_empty() => {
-                format!(
-                    "{existing}{}{}",
-                    append_separator(name),
-                    credential.expose()
-                )
+        InjectMode::Append => {
+            // Every line, joined: a caller may send several `Cookie` headers (HTTP/2 splits
+            // them), and `insert` below replaces them all, so reading only the first would drop
+            // the rest of what the caller sent.
+            let separator = append_separator(name);
+            let mut existing = Vec::new();
+            for value in headers.get_all(name) {
+                match value.to_str() {
+                    Ok(text) if !text.is_empty() => existing.push(text),
+                    Ok(_) => {}
+                    // Not text, so it cannot be joined — and dropping it would send the upstream
+                    // a request that is not the one the caller made. Refuse it by name instead.
+                    Err(_) => {
+                        return Err(RelayError::Malformed(format!(
+                            "{name} carries a value that is not text and cannot be appended to"
+                        )));
+                    }
+                }
             }
-            _ => credential.expose().to_owned(),
-        },
+            existing.push(credential.expose());
+            existing.join(separator)
+        }
     };
 
     let value = HeaderValue::from_str(&combined).map_err(|_| {
@@ -833,5 +863,60 @@ mod tests {
 
         headers.append(http::header::COOKIE, "session=abc".parse().unwrap());
         assert!(marker_present(&headers, &cfg));
+    }
+
+    #[test]
+    fn a_cookie_merely_ending_in_the_marker_name_is_not_the_marker() {
+        let cfg = config(InjectMode::Set, &[], 0);
+        let mut headers = HeaderMap::new();
+        // The gateway's own cookie, set for every user.
+        headers.insert(
+            http::header::COOKIE,
+            "_gw_session=abc; theme=session=x".parse().unwrap(),
+        );
+        assert!(!marker_present(&headers, &cfg));
+
+        // Whereas the real one is found anywhere in the list, and on any line.
+        headers.insert(
+            http::header::COOKIE,
+            "_gw_session=abc; session=mine".parse().unwrap(),
+        );
+        assert!(marker_present(&headers, &cfg));
+    }
+
+    #[tokio::test]
+    async fn append_keeps_every_cookie_line_the_caller_sent() {
+        let cfg = config(InjectMode::Append, &[], 0);
+        let cache = Cache::new();
+        let upstream = Recorder::scripted(&[200]);
+        let mut req = request(Some("theme=dark"));
+        req.headers_mut()
+            .append(http::header::COOKIE, "lang=fr".parse().unwrap());
+
+        relay(req, &cfg, &cache, &Minting::default(), &upstream)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            upstream.injected(),
+            vec![Some("theme=dark; lang=fr; sid=token0".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn append_refuses_a_cookie_value_it_cannot_join_rather_than_dropping_it() {
+        let cfg = config(InjectMode::Append, &[], 0);
+        let cache = Cache::new();
+        let upstream = Recorder::scripted(&[200]);
+        let mut req = request(None);
+        req.headers_mut().insert(
+            http::header::COOKIE,
+            HeaderValue::from_bytes(b"a=\xff").unwrap(),
+        );
+
+        let err = relay(req, &cfg, &cache, &Minting::default(), &upstream)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RelayError::Malformed(_)), "{err}");
     }
 }

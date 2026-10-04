@@ -7,7 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use kube::Client;
-use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams};
+use kube::api::{Api, DynamicObject, Patch, PatchParams};
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::{WatchStreamExt, watcher};
 use serde_json::{Value, json};
@@ -20,6 +20,7 @@ use weebo_si_kubearmor_policy::{
     Applied, BaselineView, Diff, ManagedObject, ObjectKey, PodSelector, PolicyStore, RuleBody,
 };
 
+use crate::kube_policy_store::{pinned_delete_outcome, pinned_delete_params};
 use crate::kubearmor_template_store::{SELECTOR_FIELD, kubearmor_policy_resource};
 use crate::ns_index::NsIndex;
 use crate::owner_reference::{owner_from_references, owner_references_json};
@@ -162,6 +163,7 @@ impl KubeArmorPolicyStore {
             pod_selector,
             body: RuleBody::opaque(serde_json::to_vec(&spec).ok()?),
             owner: owner_from_references(obj.metadata.owner_references.as_deref()),
+            uid: obj.metadata.uid.clone(),
         })
     }
 
@@ -206,20 +208,22 @@ impl KubeArmorPolicyStore {
         Ok(())
     }
 
-    async fn delete(&self, key: &ObjectKey, backend: RuntimeBackend) -> Result<(), DomainError> {
+    async fn delete(
+        &self,
+        key: &ObjectKey,
+        backend: RuntimeBackend,
+        uid: Option<&str>,
+    ) -> Result<(), DomainError> {
         match backend {
             RuntimeBackend::KubeArmor => {}
         }
         let resource = kubearmor_policy_resource();
         let api: Api<DynamicObject> =
             Api::namespaced_with(self.client.clone(), key.namespace.as_str(), &resource);
-        match api.delete(&key.name, &DeleteParams::default()).await {
-            Ok(_) => Ok(()),
-            // Deleting an object that is already gone is the outcome we wanted, not a failure —
-            // this is what keeps a repeated Enforce pass over a namespace idempotent.
-            Err(kube::Error::Api(err)) if err.code == 404 => Ok(()),
-            Err(err) => Err(DomainError::PortFailed(err.to_string())),
-        }
+        // Pinned to the uid the object was listed with, and 404/409 read as "nothing of ours to
+        // delete" — see `pinned_delete_params` for the window this closes.
+        let result = api.delete(&key.name, &pinned_delete_params(uid)).await;
+        pinned_delete_outcome("kubearmor-policy", key, result)
     }
 }
 
@@ -262,7 +266,9 @@ impl PolicyStore for KubeArmorPolicyStore {
             for diff in diffs {
                 match diff {
                     Diff::Create(obj) | Diff::Update(obj) => self.apply_object(obj).await?,
-                    Diff::Delete { key, backend } => self.delete(key, *backend).await?,
+                    Diff::Delete { key, backend, uid } => {
+                        self.delete(key, *backend, uid.as_deref()).await?
+                    }
                     Diff::Unchanged(_) => {}
                 }
             }
@@ -291,6 +297,7 @@ mod tests {
             pod_selector: PodSelector::DevWorkspaceId("workspacede4f56".to_string()),
             body: RuleBody::opaque(br#"{"action":"Allow"}"#.to_vec()),
             owner,
+            uid: None,
         }
     }
 
@@ -379,6 +386,21 @@ mod tests {
                 "hardening.weebo.io/profile": "git-write",
                 "hardening.weebo.io/backend": "KubeArmor",
             })
+        );
+    }
+
+    #[test]
+    fn a_listed_object_carries_its_uid_into_the_delete_precondition() {
+        // The uid read here is what `Diff::Delete` pins the delete to; dropping it would quietly
+        // turn every delete back into a delete by name.
+        let mut live = written(&profile_object(None));
+        live.metadata.uid = Some("uid-listed".to_string());
+        let read = KubeArmorPolicyStore::from_object(&live).unwrap();
+        assert_eq!(read.uid.as_deref(), Some("uid-listed"));
+        let expected = profile_object(None);
+        assert!(
+            weebo_si_chassis::managed::Managed::content_eq(&read, &expected),
+            "the uid is not content: a listed object must still diff as Unchanged"
         );
     }
 }

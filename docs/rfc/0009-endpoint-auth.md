@@ -626,6 +626,16 @@ Che-specific in a way that is worth taking advantage of rather than reinventing:
    linear-time guarantee is what makes accepting an admin-supplied pattern on the admission path
    defensible at all.
 
+   A template is ambiguous too once a username, workspace or endpoint contains the separator:
+   `{user}-{workspace}-{endpoint}` reads `alice-bob-ws-api` as `alice` or `alice-bob`, and
+   `alice-my-ws-api` as `alice` or `alice-my`. Admission therefore gives a host to the
+   namespace's owner when the owner is one of the readings **and no other reading is a user who
+   owns a namespace** (by the same owner annotation, across every namespace the webhook
+   watches). `alice-bob` gets `alice-bob-ws-api` while no `alice` exists, `alice` keeps her
+   hyphenated workspaces while no `alice-my` exists, and when both readings are real people
+   neither gets the host. A user created after a colliding host was admitted is the remaining
+   case, and lands in the conflict rule below.
+
    A host matching no entry belongs to nobody: admission refuses it, and the gateway denies, with
    the pattern list named in the message so the answer is "add a template", not "why".
 3. **Ambiguity is `deny`, never "pick one".** If two indexed objects still claim one host, the
@@ -821,8 +831,8 @@ caller chose.
 `HaproxyIngress` is therefore **conditionally supportable, on an assertion rather than on a check**
 — which is precisely the `Custom` dialect's position, where "allowing the dialect *is* the admin's
 assertion that it conforms". It is enabled the same way: `gateway.haproxyPrerequisite`, a boolean
-an admin sets after installing the six lines, `Degraded` with the reason while it is `false`, and
-the six lines written out in `docs/weebosiconfig.md` and the brick page. The gate still attaches
+an admin sets after installing the seven lines, `Degraded` with the reason while it is `false`, and
+the seven lines written out in `docs/weebosiconfig.md` and the brick page. The gate still attaches
 when the assertion is missing, because a gate a knowing attacker can bypass refuses everybody who
 is not attacking and an unattached gate refuses nobody. Two annotations the dialect had been
 missing came out of the same row and are now written: `auth-method: "*"`, without which the gate is
@@ -920,14 +930,21 @@ instead**, where ingress-nginx interpolates nginx variables without any snippet:
 
 ```yaml
 nginx.ingress.kubernetes.io/auth-url: >-
-  http://endpoint-gateway.weebo-si-hardening.svc.cluster.local:4180/auth?host=$host&uri=$request_uri&method=$request_method&proto=$scheme
+  http://endpoint-gateway.weebo-si-hardening.svc.cluster.local:4180/auth?host=$host&uri=$escaped_request_uri&method=$request_method&proto=$scheme
 nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-User,X-Auth-Request-Groups,X-Auth-Request-Email
 ```
 
 `/auth` therefore accepts its four inputs from either the headers or those query parameters,
 **never mixing the two**: a dialect declares which transport it uses, and a request arriving with
 both is rejected rather than merged, because "the header says one path and the query says another"
-is the path-confusion bug this design spends a whole section closing. `Set-Cookie` propagation
+is the path-confusion bug this design spends a whole section closing.
+
+The URL carries the caller's own request URI, so the dialect uses `$escaped_request_uri`, never
+`$request_uri`: the raw value holds the caller's `?` and `&`, and `/x?&host=other` would otherwise
+state a second `host` in the auth URL. The gateway also refuses any request that states `host`,
+`uri`, `method` or `proto` more than once, and one that omits an input the controller always
+sends — a missing or unreadable `X-Forwarded-Uri` is a `400`, never a decision about `/`.
+`Set-Cookie` propagation
 still needs `auth_request_set` plus `add_header` in the controller's own configuration snippet at
 the `ConfigMap` level, which is admin-owned and not developer-reachable — that is the Nginx
 dialect's real prerequisite, and it is one line in a `ConfigMap` rather than a cluster-wide

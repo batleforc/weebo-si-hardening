@@ -393,7 +393,25 @@ impl IdentityConfig {
             namespace,
             values,
         ) {
-            Ok(application) => Ok(application),
+            Ok(application) => {
+                // The allow-list was checked on the *template* above, where `{USERNAME}` is still
+                // a placeholder; a prefix match there says nothing about what a username renders
+                // to. Checked again on the value Argo will actually be given, and a `..` segment
+                // is refused outright: it is how `https://git/org/{USERNAME}` becomes
+                // `https://git/org/x/../../other` and still passes a prefix check.
+                let rendered = &application.source.repo_url;
+                let escapes = rendered
+                    .split(['/', '?', '#'])
+                    .any(|segment| segment == "..");
+                if escapes || !allow_listed(&self.che.allowed_repo_urls, rendered) {
+                    violations.push(IdentityConfigViolation::RepoUrlNotAllowed {
+                        team: team.team_name(),
+                        repo_url: rendered.clone(),
+                    });
+                    return Err(violations);
+                }
+                Ok(application)
+            }
             Err(error) => {
                 violations.push(IdentityConfigViolation::RenderFailed {
                     user: user.spec.username.clone(),
@@ -679,6 +697,32 @@ mod tests {
                 team: TeamName::new("platform"),
                 repo_url: "https://charts.example.test".to_string(),
             }
+        ));
+    }
+
+    #[test]
+    fn a_username_cannot_render_the_repository_out_of_its_allowed_prefix() {
+        let mut template = template();
+        template.source.repo_url = "https://git.example.test/org/{USERNAME}".to_string();
+        // A fixed namespace, so the hostile username is judged by the repository check and not
+        // refused earlier by namespace rendering.
+        template.destination.namespace = "che-users".to_string();
+        let mut config = config();
+        config.che.allowed_repo_urls = vec!["https://git.example.test/org/*".to_string()];
+        let team = team(Some(template), vec![]);
+
+        let mut honest = user(None, ensure_che());
+        honest.spec.username = Username::new("max");
+        assert!(config.plan_for(&honest, Some(&team)).is_ok());
+
+        let mut hostile = user(None, ensure_che());
+        hostile.spec.username = Username::new("x/../../other");
+        assert!(matches!(
+            config
+                .plan_for(&hostile, Some(&team))
+                .unwrap_err()
+                .as_slice(),
+            [IdentityConfigViolation::RepoUrlNotAllowed { .. }]
         ));
     }
 

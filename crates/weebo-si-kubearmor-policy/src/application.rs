@@ -87,14 +87,46 @@ pub async fn reconcile<S: OwnedScope>(
         None
     };
 
+    // A posture decides what KubeArmor does with every operation no policy allows, so it is only
+    // ever written over a baseline that exists: built this pass, or already live and merely held
+    // because its template is momentarily unreadable. `Block` with no baseline policy anywhere
+    // blocks every operation in the namespace and breaks its workspaces.
+    let baseline_exists = !desired.objects.is_empty()
+        || desired
+            .held
+            .iter()
+            .any(|key| existing.iter().any(|live| &live.key == key));
+    let posture = desired.posture.filter(|_| baseline_exists);
+
     Ok(ReconcileOutcome {
         diffs,
         applied,
-        posture: desired.posture,
+        posture,
         team: desired.team,
         not_granted: desired.not_granted,
         held: desired.held,
     })
+}
+
+/// Remove every managed object `store` reports in `namespace` — the rollback `mode: Off` is.
+///
+/// A controller that merely stops reconciling leaves every baseline in place with nothing left to
+/// repair it, which is the opposite of what an admin reaching for `Off` wants. `managed_in` is
+/// already filtered to objects carrying the managed-by label.
+///
+/// **The caller decides that the feature is deliberately off.** A gate answering `Off` because a
+/// cache is cold is not an instruction to delete anything. The namespace's posture annotations
+/// are the caller's to remove (see `weebo_si_controller`'s `posture_removal_patch`).
+pub async fn teardown(
+    namespace: &NamespaceName,
+    store: &dyn PolicyStore,
+) -> Result<Applied, DomainError> {
+    let existing = store.managed_in(namespace);
+    if existing.is_empty() {
+        return Ok(Applied::default());
+    }
+    let diffs = crate::model::diff::compute_diff(&[], &existing);
+    store.apply(&diffs).await
 }
 
 /// Ask [`NodeEnforcerView`] what the node hosting `workspace_id` reports, and hand the answer
@@ -491,6 +523,7 @@ mod tests {
             },
             pod_selector: selector,
             body: RuleBody::opaque(body.to_vec()),
+            uid: None,
         }
     }
 
@@ -604,6 +637,50 @@ mod tests {
         assert_eq!(outcome.held[0].name, "weebo-base");
         assert!(outcome.posture_to_write().is_some());
         assert_eq!(store.all().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_baseline_with_no_live_baseline_writes_no_posture() {
+        // `Block` over a namespace with no baseline policy anywhere blocks every operation.
+        let store = FakePolicyStore::default();
+        let facts = team_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let teams = [team1()];
+        let outcome = reconcile(
+            &scoped_feature(FakeTemplateStore::new([])),
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.held.len(), 1);
+        assert_eq!(outcome.posture, None);
+        assert_eq!(outcome.posture_to_write(), None);
+    }
+
+    #[tokio::test]
+    async fn teardown_removes_what_this_namespace_holds_and_nothing_elsewhere() {
+        let mut elsewhere = live("weebo-base", "base", PodSelector::Empty, b"base-rules");
+        elsewhere.key.namespace = NamespaceName::new("user-bob");
+        let store = FakePolicyStore::new(
+            shared_namespace_store()
+                .all()
+                .into_iter()
+                .chain([elsewhere]),
+        );
+        let in_alice = store.managed_in(&NamespaceName::new("user-alice")).len();
+        assert!(in_alice > 0);
+
+        let applied = teardown(&NamespaceName::new("user-alice"), &store)
+            .await
+            .unwrap();
+
+        assert_eq!(applied.deleted as usize, in_alice);
+        let left = store.all();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].key.namespace, NamespaceName::new("user-bob"));
     }
 
     #[tokio::test]

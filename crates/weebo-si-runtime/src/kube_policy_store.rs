@@ -7,7 +7,7 @@ use std::pin::Pin;
 
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::Client;
-use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, Preconditions};
 use kube::runtime::reflector::{self, Store};
 use kube::runtime::{WatchStreamExt, watcher};
 use serde_json::{Value, json};
@@ -184,6 +184,7 @@ impl KubePolicyStore {
             pod_selector,
             body: PolicyBody::opaque(serde_json::to_vec(&spec).ok()?),
             owner: owner_from_references(obj.metadata.owner_references.as_deref()),
+            uid: obj.metadata.uid.clone(),
         })
     }
 
@@ -205,6 +206,7 @@ impl KubePolicyStore {
             pod_selector,
             body: PolicyBody::opaque(serde_json::to_vec(&spec).ok()?),
             owner: owner_from_references(obj.metadata.owner_references.as_deref()),
+            uid: obj.metadata.uid.clone(),
         })
     }
 
@@ -263,31 +265,70 @@ impl KubePolicyStore {
         Ok(())
     }
 
-    async fn delete(&self, key: &ObjectKey, backend: Backend) -> Result<(), DomainError> {
+    async fn delete(
+        &self,
+        key: &ObjectKey,
+        backend: Backend,
+        uid: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let params = pinned_delete_params(uid);
         let result = match backend {
             Backend::NetworkPolicy => {
                 let api: Api<NetworkPolicy> =
                     Api::namespaced(self.client.clone(), key.namespace.as_str());
-                api.delete(&key.name, &DeleteParams::default())
-                    .await
-                    .map(|_| ())
+                api.delete(&key.name, &params).await.map(|_| ())
             }
             Backend::Cilium => {
                 let resource = cilium_network_policy_resource();
                 let api: Api<DynamicObject> =
                     Api::namespaced_with(self.client.clone(), key.namespace.as_str(), &resource);
-                api.delete(&key.name, &DeleteParams::default())
-                    .await
-                    .map(|_| ())
+                api.delete(&key.name, &params).await.map(|_| ())
             }
         };
-        match result {
-            Ok(()) => Ok(()),
-            // Deleting an object that is already gone is the outcome we wanted, not a failure —
-            // this is what keeps a repeated Enforce pass over a namespace idempotent.
-            Err(kube::Error::Api(err)) if err.code == 404 => Ok(()),
-            Err(err) => Err(DomainError::PortFailed(err.to_string())),
+        pinned_delete_outcome("network-profiles", key, result)
+    }
+}
+
+/// `DeleteParams` pinned to the uid the object was listed with, when the diff carried one.
+///
+/// The watch cache a diff is computed from can be stale, and nothing stops a same-named object
+/// being deleted and recreated between that list and this delete — by a user, or by another
+/// subject's pass. A delete by name alone would remove the new object; a delete preconditioned
+/// on the old uid is refused by the apiserver instead. Shared with
+/// [`crate::kubearmor_policy_store`], which has the same window.
+pub(crate) fn pinned_delete_params(uid: Option<&str>) -> DeleteParams {
+    DeleteParams {
+        preconditions: uid.map(|uid| Preconditions {
+            uid: Some(uid.to_string()),
+            resource_version: None,
+        }),
+        ..DeleteParams::default()
+    }
+}
+
+/// What a [`pinned_delete_params`] delete's result means for the reconcile pass.
+pub(crate) fn pinned_delete_outcome<T>(
+    feature: &str,
+    key: &ObjectKey,
+    result: Result<T, kube::Error>,
+) -> Result<(), DomainError> {
+    match result {
+        Ok(_) => Ok(()),
+        // Deleting an object that is already gone is the outcome we wanted, not a failure —
+        // this is what keeps a repeated Enforce pass over a namespace idempotent.
+        Err(kube::Error::Api(err)) if err.code == 404 => Ok(()),
+        // The uid precondition failed: the object under this name is not the one the diff saw,
+        // so it is not this delete's to remove. Not a reconcile error — the object it was meant
+        // for is gone either way, and the newcomer is diffed on its own merits on the next pass.
+        Err(kube::Error::Api(err)) if err.code == 409 => {
+            eprintln!(
+                "WARN weebo-si-controller: {feature} not deleting {}/{}: it was recreated since \
+                 it was listed ({})",
+                key.namespace, key.name, err.message
+            );
+            Ok(())
         }
+        Err(err) => Err(DomainError::PortFailed(err.to_string())),
     }
 }
 
@@ -355,7 +396,9 @@ impl PolicyStore for KubePolicyStore {
                         Backend::NetworkPolicy => self.apply_network_policy(obj).await?,
                         Backend::Cilium => self.apply_cilium(obj).await?,
                     },
-                    Diff::Delete { key, backend } => self.delete(key, *backend).await?,
+                    Diff::Delete { key, backend, uid } => {
+                        self.delete(key, *backend, uid.as_deref()).await?
+                    }
                     Diff::Unchanged(_) => {}
                 }
             }
@@ -386,6 +429,7 @@ mod tests {
             pod_selector: PodSelector::DevWorkspaceId("workspacede4f56".to_string()),
             body: PolicyBody::opaque(br#"{"policyTypes":["Egress"]}"#.to_vec()),
             owner,
+            uid: None,
         }
     }
 
@@ -427,5 +471,76 @@ mod tests {
         let policy = written(&obj);
         assert_eq!(policy.metadata.owner_references, None);
         assert_eq!(KubePolicyStore::from_network_policy(&policy), Some(obj));
+    }
+
+    #[test]
+    fn a_listed_object_carries_its_uid_into_the_delete_precondition() {
+        // The uid read here is what `Diff::Delete` pins the delete to; dropping it would quietly
+        // turn every delete back into a delete by name.
+        let mut live = written(&profile_object(None));
+        live.metadata.uid = Some("uid-listed".to_string());
+        let read = KubePolicyStore::from_network_policy(&live).unwrap();
+        assert_eq!(read.uid.as_deref(), Some("uid-listed"));
+        let expected = profile_object(None);
+        assert!(
+            weebo_si_chassis::managed::Managed::content_eq(&read, &expected),
+            "the uid is not content: a listed object must still diff as Unchanged"
+        );
+    }
+
+    #[test]
+    fn a_delete_with_a_listed_uid_is_preconditioned_on_it() {
+        let params = pinned_delete_params(Some("uid-listed"));
+        let preconditions = params.preconditions.unwrap();
+        assert_eq!(preconditions.uid.as_deref(), Some("uid-listed"));
+        assert_eq!(preconditions.resource_version, None);
+    }
+
+    #[test]
+    fn a_delete_without_a_uid_carries_no_precondition() {
+        assert!(pinned_delete_params(None).preconditions.is_none());
+    }
+
+    fn api_error(code: u16) -> kube::Error {
+        kube::Error::Api(
+            kube::core::Status::failure("injected", "Injected")
+                .with_code(code)
+                .boxed(),
+        )
+    }
+
+    fn key() -> ObjectKey {
+        ObjectKey {
+            namespace: NamespaceName::new("user-alice"),
+            name: "weebo-git-workspacede4f56".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_delete_of_an_object_already_gone_is_not_a_failure() {
+        assert!(
+            pinned_delete_outcome::<()>("network-profiles", &key(), Err(api_error(404))).is_ok()
+        );
+    }
+
+    #[test]
+    fn a_failed_uid_precondition_is_benign_not_a_reconcile_error() {
+        // 409 is the apiserver refusing to delete a same-named object recreated since the list —
+        // exactly the delete this precondition exists to stop.
+        assert!(
+            pinned_delete_outcome::<()>("network-profiles", &key(), Err(api_error(409))).is_ok()
+        );
+    }
+
+    #[test]
+    fn any_other_delete_failure_is_a_port_failure() {
+        assert!(matches!(
+            pinned_delete_outcome::<()>("network-profiles", &key(), Err(api_error(500))),
+            Err(DomainError::PortFailed(_))
+        ));
+        assert!(matches!(
+            pinned_delete_outcome::<()>("network-profiles", &key(), Err(api_error(403))),
+            Err(DomainError::PortFailed(_))
+        ));
     }
 }

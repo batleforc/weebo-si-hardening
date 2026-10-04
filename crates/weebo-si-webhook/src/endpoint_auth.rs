@@ -372,6 +372,7 @@ fn guard_subject(
     kind: RoutingKind,
     config: &ResolvedEndpointAuthConfig,
     namespace_owner: Option<String>,
+    is_user: impl Fn(&str) -> bool,
 ) -> EndpointRoutingWrite {
     let namespace = NamespaceName::new(request.namespace.clone().unwrap_or_default());
     let actor = request
@@ -482,10 +483,21 @@ fn guard_subject(
         (Some(owner), hosts) => Some(
             hosts
                 .iter()
-                .all(|host| config.hosts.owner_of(host).as_deref() == Some(owner.as_str())),
+                .all(|host| config.hosts.owned_by(host, owner.as_str(), &is_user)),
         ),
         (None, _) => Some(false),
     };
+
+    // Read from both objects: a CREATE has no previous one, and an UPDATE that merely keeps a
+    // `bypass` a break-glass identity set is not introducing anything.
+    let says_bypass = |annotations: &BTreeMap<String, String>| {
+        annotations
+            .get(weebo_si_crd::ENDPOINT_AUTH_ANNOTATION)
+            .map(String::as_str)
+            == Some(weebo_si_crd::ENDPOINT_AUTH_BYPASS)
+    };
+    let introduces_bypass =
+        says_bypass(&submitted_annotations) && !says_bypass(&previous_annotations);
 
     EndpointRoutingWrite {
         namespace,
@@ -499,6 +511,7 @@ fn guard_subject(
         submitted_managed,
         carries_devworkspace_label,
         host_owned_by_namespace,
+        introduces_bypass,
     }
 }
 
@@ -613,7 +626,20 @@ async fn validate(
                 .find(|team| team.namespace_selector.matches(&facts.labels))
         })
         .map(|team| team.name);
-    let write = guard_subject(&request, kind, &config, namespace_owner_name.clone());
+    // Who else a hyphen-ambiguous host could name: a reading is a real user when some namespace
+    // carries it as its owner, by the same annotation this namespace is read with.
+    let is_user = |user: &str| {
+        state
+            .namespace_view
+            .annotated_anywhere(&config.owner.namespace_annotation, user)
+    };
+    let write = guard_subject(
+        &request,
+        kind,
+        &config,
+        namespace_owner_name.clone(),
+        is_user,
+    );
 
     let mut registry: Registry<EndpointRoutingWrite> = Registry::new();
     registry.register(EndpointRoutingGuard::new(
@@ -658,7 +684,7 @@ async fn validate(
             match refusal {
                 Some(reason) => {
                     println!(
-                        "weebo-si-webhook: endpoint-auth deny namespace={namespace} actor={} \
+                        "weebo-si-webhook: endpoint-auth deny namespace={namespace} actor={:?} \
                          kind={} reason=unusable_annotations",
                         write.actor,
                         kind.kind()
@@ -673,7 +699,7 @@ async fn validate(
         }
         Ok(AdmitOutcome::Deny(reason)) => {
             println!(
-                "weebo-si-webhook: endpoint-auth deny namespace={} actor={} kind={} operation={:?} reason={reason}",
+                "weebo-si-webhook: endpoint-auth deny namespace={} actor={:?} kind={} operation={:?} reason={reason:?}",
                 write.namespace,
                 write.actor,
                 kind.kind(),
@@ -945,6 +971,7 @@ mod tests {
             RoutingKind::Ingress,
             &config,
             Some("alice".into()),
+            |_: &str| true,
         );
         assert_eq!(write.host_owned_by_namespace, Some(false));
 
@@ -961,8 +988,34 @@ mod tests {
             RoutingKind::Ingress,
             &config,
             Some("alice".into()),
+            |_: &str| true,
         );
         assert_eq!(write.host_owned_by_namespace, None);
+    }
+
+    #[test]
+    fn a_hyphenated_owner_is_admitted_their_host_unless_another_reading_is_a_user() {
+        let config = config(Dialect::Traefik);
+        let object = ingress(json!({}), "alice-bob-ws-api.weebo.si");
+        let request = request_for(&object, Operation::Create, "alice-bob");
+        let write = guard_subject(
+            &request,
+            RoutingKind::Ingress,
+            &config,
+            Some("alice-bob".into()),
+            |user: &str| user == "alice-bob",
+        );
+        assert_eq!(write.host_owned_by_namespace, Some(true));
+
+        // An `alice` who owns a namespace makes the host a real clash: refused.
+        let write = guard_subject(
+            &request,
+            RoutingKind::Ingress,
+            &config,
+            Some("alice-bob".into()),
+            |user: &str| user == "alice-bob" || user == "alice",
+        );
+        assert_eq!(write.host_owned_by_namespace, Some(false));
     }
 
     #[test]
@@ -1080,6 +1133,7 @@ mod tests {
             RoutingKind::Ingress,
             &config,
             Some("alice".into()),
+            |_: &str| true,
         );
         assert!(
             !write.tampered().is_empty(),
@@ -1107,6 +1161,7 @@ mod tests {
             RoutingKind::Ingress,
             &config,
             Some("alice".into()),
+            |_: &str| true,
         );
         assert_eq!(write.provenance, Provenance::Author);
         assert!(write.carries_devworkspace_label);

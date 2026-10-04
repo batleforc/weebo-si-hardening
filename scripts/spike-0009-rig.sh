@@ -144,7 +144,7 @@ down() {
   kind delete cluster --name "$CLUSTER"
 }
 
-# The six lines that make community haproxy-ingress satisfy the forward-auth contract, and the
+# The seven lines that make community haproxy-ingress satisfy the forward-auth contract, and the
 # reason RFC 0009 calls them a *prerequisite* rather than part of the dialect: they live in the
 # controller's own ConfigMap, which belongs to whoever installed the controller. An annotation
 # cannot do this job — a per-ingress `config-backend` snippet is emitted *after* the auth call in
@@ -155,7 +155,8 @@ http-request del-header X-Auth-Request-Groups
 http-request del-header X-Auth-Request-Email
 http-request set-header X-Forwarded-Host %[req.hdr(host)]
 http-request set-header X-Forwarded-Uri %[pathq]
-http-request set-header X-Forwarded-Method %[method]'
+http-request set-header X-Forwarded-Method %[method]
+http-request set-header X-Forwarded-Proto %[ssl_fc,iif(https,http)]'
 
 prerequisite() { # prerequisite on|off
   cm=$(kubectl -n haproxy get cm -o name 2>/dev/null | grep haproxy-ingress | head -1)

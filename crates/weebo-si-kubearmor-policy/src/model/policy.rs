@@ -66,6 +66,10 @@ pub struct ManagedObject {
     /// `None` for the baseline, which must outlive any one workspace. Written as a
     /// `metadata.ownerReferences` entry by the store adapter and read back from it.
     pub owner: Option<Owner>,
+    /// The `metadata.uid` the store adapter listed this object with — `None` for a desired
+    /// object. Never compared as content; it exists so a `Delete` can be pinned to the object
+    /// actually seen (see [`weebo_si_chassis::managed::Managed::uid`]).
+    pub uid: Option<String>,
 }
 
 #[cfg(test)]

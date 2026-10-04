@@ -18,7 +18,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 
-use crate::domain::config::{Acquisition, Origin};
+use crate::domain::config::{Acquisition, Origin, Take};
 use crate::domain::port::{AcquireError, Credential, CredentialSource, GatewayError, Upstream};
 
 /// Longest credential accepted out of an origin response header.
@@ -104,6 +104,24 @@ impl HttpCredentialSource {
     }
 }
 
+/// Whether a `Set-Cookie` line deletes the cookie rather than setting it: an empty value, or a
+/// `Max-Age` of zero or less (`sid=; Max-Age=0`).
+fn is_expiring_cookie(raw: &str) -> bool {
+    let mut parts = raw.split(';');
+    let empty_value = parts
+        .next()
+        .and_then(|pair| pair.split_once('='))
+        .is_none_or(|(_, value)| value.trim().is_empty());
+    empty_value
+        || parts.any(|attribute| {
+            attribute
+                .split_once('=')
+                .filter(|(key, _)| key.trim().eq_ignore_ascii_case("max-age"))
+                .and_then(|(_, value)| value.trim().parse::<i64>().ok())
+                .is_some_and(|seconds| seconds <= 0)
+        })
+}
+
 impl CredentialSource for HttpCredentialSource {
     async fn acquire(&self) -> Result<Credential, AcquireError> {
         let response = send(&self.client, self.build()?, self.timeout)
@@ -116,17 +134,18 @@ impl CredentialSource for HttpCredentialSource {
         }
 
         let name = &self.acquisition.from_header;
-        let raw = response
-            .headers()
-            .get(name)
-            .ok_or_else(|| AcquireError::NoHeader(name.to_string()))?
-            .to_str()
-            .map_err(|_| AcquireError::NothingExtracted(name.to_string()))?;
-
-        let taken = self
-            .acquisition
-            .take
-            .apply(raw)
+        // Every line of the header, not the first: a login that sets a CSRF, locale or expiry
+        // cookie ahead of the session cookie sends several `Set-Cookie` lines, and `get` would
+        // read only the first of them.
+        let mut lines = response.headers().get_all(name).iter().peekable();
+        if lines.peek().is_none() {
+            return Err(AcquireError::NoHeader(name.to_string()));
+        }
+        let cookie_pair = matches!(self.acquisition.take, Take::CookiePair);
+        let taken = lines
+            .filter_map(|line| line.to_str().ok())
+            .filter(|raw| !(cookie_pair && is_expiring_cookie(raw)))
+            .find_map(|raw| self.acquisition.take.apply(raw))
             .ok_or_else(|| AcquireError::NothingExtracted(name.to_string()))?;
 
         if taken.len() > MAX_CREDENTIAL_LEN {
@@ -203,11 +222,68 @@ impl Upstream for HttpUpstream {
 )]
 mod tests {
     use super::*;
-    use crate::domain::config::Take;
     use http::{Method, StatusCode};
     use std::time::Instant;
 
     const SECOND: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn a_cookie_that_deletes_is_not_a_credential() {
+        assert!(is_expiring_cookie("sid=; Max-Age=0; Path=/"));
+        assert!(is_expiring_cookie("sid=abc; Max-Age=-1"));
+        assert!(is_expiring_cookie("sid=; Path=/"));
+        assert!(!is_expiring_cookie("sid=abc; Path=/; HttpOnly"));
+        assert!(!is_expiring_cookie("sid=abc; Max-Age=3600"));
+    }
+
+    /// An origin that answers every request with the given raw header lines and an empty body.
+    async fn origin_answering(header_lines: &'static str) -> (Origin, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let response =
+                    format!("HTTP/1.1 200 OK\r\n{header_lines}content-length: 0\r\n\r\n");
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (
+            Origin::parse("credential.origin", &format!("http://{addr}")).unwrap(),
+            task,
+        )
+    }
+
+    #[tokio::test]
+    async fn the_session_cookie_is_found_behind_other_set_cookie_lines() {
+        let (origin, task) = origin_answering(
+            "set-cookie: csrf=; Max-Age=0\r\nset-cookie: locale=fr; Path=/\r\nset-cookie: sid=abc; Path=/\r\n",
+        )
+        .await;
+        let mut acq = acquisition();
+        acq.origin = origin;
+        let source = HttpCredentialSource::new(client(SECOND), acq, SECOND);
+
+        // `locale=fr` is the first live cookie, which is exactly why a rule naming the header
+        // alone cannot pick the session: the first non-expiring line wins, deterministically.
+        let credential = source.acquire().await.unwrap();
+        assert_eq!(credential.expose(), "locale=fr");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn only_expiring_cookies_is_nothing_extracted() {
+        let (origin, task) = origin_answering("set-cookie: sid=; Max-Age=0\r\n").await;
+        let mut acq = acquisition();
+        acq.origin = origin;
+        let source = HttpCredentialSource::new(client(SECOND), acq, SECOND);
+
+        let err = source.acquire().await.unwrap_err();
+        assert!(matches!(err, AcquireError::NothingExtracted(_)), "{err}");
+        task.abort();
+    }
 
     /// A socket that accepts and then never says a word: the stalled-upstream shape.
     async fn silent_origin() -> (Origin, tokio::task::JoinHandle<()>) {

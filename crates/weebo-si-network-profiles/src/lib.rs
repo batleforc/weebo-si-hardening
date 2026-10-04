@@ -13,7 +13,7 @@ pub mod model;
 pub mod port;
 pub mod resolve;
 
-pub use application::{ReconcileOutcome, reconcile, run_canary};
+pub use application::{ReconcileOutcome, reconcile, run_canary, teardown};
 pub use backend::resolve_backend;
 pub use canary::{CanaryVerdict, Reachability, verdict};
 pub use exclusion::{CHE_NAMESPACE, is_excluded_namespace};

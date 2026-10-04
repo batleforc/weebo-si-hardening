@@ -139,6 +139,17 @@ fn warn_refused(outcome: &ReconcileOutcome) {
     }
 }
 
+/// Whether the loaded configuration itself says `mode: Off`, as opposed to the gate answering
+/// `Off` for a namespace it cannot yet see or a singleton it has not yet read.
+fn configured_off(ctx: &Ctx) -> bool {
+    ctx.deps
+        .config
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .is_some_and(|config| config.mode == FeatureMode::Off)
+}
+
 async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     if !ctx.is_leader.load(Ordering::Relaxed) {
         return Ok(Action::requeue(Duration::from_secs(15)));
@@ -160,6 +171,20 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // A namespace this feature no longer reconciles must stop being counted, or the readiness
         // gauge reports a degradation for a namespace nobody is configuring any more.
         ctx.deps.observer.forget(&name);
+        // `mode: Off` is a rollback: the copies this feature wrote come away. Only when the
+        // configuration *says* `Off` — the gate also answers `Off` while the namespace cache is
+        // cold or the singleton has not loaded, and neither is an instruction to delete anything.
+        if configured_off(&ctx) {
+            let applied = weebo_si_registry_config::teardown(&name, ctx.deps.object_store.as_ref())
+                .await
+                .map_err(|err| Error(err.to_string()))?;
+            if applied.deleted > 0 {
+                println!(
+                    "weebo-si-controller: {FEATURE} namespace={name} mode=Off torn down deleted={}",
+                    applied.deleted
+                );
+            }
+        }
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
@@ -202,6 +227,7 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
     ctx.deps.observer.reconciled(&outcome);
     warn_not_granted(&outcome);
     warn_refused(&outcome);
+    crate::network_profiles::warn_held(FEATURE, &outcome.held);
     println!(
         "weebo-si-controller: {FEATURE} namespace={name} mode={mode:?} diffs={} applied={:?} \
          ready={}",

@@ -66,8 +66,10 @@ tasks:
       - |
         set -eu
         if ! command -v trivy >/dev/null 2>&1; then
-          echo "trivy not installed — run 'mise use trivy' to enable the filesystem scan" >&2
-          exit 0
+          # A scan that cannot run is not a scan that passed: exiting 0 here let `task audit` report
+          # green on a machine with nothing checked.
+          echo "trivy not installed — run 'mise install' (trivy is pinned in mise.toml)" >&2
+          exit 1
         fi
         # --helm-set: charts/preauth-proxy/values.yaml's `credentials.existingSecret` is
         # required-with-no-default (see values.yaml's own comment) — trivy's Helm renderer needs

@@ -197,6 +197,30 @@ pub fn pod_images_from_object(
         }
     }
 
+    // OCI image volumes (`spec.volumes[*].image.reference`) pull from a registry exactly as a
+    // container's image does, so leaving them out would be a second way around the allow-list: a
+    // pod could mount any registry's content next to an admitted container. Named
+    // `volume/<name>` so the denial message says which kind of thing was refused.
+    if let Some(volumes) = obj
+        .data
+        .pointer("/spec/volumes")
+        .and_then(|value| value.as_array())
+    {
+        for volume in volumes {
+            let Some(reference) = volume
+                .pointer("/image/reference")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            let name = volume
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or("<unnamed>");
+            images.push(ContainerImage::new(format!("volume/{name}"), reference));
+        }
+    }
+
     PodImages {
         name: obj.metadata.name.clone().unwrap_or_default(),
         namespace: namespace.clone(),
@@ -534,6 +558,26 @@ mod tests {
         let subject = pod_images_from_object(&ns(), &obj, VariableValues::new());
         let names: Vec<&str> = subject.images.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["dev", "clone", "debugger"]);
+    }
+
+    #[test]
+    fn an_image_volume_is_judged_like_a_container_image() {
+        let obj = pod(serde_json::json!({
+            "containers": [{"name": "dev", "image": "registry.internal/a:1"}],
+            "volumes": [
+                {"name": "data", "image": {"reference": "ghcr.io/x/data:1", "pullPolicy": "Always"}},
+                {"name": "scratch", "emptyDir": {}},
+                {"name": "broken", "image": {}},
+            ],
+        }));
+        let subject = pod_images_from_object(&ns(), &obj, VariableValues::new());
+        assert_eq!(
+            subject.images,
+            vec![
+                ContainerImage::new("dev", "registry.internal/a:1"),
+                ContainerImage::new("volume/data", "ghcr.io/x/data:1"),
+            ]
+        );
     }
 
     #[test]

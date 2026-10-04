@@ -28,3 +28,25 @@ Roll it out in four steps, not one — RFC 0009's *Rollout*:
 
 `enforcement: Observe` is this chart's `config.enforcement`. It is the step that tells you which
 endpoint a probe has been hitting unauthenticated for a year, *before* the probe breaks.
+{{- if not .Values.networkPolicy.enabled }}
+
+*** networkPolicy.enabled is false. ***
+Nothing in this release limits who can call /auth, so a workspace pod can ask the gateway for
+verdicts directly, with a client-address header of its choosing. Before this carries real
+traffic, set:
+
+  networkPolicy.enabled=true
+  networkPolicy.ingressController.namespaceSelector   your ingress controller's namespace
+                                                      (now: {{ .Values.networkPolicy.ingressController.namespaceSelector | toJson }})
+  networkPolicy.ingressController.podSelector         its pods, if that namespace runs others
+  networkPolicy.monitoring.namespaceSelector          your metrics scraper's namespace
+                                                      (now: {{ .Values.networkPolicy.monitoring.namespaceSelector | toJson }})
+
+and restrict config.trustedProxy to the ingress controller's pod CIDR.
+{{- else }}
+
+NetworkPolicy "{{ include "endpoint-gateway.fullname" . }}" admits only the ingress controller
+({{ .Values.networkPolicy.ingressController.namespaceSelector | toJson }}){{ if .Values.metrics.enabled }} and the metrics scraper ({{ .Values.networkPolicy.monitoring.namespaceSelector | toJson }}){{ end }}.
+If every gated endpoint starts answering 5xx, check that selector against the namespace your
+ingress controller actually runs in.
+{{- end }}

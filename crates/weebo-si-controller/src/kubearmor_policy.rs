@@ -31,7 +31,11 @@ use weebo_si_chassis::port::dwoc_catalog::DwocCatalog;
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, DomainError, FeatureId};
-use weebo_si_crd::{DefaultPosture, FeatureMode, NamespaceName, ResolvedKubeArmorPolicyConfig};
+use weebo_si_crd::{
+    DefaultPosture, FeatureMode, KUBEARMOR_CAPABILITIES_POSTURE_ANNOTATION,
+    KUBEARMOR_FILE_POSTURE_ANNOTATION, KUBEARMOR_NETWORK_POSTURE_ANNOTATION, NamespaceName,
+    ResolvedKubeArmorPolicyConfig,
+};
 use weebo_si_kubearmor_policy::{
     EnforcementSubjects, KubeArmorPolicy, NamespaceSubject, NodeEnforcerView, PolicyStore,
     ReconcileObserver, ReconcileOutcome, Workspace,
@@ -119,6 +123,27 @@ fn warn_not_granted(outcome: &ReconcileOutcome, workspace: &str) {
     );
 }
 
+/// The merge patch that removes KubeArmor's three posture annotations — `mode: Off`'s half of the
+/// rollback. Null values, nothing else, for the same reason as [`posture_patch`].
+pub fn posture_removal_patch() -> Value {
+    json!({"metadata": {"annotations": {
+        KUBEARMOR_FILE_POSTURE_ANNOTATION: null,
+        KUBEARMOR_NETWORK_POSTURE_ANNOTATION: null,
+        KUBEARMOR_CAPABILITIES_POSTURE_ANNOTATION: null,
+    }}})
+}
+
+/// Whether the loaded configuration itself says `mode: Off`, as opposed to the gate answering `Off`
+/// for a namespace it cannot yet see or a singleton it has not yet read.
+fn configured_off(ctx: &Ctx) -> bool {
+    ctx.deps
+        .config
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .is_some_and(|config| config.mode == FeatureMode::Off)
+}
+
 /// The merge patch that carries KubeArmor's three posture annotations, and nothing else.
 ///
 /// Split out from [`write_posture`] so the document this controller sends can be asserted
@@ -178,6 +203,47 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
 
     let mode = ctx.deps.gate.mode(FeatureId::new(FEATURE), &name);
     if mode == FeatureMode::Off {
+        // `mode: Off` is a rollback: the baseline comes away and the posture annotations with it,
+        // or an admin reaching for `Off` mid-incident is left with a `Block` posture and no one
+        // repairing it. Only when the configuration *says* `Off` — the gate also answers `Off`
+        // while the namespace cache is cold or the singleton has not loaded.
+        if configured_off(&ctx) {
+            // The managed baseline is the only proof these annotations are ours: a namespace an
+            // admin annotated by hand (`kube-system`, an app namespace) never held one, and `Off`
+            // must not strip a posture this feature did not write. So the annotations come away
+            // *before* the baseline does — a failed patch is retried while the baseline still
+            // marks the namespace as ours, instead of being forgotten once it is gone.
+            let owned = !ctx.deps.policy_store.managed_in(&name).is_empty();
+            if owned
+                && ns.annotations().keys().any(|key| {
+                    [
+                        KUBEARMOR_FILE_POSTURE_ANNOTATION,
+                        KUBEARMOR_NETWORK_POSTURE_ANNOTATION,
+                        KUBEARMOR_CAPABILITIES_POSTURE_ANNOTATION,
+                    ]
+                    .contains(&key.as_str())
+                })
+            {
+                let api: Api<Namespace> = Api::all(ctx.client.clone());
+                api.patch(
+                    name.as_str(),
+                    &PatchParams::default(),
+                    &Patch::Merge(posture_removal_patch()),
+                )
+                .await
+                .map_err(|err| Error(err.to_string()))?;
+            }
+            let applied =
+                weebo_si_kubearmor_policy::teardown(&name, ctx.deps.policy_store.as_ref())
+                    .await
+                    .map_err(|err| Error(err.to_string()))?;
+            if applied.deleted > 0 {
+                println!(
+                    "weebo-si-controller: {FEATURE} namespace={name} mode=Off torn down deleted={}",
+                    applied.deleted
+                );
+            }
+        }
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
@@ -445,6 +511,18 @@ mod tests {
                 "kubearmor-file-posture": "block",
                 "kubearmor-network-posture": "audit",
                 "kubearmor-capabilities-posture": "block",
+            }}})
+        );
+    }
+
+    #[test]
+    fn the_removal_patch_nulls_exactly_the_three_annotations() {
+        assert_eq!(
+            posture_removal_patch(),
+            json!({"metadata": {"annotations": {
+                "kubearmor-file-posture": null,
+                "kubearmor-network-posture": null,
+                "kubearmor-capabilities-posture": null,
             }}})
         );
     }

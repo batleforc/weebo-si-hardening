@@ -20,13 +20,13 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
 
 [[tools.claude]]
-version = "2.1.283"
+version = "2.1.287"
 backend = "aqua:anthropics/claude-code"
 
 [tools.claude."platforms.linux-x64"]
-checksum = "sha256:db404a91bec8baffb53463166fdc8bf579208a527d60afc2d984d7507dc0c2f9"
-url = "https://github.com/anthropics/claude-code/releases/download/v2.1.283/claude-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/588996841"
+checksum = "sha256:627e578d436ebc12daf059c0379dee23f77c761fb7d2ad5de82645dc29b24372"
+url = "https://github.com/anthropics/claude-code/releases/download/v2.1.287/claude-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/603710749"
 
 [[tools.cocogitto]]
 version = "7.0.0"
@@ -72,13 +72,13 @@ checksum = "sha256:6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc
 url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz"
 
 [[tools.rtk]]
-version = "0.50.0"
+version = "0.51.0"
 backend = "aqua:rtk-ai/rtk"
 
 [tools.rtk."platforms.linux-x64"]
-checksum = "sha256:bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89"
-url = "https://github.com/rtk-ai/rtk/releases/download/v0.50.0/rtk-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/rtk-ai/rtk/releases/assets/585679953"
+checksum = "sha256:5028d3b19a8f0990d30fec9fbb07e32782bc5698e618fb1861aad8a9ccba4eb5"
+url = "https://github.com/rtk-ai/rtk/releases/download/v0.51.0/rtk-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/rtk-ai/rtk/releases/assets/605695141"
 
 [[tools.rust]]
 version = "1.98.1"
@@ -94,13 +94,13 @@ url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellche
 url_api = "https://api.github.com/repos/koalaman/shellcheck/releases/assets/279056942"
 
 [[tools.task]]
-version = "3.53.1"
+version = "3.54.0"
 backend = "aqua:go-task/task"
 
 [tools.task."platforms.linux-x64"]
-checksum = "sha256:a54a408f6861ff921f6e87774180db31bacd8c1e7c944ca696db9fea49a82fc7"
-url = "https://github.com/go-task/task/releases/download/v3.53.1/task_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/go-task/task/releases/assets/519645449"
+checksum = "sha256:680859dbb4d881a9c72d4d9a8f510825450849af8567deacd7302c01124416fb"
+url = "https://github.com/go-task/task/releases/download/v3.54.0/task_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/go-task/task/releases/assets/604090073"
 
 [[tools.traefik]]
 version = "3.7.13"
@@ -122,5 +122,11 @@ url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/51433
 provenance = "cosign"
 
 [[tools.yq]]
-version = "4.53.6"
+version = "4.54.1"
 backend = "aqua:mikefarah/yq"
+
+[tools.yq."platforms.linux-x64"]
+checksum = "sha512:57a5e74afd5aafb63c373be84c37fb778957051af3f2d1f563ae77df27b16f0e221cd64a6b7d7729f087fccbfe7d5b4aa1b42e9004d6c2df478f160b17392ead"
+url = "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64"
+url_api = "https://api.github.com/repos/mikefarah/yq/releases/assets/597222595"
+provenance = "cosign"

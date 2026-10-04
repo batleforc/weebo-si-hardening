@@ -69,11 +69,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-RESULTS=$(mktemp)
-NOTES=$(mktemp)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/weebo-si-spike.XXXXXX")
+RESULTS="$WORK/results"
+NOTES="$WORK/notes"
+: >"$RESULTS"
+: >"$NOTES"
 # shellcheck disable=SC2317,SC2329  # invoked from the EXIT trap below, which shellcheck cannot see.
-cleanup_tmp() { rm -f "$RESULTS" "$NOTES"; }
+cleanup_tmp() { rm -rf "$WORK"; }
 trap cleanup_tmp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- output -----------------------------------------------------------------------------------
 

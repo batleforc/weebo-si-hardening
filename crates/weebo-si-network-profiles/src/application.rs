@@ -92,6 +92,29 @@ pub async fn reconcile<S: OwnedScope>(
     })
 }
 
+/// Remove every managed object `store` reports in `namespace` — the rollback `mode: Off` is.
+///
+/// RFC 0004's *Rollback* promises that setting the feature to `Off` takes the objects away again;
+/// a controller that merely stops reconciling leaves every deny-all baseline in place with nothing
+/// left to repair it, which is the opposite of what an admin reaching for `Off` during an
+/// incident wants. `managed_in` is already filtered to objects carrying the managed-by label, so
+/// nothing a developer wrote is in reach.
+///
+/// **The caller decides that the feature is deliberately off.** A gate that answers `Off` because
+/// a cache is still cold is not an instruction to delete anything, and this function cannot tell
+/// the two apart.
+pub async fn teardown(
+    namespace: &weebo_si_crd::NamespaceName,
+    store: &dyn PolicyStore,
+) -> Result<Applied, DomainError> {
+    let existing = store.managed_in(namespace);
+    if existing.is_empty() {
+        return Ok(Applied::default());
+    }
+    let diffs = crate::model::diff::compute_diff(&[], &existing);
+    store.apply(&diffs).await
+}
+
 /// Run one full canary probe: reach the target with nothing in the way, then reach it again with
 /// a deny policy applied, and read the pair as a verdict.
 ///
@@ -229,6 +252,34 @@ mod tests {
         );
         assert_eq!(store.all().len(), 1);
         assert_eq!(store.all()[0].key.name, "weebo-base");
+    }
+
+    #[tokio::test]
+    async fn teardown_removes_what_this_namespace_holds_and_nothing_elsewhere() {
+        let store = FakePolicyStore::default();
+        let namespace = NamespaceFacts::default();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        reconcile(
+            &feature(),
+            &subject(),
+            &empty_context(&namespace, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut elsewhere = store.all()[0].clone();
+        elsewhere.key.namespace = NamespaceName::new("user-bob");
+        let store = FakePolicyStore::new(store.all().into_iter().chain([elsewhere]));
+
+        let applied = teardown(&NamespaceName::new("user-alice"), &store)
+            .await
+            .unwrap();
+
+        assert_eq!(applied.deleted, 1);
+        let left = store.all();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].key.namespace, NamespaceName::new("user-bob"));
     }
 
     #[tokio::test]
@@ -425,6 +476,7 @@ mod tests {
             },
             pod_selector: selector,
             body: PolicyBody::opaque(body.to_vec()),
+            uid: None,
         }
     }
 

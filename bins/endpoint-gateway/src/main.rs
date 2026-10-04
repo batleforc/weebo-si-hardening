@@ -489,6 +489,9 @@ async fn run(config: GatewayConfig) -> Result<(), String> {
     if let Some(warning) = config.token_review_limit_warning() {
         eprintln!("WARN endpoint-gateway: {warning}");
     }
+    if let Some(warning) = config.trusted_proxy_any_warning() {
+        eprintln!("WARN endpoint-gateway: {warning}");
+    }
 
     // `On` starts trusted, as the admin asserted. `Auto` starts **untrusted** and is turned on
     // only by a conclusive probe (`probe.rs`) — a forged address that did not come back.

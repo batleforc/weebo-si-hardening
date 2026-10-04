@@ -18,7 +18,7 @@ pub mod model;
 pub mod port;
 pub mod resolve;
 
-pub use application::{ReconcileOutcome, observe_enforcement, reconcile};
+pub use application::{ReconcileOutcome, observe_enforcement, reconcile, teardown};
 pub use backend::resolve_backend;
 pub use feature::kubearmor_policy::{KubeArmorPolicy, NamespaceSubject, Workspace};
 pub use model::diff::{Applied, DesiredState, Diff, compute_diff, tally};

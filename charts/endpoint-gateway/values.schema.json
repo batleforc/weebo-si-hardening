@@ -353,7 +353,11 @@
           }
         },
         "enforcement": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "Enforce",
+            "Observe"
+          ]
         },
         "revealOwner": {
           "type": "boolean"

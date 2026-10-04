@@ -159,18 +159,34 @@ pub fn passwd_scan(contents: &[u8], uid: u32, name: &str) -> Scan {
     }
 }
 
-/// Whether a group database already carries `name`, or already uses `gid`.
+/// The group scan: does our GID already resolve (nothing to do), is our group name already taken
+/// by a **different** GID (refuse), or neither (append)?
 ///
-/// Either match is enough to skip the group append: both would make the new line a duplicate of
-/// something already resolvable.
-pub fn group_has(contents: &[u8], name: &str, gid: u32) -> bool {
-    records(contents).any(|f| {
-        // name:passwd:gid:members
-        if f.first() == Some(&name.as_bytes()) {
-            return true;
-        }
-        f.get(2).and_then(|g| number(g)) == Some(gid)
-    })
+/// A GID that already resolves is enough to skip, whatever name carries it. A name that exists
+/// with another GID is a conflict, not "already there": appending would give one name two GIDs,
+/// and skipping with a "nothing to do" would leave our UID's group unresolved behind a log line
+/// that says everything is fine — the same call [`passwd_scan`] makes for a taken login name.
+pub fn group_scan(contents: &[u8], name: &str, gid: u32) -> Scan {
+    // name:passwd:gid:members
+    let gid_owner = records(contents).find_map(|f| {
+        (f.get(2).and_then(|g| number(g)) == Some(gid))
+            .then(|| String::from_utf8_lossy(f.first().copied().unwrap_or_default()).into_owned())
+    });
+    if let Some(owner) = gid_owner {
+        return Scan::Present(format!("gid {gid} to '{owner}'"));
+    }
+    let named = records(contents).find_map(|f| {
+        (f.first() == Some(&name.as_bytes())).then(|| {
+            f.get(2)
+                .map_or_else(String::new, |raw| String::from_utf8_lossy(raw).into_owned())
+        })
+    });
+    match named {
+        Some(other) => Scan::Conflict(format!(
+            "group '{name}' already exists with gid '{other}', refusing to give it gid {gid} too"
+        )),
+        None => Scan::Absent,
+    }
 }
 
 /// What scanning a database, under the lock, concluded about the line we would append.
@@ -429,12 +445,31 @@ mod tests {
         assert_eq!(passwd_name_for_uid(db, 0).as_deref(), Some("root"));
         assert_eq!(passwd_uid_for_name(db, "user"), Some(NameOwner::Uid(1000)));
         assert!(matches!(passwd_scan(db, 1234, "root"), Scan::Conflict(_)));
-        assert!(group_has(b"  wheel:x:10:\n", "wheel", 4242));
+        // Leading whitespace is skipped for groups too: `wheel` exists, with another gid.
+        assert!(matches!(
+            group_scan(b"  wheel:x:10:\n", "wheel", 4242),
+            Scan::Conflict(_)
+        ));
+        assert!(matches!(
+            group_scan(b"  wheel:x:10:\n", "other", 10),
+            Scan::Present(_)
+        ));
 
         // And an indented `#` is still a comment, as it is for glibc.
         let commented = b"   # root:x:0:0:root:/root:/bin/bash\n \n";
         assert_eq!(passwd_name_for_uid(commented, 0), None);
         assert_eq!(passwd_scan(commented, 1000, "root"), Scan::Absent);
+    }
+
+    #[test]
+    fn a_group_name_held_by_another_gid_is_a_conflict_like_a_passwd_name() {
+        let db = b"root:x:0:\nuser:x:1000:\n";
+        // Same name, same gid: already resolves. Same gid, other name: also resolves.
+        assert!(matches!(group_scan(db, "user", 1000), Scan::Present(_)));
+        assert!(matches!(group_scan(db, "dev", 1000), Scan::Present(_)));
+        // Same name, different gid: appending would give one name two gids.
+        assert!(matches!(group_scan(db, "user", 1234), Scan::Conflict(_)));
+        assert_eq!(group_scan(db, "dev", 1234), Scan::Absent);
     }
 
     #[test]
@@ -480,13 +515,17 @@ mod tests {
     }
 
     #[test]
-    fn group_matches_on_either_the_name_or_the_gid() {
+    fn group_scan_resolves_on_the_gid_and_refuses_a_name_with_another_gid() {
         let db = "root:x:0:\nuser:x:1000730000:\n";
-        assert!(group_has(db.as_bytes(), "user", 4242), "name should match");
-        assert!(
-            group_has(db.as_bytes(), "other", 1_000_730_000),
-            "gid should match"
-        );
-        assert!(!group_has(db.as_bytes(), "other", 4242));
+        // Same name with another gid is a conflict now, not a match.
+        assert!(matches!(
+            group_scan(db.as_bytes(), "user", 4242),
+            Scan::Conflict(_)
+        ));
+        assert!(matches!(
+            group_scan(db.as_bytes(), "other", 1_000_730_000),
+            Scan::Present(_)
+        ));
+        assert_eq!(group_scan(db.as_bytes(), "other", 4242), Scan::Absent);
     }
 }

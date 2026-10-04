@@ -49,39 +49,11 @@ rules:
     resources: ["kubearmorpolicies"]
     verbs: ["get", "list", "watch"]
   {{- end }}
-  {{- if .Values.endpointAuth.rbac.enabled }}
-  # RFC 0009. Read-only on the shared role: the controller's sweep diffs against it, and the
-  # webhook reads the object out of the AdmissionReview body rather than from the apiserver.
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
-  {{- if eq .Values.endpointAuth.dialect "OpenShiftRoute" }}
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["get", "list", "watch"]
-  {{- end }}
-  {{- end }}
-  {{- if .Values.registryConfig.rbac.enabled }}
-  # RFC 0007's `registry-config`, and this is a grant to read carefully rather than skim.
-  #
-  # **`secrets` cluster-wide read is the largest single permission this chart asks for.** The
-  # controller needs it for two reasons: the *templates* live in the operator's own namespace,
-  # and the *copies* live in every workspace namespace it reconciles and have to be diffed
-  # against. Kubernetes RBAC has no way to say "only objects carrying this label", so the
-  # narrowing is in code — every watch this operator opens over `secrets` is filtered by
-  # `hardening.weebo.io/managed-by` server-side (the copies) or scoped to one namespace (the
-  # templates), and neither adapter can be pointed elsewhere without changing a signature.
-  #
-  # It sits on the **shared** role because the webhook's registry guard route needs to read a
-  # `ConfigMap`'s labels to answer "is this one ours" — but note the asymmetry with every other
-  # rule here: the guard reads the object out of the AdmissionReview body, not from the
-  # apiserver, so if you are narrowing this deployment's permissions, the webhook role can lose
-  # this rule entirely. It is shared for consistency with the rules above, not because the
-  # webhook needs it. See RFC 0007's *Security considerations → Privileges*.
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
-    verbs: ["get", "list", "watch"]
-  {{- end }}
+  # The read halves of RFC 0009's `endpoint-auth` (`ingresses`, `routes`) and RFC 0007's
+  # `registry-config` (`configmaps`, `secrets`) are on the controller-only role below, not here:
+  # the webhook reads those objects out of the AdmissionReview body and never from the apiserver,
+  # so a shared grant would hand the pod an untrusted body reaches a cluster-wide read of every
+  # Secret for nothing.
   # RFC 0005's `image-policy` adds **nothing here, and nothing to the controller role either** —
   # no verb, no resource, no Role. Both of its subjects arrive in the admission body, and the
   # only lookup either route makes is the `namespaces` watch three rules up, which already
@@ -190,11 +162,11 @@ rules:
   # from `EndpointAuthConfig::attachment` and can only ever carry the keys the dialect owns.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["patch"]
+    verbs: ["get", "list", "watch", "patch"]
   {{- if eq .Values.endpointAuth.dialect "OpenShiftRoute" }}
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
-    verbs: ["patch"]
+    verbs: ["get", "list", "watch", "patch"]
   # The companion `Service` and its `EndpointSlice`, in every workspace namespace — the price of
   # a router that cannot be asked a question, since a `Route`'s `spec.to` is a local reference
   # with no cross-namespace form. Only this dialect needs them, so only this dialect grants them.
@@ -204,14 +176,6 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  {{- end }}
-  {{- if eq .Values.endpointAuth.dialect "Traefik" }}
-  # The one shared `forwardAuth` Middleware, in the operator's own namespace. An `Ingress`
-  # naming a middleware that does not exist is an `Ingress` Traefik refuses to route, so the
-  # object has to exist before the first annotation names it.
-  - apiGroups: ["traefik.io"]
-    resources: ["middlewares"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
   {{- end }}
   {{- end }}
   {{- if .Values.registryConfig.rbac.enabled }}
@@ -232,9 +196,16 @@ rules:
   # This is also the one brick whose compromise makes the cluster *less* safe rather than merely
   # unprotected: an operator that distributes registry configuration is an operator that can
   # redirect every build in the fleet. RFC 0007's *Drawbacks and risks* says so in those words.
+  #
+  # `get/list/watch` is here too and **only** here: the controller needs it for the *templates*
+  # (the operator's own namespace) and for the *copies* it diffs against in every workspace
+  # namespace. Kubernetes RBAC cannot say "only objects carrying this label", so the narrowing is
+  # in code — every watch over `secrets` is filtered by `hardening.weebo.io/managed-by`
+  # server-side (the copies) or scoped to one namespace (the templates). The webhook role does not
+  # hold it: the registry guard reads the object out of the AdmissionReview body.
   - apiGroups: [""]
     resources: ["configmaps", "secrets"]
-    verbs: ["create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   {{- end }}
   {{- if .Values.identity.rbac.enabled }}
   # RFC 0011's provisioning half, and the point where this operator stops only constraining
@@ -295,6 +266,41 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "weebo-si-operator.fullname" . }}-controller-applications
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if and .Values.endpointAuth.rbac.enabled (eq .Values.endpointAuth.dialect "Traefik") }}
+---
+# The one shared `forwardAuth` Middleware, in the operator's own namespace — a `Role`, because that
+# is the only namespace the controller ever writes it in. An `Ingress` naming a middleware that
+# does not exist is an `Ingress` Traefik refuses to route, so the object has to exist before the
+# first annotation names it; a cluster-wide grant here would be the ability to rewrite any
+# middleware chain in the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-middleware
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-middleware
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-middleware
 subjects:
   - kind: ServiceAccount
     name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}

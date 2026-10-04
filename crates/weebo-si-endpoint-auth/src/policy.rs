@@ -162,8 +162,12 @@ impl MethodSet {
     }
 
     /// Whether `method` is in this set.
+    ///
+    /// `HEAD` is answered by whatever answers `GET`: almost every framework routes it to the `GET`
+    /// handler, so a rule scoped to `GET` that did not cover it would leave `HEAD /admin` to fall
+    /// through to the endpoint default.
     pub fn contains(self, method: Method) -> bool {
-        self.0 & method.bit() != 0
+        self.0 & method.bit() != 0 || (method == Method::Head && self.0 & Method::Get.bit() != 0)
     }
 
     /// Whether this set is empty — a rule that could never match, which [`crate::compile`]
@@ -360,6 +364,18 @@ mod tests {
             },
             bearer: None,
         }
+    }
+
+    #[test]
+    fn head_is_answered_by_a_rule_scoped_to_get() {
+        let get_only = MethodSet::of([Method::Get]);
+        assert!(get_only.contains(Method::Get));
+        assert!(get_only.contains(Method::Head));
+        assert!(!get_only.contains(Method::Post));
+        // A rule naming HEAD alone does not pull GET in with it.
+        let head_only = MethodSet::of([Method::Head]);
+        assert!(head_only.contains(Method::Head));
+        assert!(!head_only.contains(Method::Get));
     }
 
     fn policy(rules: Vec<PathRule>) -> EndpointPolicy {

@@ -1,0 +1,103 @@
+{{- /*
+  The operator's own pods (webhook and controller), fenced at the network. Off by default, like
+  charts/endpoint-gateway's and charts/preauth-proxy's, because the right peers are the cluster's
+  and not the chart's — and here a wrong guess is worse than none: a policy that drops the
+  kube-apiserver's calls to the webhook is, at `failurePolicy: Fail`, a cluster-wide outage of
+  every write the webhook covers (see the break-glass command in NOTES.txt).
+
+  Ingress: the kube-apiserver to the webhook port (`https`, webhook pods only — the controller has
+  no such port), and metrics scrapers to `http-health` while the metrics Service is rendered.
+  Egress: cluster DNS, and the kube-apiserver. The apiserver is rarely a pod, so it is matched by
+  CIDR (`ipBlock`) by default; on a hosted control plane where it *is* a pod, its selectors work
+  instead. Egress is to the apiserver's *endpoints* (`kubectl get endpoints kubernetes -n
+  default`), not to the `kubernetes.default` ClusterIP: on mainstream CNIs the policy is evaluated
+  after the Service's DNAT, which is why `ports` defaults to both 443 and 6443.
+
+  Kubelet probes come from the node and are not subject to pod NetworkPolicy on mainstream CNIs;
+  if yours differs, add the node CIDR to `extraIngress`.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $api := $np.kubeApiserver }}
+{{- $nsNarrows := or (not (empty (dig "matchLabels" (dict) ($api.namespaceSelector | default (dict))))) (not (empty (dig "matchExpressions" (list) ($api.namespaceSelector | default (dict))))) }}
+{{- $podNarrows := or (not (empty (dig "matchLabels" (dict) ($api.podSelector | default (dict))))) (not (empty (dig "matchExpressions" (list) ($api.podSelector | default (dict))))) }}
+{{- if not (or $api.cidrs $nsNarrows $podNarrows) }}
+{{- fail "networkPolicy.enabled needs networkPolicy.kubeApiserver.cidrs (or, where the apiserver runs as a pod, .namespaceSelector/.podSelector with non-empty matchLabels or matchExpressions) — without one, the policy would drop the apiserver's calls to the webhook and the controller's calls to the apiserver, and at failurePolicy: Fail that blocks every write the webhook covers" }}
+{{- end }}
+{{- /* The apiserver as NetworkPolicyPeers: one ipBlock per CIDR, plus a selector peer if given. */}}
+{{- $apiPeers := list }}
+{{- range $api.cidrs }}
+{{- $apiPeers = append $apiPeers (dict "ipBlock" (dict "cidr" .)) }}
+{{- end }}
+{{- if or $nsNarrows $podNarrows }}
+{{- $peer := dict }}
+{{- with $api.namespaceSelector }}{{ $_ := set $peer "namespaceSelector" . }}{{ end }}
+{{- with $api.podSelector }}{{ $_ := set $peer "podSelector" . }}{{ end }}
+{{- $apiPeers = append $apiPeers $peer }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+spec:
+  # Both roles: the two labels every pod this chart renders shares.
+  podSelector:
+    matchLabels:
+      {{- include "weebo-si-operator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The kube-apiserver calling the admission webhooks.
+    - from:
+        {{- toYaml $apiPeers | nindent 8 }}
+      ports:
+        - port: https
+          protocol: TCP
+    {{- if .Values.metrics.service.enabled }}
+    # Metrics scrapers, on the metrics/health port only.
+    - from:
+        - namespaceSelector:
+            {{- toYaml $np.monitoring.namespaceSelector | nindent 12 }}
+          {{- with $np.monitoring.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: http-health
+          protocol: TCP
+    {{- end }}
+    {{- with $np.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if $np.dns.enabled }}
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            {{- toYaml $np.dns.namespaceSelector | nindent 12 }}
+          {{- with $np.dns.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    # The kube-apiserver: every watch, write and leader-election lease both roles make.
+    - to:
+        {{- toYaml $apiPeers | nindent 8 }}
+      ports:
+        {{- range $api.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

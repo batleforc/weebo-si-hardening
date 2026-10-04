@@ -120,4 +120,18 @@ impl NamespaceView for KubeNsStore {
                 .cloned()
         })
     }
+
+    fn annotated_anywhere(&self, key: &str, value: &str) -> bool {
+        if key.is_empty() || value.is_empty() {
+            return false;
+        }
+        self.store.state().iter().any(|namespace| {
+            namespace
+                .metadata
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.get(key))
+                .is_some_and(|found| found.eq_ignore_ascii_case(value))
+        })
+    }
 }

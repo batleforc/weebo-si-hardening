@@ -8,6 +8,14 @@ use crate::feature::FeatureId;
 pub trait FeatureGate {
     /// The mode `feature` runs in for `namespace`. Absent from `spec.features` means `Off`.
     fn mode(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode;
+    /// The mode admission acts on. Differs from [`Self::mode`] only for a namespace the watch has
+    /// not observed yet: a controller may treat that as out of scope, but admission must not, or a
+    /// namespace created a moment ago admits unguarded until the cache catches up. An
+    /// implementation that reports the configured mode there makes the caller ask for the
+    /// namespace's facts and fail closed on their absence.
+    fn mode_for_admission(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode {
+        self.mode(feature, namespace)
+    }
     /// Ordered, chassis-level, shared by every feature. Owned, not borrowed: a live
     /// implementation reads this from behind a lock (`WeeboSiConfig` is hot-reloadable), and a
     /// handful of entries written by one admin in one file is cheap to clone per admission.

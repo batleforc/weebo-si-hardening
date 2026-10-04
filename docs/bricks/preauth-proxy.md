@@ -85,7 +85,7 @@ renew:
 | `limits.response_idle_timeout_secs` | no (default `60`) | Longest silence allowed between two frames of a streamed response body; past it the body is cut (the caller sees a truncated response) and its slot freed. Resets on every frame, so a long live download is not cut. |
 | `limits.client_read_timeout_secs` | no (default `30`) | Bound on the caller sending its request head, and separately its body. |
 | `limits.drain_timeout_secs` | no (default `20`) | How long `SIGTERM` waits for in-flight requests. `preStopSleepSeconds` + this must stay under `terminationGracePeriodSeconds` (the chart checks). |
-| `limits.max_in_flight` | no (default `256`) | Requests handled at once — a request counts until its response body has finished streaming or the caller has gone; the next gets `503`. |
+| `limits.max_in_flight` | no (default `256`) | Requests handled at once — a request counts from when its body has been read in full until its response body has finished streaming or the caller has gone; the next gets `503`. |
 | `limits.max_buffered_mib` | no (default `16`, min `4`) | Request-body MiB buffered across all requests; a request that would exceed it gets `503`. |
 
 `append` joins with a semicolon for `Cookie` and a comma for every other header, because that is
@@ -150,6 +150,11 @@ A request holds its `max_in_flight` slot until its response **body** has finishe
 the caller has gone — not merely until the head is sent — so the limit bounds streams in
 progress. A body that goes silent for `limits.response_idle_timeout_secs` (default 60) is cut
 with a `WARN` line, the caller sees a truncated response, and the slot is freed.
+
+The slot is taken only once the request body has been read in full, so a caller trickling an
+upload holds none. It is bounded instead by `limits.client_read_timeout_secs` (`408`), the
+per-request body cap (`413`) and `limits.max_buffered_mib` (`503`). A proxy already at the limit
+still answers `503` before reading the body.
 
 Acquisition is **single-flight**: N concurrent first-requests produce one login, not N.
 
@@ -239,7 +244,8 @@ listener binds only after that acquisition succeeds, so the startupProbe is what
 from killing a pod that is still logging in.
 
 **NetworkPolicy.** Set `networkPolicy.enabled=true` with `networkPolicy.gateway.namespaceSelector`
-and/or `.podSelector` naming your forward-auth gateway's pods, and only they can reach the proxy
+and/or `.podSelector` naming the pods that open the connection — the router running the
+forward-auth middleware (e.g. Traefik), not the auth service itself — and only they can reach the proxy
 port — closing the "a pod calls the Service directly" bypass at the network layer. Each selector
 is a full Kubernetes LabelSelector, rendered as given (the same shape `charts/endpoint-gateway`
 takes):

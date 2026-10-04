@@ -754,7 +754,7 @@ endpointAuth:
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2: whoever writes the generated routing objects. Wrong here means every workspace endpoint stops being created. Under Eclipse Che (`routingClass: che`) that is che-operator, not DWO — `system:serviceaccount:eclipse-che:che-operator`. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |
-| `hosts.ownership` | `[{template}\|{regex}]` | yes | — | How a host names its owner. First match wins; a host no pattern describes is refused at admission. |
+| `hosts.ownership` | `[{template}\|{regex}]` | yes | — | How a host names its owner. First match wins; a host no pattern describes is refused at admission. When a template reads a host as more than one user (a `-` in a username, workspace or endpoint), the namespace owner gets it only if no other reading owns a namespace too. |
 | `hosts.exclude` | `[string]` | no | `[]` | Hosts the gate never attaches to — Che's own, and the gateway's. |
 | `catalog[].key` | string | yes | — | `private`, `team`, `shared`, `open`… admin vocabulary; a developer names one and never defines one. |
 | `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with `delegation`. |
@@ -781,7 +781,7 @@ Two write paths, and the difference is worth telling people once: `kubectl annot
 the devfile is durable, and **the devfile wins at the next workspace start**. Share now with
 `kubectl`, share for good in the devfile.
 
-**On `HaproxyIngress`, the dialect needs six lines you install yourself.** That controller builds
+**On `HaproxyIngress`, the dialect needs seven lines you install yourself.** That controller builds
 its auth request by copying the *caller's* own headers onto a fixed path, so on a default install
 the gate is handed no host and no path, a caller can state the `X-Forwarded-Host` they are judged
 against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the gate
@@ -795,6 +795,7 @@ http-request del-header X-Auth-Request-Email
 http-request set-header X-Forwarded-Host %[req.hdr(host)]
 http-request set-header X-Forwarded-Uri %[pathq]
 http-request set-header X-Forwarded-Method %[method]
+http-request set-header X-Forwarded-Proto %[ssl_fc,iif(https,http)]
 ```
 
 Then set `gateway.haproxyPrerequisite: true`. **The field is an assertion, not a check**: the

@@ -125,41 +125,54 @@ pub(crate) struct Forwarded {
 pub(crate) enum ForwardedError {
     Missing,
     Mixed,
+    /// An input the controller always states was absent or not valid text.
+    ///
+    /// Defaulting it would let the gate decide about a request nobody made: a path of `/` while
+    /// the application serves `/admin/é`, or a `GET` for a `POST`.
+    Unusable,
+}
+
+/// The four query names the Nginx dialect carries the request in.
+const QUERY_INPUTS: [&str; 4] = ["host", "uri", "method", "proto"];
+
+/// Whether the query states any of the four inputs more than once.
+///
+/// The Nginx dialect splices the caller's request URI into the auth URL, so a caller who puts
+/// `&host=...` in their own query string adds a second `host` that a map would silently resolve
+/// in the caller's favour.
+pub(crate) fn repeats_an_input(pairs: &[(String, String)]) -> bool {
+    QUERY_INPUTS
+        .iter()
+        .any(|name| pairs.iter().filter(|(key, _)| key == name).count() > 1)
+}
+
+fn required<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ForwardedError> {
+    header_str(headers, name).ok_or(ForwardedError::Unusable)
+}
+
+fn required_query(query: &HashMap<String, String>, name: &str) -> Result<String, ForwardedError> {
+    query.get(name).cloned().ok_or(ForwardedError::Unusable)
 }
 
 pub(crate) fn forwarded(
     headers: &HeaderMap,
     query: &HashMap<String, String>,
 ) -> Result<Forwarded, ForwardedError> {
-    let from_headers = header_str(headers, "x-forwarded-host").is_some();
+    let from_headers = headers.contains_key("x-forwarded-host");
     let from_query = query.contains_key("host");
     match (from_headers, from_query) {
         (true, true) => Err(ForwardedError::Mixed),
         (true, false) => Ok(Forwarded {
-            host: header_str(headers, "x-forwarded-host")
-                .unwrap_or_default()
-                .to_owned(),
-            uri: header_str(headers, "x-forwarded-uri")
-                .unwrap_or("/")
-                .to_owned(),
-            method: header_str(headers, "x-forwarded-method")
-                .unwrap_or("GET")
-                .to_owned(),
-            proto: header_str(headers, "x-forwarded-proto")
-                .unwrap_or("https")
-                .to_owned(),
+            host: required(headers, "x-forwarded-host")?.to_owned(),
+            uri: required(headers, "x-forwarded-uri")?.to_owned(),
+            method: required(headers, "x-forwarded-method")?.to_owned(),
+            proto: required(headers, "x-forwarded-proto")?.to_owned(),
         }),
         (false, true) => Ok(Forwarded {
-            host: query.get("host").cloned().unwrap_or_default(),
-            uri: query.get("uri").cloned().unwrap_or_else(|| "/".to_owned()),
-            method: query
-                .get("method")
-                .cloned()
-                .unwrap_or_else(|| "GET".to_owned()),
-            proto: query
-                .get("proto")
-                .cloned()
-                .unwrap_or_else(|| "https".to_owned()),
+            host: required_query(query, "host")?,
+            uri: required_query(query, "uri")?,
+            method: required_query(query, "method")?,
+            proto: required_query(query, "proto")?,
         }),
         (false, false) => Err(ForwardedError::Missing),
     }
@@ -199,7 +212,11 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
     header_str(headers, "authorization")
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| {
+            // The scheme is case-insensitive (RFC 9110 §11.1): `bearer xyz` is a bearer.
+            let (scheme, token) = value.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("Bearer").then_some(token)
+        })
         .map(str::to_owned)
 }
 
@@ -275,10 +292,18 @@ pub fn auth_request(
 /// `/auth` — the forward-auth decision.
 async fn auth(
     State(state): State<Arc<GatewayState>>,
-    Query(query): Query<HashMap<String, String>>,
+    Query(pairs): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> Response {
     let started = std::time::Instant::now();
+    if repeats_an_input(&pairs) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a forwarded input was stated more than once",
+        )
+            .into_response();
+    }
+    let query: HashMap<String, String> = pairs.into_iter().collect();
     let forwarded = match forwarded(&headers, &query) {
         Ok(forwarded) => forwarded,
         Err(ForwardedError::Mixed) => {
@@ -293,6 +318,13 @@ async fn auth(
             return (
                 StatusCode::BAD_REQUEST,
                 "no forwarded host: /auth is called by an ingress controller, not directly",
+            )
+                .into_response();
+        }
+        Err(ForwardedError::Unusable) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "a forwarded input is missing or unreadable; the gate will not decide on a default",
             )
                 .into_response();
         }
@@ -1311,6 +1343,75 @@ mod tests {
             forwarded(&HeaderMap::new(), &HashMap::new()),
             Err(ForwardedError::Missing)
         ));
+    }
+
+    #[test]
+    fn an_input_the_controller_always_states_is_never_defaulted() {
+        // A missing path would otherwise be decided as `/`.
+        let no_uri = headers(&[
+            ("x-forwarded-host", "alice-ws-api.weebo.si"),
+            ("x-forwarded-method", "GET"),
+            ("x-forwarded-proto", "https"),
+        ]);
+        assert!(matches!(
+            forwarded(&no_uri, &HashMap::new()),
+            Err(ForwardedError::Unusable)
+        ));
+
+        // So would a path with a byte above 0x7f, which `to_str` refuses.
+        let mut raw = no_uri.clone();
+        raw.insert(
+            "x-forwarded-uri",
+            HeaderValue::from_bytes(b"/admin/\xc3\xa9").unwrap(),
+        );
+        assert!(matches!(
+            forwarded(&raw, &HashMap::new()),
+            Err(ForwardedError::Unusable)
+        ));
+
+        let no_method = HashMap::from([
+            ("host".to_owned(), "alice-ws-api.weebo.si".to_owned()),
+            ("uri".to_owned(), "/".to_owned()),
+            ("proto".to_owned(), "https".to_owned()),
+        ]);
+        assert!(matches!(
+            forwarded(&HeaderMap::new(), &no_method),
+            Err(ForwardedError::Unusable)
+        ));
+    }
+
+    #[test]
+    fn a_caller_cannot_state_an_input_a_second_time_through_the_request_uri() {
+        let pairs = |raw: &str| -> Vec<(String, String)> {
+            raw.split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect()
+        };
+        // `/auth?host=$host&uri=$request_uri` with `$request_uri` = `/admin?&host=attacker`.
+        assert!(repeats_an_input(&pairs(
+            "host=victim.weebo.si&uri=/admin?&host=attacker.weebo.si&method=GET&proto=https"
+        )));
+        assert!(repeats_an_input(&pairs(
+            "host=victim.weebo.si&uri=/x?&uri=/public&method=GET&proto=https"
+        )));
+        // The escaped form carries the same text inside one value.
+        assert!(!repeats_an_input(&pairs(
+            "host=victim.weebo.si&uri=%2Fadmin%3F%26host%3Dattacker&method=GET&proto=https"
+        )));
+    }
+
+    #[test]
+    fn the_bearer_scheme_is_case_insensitive() {
+        for value in ["Bearer abc", "bearer abc", "BEARER abc"] {
+            assert_eq!(
+                bearer(&headers(&[("authorization", value)])).as_deref(),
+                Some("abc"),
+                "{value}"
+            );
+        }
+        assert_eq!(bearer(&headers(&[("authorization", "Basic abc")])), None);
+        assert_eq!(bearer(&headers(&[("authorization", "Bearerabc")])), None);
     }
 
     #[test]

@@ -400,14 +400,7 @@ fn sync_from_store_initial(
     capabilities: &dyn Capabilities,
     runtime_capabilities: &dyn RuntimeCapabilities,
 ) {
-    let Some(config) = store
-        .state()
-        .into_iter()
-        .find(|c| c.metadata.name.as_deref() == Some(SINGLETON_NAME))
-    else {
-        return;
-    };
-    let (declared, features) = resolve(&config, team_store);
+    let (_generation, declared, features) = resolve(store, team_store);
     apply_config(
         &features,
         &declared,
@@ -452,14 +445,7 @@ fn sync_from_store(
     runtime_capabilities: &dyn RuntimeCapabilities,
     metrics: &Metrics,
 ) {
-    let Some(config) = store
-        .state()
-        .into_iter()
-        .find(|c| c.metadata.name.as_deref() == Some(SINGLETON_NAME))
-    else {
-        return;
-    };
-    let (declared, features) = resolve(&config, team_store);
+    let (generation, declared, features) = resolve(store, team_store);
     apply_config(
         &features,
         &declared,
@@ -479,9 +465,7 @@ fn sync_from_store(
         runtime_capabilities,
     );
 
-    metrics
-        .observed_generation
-        .set(config.metadata.generation.unwrap_or(0));
+    metrics.observed_generation.set(generation);
 
     let dwoc_pin_config = features.dwoc_pin.as_ref();
     metrics
@@ -623,22 +607,42 @@ fn sync_from_store(
     }
 }
 
-/// The declared teams, and the configuration the features actually evaluate: the singleton
-/// merged with every `WeeboSiTeam`, per RFC 0011.
+/// The singleton's `generation`, the declared teams, and the configuration the features actually
+/// evaluate: the singleton merged with every `WeeboSiTeam`, per RFC 0011.
+///
+/// **No singleton reads as an empty `spec`**, never as "keep the last one seen": every feature
+/// absent, and a feature absent from `spec.features` is `Off` (`docs/weebosiconfig.md`, *`mode`*).
+/// That is also the state a pod booted into a cluster without the singleton starts in, so deleting
+/// it lands where never creating it does — rather than the last config staying in force until a
+/// restart, which is what returning early here used to do. The reflector drops the object on its
+/// `Delete` event, and on any relist that no longer carries it; both are stream items, so the
+/// sync that follows is the one that lands here.
+///
+/// No finalizer, on purpose: this stops the features, it does not roll them back. Teardown stays
+/// reserved for a config that *says* `mode: Off` (see `configured_off` in each reconciler), so a
+/// singleton deleted by mistake leaves the written baselines in place, unrepaired, rather than
+/// stripping every namespace's deny-all at once. `mode: Off` before deleting is the cleanup.
 ///
 /// Conflict messages are dropped here on purpose — this is a cache, and the `WeeboSiConfig`
 /// reconcile loop is the one place that reports them, as `Degraded` conditions on the object.
 fn resolve(
-    config: &WeeboSiConfig,
+    store: &Store<WeeboSiConfig>,
     team_store: &Store<WeeboSiTeam>,
-) -> (Vec<WeeboSiTeam>, ResolvedFeatures) {
+) -> (i64, Vec<WeeboSiTeam>, ResolvedFeatures) {
     let declared: Vec<WeeboSiTeam> = team_store
         .state()
         .iter()
         .map(|team| (**team).clone())
         .collect();
+    let Some(config) = store
+        .state()
+        .into_iter()
+        .find(|c| c.metadata.name.as_deref() == Some(SINGLETON_NAME))
+    else {
+        return (0, declared, ResolvedFeatures::default());
+    };
     let (features, _conflicts) = config.spec.resolve_teams(&declared);
-    (declared, features)
+    (config.metadata.generation.unwrap_or(0), declared, features)
 }
 
 #[allow(
@@ -728,8 +732,18 @@ fn apply_config(
     }
 }
 
-impl FeatureGate for KubeConfigStore {
-    fn mode(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode {
+impl KubeConfigStore {
+    /// The mode `feature` runs in for `namespace`.
+    ///
+    /// `unobserved_is_off` is what a namespace the watch has not yet seen answers: for the
+    /// controllers that is `Off` (nothing to reconcile until the namespace is known), for
+    /// admission it must not be — see [`FeatureGate::mode_for_admission`].
+    fn resolve_mode(
+        &self,
+        feature: FeatureId,
+        namespace: &NamespaceName,
+        unobserved_is_off: bool,
+    ) -> FeatureMode {
         let (mode, selector) = match feature.kebab() {
             "dwoc-pin" => {
                 let guard = self
@@ -814,16 +828,29 @@ impl FeatureGate for KubeConfigStore {
         // is treated as Off for this feature, regardless of the global mode. Absent selector
         // (the common case) matches everything, per RFC 0002's *Contract*.
         if let Some(selector) = selector {
-            let matches = self
-                .namespace_view
-                .facts(namespace)
-                .is_some_and(|facts| selector.matches(&facts.labels));
-            if !matches {
-                return FeatureMode::Off;
+            match self.namespace_view.facts(namespace) {
+                Some(facts) if selector.matches(&facts.labels) => {}
+                Some(_) => return FeatureMode::Off,
+                // Not in the cache yet. Admission must not read that as "out of scope": a freshly
+                // created namespace would then admit unguarded for the length of the watch lag,
+                // which is exactly when its first objects arrive. Handing back the configured
+                // mode makes `admit` ask for the facts and refuse with `NamespaceNotObserved`.
+                None if !unobserved_is_off => {}
+                None => return FeatureMode::Off,
             }
         }
 
         mode
+    }
+}
+
+impl FeatureGate for KubeConfigStore {
+    fn mode(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode {
+        self.resolve_mode(feature, namespace, true)
+    }
+
+    fn mode_for_admission(&self, feature: FeatureId, namespace: &NamespaceName) -> FeatureMode {
+        self.resolve_mode(feature, namespace, false)
     }
 
     fn teams(&self) -> Vec<Team> {
@@ -831,5 +858,212 @@ impl FeatureGate for KubeConfigStore {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use kube::runtime::reflector::store::Writer;
+
+    use super::*;
+
+    struct NoBackend;
+
+    impl Capabilities for NoBackend {
+        fn offers(&self, _backend: Backend) -> bool {
+            false
+        }
+    }
+
+    impl RuntimeCapabilities for NoBackend {
+        fn offers(&self, _backend: RuntimeBackend) -> bool {
+            false
+        }
+    }
+
+    fn singleton(generation: i64) -> WeeboSiConfig {
+        let spec = serde_json::from_value(serde_json::json!({
+            "features": {
+                "policyGuard": {
+                    "mode": "Enforce",
+                    "allowedIdentities": ["system:serviceaccount:argocd:argocd-application-controller"],
+                },
+            },
+        }))
+        .unwrap();
+        let mut config = WeeboSiConfig::new(SINGLETON_NAME, spec);
+        config.metadata.generation = Some(generation);
+        config
+    }
+
+    /// One handle per thing `apply_config` writes, so a test can see every one of them move.
+    struct Handles {
+        teams: Arc<RwLock<Vec<Team>>>,
+        dwoc_pin: Arc<RwLock<Option<ResolvedDwocPinConfig>>>,
+        network_profiles: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
+        policy_guard: Arc<RwLock<Option<PolicyGuardConfig>>>,
+        image_policy: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
+        kubearmor_policy: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
+        registry_config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
+        endpoint_auth: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+        identity: Arc<RwLock<Option<IdentityConfig>>>,
+        resolved_backend: Arc<RwLock<Backend>>,
+        resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
+        annotation_key: Arc<RwLock<String>>,
+    }
+
+    impl Handles {
+        fn new() -> Self {
+            Self {
+                teams: Arc::default(),
+                dwoc_pin: Arc::default(),
+                network_profiles: Arc::default(),
+                policy_guard: Arc::default(),
+                image_policy: Arc::default(),
+                kubearmor_policy: Arc::default(),
+                registry_config: Arc::default(),
+                endpoint_auth: Arc::default(),
+                identity: Arc::default(),
+                resolved_backend: Arc::new(RwLock::new(Backend::NetworkPolicy)),
+                resolved_runtime_backend: Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
+                annotation_key: Arc::new(RwLock::new(DEFAULT_ANNOTATION.to_string())),
+            }
+        }
+
+        /// What the background task does on every stream item, minus the metrics.
+        fn sync(&self, store: &Store<WeeboSiConfig>, team_store: &Store<WeeboSiTeam>) {
+            sync_from_store_initial(
+                store,
+                team_store,
+                &self.teams,
+                &self.dwoc_pin,
+                &self.network_profiles,
+                &self.policy_guard,
+                &self.image_policy,
+                &self.kubearmor_policy,
+                &self.registry_config,
+                &self.endpoint_auth,
+                &self.identity,
+                &self.resolved_backend,
+                &self.resolved_runtime_backend,
+                &self.annotation_key,
+                &NoBackend,
+                &NoBackend,
+            );
+        }
+
+        fn policy_guard(&self) -> Option<PolicyGuardConfig> {
+            self.policy_guard.read().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn a_deleted_singleton_resolves_as_an_empty_spec() {
+        let mut writer: Writer<WeeboSiConfig> = Writer::default();
+        let store = writer.as_reader();
+        let team_store = Writer::<WeeboSiTeam>::default().as_reader();
+        let config = singleton(7);
+
+        writer.apply_watcher_event(&watcher::Event::Apply(config.clone()));
+        let (generation, _, features) = resolve(&store, &team_store);
+        assert_eq!(generation, 7);
+        assert!(features.policy_guard.is_some());
+
+        writer.apply_watcher_event(&watcher::Event::Delete(config));
+        let (generation, declared, features) = resolve(&store, &team_store);
+        assert_eq!(generation, 0);
+        assert!(declared.is_empty());
+        assert_eq!(features, ResolvedFeatures::default());
+    }
+
+    /// The default `resolve` falls back to is the one an empty `spec` resolves to — "deleted" and
+    /// "created with no features" must not be two different states.
+    #[test]
+    fn the_no_singleton_default_is_what_an_empty_spec_resolves_to() {
+        let spec: weebo_si_crd::WeeboSiConfigSpec =
+            serde_json::from_value(serde_json::json!({ "features": {} })).unwrap();
+        let (features, conflicts) = spec.resolve_teams(&[]);
+        assert!(conflicts.is_empty());
+        assert_eq!(features, ResolvedFeatures::default());
+    }
+
+    #[test]
+    fn deleting_the_singleton_turns_every_feature_off_without_a_restart() {
+        let mut writer: Writer<WeeboSiConfig> = Writer::default();
+        let store = writer.as_reader();
+        let team_store = Writer::<WeeboSiTeam>::default().as_reader();
+        let handles = Handles::new();
+        let config = singleton(3);
+
+        writer.apply_watcher_event(&watcher::Event::Apply(config.clone()));
+        handles.sync(&store, &team_store);
+        assert_eq!(handles.policy_guard().unwrap().mode, FeatureMode::Enforce);
+
+        // Stand-ins for blocks a richer singleton would have carried: whatever was last applied,
+        // the delete must clear it, not only the one block this fixture happens to set.
+        *handles.annotation_key.write().unwrap() = "example.com/custom".to_string();
+
+        writer.apply_watcher_event(&watcher::Event::Delete(config));
+        handles.sync(&store, &team_store);
+
+        assert_eq!(handles.policy_guard(), None);
+        assert!(handles.dwoc_pin.read().unwrap().is_none());
+        assert!(handles.network_profiles.read().unwrap().is_none());
+        assert!(handles.image_policy.read().unwrap().is_none());
+        assert!(handles.kubearmor_policy.read().unwrap().is_none());
+        assert!(handles.registry_config.read().unwrap().is_none());
+        assert!(handles.endpoint_auth.read().unwrap().is_none());
+        assert!(handles.identity.read().unwrap().is_none());
+        assert!(handles.teams.read().unwrap().is_empty());
+        assert_eq!(*handles.annotation_key.read().unwrap(), DEFAULT_ANNOTATION);
+    }
+
+    /// A `Delete` the watch missed (a dropped connection while the object went away) arrives as a
+    /// relist that no longer carries it — the store is replaced at `InitDone`, and the sync after
+    /// it must clear the handles exactly as an observed `Delete` does.
+    #[test]
+    fn a_relist_without_the_singleton_turns_every_feature_off() {
+        let mut writer: Writer<WeeboSiConfig> = Writer::default();
+        let store = writer.as_reader();
+        let team_store = Writer::<WeeboSiTeam>::default().as_reader();
+        let handles = Handles::new();
+
+        writer.apply_watcher_event(&watcher::Event::Apply(singleton(1)));
+        handles.sync(&store, &team_store);
+        assert!(handles.policy_guard().is_some());
+
+        writer.apply_watcher_event(&watcher::Event::Init);
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        handles.sync(&store, &team_store);
+
+        assert_eq!(handles.policy_guard(), None);
+    }
+
+    /// Only the name the singleton is honoured under counts: a stray `WeeboSiConfig` left behind
+    /// after `cluster` is deleted must not keep anything on.
+    #[test]
+    fn a_differently_named_config_does_not_stand_in_for_a_deleted_singleton() {
+        let mut writer: Writer<WeeboSiConfig> = Writer::default();
+        let store = writer.as_reader();
+        let team_store = Writer::<WeeboSiTeam>::default().as_reader();
+        let handles = Handles::new();
+        let config = singleton(1);
+        let mut stray = singleton(1);
+        stray.metadata.name = Some("not-cluster".to_string());
+
+        writer.apply_watcher_event(&watcher::Event::Apply(config.clone()));
+        writer.apply_watcher_event(&watcher::Event::Apply(stray));
+        handles.sync(&store, &team_store);
+        assert!(handles.policy_guard().is_some());
+
+        writer.apply_watcher_event(&watcher::Event::Delete(config));
+        handles.sync(&store, &team_store);
+
+        assert_eq!(handles.policy_guard(), None);
     }
 }

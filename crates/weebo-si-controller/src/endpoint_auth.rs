@@ -32,6 +32,7 @@ use weebo_si_crd::{
     AttachmentMode, COMPANION_SERVICE, Dialect, FeatureMode, MIDDLEWARE_NAME, NamespaceName,
     ResolvedEndpointAuthConfig,
 };
+use weebo_si_network_profiles::is_excluded_namespace;
 
 /// The largest auth response body Traefik will read from the gate, in bytes — two orders of
 /// magnitude above what the gate sends.
@@ -44,6 +45,12 @@ const FEATURE: &str = "endpoint-auth";
 /// interesting change arrives as a watch event and this is only the backstop for the ones that
 /// do not (a `WeeboSiConfig` edit that changes the dialect, a controller restart).
 const REQUEUE: Duration = Duration::from_secs(300);
+
+/// How often the shared `Middleware` is re-applied.
+const MIDDLEWARE_TICK: Duration = Duration::from_secs(30);
+
+/// The `Route` sweep runs once per this many [`MIDDLEWARE_TICK`]s — the old five-minute cadence.
+const ROUTE_SWEEP_EVERY: u64 = 10;
 
 /// Everything the loop needs, built by the composition root.
 pub struct EndpointAuthDeps {
@@ -73,9 +80,15 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, is_leader: Arc<Atomic
     let ticker_namespace = deps.operator_namespace.clone();
     let ticker_leader = Arc::clone(&is_leader);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(REQUEUE);
+        // Short, because the `Middleware` has to exist before the first annotation names it and
+        // a five-minute tick leaves a freshly elected leader (or a deleted `Middleware`) with
+        // unroutable `Ingress`es for that long. The server-side apply is a no-op when nothing
+        // changed; the heavier `Route` listing keeps its old cadence.
+        let mut interval = tokio::time::interval(MIDDLEWARE_TICK);
+        let mut ticks: u64 = 0;
         loop {
             interval.tick().await;
+            ticks = ticks.wrapping_add(1);
             if !ticker_leader.load(Ordering::Relaxed) {
                 continue;
             }
@@ -87,6 +100,18 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, is_leader: Arc<Atomic
             }
             match config.gateway.dialect {
                 Dialect::Traefik => {
+                    // The annotation names the middleware by the *gateway's* namespace, and the
+                    // controller's RBAC lets it write one only in its own: when they differ the
+                    // annotation points at an object nobody creates.
+                    if config.gateway.service.namespace != ticker_namespace.as_str() {
+                        eprintln!(
+                            "ERROR weebo-si-controller: endpoint-auth gateway.service.namespace={} \
+                             is not the operator's namespace {}; the shared Middleware cannot be \
+                             created where the annotations name it",
+                            config.gateway.service.namespace, ticker_namespace
+                        );
+                        continue;
+                    }
                     if let Err(err) =
                         ensure_middleware(&ticker_client, &ticker_namespace, &config).await
                     {
@@ -94,7 +119,12 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, is_leader: Arc<Atomic
                     }
                 }
                 dialect if dialect.mode() == AttachmentMode::ReverseProxy => {
-                    if let Err(err) = sweep_routes(&ticker_client, &config).await {
+                    // `ticks` is already 1 on the interval's immediate first tick: sweep then, so a
+                    // fresh controller or new leader does not leave Routes unreconciled for a
+                    // whole sweep period.
+                    if ticks.wrapping_sub(1).is_multiple_of(ROUTE_SWEEP_EVERY)
+                        && let Err(err) = sweep_routes(&ticker_client, &config).await
+                    {
                         eprintln!("ERROR weebo-si-controller: endpoint-auth route sweep: {err}");
                     }
                 }
@@ -151,6 +181,16 @@ pub fn sweep(
     backend: Option<(&str, u16)>,
 ) -> SweepOutcome {
     if mode == FeatureMode::Off {
+        // Only an object this feature gated. `router.middlewares` is a key a developer or another
+        // controller may own on an object we never touched, and a rollback that strips it there
+        // would be the incident.
+        if annotations
+            .get(weebo_si_crd::ENDPOINT_AUTH_ANNOTATION)
+            .map(String::as_str)
+            != Some("managed")
+        {
+            return SweepOutcome::Unchanged;
+        }
         let present: Vec<String> = config
             .detachment()
             .into_iter()
@@ -184,6 +224,12 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
         return Ok(Action::requeue(REQUEUE));
     };
     let namespace = NamespaceName::new(ingress.namespace().unwrap_or_default());
+    // The webhook's scope, restated here because the sweep patches objects the webhook never saw:
+    // without it an unset `namespaceSelector` makes this loop gate every `Ingress` in the
+    // cluster, the gateway's own and Che's included, and users are locked out of the login page.
+    if !governs_ingress(&config, &namespace, &ctx.deps.operator_namespace, &ingress) {
+        return Ok(Action::requeue(REQUEUE));
+    }
     let mode = ctx
         .deps
         .gate
@@ -205,13 +251,34 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
     match outcome {
         SweepOutcome::Unchanged => {}
         SweepOutcome::Attach(missing) if mode == FeatureMode::Enforce => {
+            // The patch replaces these values wholesale. The guard pins the chain by value, so a
+            // middleware someone put there (strip-prefix, rate-limit) could not stay anyway, but
+            // dropping it silently is how "the route stopped working" gets reported.
+            for (key, value) in &missing {
+                if let Some(existing) = annotations.get(key)
+                    && !existing.is_empty()
+                    && existing != value
+                {
+                    eprintln!(
+                        "WARN weebo-si-controller: endpoint-auth replacing {key} namespace={namespace} \
+                         ingress={name} was={existing:?} now={value:?}"
+                    );
+                }
+            }
             patch_annotations(&ctx, &namespace, &name, annotation_patch(&missing, false)).await?;
             println!(
                 "weebo-si-controller: endpoint-auth attached namespace={namespace} ingress={name} keys={}",
                 missing.len()
             );
         }
-        SweepOutcome::Detach(keys) if mode == FeatureMode::Enforce => {
+        // `sweep` only returns `Detach` for `Off`, so this arm is the rollback RFC 0009 promises.
+        // Guarding it on `Enforce` made it unreachable. It also needs the configuration itself to
+        // say `Off`: with a `namespaceSelector` the gate answers `Off` for a namespace its cache
+        // has not seen yet, and a fresh leader would otherwise ungate every endpoint it reaches
+        // before the Namespace reflector fills.
+        SweepOutcome::Detach(keys)
+            if mode == FeatureMode::Off && config.mode == FeatureMode::Off =>
+        {
             let removals: BTreeMap<String, String> = keys
                 .iter()
                 .map(|key| (key.clone(), String::new()))
@@ -228,6 +295,30 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
     }
 
     Ok(Action::requeue(REQUEUE))
+}
+
+/// Whether this feature governs `ingress` at all: not in a namespace the operator never touches,
+/// and naming at least one host under the governed suffix that is not excluded. An `Ingress` with
+/// no host is not an endpoint on its own FQDN, which is the only thing this feature governs.
+fn governs_ingress(
+    config: &ResolvedEndpointAuthConfig,
+    namespace: &NamespaceName,
+    operator_namespace: &NamespaceName,
+    ingress: &Ingress,
+) -> bool {
+    if is_excluded_namespace(namespace, operator_namespace) {
+        return false;
+    }
+    ingress
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.rules.as_ref())
+        .is_some_and(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| rule.host.as_deref())
+                .any(|host| config.hosts.governs(host))
+        })
 }
 
 /// A merge patch over `metadata.annotations`. Removing a key is `null`, which is why this cannot
@@ -707,6 +798,68 @@ mod tests {
                 );
             }
             other => panic!("expected a detach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn off_leaves_a_chain_on_an_object_this_feature_never_gated() {
+        // A developer's own middleware chain, no managed marker.
+        let annotations = BTreeMap::from([(CHAIN.to_owned(), "mine@kubernetescrd".to_owned())]);
+        assert_eq!(
+            sweep(&config(), FeatureMode::Off, &annotations, None),
+            SweepOutcome::Unchanged
+        );
+    }
+
+    fn ingress_for(hosts: &[&str]) -> Ingress {
+        serde_json::from_value(json!({
+            "metadata": { "name": "x", "namespace": "user-alice" },
+            "spec": { "rules": hosts.iter().map(|host| json!({ "host": host })).collect::<Vec<_>>() }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_sweep_governs_only_what_the_webhook_governs() {
+        let mut config = config();
+        config.hosts.exclude = vec!["auth.weebo.si".to_owned()];
+        let operator = NamespaceName::new("weebo-si-hardening");
+        let alice = NamespaceName::new("user-alice");
+
+        assert!(governs_ingress(
+            &config,
+            &alice,
+            &operator,
+            &ingress_for(&["alice-ws-api.weebo.si"])
+        ));
+        // The gateway's own login host, which gating would lock everyone out of.
+        assert!(!governs_ingress(
+            &config,
+            &alice,
+            &operator,
+            &ingress_for(&["auth.weebo.si"])
+        ));
+        // Another suffix, and no host at all.
+        assert!(!governs_ingress(
+            &config,
+            &alice,
+            &operator,
+            &ingress_for(&["x.example.org"])
+        ));
+        assert!(!governs_ingress(
+            &config,
+            &alice,
+            &operator,
+            &ingress_for(&[])
+        ));
+        // The operator's namespace and Che's, whatever host they carry.
+        for namespace in [operator.clone(), NamespaceName::new("eclipse-che")] {
+            assert!(!governs_ingress(
+                &config,
+                &namespace,
+                &operator,
+                &ingress_for(&["alice-ws-api.weebo.si"])
+            ));
         }
     }
 

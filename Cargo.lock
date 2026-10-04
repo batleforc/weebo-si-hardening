@@ -3403,6 +3403,7 @@ dependencies = [
  "weebo-si-crd",
  "weebo-si-envtest-support",
  "weebo-si-identity",
+ "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
  "weebo-si-registry-config",

@@ -4,8 +4,8 @@
 //! [`crate::domain::exchange::relay`], and turns whatever comes back into a response.
 //!
 //! It does own the resource bounds of `limits` that concern the caller's side: how long a caller
-//! may take to send its request, how many requests run at once (a request counts until its
-//! response body has been streamed out or dropped), how long a streamed response body may go
+//! may take to send its request, how many requests run at once (a request counts from the moment
+//! its body has been read in full until its response body has been streamed out or dropped), how long a streamed response body may go
 //! silent, how many request-body bytes are buffered across all of them, and how long a `SIGTERM`
 //! waits for what is in flight.
 
@@ -87,6 +87,15 @@ fn message(status: StatusCode, text: &'static str) -> Response<ResponseBody> {
         .body(body)
         // `Builder::body` only fails on an invalid status or header, both fixed above.
         .unwrap_or_else(|_| Response::new(BoxBody::default()))
+}
+
+/// The answer when every `max_in_flight` slot is taken.
+fn saturated() -> Response<ResponseBody> {
+    eprintln!("WARN  preauth-proxy: max_in_flight reached, refusing a request with 503");
+    message(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "preauth-proxy: too many requests in flight\n",
+    )
 }
 
 /// A relayed response body that keeps its request's `max_in_flight` slot until it ends, and
@@ -272,18 +281,23 @@ where
     <U::Body as Body>::Error: Into<BoxError>,
     B: Body<Data = Bytes>,
 {
-    // Admission first: a saturated proxy says so at once rather than queueing without bound. The
-    // permit is held until the relayed response **body** ends or is dropped (see [`Guarded`]),
-    // so `max_in_flight` bounds streams in progress, not just heads being awaited.
-    let Ok(admitted) = Arc::clone(&proxy.in_flight).try_acquire_owned() else {
-        eprintln!("WARN  preauth-proxy: max_in_flight reached, refusing a request with 503");
-        return Ok(message(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "preauth-proxy: too many requests in flight\n",
-        ));
-    };
+    // A saturated proxy says so at once, before reading a byte of the body. This is only a look:
+    // the slot itself is taken once the body is in (below), and may be gone by then.
+    if proxy.in_flight.available_permits() == 0 {
+        return Ok(saturated());
+    }
 
     let (parts, body) = request.into_parts();
+
+    // `Upgrade` is a hop-by-hop header and is stripped before forwarding, so the upstream would
+    // see a plain request and could answer `101` with no tunnel behind it. Say so up front
+    // instead of relaying a handshake that cannot complete.
+    if parts.headers.contains_key(http::header::UPGRADE) {
+        return Ok(message(
+            StatusCode::NOT_IMPLEMENTED,
+            "preauth-proxy: protocol upgrades (WebSocket) are not supported\n",
+        ));
+    }
 
     let read_timeout = proxy.config.limits.client_read_timeout;
     let collected = tokio::time::timeout(read_timeout, collect(body, &proxy.buffered)).await;
@@ -318,6 +332,17 @@ where
                 "request body not received in time\n",
             ));
         }
+    };
+
+    // Admission only now that the body is buffered. Taken before the read, the slot was pinned
+    // for as long as the caller cared to trickle its upload (up to `client_read_timeout`), so a
+    // handful of slow uploaders could starve every other caller with `503`s. Reading is bounded
+    // on its own — by `client_read_timeout`, `MAX_REQUEST_BODY` and `max_buffered_bytes` — and
+    // the slot covers what it is for: the credential acquisition, the upstream exchange and the
+    // streamed response. It is held until the relayed response **body** ends or is dropped (see
+    // [`Guarded`]), so `max_in_flight` bounds streams in progress, not just heads being awaited.
+    let Ok(admitted) = Arc::clone(&proxy.in_flight).try_acquire_owned() else {
+        return Ok(saturated());
     };
 
     let request = Request::from_parts(parts, collected);
@@ -587,6 +612,64 @@ mod tests {
             StatusCode::OK,
             "the permit was not returned"
         );
+    }
+
+    /// A request body whose caller never sends the next byte.
+    struct Stalled;
+
+    impl Body for Stalled {
+        type Data = Bytes;
+        type Error = Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_upload_holds_no_slot_and_is_408_after_the_read_timeout() {
+        let limits = Limits {
+            max_in_flight: 1,
+            client_read_timeout: Duration::from_millis(200),
+            ..Limits::default()
+        };
+        let proxy = proxy(limits, Slow::default());
+
+        let stalled = Request::builder().uri("/upload").body(Stalled).unwrap();
+        let uploader = tokio::spawn(handle(Arc::clone(&proxy), stalled));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            proxy.in_flight.available_permits(),
+            1,
+            "a body still being uploaded took the slot"
+        );
+
+        // The only slot is free for a request that is ready, while the upload is still stuck.
+        let response = handle(Arc::clone(&proxy), get(b"ready")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!uploader.is_finished());
+        drop(response);
+
+        let response = uploader.await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(proxy.in_flight.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_upgrade_request_is_501_rather_than_a_handshake_with_no_tunnel() {
+        let proxy = proxy(Limits::default(), Slow::default());
+        let request = Request::builder()
+            .uri("/socket")
+            .header(http::header::CONNECTION, "Upgrade")
+            .header(http::header::UPGRADE, "websocket")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let response = handle(proxy, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
@@ -880,6 +963,46 @@ mod tests {
         // The stuck connection was closed rather than left open.
         let response = client.await.unwrap();
         assert!(response.is_empty(), "{response}");
+    }
+
+    #[tokio::test]
+    async fn slow_uploaders_cannot_starve_a_ready_caller() {
+        let limits = Limits {
+            max_in_flight: 2,
+            ..Limits::default()
+        };
+        let (addr, shutdown, server) = bound(proxy(limits, Slow::default())).await;
+
+        // More trickling uploaders than there are slots, each a few bytes into a body it never
+        // finishes.
+        let mut uploaders = Vec::new();
+        for _ in 0..4 {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(
+                    b"POST /upload HTTP/1.1\r\nHost: proxy\r\nContent-Length: 1024\r\n\r\npart",
+                )
+                .await
+                .unwrap();
+            uploaders.push(stream);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut ready = TcpStream::connect(addr).await.unwrap();
+        ready
+            .write_all(b"GET /page HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(Duration::from_secs(5), ready.read_to_string(&mut response))
+            .await
+            .unwrap_or_else(|_| panic!("the ready caller was never answered"))
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+        drop(uploaders);
+        shutdown.notify_one();
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]

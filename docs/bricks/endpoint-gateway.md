@@ -91,8 +91,12 @@ application is unlikely to use them by accident, and none of them a path:
 | `X-Auth-Request-User`, `-Groups`, `-Email` | request headers | Set from the decision and replaced if the caller sent them — the reason the application may trust them. |
 
 "Public" is what the chart's `Ingress` routes on the gateway's own host — exact paths only,
-nothing else. The optional `NetworkPolicy` (`networkPolicy.enabled`) narrows who may connect at
-all to the ingress controller's namespace (main port) and the monitoring namespace (metrics port).
+nothing else. The optional `NetworkPolicy` (`networkPolicy.enabled`, off by default) narrows who
+may connect at all to the ingress controller's namespace (main port) and the monitoring namespace
+(metrics port). Before enabling it, set `networkPolicy.ingressController.namespaceSelector` (and
+`.podSelector` if that namespace runs other pods) to the controller that calls `/auth` — the
+default assumes Traefik in namespace `traefik` — and `networkPolicy.monitoring.namespaceSelector`
+to your scraper's; the chart's NOTES warn while it is off.
 
 **Signing out does not revoke.** The only session id the gateway holds is the identity provider's
 `sid`; recording it as revoked would refuse the very next sign-in, which silently re-uses the same
@@ -406,7 +410,7 @@ real one.
 | 5b | a caller-stated host on haproxy | **`differs`** on a default install, `settled` with the prerequisite | `X-Forwarded-Host: forged.example.test` from the client reaches `/auth` verbatim; the prerequisite's `set-header` overwrites it with the host that actually routed the request |
 | 5c | identity headers on haproxy | **`differs`** on a default install, `settled` with the prerequisite | a caller's own `X-Auth-Request-User` reaches the application whenever the auth response does not itself carry one — the lua overwrites only the headers the response returned. The prerequisite's `del-header` lines strip it before anything else runs |
 | 5d | a `302` challenge on haproxy | `settled` | passed through with its `Location` and `Set-Cookie` |
-| 6 | nginx variables in `auth-url` | `settled` | `$host`, `$request_uri`, `$request_method` and `$scheme` all interpolate, with `allow-snippet-annotations` off — the dialect's whole reason for carrying the request in the URL holds |
+| 6 | nginx variables in `auth-url` | `settled` | `$host`, `$request_uri`, `$request_method` and `$scheme` all interpolate (the dialect now sends `$escaped_request_uri`, which this spike did not exercise — re-run it against ingress-nginx before relying on the sign-in redirect), with `allow-snippet-annotations` off — the dialect's whole reason for carrying the request in the URL holds |
 | 6a | a refusal reaching the caller on nginx | **`differs`** | the status and `WWW-Authenticate` survive; the **body and the `Set-Cookie` do not**. `auth_request` discards the subrequest's body and headers |
 | 6b | a `302` challenge on nginx | **`differs`** | the caller gets **`500`**. `auth_request` accepts `2xx`, `401` and `403` and treats everything else as a server error |
 | 6c | `auth-signin` and the challenge shape | **`differs`** | with the `auth-signin` the dialect writes, a `POST` from `curl` is answered `302` to the sign-in URL. The gateway's three-shape challenge selection collapses to one shape on this dialect |
@@ -460,7 +464,7 @@ can state the host it is judged against (5b), and a caller can hand the applicat
 gate never issued (5c). That is because the controller builds its auth request by copying the
 caller's own headers onto a fixed path — a different contract from Traefik's.
 
-All three close with six lines in the **controller's own ConfigMap**, and the spike proves it both
+All three close with seven lines in the **controller's own ConfigMap**, and the spike proves it both
 ways (`scripts/spike-0009-rig.sh prerequisite on|off`, then re-run row 5):
 
 ```text
@@ -470,6 +474,7 @@ http-request del-header X-Auth-Request-Email
 http-request set-header X-Forwarded-Host %[req.hdr(host)]
 http-request set-header X-Forwarded-Uri %[pathq]
 http-request set-header X-Forwarded-Method %[method]
+http-request set-header X-Forwarded-Proto %[ssl_fc,iif(https,http)]
 ```
 
 **An annotation cannot do this job, and that is the load-bearing fact.** A per-ingress

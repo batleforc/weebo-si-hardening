@@ -70,8 +70,22 @@ probes:
 terminationGracePeriodSeconds: 30
 
 # An optional NetworkPolicy admitting only the ingress controller (to `http`) and monitoring (to
-# `metrics`). Off by default because the selectors are the cluster's to know; turn it on with
-# them filled in.
+# `metrics`, while `metrics.enabled`). Every other caller — in particular every workspace pod — is
+# refused, which is what keeps a pod from asking for verdicts on `/auth` directly with a
+# client-address header of its choosing. Strongly recommended.
+#
+# Off by default because the selectors are the cluster's to know. To turn it on, check (and
+# usually change) the two selector pairs below — the defaults assume Traefik in namespace
+# `traefik` and a scraper in namespace `monitoring` — then set `enabled: true`:
+#
+#   ingressController   the pods that call `/auth` and carry the login paths: e.g.
+#                       `kubernetes.io/metadata.name: ingress-nginx` for ingress-nginx, or
+#                       `openshift-ingress` for the OpenShift router; narrow with `podSelector`
+#                       (e.g. `app.kubernetes.io/name: traefik`) if that namespace runs more.
+#   monitoring          your Prometheus (or other scraper) namespace and pods.
+#
+# Each selector is a full LabelSelector (`matchLabels`/`matchExpressions`); `namespaceSelector: {}`
+# admits every namespace. Also restrict `config.trustedProxy` to the ingress controller's pod CIDR.
 networkPolicy:
   enabled: false
   ingressController:

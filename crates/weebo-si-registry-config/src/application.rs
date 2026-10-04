@@ -9,7 +9,10 @@
 use weebo_si_chassis::{Context, DomainError, ReconcileFeature, Subject};
 use weebo_si_crd::{FeatureMode, RegistryKey, TeamName};
 
-use crate::model::diff::{Applied, DesiredState, Diff, RefusedTemplate, compute_diff};
+use crate::model::diff::{
+    Applied, DesiredState, Diff, RefusedTemplate, compute_diff, compute_held_diff,
+};
+use crate::model::object::ObjectKey;
 use crate::port::ObjectStore;
 
 /// What one `reconcile` call decided and (in `Enforce`) did.
@@ -34,6 +37,9 @@ pub struct ReconcileOutcome {
     pub not_granted: Vec<RegistryKey>,
     /// Sources of resolved keys that produced no copy, and why.
     pub refused: Vec<RefusedTemplate>,
+    /// Copies whose template did not resolve this pass and whose live copy was therefore left
+    /// untouched — see [`DesiredState::held`].
+    pub held: Vec<ObjectKey>,
     /// Whether every source of every resolved key for this namespace resolved — the value behind
     /// `weebo_si_registry_ready`, and the signal an operator alerts on.
     ///
@@ -67,7 +73,9 @@ pub async fn reconcile<S: Subject>(
 
     let desired = feature.desired(subject, ctx)?;
     let existing = store.managed_in(subject.namespace());
-    let diffs = compute_diff(&desired.objects, &existing);
+    // Held-aware, so a template that is unreadable this pass (a cold watch cache after a restart,
+    // or an admin's bad edit) keeps the copy that is enforced now instead of deleting it.
+    let diffs = compute_held_diff(&desired.objects, &desired.held, &existing);
 
     let applied = if mode == FeatureMode::Enforce {
         Some(store.apply(&diffs).await?)
@@ -83,8 +91,29 @@ pub async fn reconcile<S: Subject>(
         team: desired.team,
         not_granted: desired.not_granted,
         refused: desired.refused,
+        held: desired.held,
         ready,
     })
+}
+
+/// Remove every managed copy `store` reports in `namespace` — the rollback `mode: Off` is.
+///
+/// A controller that merely stops reconciling leaves every copy in place with nothing left to
+/// repair or remove it, which is the opposite of what an admin reaching for `Off` wants.
+/// `managed_in` is already filtered to objects carrying the managed-by label.
+///
+/// **The caller decides that the feature is deliberately off.** A gate that answers `Off` because
+/// a cache is still cold is not an instruction to delete anything, and this function cannot tell
+/// the two apart.
+pub async fn teardown(
+    namespace: &weebo_si_crd::NamespaceName,
+    store: &dyn ObjectStore,
+) -> Result<Applied, DomainError> {
+    let existing = store.managed_in(namespace);
+    if existing.is_empty() {
+        return Ok(Applied::default());
+    }
+    store.apply(&compute_diff(&[], &existing)).await
 }
 
 #[cfg(test)]
@@ -440,5 +469,119 @@ mod tests {
         assert!(!outcome.ready);
         assert_eq!(outcome.refused.len(), 1);
         assert!(store.all().is_empty());
+    }
+
+    /// Reconcile once with a populated template store, so a copy is live.
+    async fn live_copy(store: &FakeObjectStore) {
+        let teams = teams();
+        let facts = namespace_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        reconcile(
+            &feature(),
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.all().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_cold_template_cache_does_not_delete_the_live_copy() {
+        // The operator restarted and its template watch cache has not filled: `template()`
+        // answers `None` for everything. Deleting every namespace's copy here would send each
+        // developer's package manager back to the public registry.
+        let store = FakeObjectStore::default();
+        live_copy(&store).await;
+        let before = store.all();
+
+        let teams = teams();
+        let facts = namespace_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let cold = RegistryConfigFeature::new(
+            Arc::new(RwLock::new(Some(config()))),
+            Arc::new(FakeTemplateStore::default()),
+        );
+        let outcome = reconcile(
+            &cold,
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.applied, Some(Applied::default()));
+        assert_eq!(outcome.held.len(), 1);
+        assert_eq!(store.all(), before, "the enforced copy must survive");
+        assert!(!outcome.ready, "but the namespace still reports not ready");
+    }
+
+    #[tokio::test]
+    async fn a_refused_template_does_not_delete_or_rewrite_the_live_copy() {
+        // An admin edits the template to a `file` mount over a home directory.
+        use crate::model::mount::{
+            MOUNT_AS_ANNOTATION, MOUNT_PATH_ANNOTATION, MOUNT_TO_DEVWORKSPACE_LABEL,
+        };
+        use crate::model::object::Template;
+
+        let store = FakeObjectStore::default();
+        live_copy(&store).await;
+        let before = store.all();
+
+        let teams = teams();
+        let facts = namespace_facts();
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let bad = RegistryConfigFeature::new(
+            Arc::new(RwLock::new(Some(config()))),
+            Arc::new(FakeTemplateStore::new([(
+                (SourceKind::ConfigMap, template_ref()),
+                Template {
+                    labels: BTreeMap::from([(
+                        MOUNT_TO_DEVWORKSPACE_LABEL.to_string(),
+                        "true".to_string(),
+                    )]),
+                    annotations: BTreeMap::from([
+                        (MOUNT_AS_ANNOTATION.to_string(), "File".to_string()),
+                        (MOUNT_PATH_ANNOTATION.to_string(), "/home/user".to_string()),
+                    ]),
+                    body: ObjectBody::opaque(b"registry=https://registry.npmjs.org/".to_vec()),
+                },
+            )])),
+        );
+        let outcome = reconcile(
+            &bad,
+            &subject(),
+            &Context::new(&teams, &facts, &catalog),
+            FeatureMode::Enforce,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.applied, Some(Applied::default()));
+        assert_eq!(outcome.refused.len(), 1);
+        assert_eq!(store.all(), before);
+    }
+
+    #[tokio::test]
+    async fn teardown_removes_this_namespaces_copies_and_nothing_elsewhere() {
+        let store = FakeObjectStore::default();
+        live_copy(&store).await;
+        let mut elsewhere = store.all()[0].clone();
+        elsewhere.key.namespace = NamespaceName::new("user-bob");
+        let store = FakeObjectStore::new(store.all().into_iter().chain([elsewhere]));
+
+        let applied = teardown(&NamespaceName::new("user-alice"), &store)
+            .await
+            .unwrap();
+
+        assert_eq!(applied.deleted, 1);
+        let left = store.all();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].key.namespace, NamespaceName::new("user-bob"));
     }
 }

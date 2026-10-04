@@ -319,7 +319,7 @@ A pattern is parsed as a reference is, and each field is matched independently.
 | host | a literal host, `*.suffix`, or a host whose whole label is a variable | Lowercased, trailing dot stripped, port significant. A bare `*` is rejected at validation — "any registry" is not an allow-list, and an admin who genuinely means it writes `**` for the path under each registry they name. |
 | path | `/`-separated segments; `*` matches within one segment, `**` matches one or more whole segments; a whole segment may be a variable | `library/*` matches `library/nginx`, not `library/a/b`. `**` matches both. |
 | tag | glob, `*` within the tag; may contain a variable | Absent from the pattern means "any tag, or none". |
-| digest | not writable in a pattern | See below. |
+| digest | only as a trailing `@*` ("any digest-pinned reference of this repository") | See below. |
 
 Variables — `{TEAM_NAME}` and `{NAMESPACE}` — have their own section immediately below, because
 substituting a value into a matcher is the second-most dangerous thing in this RFC.
@@ -335,6 +335,10 @@ runs that digest whatever its tag says, so the tag is not evidence. The rule:
   or both.
 - A pattern with a tag constraint matches a reference whose tag matches the glob. A digest-only
   reference has no tag and therefore matches only tag-agnostic patterns.
+  The one exception is a pattern ending in `@*`, which also matches a digest-pinned reference of
+  the same host and path. The built-in platform patterns carry it (`quay.io/devfile/project-clone:*@*`),
+  because a mirrored or `RELATED_IMAGE_*`-pinned install references them by digest alone. An
+  admin pattern gets it only by writing it: a digest of unknown provenance is never read as `v1`.
 
 An admin who wants "only `ubi9-*`, and pinned" gets the first half from this RFC and the second
 half from *Future work* — a `requireDigest` switch per entry is named there, deliberately not

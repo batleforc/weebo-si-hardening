@@ -848,6 +848,21 @@ impl GatewayConfig {
             )
     }
 
+    /// Why `trusted_proxy: any` is worth a line in the log, when it is set.
+    ///
+    /// The default, and right where only the ingress controller can reach this gateway — but then
+    /// the client-address header is believed from *any* connection, so a caller that can reach the
+    /// Service directly picks its own login-limiter bucket per request. The chart's
+    /// `networkPolicy` is what makes `any` safe; this says so where an operator will read it.
+    pub fn trusted_proxy_any_warning(&self) -> Option<&'static str> {
+        (self.self_origin.trusted_proxy == TrustedProxy::Any).then_some(
+            "self_origin.trusted_proxy is any: the client-address header is believed from every \
+             connection, so anything that can reach this gateway directly chooses its own \
+             login-limiter bucket and can claim a pod address. Restrict who can reach it with the \
+             chart's networkPolicy, or set trusted_proxy to the router's CIDRs.",
+        )
+    }
+
     /// What makes a bearer ours, or why nothing could.
     ///
     /// `None` where `verify_own_issuer` is off: the branch does not exist, so there is no list to

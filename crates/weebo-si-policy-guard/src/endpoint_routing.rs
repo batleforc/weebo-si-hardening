@@ -26,7 +26,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
-use weebo_si_crd::{DEVELOPER_ANNOTATIONS, NamespaceName, RoutingKind};
+use weebo_si_crd::{
+    DEVELOPER_ANNOTATIONS, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_BYPASS, NamespaceName,
+    RoutingKind,
+};
 
 use crate::guard::WriteOperation;
 
@@ -92,6 +95,11 @@ pub struct EndpointRoutingWrite {
     /// Whether the host the object claims is owned by this namespace, as
     /// `hosts.ownership` resolves it. `None` where the write names no host at all.
     pub host_owned_by_namespace: Option<bool>,
+    /// Whether this write puts `hardening.weebo.io/endpoint-auth: bypass` on an object that did
+    /// not already carry it. Only a break-glass identity may do that: the gate mutation attaches
+    /// nothing to an object that says `bypass`, so anyone else writing it is opting their own
+    /// endpoint out of the gate.
+    pub introduces_bypass: bool,
 }
 
 impl Subject for EndpointRoutingWrite {
@@ -164,17 +172,38 @@ impl Feature<EndpointRoutingWrite> for EndpointRoutingGuard {
         if subject.actor == self.operator_identity {
             return Ok(Decision::new(Vec::new(), None, None, "operator_allowed"));
         }
-        if subject.actor == self.devworkspace_operator_identity {
-            return Ok(Decision::new(Vec::new(), None, None, "dwo_allowed"));
-        }
         if self.break_glass_identities.contains(&subject.actor) {
             return Ok(Decision::new(Vec::new(), None, None, "break_glass"));
+        }
+        // Except for `bypass`: DWO copies a devfile endpoint's annotations onto the object it
+        // generates, so the actor being DWO says nothing about who wrote the annotation. Only
+        // the operator and the break-glass identities (answered above) may introduce it.
+        if subject.actor == self.devworkspace_operator_identity && !subject.introduces_bypass {
+            return Ok(Decision::new(Vec::new(), None, None, "dwo_allowed"));
         }
 
         // Row 9, before anything that reads the object's contents: the route dies with the gate,
         // so there is nothing left to reach. DWO recreates what DWO owns.
         if subject.operation == WriteOperation::Delete {
             return Ok(Decision::new(Vec::new(), None, None, "delete_allowed"));
+        }
+
+        // The break-glass annotation is for the break-glass identities. The mutation honours it
+        // by attaching nothing, so without this a developer creating an `Ingress` that already
+        // says `bypass` would get an ungated endpoint on a host they own.
+        if subject.introduces_bypass {
+            return Ok(Decision::deny(
+                format!(
+                    "{} may not set {}: {} on a {}; that is reserved for the break-glass identities",
+                    subject.actor,
+                    ENDPOINT_AUTH_ANNOTATION,
+                    ENDPOINT_AUTH_BYPASS,
+                    subject.kind.kind()
+                ),
+                None,
+                Some("bypass_not_permitted".to_string()),
+                "denied_bypass",
+            ));
         }
 
         // Row 4: forging DWO's own label is how a namespace claims a policy it did not earn —
@@ -323,6 +352,7 @@ mod tests {
             submitted_managed: expected(),
             carries_devworkspace_label: provenance == Provenance::Devfile,
             host_owned_by_namespace: Some(true),
+            introduces_bypass: false,
         }
     }
 
@@ -365,6 +395,32 @@ mod tests {
         let decision = verdict(&subject);
         assert!(decision.denial.is_some());
         assert_eq!(decision.result, "denied_forged_label");
+    }
+
+    #[test]
+    fn a_developer_may_not_create_or_update_an_endpoint_into_bypass() {
+        for operation in [WriteOperation::Create, WriteOperation::Update] {
+            let mut subject = write("alice", operation, Provenance::Author);
+            subject.introduces_bypass = true;
+            let decision = verdict(&subject);
+            assert!(decision.denial.is_some(), "{operation:?}");
+            assert_eq!(decision.result, "denied_bypass");
+        }
+        // DWO copies a devfile endpoint's annotations onto the object it generates, so a `bypass`
+        // that arrives under its name is the developer's, not DWO's.
+        let mut subject = write(DWO, WriteOperation::Create, Provenance::Author);
+        subject.introduces_bypass = true;
+        let decision = verdict(&subject);
+        assert!(decision.denial.is_some());
+        assert_eq!(decision.result, "denied_bypass");
+        // The break-glass identity is exempt, as it is from every row.
+        let mut subject = write(
+            "system:serviceaccount:platform:break-glass",
+            WriteOperation::Create,
+            Provenance::Author,
+        );
+        subject.introduces_bypass = true;
+        assert!(verdict(&subject).denial.is_none());
     }
 
     #[test]

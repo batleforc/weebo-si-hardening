@@ -363,6 +363,7 @@ mod tests {
             team: Some(TeamName::new("team-1")),
             not_granted: Vec::new(),
             refused: Vec::new(),
+            held: Vec::new(),
             ready: true,
         }
     }

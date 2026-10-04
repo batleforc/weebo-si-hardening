@@ -122,6 +122,13 @@ fn parse(argv: Vec<OsString>) -> Result<Args, Failure> {
     while let Some(raw) = it.next() {
         if raw == "--" {
             args.command = it.collect();
+            // A `--` that names nothing is a templating mistake (`-- $CMD` with `$CMD` unset), and
+            // exiting 0 would end the container silently instead of running its entrypoint.
+            if args.command.is_empty() {
+                return Err(Failure::Usage(
+                    "`--` must be followed by the command to run".to_owned(),
+                ));
+            }
             break;
         }
 
@@ -319,6 +326,24 @@ fn run() -> Result<u8, Failure> {
     }
 
     let uid = rustix::process::geteuid().as_raw();
+
+    // Root already resolves, and this binary never writes a root entry. That is no reason to stop
+    // the container: the image run as uid 0 (local dev, `runAsUser: 0`) would crash-loop before its
+    // command ever started, which contradicts the fail-open posture everything else here has.
+    // `--strict` keeps the old answer — it asked for a failure whenever nothing is written.
+    let strict = args.strict || env_flag(std::env::var("WEEBO_PASSWD_STRICT").ok());
+    if uid == 0 && !strict {
+        log!(
+            "WARN",
+            "running as uid 0, which already resolves: no entry written"
+        );
+        return if args.dry_run {
+            Ok(exit::OK)
+        } else {
+            hand_over(&args)
+        };
+    }
+
     let config = resolve(&args, uid, |key| std::env::var(key).ok(), &FsProbe)?;
 
     let passwd_line = config.passwd_entry.to_string();
@@ -341,11 +366,7 @@ fn run() -> Result<u8, Failure> {
         // The two files are handled independently: a read-only /etc/group does not prevent the
         // passwd entry.
         let failed = apply(&config.group_path, line, |contents| {
-            if nss::group_has(contents, entry.name(), entry.gid_field()) {
-                Scan::Present(format!("group '{}'", entry.name()))
-            } else {
-                Scan::Absent
-            }
+            nss::group_scan(contents, entry.name(), entry.gid_field())
         })?;
         any_failed = any_failed || failed;
     }
@@ -355,7 +376,12 @@ fn run() -> Result<u8, Failure> {
         return Ok(exit::STRICT);
     }
 
-    let Some((program, rest)) = config_command(&args) else {
+    hand_over(&args)
+}
+
+/// Exec the command after `--`, or report success when there is none.
+fn hand_over(args: &Args) -> Result<u8, Failure> {
+    let Some((program, rest)) = config_command(args) else {
         return Ok(exit::OK);
     };
 
@@ -440,6 +466,13 @@ mod tests {
     fn a_second_double_dash_belongs_to_the_command() {
         let args = parse(argv(&["--", "sh", "-c", "--", "echo hi"])).unwrap();
         assert_eq!(args.command, argv(&["sh", "-c", "--", "echo hi"]));
+    }
+
+    #[test]
+    fn a_double_dash_with_no_command_is_a_usage_error() {
+        let err = parse(argv(&["--name", "dev", "--"])).unwrap_err();
+        assert!(matches!(err, Failure::Usage(_)), "{err}");
+        assert_eq!(err.code(), 2);
     }
 
     #[test]

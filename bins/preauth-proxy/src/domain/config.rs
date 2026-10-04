@@ -235,6 +235,17 @@ impl Origin {
         if authority.is_empty() || authority.contains('/') {
             return Err(invalid("an origin with no path"));
         }
+        // The authority becomes the `Host` header sent upstream and is printed by `--check`, so
+        // userinfo (`user:pw@host`) would put a password on the wire and in the log, and `?`/`#`
+        // would parse here but yield an unusable URI on every request. The rejection never
+        // echoes the value: it may be carrying exactly the secret being refused.
+        if authority.contains(['@', '?', '#']) || authority.chars().any(char::is_whitespace) {
+            return Err(ConfigError::Invalid {
+                field: field.to_owned(),
+                value: "<redacted>".to_owned(),
+                expected: "a bare host[:port] with no userinfo, query, fragment or whitespace",
+            });
+        }
         // Round-trip through http's own parser so a malformed authority is caught here rather
         // than on the first request.
         let uri = format!("http://{authority}/")
@@ -403,8 +414,10 @@ pub struct Limits {
     pub response_idle_timeout: Duration,
     /// Bound on a caller sending its request head, and separately its request body.
     pub client_read_timeout: Duration,
-    /// Requests handled at once — from admission until the response body has been fully
-    /// streamed or dropped; the next one is answered `503` immediately.
+    /// Requests handled at once — from admission, once the request body has been read in full,
+    /// until the response body has been fully streamed or dropped; the next one is answered
+    /// `503` immediately. A body still being uploaded does not count, so slow uploaders cannot
+    /// take every slot; they are bounded by `client_read_timeout` and `max_buffered_bytes`.
     pub max_in_flight: usize,
     /// Request-body bytes buffered across **all** in-flight requests; a request that would push
     /// past it is answered `503`. Never below [`MAX_REQUEST_BODY`].
@@ -632,6 +645,23 @@ mod tests {
                 Origin::parse("upstream", bad).is_err(),
                 "{bad:?} should be refused"
             );
+        }
+    }
+
+    #[test]
+    fn an_origin_with_userinfo_query_fragment_or_whitespace_is_refused_without_echoing_it() {
+        for bad in [
+            "http://user:hunter2@app:3000",
+            "http://app:3000?x=1",
+            "http://app#frag",
+            "http://app :3000",
+        ] {
+            let err = Origin::parse("upstream", bad).unwrap_err().to_string();
+            assert!(
+                !err.contains("hunter2"),
+                "the refusal echoed a secret: {err}"
+            );
+            assert!(!err.contains(bad), "the refusal echoed the value: {err}");
         }
     }
 

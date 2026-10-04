@@ -116,6 +116,10 @@ impl ImageReference {
     /// of RFC 0005's "the tag is decoration, the digest is what runs," and it makes
     /// `dev:v1@sha256:…` and `dev@sha256:…` behave identically, which is what an admin reading
     /// the table in that RFC would predict.
+    ///
+    /// A tag-constrained pattern therefore matches a digest-pinned reference only when its admin
+    /// wrote the explicit trailing `@*` ("any digest of this repository"), which the compiled-in
+    /// platform patterns do — see [`crate::pattern::Pattern::parse`].
     pub fn tag(&self) -> Option<&str> {
         self.tag.as_deref()
     }

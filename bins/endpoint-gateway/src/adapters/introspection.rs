@@ -166,7 +166,14 @@ impl Introspector {
                 let ceiling = now.plus_secs(self.identity_ttl_secs);
                 bearers.insert(key, claims.clone(), (*expires_at).min(ceiling), now);
             }
-            // Everything else is remembered as a refusal for `negative_ttl_secs`, so a flood of
+            // Not an answer about the token: the identity provider was down, slow or erroring.
+            // Remembering it as a refusal would reject a valid opaque token for the whole
+            // negative TTL after a blip; the limiter above already bounds what a flood costs.
+            Introspected {
+                result: BearerResult::Unverifiable,
+                ..
+            } => {}
+            // Every definitive refusal is remembered for `negative_ttl_secs`, so a flood of
             // invented tokens costs one call per token rather than one per request.
             _ => {
                 negatives.insert(key, (), now.plus_secs(self.negative_ttl_secs), now);

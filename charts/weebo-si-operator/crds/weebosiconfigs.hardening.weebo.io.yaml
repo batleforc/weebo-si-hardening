@@ -267,7 +267,7 @@ spec:
                               copying the *caller's* headers onto a fixed path, so on a default install the gate is
                               handed no host and no path, a caller can state the `X-Forwarded-Host` it is judged
                               against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the
-                              gate does not put a name on. Six lines in the controller's own ConfigMap close all three —
+                              gate does not put a name on. Seven lines in the controller's own ConfigMap close all three —
                               and an annotation cannot, because a per-ingress `config-backend` snippet is emitted *after*
                               the auth call and so rewrites what the application is handed rather than what the gate is
                               asked. The lines therefore belong to whoever installed the controller, which is nobody this
@@ -279,7 +279,7 @@ spec:
                               leaving it `false` raises `Degraded` with the reason. The gate still attaches, because a
                               gate a knowing attacker can bypass is better than the endpoint being open to everyone.
 
-                              The six lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
+                              The seven lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
                             type: boolean
                           service:
                             description: The gateway's in-cluster `Service`.

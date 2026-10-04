@@ -40,8 +40,11 @@ pub enum MountAs {
     Env,
     /// A value this brick does not recognise. Carried rather than rejected: DevWorkspace
     /// Operator owns this vocabulary, and a value added upstream should not make this operator
-    /// refuse an object it would have handled correctly. Treated as *not* `File` by [`admit`],
-    /// since the shadowing failure is specific to `file`'s directory semantics.
+    /// refuse an object it would have handled correctly. Treated **as `File`** by [`admit`]'s
+    /// shadow check: if DevWorkspace Operator falls back to `file` for a value it does not
+    /// recognise, skipping the check would pass exactly the template the check exists to refuse.
+    /// A path that does not shadow anything is admitted either way, so this only costs an entry
+    /// with an unrecognised `mount-as` *and* a home-directory `mount-path`.
     Unknown,
 }
 
@@ -53,10 +56,13 @@ impl MountAs {
     /// [`admit`] refuse the template that would silently empty a home directory; encoding a
     /// convenient one would make this whole module report success on exactly that case.
     pub fn parse(annotations: &BTreeMap<String, String>) -> Self {
+        // Case-folded: `File` is not a value this brick knows, but a DevWorkspace Operator that
+        // is lenient about case would still mount a directory, and the shadow check must not be
+        // skipped by spelling.
         match annotations
             .get(MOUNT_AS_ANNOTATION)
-            .map(String::as_str)
-            .map(str::trim)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
         {
             None | Some("") | Some("file") => Self::File,
             Some("subpath") => Self::Subpath,
@@ -146,16 +152,24 @@ pub fn is_automountable(labels: &BTreeMap<String, String>) -> bool {
 /// object is entitled to own outright — and so is a path outside them entirely (`/etc/pip.conf`
 /// is a *file* path DWO would create the parent of).
 pub fn shadows_directory(path: &str) -> bool {
-    let trimmed = path.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
+    // Normalised first: `/home/x/../y` is `/home/y`, and a check on the spelling rather than the
+    // path is a check a `..` walks around. A `..` at the root stays at the root, as it does in
+    // the kernel.
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.trim().split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+
+    if segments.is_empty() {
         // "" or "/" — the container's root. Nothing is more shadowing than this.
         return true;
     }
-
-    let segments: Vec<&str> = trimmed
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
 
     if let Some(last) = segments.last()
         && last.starts_with('.')
@@ -189,9 +203,10 @@ pub fn admit(
         return Err(TemplateRefusal::NotAutomountable);
     }
 
-    // Only `file` replaces a directory. `subpath` places keys individually, and `env` never
-    // touches the filesystem at all — so neither can shadow anything, whatever the path says.
-    if MountAs::parse(annotations) != MountAs::File {
+    // `subpath` places keys individually, and `env` never touches the filesystem at all — so
+    // neither can shadow anything, whatever the path says. `file` replaces a directory, and a
+    // value this brick does not recognise is checked as `file` rather than waved through.
+    if matches!(MountAs::parse(annotations), MountAs::Subpath | MountAs::Env) {
         return Ok(());
     }
 
@@ -327,6 +342,69 @@ mod tests {
         ] {
             assert!(shadows_directory(path), "{path} should shadow");
         }
+    }
+
+    #[test]
+    fn dot_segments_are_resolved_before_the_path_is_judged() {
+        for path in [
+            "/home/x/../y",
+            "/etc/..",
+            "/opt/../home/user",
+            "/home/user/./",
+            "/home/user/mirror/..",
+            "/home/user/mirror/../.config",
+            "/../..",
+        ] {
+            assert!(shadows_directory(path), "{path} should shadow");
+        }
+        for path in ["/home/user/mirror/../other", "/etc/./pip.conf"] {
+            assert!(!shadows_directory(path), "{path} should not shadow");
+        }
+    }
+
+    #[test]
+    fn mount_as_is_case_folded_and_an_unknown_value_is_checked_as_file() {
+        assert_eq!(
+            MountAs::parse(&map(&[(MOUNT_AS_ANNOTATION, " FILE ")])),
+            MountAs::File
+        );
+        assert_eq!(
+            MountAs::parse(&map(&[(MOUNT_AS_ANNOTATION, "SubPath")])),
+            MountAs::Subpath
+        );
+        // A spelling that only differs by case no longer skips the shadow check.
+        assert_eq!(
+            admit(
+                &automountable(),
+                &map(&[
+                    (MOUNT_AS_ANNOTATION, "File"),
+                    (MOUNT_PATH_ANNOTATION, "/home/user"),
+                ]),
+            ),
+            Err(TemplateRefusal::MountShadowsPath)
+        );
+        // Nor does a value this brick has never heard of: DWO may well treat it as `file`.
+        assert_eq!(
+            admit(
+                &automountable(),
+                &map(&[
+                    (MOUNT_AS_ANNOTATION, "something-new"),
+                    (MOUNT_PATH_ANNOTATION, "/home/user"),
+                ]),
+            ),
+            Err(TemplateRefusal::MountShadowsPath)
+        );
+        // …while an unknown value over a harmless path is still admitted.
+        assert_eq!(
+            admit(
+                &automountable(),
+                &map(&[
+                    (MOUNT_AS_ANNOTATION, "something-new"),
+                    (MOUNT_PATH_ANNOTATION, "/etc/pip.conf"),
+                ]),
+            ),
+            Ok(())
+        );
     }
 
     #[test]

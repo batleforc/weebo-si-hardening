@@ -97,6 +97,58 @@ pub struct DesiredState {
     /// became an object is ready, and one with any entry here is not — which is the difference
     /// between "the developer's `npm install` failed because of us" and "it did not".
     pub refused: Vec<RefusedTemplate>,
+    /// Objects this namespace should carry but could not build this pass — the template is
+    /// missing, not yet in the watch cache, or refused. Their live copy is **held**: never
+    /// deleted, never updated, until the template resolves again.
+    ///
+    /// Dropping them from `objects` alone would turn a cold watch cache after an operator
+    /// restart, or an admin's bad edit to a template, into a `Delete` of every namespace's
+    /// registry configuration — and a developer whose `.npmrc` copy vanished silently falls back
+    /// to the public registry, which is the bypass this feature exists to stop (fail-open).
+    pub held: Vec<ObjectKey>,
+}
+
+/// [`compute_diff`], except that a `held` object's live copy is left exactly as it is and that an
+/// object is identified by its **kind and name**, not its name alone.
+///
+/// The second half matters because a `ConfigMap` and a `Secret` of one name are two objects: with
+/// the chassis' name-only comparison, a catalogue entry with a `ConfigMap` source and a `Secret`
+/// source over the same template name would find the other kind's live object, report `Update`
+/// on every pass, and never `Delete` the one a removed source left behind.
+pub fn compute_held_diff(
+    desired: &[ManagedObject],
+    held: &[ObjectKey],
+    existing: &[ManagedObject],
+) -> Vec<Diff> {
+    let live: Vec<ManagedObject> = existing
+        .iter()
+        .filter(|object| !held.contains(&object.key))
+        .cloned()
+        .collect();
+
+    let mut kinds: Vec<SourceKind> = Vec::new();
+    for object in desired.iter().chain(live.iter()) {
+        if !kinds.contains(&object.kind) {
+            kinds.push(object.kind);
+        }
+    }
+
+    kinds
+        .into_iter()
+        .flat_map(|kind| {
+            let wanted: Vec<ManagedObject> = desired
+                .iter()
+                .filter(|object| object.kind == kind)
+                .cloned()
+                .collect();
+            let present: Vec<ManagedObject> = live
+                .iter()
+                .filter(|object| object.kind == kind)
+                .cloned()
+                .collect();
+            compute_diff(&wanted, &present)
+        })
+        .collect()
 }
 
 impl DesiredState {
@@ -210,8 +262,63 @@ mod tests {
             vec![Diff::Delete {
                 key: existing[0].key.clone(),
                 backend: SourceKind::ConfigMap,
+                uid: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_held_object_is_neither_deleted_nor_updated() {
+        let existing = [object("weebo-si-internal-npm-weebo-npmrc", b"old")];
+        let held = [existing[0].key.clone()];
+        // Not desired this pass (its template is unreadable): no `Delete`.
+        assert!(compute_held_diff(&[], &held, &existing).is_empty());
+        // Desired with new content but held: no `Update` either.
+        let desired = [object("weebo-si-internal-npm-weebo-npmrc", b"new")];
+        assert!(
+            compute_held_diff(&desired, &held, &existing)
+                .iter()
+                .all(|line| !matches!(line, Diff::Update(_) | Diff::Delete { .. }))
+        );
+        // Without the hold, the same absence is a delete.
+        assert_eq!(
+            compute_held_diff(&[], &[], &existing),
+            vec![Diff::Delete {
+                key: existing[0].key.clone(),
+                backend: SourceKind::ConfigMap,
+                uid: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_config_map_and_a_secret_of_one_name_are_two_objects() {
+        let config_map = object("weebo-si-internal-npm-token", b"same");
+        let mut secret = config_map.clone();
+        secret.kind = SourceKind::Secret;
+
+        // Both live, both desired and identical: nothing to do, not an `Update` per pass.
+        let diffs = compute_held_diff(
+            &[config_map.clone(), secret.clone()],
+            &[],
+            &[config_map.clone(), secret.clone()],
+        );
+        assert_eq!(diffs.len(), 2);
+        assert!(diffs.iter().all(|line| matches!(line, Diff::Unchanged(_))));
+
+        // The `Secret` source removed: its live copy is deleted, as a `Secret`, and the
+        // `ConfigMap` of the same name stays.
+        let diffs = compute_held_diff(
+            std::slice::from_ref(&config_map),
+            &[],
+            &[config_map.clone(), secret.clone()],
+        );
+        assert!(diffs.contains(&Diff::Delete {
+            key: secret.key.clone(),
+            backend: SourceKind::Secret,
+            uid: None,
+        }));
+        assert!(diffs.contains(&Diff::Unchanged(config_map.key.clone())));
     }
 
     #[test]

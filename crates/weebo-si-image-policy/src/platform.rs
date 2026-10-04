@@ -27,10 +27,10 @@ use crate::reference::ParseError;
 /// The compiled-in platform patterns, as text. Parsed once per config load by
 /// [`platform_patterns`], never per request.
 pub const BUILTIN_PLATFORM_PATTERNS: &[&str] = &[
-    "quay.io/devfile/project-clone:*",
-    "quay.io/che-incubator/che-code:*",
-    "quay.io/che-incubator/configbump:*",
-    "quay.io/eclipse/che--traefik:*",
+    "quay.io/devfile/project-clone:*@*",
+    "quay.io/che-incubator/che-code:*@*",
+    "quay.io/che-incubator/configbump:*@*",
+    "quay.io/eclipse/che--traefik:*@*",
 ];
 
 /// The platform pattern set for one configuration: the compiled-in list when
@@ -99,6 +99,39 @@ mod tests {
                 "{raw:?} should be permitted by the platform set"
             );
         }
+    }
+
+    #[test]
+    fn the_platform_set_permits_the_digest_pinned_form_of_its_own_repositories_only() {
+        // Mirrored and `RELATED_IMAGE_*`-pinned installs inject `repo@sha256:…`, which carries no
+        // tag; without the `@*` opt-in every workspace pod would be refused at `Enforce`.
+        let digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let patterns = platform_patterns(&PlatformConfig::default()).unwrap();
+        let values = VariableValues::new();
+        let allowed = |raw: String| {
+            let reference = ImageReference::parse(&raw).unwrap();
+            patterns.iter().any(|p| p.matches(&reference, &values))
+        };
+        for repo in [
+            "quay.io/devfile/project-clone",
+            "quay.io/che-incubator/che-code",
+            "quay.io/che-incubator/configbump",
+            "quay.io/eclipse/che--traefik",
+        ] {
+            assert!(allowed(format!("{repo}@{digest}")), "{repo}");
+            assert!(allowed(format!("{repo}:v1@{digest}")), "{repo}");
+        }
+        // A neighbour, a lookalike host and another port are still refused.
+        assert!(!allowed(format!("quay.io/someone/tool@{digest}")));
+        assert!(!allowed(format!(
+            "quay.io.evil.com/devfile/project-clone@{digest}"
+        )));
+        assert!(!allowed(format!(
+            "quay.io:5000/devfile/project-clone@{digest}"
+        )));
+        assert!(!allowed(format!(
+            "quay.io/devfile/project-clone-evil@{digest}"
+        )));
     }
 
     #[test]

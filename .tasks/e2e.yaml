@@ -12,6 +12,14 @@ vars:
   SUITE: '{{ .SUITE | default "workspace" }}'
   # The Rust test target for a suite: the file name, with the dash a filename cannot carry.
   TARGET: '{{ .SUITE | default "workspace" | replace "-" "_" }}'
+  # Where scripts/e2e.sh keeps the state that outlives a run (the rig's CA, `diag` output). The
+  # script computes the same default; it is resolved here too so the Rust suites are pointed at
+  # the CA the cluster was actually built with. Override with E2E_STATE=<dir>.
+  E2E_STATE:
+    sh: printf '%s' "${E2E_STATE:-${TMPDIR:-/tmp}/weebo-si-e2e}"
+
+env:
+  E2E_STATE: '{{.E2E_STATE}}'
 
 tasks:
   build:
@@ -34,7 +42,8 @@ tasks:
     desc: 'Run one suite against an already deployed e2e cluster (usage: task e2e:test SUITE=workspace)'
     cmds:
       # Serialised: every test in a suite shares the cluster's one WeeboSiConfig singleton.
-      - cargo test -p weebo-si-e2e --features e2e --test {{.TARGET}} -- --test-threads=1 {{.CLI_ARGS}}
+      # E2E_CA_FILE defaults to the CA scripts/e2e.sh wrote; an explicit one (CI sets it) wins.
+      - E2E_CA_FILE="${E2E_CA_FILE:-{{.E2E_STATE}}/ca.crt}" cargo test -p weebo-si-e2e --features e2e --test {{.TARGET}} -- --test-threads=1 {{.CLI_ARGS}}
 
   run:
     desc: 'Bring the cluster up if needed, deploy one suite and run it (usage: task e2e:run SUITE=endpoint-auth)'
@@ -46,9 +55,9 @@ tasks:
         vars: { SUITE: "{{.SUITE}}" }
 
   diag:
-    desc: "Dump pods, events, operator objects and logs from the e2e cluster into /tmp/weebo-si-e2e/diag"
+    desc: "Dump pods, events, operator objects and logs from the e2e cluster into $E2E_STATE/diag (default ${TMPDIR:-/tmp}/weebo-si-e2e/diag; DIR=<dir> to choose)"
     cmds:
-      - "{{.ROOT_DIR}}/scripts/e2e.sh diag"
+      - "{{.ROOT_DIR}}/scripts/e2e.sh diag {{.DIR}}"
 
   down:
     desc: "Delete the e2e kind cluster and its certificate authority"

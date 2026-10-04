@@ -37,3 +37,28 @@ one command removes them all; `helm upgrade` puts them back once the operator is
 
   kubectl delete mutatingwebhookconfiguration,validatingwebhookconfiguration \
     -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy "{{ include "weebo-si-operator.fullname" . }}" is in place:
+
+  ingress   kube-apiserver ({{ join ", " .Values.networkPolicy.kubeApiserver.cidrs | default "by selector" }}) to the webhook port
+  egress    DNS, and the kube-apiserver on port(s) {{ join ", " .Values.networkPolicy.kubeApiserver.ports }}
+
+If DevWorkspace creation starts failing with "failed calling webhook", that policy is the first
+suspect: check the CIDRs against `kubectl get endpoints kubernetes -n default`, then use the
+break-glass above.
+{{- else }}
+
+*** networkPolicy.enabled is false. ***
+Nothing in this release limits who can reach the webhook (port {{ .Values.webhook.service.targetPort }}) or the metrics
+port ({{ .Values.metrics.service.port }}): any pod your cluster's network allows can. To fence them, set:
+
+  networkPolicy.enabled=true
+  networkPolicy.kubeApiserver.cidrs     the apiserver's addresses (kubectl get endpoints kubernetes -n default)
+  networkPolicy.kubeApiserver.ports     its endpoint port(s), default 443 and 6443
+  networkPolicy.monitoring.*Selector    your metrics scraper (default: namespace "monitoring")
+  networkPolicy.dns.*Selector           your cluster DNS (default: kube-dns in kube-system)
+
+The render fails without kubeApiserver.cidrs (or apiserver selectors), since a policy that drops
+the apiserver's calls blocks every write the webhook covers.
+{{- end }}

@@ -27,3 +27,9 @@ tasks:
       # RFC 0011's provisioning grants: a ClusterRole rule and a namespaced Role/RoleBinding pair
       # that only exist behind this switch, so the default render never covers them.
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null
+      # The NetworkPolicies are off by default in all three charts, so the default renders never
+      # cover them. The operator's needs the apiserver CIDR (the render fails without it, on
+      # purpose); preauth-proxy's needs a narrowing gateway selector, for the same reason.
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set networkPolicy.enabled=true --set 'networkPolicy.kubeApiserver.cidrs={10.0.0.0/24}' > /dev/null
+      - helm template ci charts/endpoint-gateway --namespace weebo-si-hardening --set networkPolicy.enabled=true > /dev/null
+      - helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder --set networkPolicy.enabled=true --set networkPolicy.gateway.namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=traefik > /dev/null

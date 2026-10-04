@@ -205,6 +205,7 @@ impl ReconcileFeature<NamespaceSubject> for KubeArmorPolicy {
                 body,
                 // Never owned: a namespace outliving its workspaces must keep its floor.
                 owner: None,
+                uid: None,
             }],
             posture,
             ..DesiredState::default()
@@ -270,6 +271,7 @@ impl ReconcileFeature<Workspace> for KubeArmorPolicy {
                 pod_selector: PodSelector::DevWorkspaceId(subject.workspace_id.clone()),
                 body,
                 owner: Some(subject.owner.clone()),
+                uid: None,
             });
         }
 

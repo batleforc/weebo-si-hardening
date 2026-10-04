@@ -30,10 +30,12 @@ pub mod model;
 pub mod port;
 pub mod resolve;
 
-pub use application::{ReconcileOutcome, reconcile};
+pub use application::{ReconcileOutcome, reconcile, teardown};
 pub use feature::registry_config::{NamespaceSubject, RegistryConfigFeature};
 pub use feature::registry_guard::{RegistryGuard, RegistryObjectWrite, WriteOperation};
-pub use model::diff::{Applied, DesiredState, Diff, RefusedTemplate, compute_diff, tally};
+pub use model::diff::{
+    Applied, DesiredState, Diff, RefusedTemplate, compute_diff, compute_held_diff, tally,
+};
 pub use model::mount::{
     MOUNT_AS_ANNOTATION, MOUNT_PATH_ANNOTATION, MOUNT_TO_DEVWORKSPACE_LABEL, MountAs,
     TemplateRefusal, admit, is_automountable, shadows_directory,

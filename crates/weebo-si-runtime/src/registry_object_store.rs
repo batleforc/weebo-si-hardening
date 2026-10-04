@@ -224,7 +224,37 @@ async fn delete<K>(api: &Api<K>, name: &str) -> Result<(), DomainError>
 where
     K: Resource<DynamicType = ()> + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
 {
-    match api.delete(name, &DeleteParams::default()).await {
+    // Read the live object first and delete *that one*. The cache this diff was built from can be
+    // stale, and this brick's guard ships at `failurePolicy: Ignore`, so a user can replace a copy
+    // with an object of their own under the same name. Deleting by name alone would then delete
+    // theirs: instead the managed-by label is re-checked on the live object, and the delete is
+    // pinned to its UID.
+    let live = match api.get_opt(name).await {
+        Ok(Some(live)) => live,
+        Ok(None) => return Ok(()),
+        Err(err) => return Err(DomainError::PortFailed(err.to_string())),
+    };
+    let managed = live
+        .meta()
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(MANAGED_BY_LABEL))
+        .is_some_and(|value| value == MANAGED_BY_VALUE);
+    if !managed {
+        eprintln!(
+            "WARN weebo-si-controller: registry-config not deleting {name}: the live object no \
+             longer carries {MANAGED_BY_LABEL}={MANAGED_BY_VALUE}"
+        );
+        return Ok(());
+    }
+    let params = DeleteParams {
+        preconditions: Some(kube::api::Preconditions {
+            uid: live.meta().uid.clone(),
+            resource_version: None,
+        }),
+        ..DeleteParams::default()
+    };
+    match api.delete(name, &params).await {
         Ok(_) => Ok(()),
         // Deleting an object that is already gone is the outcome we wanted, not a failure — this
         // is what keeps a repeated Enforce pass over a namespace idempotent.
@@ -285,7 +315,7 @@ impl ObjectStore for KubeRegistryObjectStore {
                     Diff::Create(object) | Diff::Update(object) => {
                         self.apply_object(object).await?
                     }
-                    Diff::Delete { key, backend } => self.delete(key, *backend).await?,
+                    Diff::Delete { key, backend, .. } => self.delete(key, *backend).await?,
                     Diff::Unchanged(_) => {}
                 }
             }

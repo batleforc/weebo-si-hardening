@@ -14,6 +14,7 @@ weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy" }
 weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }

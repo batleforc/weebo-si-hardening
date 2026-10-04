@@ -48,7 +48,9 @@ nodes:
               readOnly: true
               pathType: File
     extraMounts:
-      # Written by scripts/e2e.sh before the cluster is created.
+      # Written by scripts/e2e.sh before the cluster is created. kind does not expand environment
+      # variables here, so this is a placeholder: the script substitutes $E2E_STATE/ca.crt into a
+      # per-run copy of this file (see kind_config in scripts/e2e.sh).
       - hostPath: /tmp/weebo-si-e2e/ca.crt
         containerPath: /etc/kubernetes/pki/sso-ca.crt
         readOnly: true

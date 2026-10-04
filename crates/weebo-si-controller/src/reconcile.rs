@@ -232,6 +232,45 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0005's `imagePolicy`. The parse-dependent half of its validation lives in
+    // `weebo_si_image_policy::validate` (the crd crate cannot call the pattern parser), and until
+    // now nothing outside the tests called it: a pattern that does not parse, or one naming an
+    // undeclared variable, matches nothing — which from the outside is indistinguishable from
+    // "correctly restrictive", and at `Enforce` is a fleet that stops starting. It is reported on
+    // the object instead.
+    if let Some(image_policy) = &resolved.image_policy {
+        let violations = weebo_si_image_policy::validate(image_policy, &declared_teams);
+        let state = if violations.is_empty() {
+            match image_policy.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} catalogue entries, {} grants",
+                image_policy.catalog.entries().len(),
+                image_policy.grants.len()
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "image-policy".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
     // configuration this repo already knew how to reject was reported nowhere — including the one
     // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the

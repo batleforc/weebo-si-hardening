@@ -19,6 +19,19 @@ pub trait NamespaceView {
     /// third feature either. This method is the general form; `facts()` stays as the
     /// convenience `dwoc-pin` already depends on, unchanged.
     fn annotation(&self, ns: &NamespaceName, key: &str) -> Option<String>;
+
+    /// Whether *some* namespace carries annotation `key` with `value`, compared ASCII
+    /// case-insensitively — "is `value` a user who owns a namespace". `endpoint-auth`'s
+    /// host-ownership patterns read a host more than one way when a name contains the
+    /// separator, and need to know whether the other reading is a real person.
+    ///
+    /// A scan, not a lookup: callers ask only when a host is ambiguous, which is rare. The
+    /// default answers `true` — "assume the other reading is somebody" — so a view that cannot
+    /// tell refuses an ambiguous host rather than handing it to whoever asked first.
+    fn annotated_anywhere(&self, key: &str, value: &str) -> bool {
+        let _ = (key, value);
+        true
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]

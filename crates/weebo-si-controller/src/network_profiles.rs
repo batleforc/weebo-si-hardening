@@ -203,6 +203,17 @@ fn warn_not_granted(outcome: &ReconcileOutcome, workspace: &str) {
     );
 }
 
+/// Whether the loaded configuration itself says `mode: Off`, as opposed to the gate answering
+/// `Off` for a namespace it cannot yet see or a singleton it has not yet read.
+fn configured_off(ctx: &Ctx) -> bool {
+    ctx.deps
+        .config
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .is_some_and(|config| config.mode == FeatureMode::Off)
+}
+
 async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     if !ctx.is_leader.load(Ordering::Relaxed) {
         return Ok(Action::requeue(Duration::from_secs(15)));
@@ -224,6 +235,23 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         .gate
         .mode(FeatureId::new("network-profiles"), &name);
     if mode == FeatureMode::Off {
+        // `mode: Off` is a rollback: the baselines this feature wrote come away, or an admin who
+        // reaches for `Off` mid-incident is left with deny-all objects and nothing repairing
+        // them. Only when the configuration *says* `Off` — the gate also answers `Off` while the
+        // namespace cache is cold or the singleton has not loaded, and neither is an instruction
+        // to delete anything.
+        if configured_off(&ctx) {
+            let applied =
+                weebo_si_network_profiles::teardown(&name, ctx.deps.policy_store.as_ref())
+                    .await
+                    .map_err(|err| Error(err.to_string()))?;
+            if applied.deleted > 0 {
+                println!(
+                    "weebo-si-controller: network-profiles namespace={name} mode=Off torn down deleted={}",
+                    applied.deleted
+                );
+            }
+        }
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.

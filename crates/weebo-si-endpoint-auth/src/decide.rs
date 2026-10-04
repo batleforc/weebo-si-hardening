@@ -207,14 +207,17 @@ pub fn decide(
     if !scope.governs(&request.host) {
         return Decision::deny(Reason::NoPolicy);
     }
-    if request.preflight {
-        return Decision::allow(Reason::Preflight);
-    }
+    // The lookup comes first: a preflight is allowed only for a host that has exactly one policy.
+    // Allowing it ahead of the lookup would answer `200` for a host in `Conflict` or one nobody
+    // owns, and hand the application's `OPTIONS` handler to an unauthenticated caller.
     let policy = match lookup {
         CatalogLookup::Policy(policy) => policy.as_ref(),
         CatalogLookup::Conflict => return Decision::deny(Reason::HostConflict),
         CatalogLookup::Unknown => return Decision::deny(Reason::NoPolicy),
     };
+    if request.preflight {
+        return Decision::allow(Reason::Preflight);
+    }
     let Ok(path) = normalise(&request.raw_path) else {
         return Decision::deny(Reason::UnnormalisedPath);
     };
@@ -647,6 +650,21 @@ mod tests {
 
         // And the real request that follows a preflight is decided on its own merits.
         assert!(!verdict(&request("/api/items"), &closed, &Credential::None).is_allow());
+    }
+
+    #[test]
+    fn a_preflight_is_not_allowed_on_a_host_with_no_single_policy() {
+        let mut preflight = request("/api/items");
+        preflight.method = Method::Options;
+        preflight.preflight = true;
+        assert_eq!(
+            verdict(&preflight, &CatalogLookup::Conflict, &Credential::None),
+            Decision::deny(Reason::HostConflict)
+        );
+        assert_eq!(
+            verdict(&preflight, &CatalogLookup::Unknown, &Credential::None),
+            Decision::deny(Reason::NoPolicy)
+        );
     }
 
     #[test]

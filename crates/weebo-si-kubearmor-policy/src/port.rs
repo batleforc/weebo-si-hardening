@@ -341,7 +341,15 @@ pub mod testing {
                             guard.retain(|existing| existing.key != obj.key);
                             guard.push(obj.clone());
                         }
-                        Diff::Delete { key, .. } => guard.retain(|existing| &existing.key != key),
+                        // Honours the uid precondition the way the apiserver does: a same-named
+                        // object with a different uid is not the one the diff saw, and survives.
+                        Diff::Delete { key, uid, .. } => guard.retain(|existing| {
+                            &existing.key != key
+                                || matches!(
+                                    (uid, &existing.uid),
+                                    (Some(want), Some(have)) if want != have
+                                )
+                        }),
                         Diff::Unchanged(_) => {}
                     }
                 }
@@ -358,7 +366,11 @@ pub mod testing {
     reason = "a failed assertion is the test failing"
 )]
 mod tests {
+    use weebo_si_crd::RuntimeProfileKey;
+
+    use super::testing::FakePolicyStore;
     use super::*;
+    use crate::model::policy::{ObjectKey, PodSelector};
 
     #[test]
     fn an_enforced_node_gauges_one_and_names_its_enforcer() {
@@ -376,5 +388,44 @@ mod tests {
     #[test]
     fn an_unscheduled_workspace_publishes_no_sample_rather_than_a_zero_it_cannot_stand_behind() {
         assert_eq!(Enforcement::Unknown.gauge(), None);
+    }
+
+    fn live(uid: &str) -> ManagedObject {
+        ManagedObject {
+            key: ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-base".to_string(),
+            },
+            backend: RuntimeBackend::KubeArmor,
+            profile: RuntimeProfileKey::new("base"),
+            pod_selector: PodSelector::Empty,
+            body: RuleBody::opaque(b"{}".to_vec()),
+            owner: None,
+            uid: Some(uid.to_string()),
+        }
+    }
+
+    fn delete(uid: &str) -> Diff {
+        Diff::Delete {
+            key: live(uid).key,
+            backend: RuntimeBackend::KubeArmor,
+            uid: Some(uid.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fake_deletes_the_object_whose_uid_the_diff_carries() {
+        let store = FakePolicyStore::new([live("uid-1")]);
+        store.apply(&[delete("uid-1")]).await.unwrap();
+        assert!(store.all().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_fake_keeps_a_same_named_object_recreated_under_another_uid() {
+        // What the apiserver does with a failed uid precondition — so a domain test against the
+        // fake cannot pass on a delete the real store would refuse.
+        let store = FakePolicyStore::new([live("uid-2")]);
+        store.apply(&[delete("uid-1")]).await.unwrap();
+        assert_eq!(store.all(), vec![live("uid-2")]);
     }
 }

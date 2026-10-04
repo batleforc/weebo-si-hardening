@@ -45,11 +45,13 @@ jobs:
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set networkPolicy.enabled=true --set 'networkPolicy.kubeApiserver.cidrs={10.0.0.0/24}' > /dev/null
       - name: preauth-proxy
         run: |
           # values.schema.json requires credentials.existingSecret; lint with the render's placeholder.
           helm lint charts/preauth-proxy --set credentials.existingSecret=ci-placeholder
           helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder > /dev/null
+          helm template ci charts/preauth-proxy --namespace preauth-proxy --set credentials.existingSecret=ci-placeholder --set networkPolicy.enabled=true --set networkPolicy.gateway.namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=traefik > /dev/null
       - name: endpoint-gateway
         run: |
           helm lint charts/endpoint-gateway
@@ -57,3 +59,4 @@ jobs:
           # `Observe` is the rollout step an admin actually uses first, so a template error in it
           # would otherwise be found during a rollout rather than in CI.
           helm template ci charts/endpoint-gateway --namespace weebo-si-hardening --set config.enforcement=Observe --set autoscaling.enabled=true > /dev/null
+          helm template ci charts/endpoint-gateway --namespace weebo-si-hardening --set networkPolicy.enabled=true > /dev/null

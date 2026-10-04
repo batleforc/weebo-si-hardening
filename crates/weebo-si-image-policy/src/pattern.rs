@@ -67,6 +67,9 @@ pub struct Pattern {
     host: HostPattern,
     path: Vec<PathSegment>,
     tag: Option<Vec<GlobPiece>>,
+    /// Whether the pattern ended in the explicit `@*` opt-in: a digest-pinned reference (which has
+    /// no tag to compare) is then accepted despite the tag constraint. See [`Pattern::parse`].
+    any_digest: bool,
 }
 
 impl Pattern {
@@ -122,11 +125,22 @@ impl Pattern {
         if raw.len() > MAX_REFERENCE_LEN {
             return Err(ParseError::TooLong);
         }
-        if raw.contains('@') {
+        // The one `@` a pattern may carry is the explicit, trailing `@*`: "a digest-pinned
+        // reference of this repository is acceptable too". It is never a digest value — an exact
+        // digest is not writable in a pattern — and it must be written, so a tag-constrained
+        // pattern does not start accepting digests of unknown provenance by default.
+        let (body, any_digest) = match raw.strip_suffix("@*") {
+            Some(body) => (body, true),
+            None => (raw, false),
+        };
+        if body.contains('@') {
             // "digest: not writable in a pattern" — Contract's grammar table.
             return Err(ParseError::IllegalDigest);
         }
-        if let Some(c) = raw.chars().find(|c| !is_legal_pattern_char(*c)) {
+        if body.is_empty() {
+            return Err(ParseError::Malformed);
+        }
+        if let Some(c) = body.chars().find(|c| !is_legal_pattern_char(*c)) {
             return Err(ParseError::IllegalCharacter(c));
         }
         // A pattern that is *only* a wildcard is the "any registry" form the Contract rejects.
@@ -134,11 +148,11 @@ impl Pattern {
         // that function to be handed — `*` would otherwise fall through to the default host and
         // silently become `docker.io/library/*`, which is a large allow-list wearing the text of
         // an unbounded one.
-        if raw == "*" || raw == "**" {
+        if body == "*" || body == "**" {
             return Err(ParseError::IllegalHost);
         }
 
-        let (name, tag) = split_pattern_tag(raw)?;
+        let (name, tag) = split_pattern_tag(body)?;
         let (host_text, path_text) = split_pattern_host(name)?;
 
         let host = parse_host(host_text)?;
@@ -153,6 +167,7 @@ impl Pattern {
             host,
             path,
             tag,
+            any_digest,
         })
     }
 
@@ -200,6 +215,9 @@ impl Pattern {
             out.push(':');
             out.push_str(&render_pieces(pieces, variables, "")?);
         }
+        if self.any_digest {
+            out.push_str("@*");
+        }
         Some(out)
     }
 
@@ -242,9 +260,11 @@ impl Pattern {
             // tagged, digested, or both."
             return true;
         };
-        // "A digest-only reference has no tag and therefore matches only tag-agnostic patterns."
+        // "A digest-only reference has no tag and therefore matches only tag-agnostic patterns" —
+        // or a pattern whose admin wrote the explicit `@*` opt-in. Host and path were already
+        // compared, so this accepts any digest of *this repository* and nothing wider.
         let Some(tag) = tag else {
-            return false;
+            return self.any_digest;
         };
         matches_glob(pieces, tag, variables)
     }
@@ -914,6 +934,81 @@ mod tests {
         let digested = format!("registry.internal/x:v1@{DIGEST}");
         assert!(!matches("registry.internal/x:v1", &digested, &no_vars()));
         assert!(matches("registry.internal/x", &digested, &no_vars()));
+    }
+
+    #[test]
+    fn a_digest_only_reference_does_not_satisfy_a_tag_constraint_by_default() {
+        // The bypass this refuses: a digest of unknown provenance is not "v1".
+        let digest_only = format!("registry.internal/x@{DIGEST}");
+        assert!(!matches("registry.internal/x:*", &digest_only, &no_vars()));
+        assert!(!matches("registry.internal/x:v1", &digest_only, &no_vars()));
+    }
+
+    #[test]
+    fn the_explicit_any_digest_suffix_accepts_a_digest_of_this_repository_only() {
+        let p = "registry.internal/x:*@*";
+        let digest_only = format!("registry.internal/x@{DIGEST}");
+        assert!(matches(p, &digest_only, &no_vars()));
+        assert!(matches(
+            p,
+            &format!("registry.internal/x:v1@{DIGEST}"),
+            &no_vars()
+        ));
+        // A tagged reference is still judged by its tag.
+        assert!(matches(p, "registry.internal/x:v1", &no_vars()));
+        assert!(!matches(
+            "registry.internal/x:v1@*",
+            "registry.internal/x:v2",
+            &no_vars()
+        ));
+        // Host and path are still compared: nothing wider than the repository.
+        assert!(!matches(
+            p,
+            &format!("registry.internal/y@{DIGEST}"),
+            &no_vars()
+        ));
+        assert!(!matches(
+            p,
+            &format!("registry.internal.evil.com/x@{DIGEST}"),
+            &no_vars()
+        ));
+        assert!(!matches(
+            p,
+            &format!("registry.internal:5000/x@{DIGEST}"),
+            &no_vars()
+        ));
+    }
+
+    #[test]
+    fn the_any_digest_suffix_is_the_only_at_a_pattern_may_carry() {
+        for raw in [
+            "registry.internal/x@*@*",
+            "registry.internal/x@sha256:abc@*",
+            "registry.internal/x@a*",
+            "registry.internal/x@**",
+            "registry.internal/@*x",
+            "registry.internal/x@",
+        ] {
+            assert_eq!(
+                Pattern::parse(raw),
+                Err(ParseError::IllegalDigest),
+                "{raw:?}"
+            );
+        }
+        // Nothing left of the suffix is not a pattern, and `*@*` is still "any registry".
+        assert_eq!(Pattern::parse("@*"), Err(ParseError::Malformed));
+        assert_eq!(Pattern::parse("*@*"), Err(ParseError::IllegalHost));
+        assert_eq!(Pattern::parse("**@*"), Err(ParseError::IllegalHost));
+    }
+
+    #[test]
+    fn interpolated_keeps_the_any_digest_suffix_visible() {
+        assert_eq!(
+            pattern("registry.internal/x:*@*")
+                .interpolated(&no_vars())
+                .as_deref(),
+            Some("registry.internal/x:*@*")
+        );
     }
 
     #[test]

@@ -67,6 +67,38 @@ charts/weebo-si-operator/crds/` by hand — see [Helm's own docs on
 RFC 0002 has no self-signed fallback of its own: `certificates.provider` is a prerequisite
 decision, not an option to skip.
 
+**NetworkPolicy for the operator's own pods.** Off by default (`networkPolicy.enabled: false`),
+like the gateway's and preauth-proxy's, because the peers are the cluster's to know — and a wrong
+guess here is a cluster-wide outage: a policy that drops the kube-apiserver's calls to the webhook
+blocks every write it covers at `failurePolicy: Fail`. Turned on, one `NetworkPolicy` over both
+roles admits the kube-apiserver to the webhook port and metrics scrapers to the metrics port, and
+allows egress to cluster DNS and the kube-apiserver only:
+
+```yaml
+networkPolicy:
+  enabled: true
+  kubeApiserver:
+    cidrs: ["10.0.0.0/24"]   # kubectl get endpoints kubernetes -n default
+    ports: [443, 6443]       # the endpoint port, not the kubernetes Service's 443
+    namespaceSelector: {}    # only where the apiserver runs as a pod (hosted control planes)
+    podSelector: {}
+  monitoring:                # the metrics port, while metrics.service.enabled
+    namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+    podSelector: {}
+  dns:                       # port 53 UDP+TCP
+    enabled: true
+    namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+    podSelector: { matchLabels: { k8s-app: kube-dns } }
+  extraIngress: []           # verbatim rules, e.g. the node CIDR if your CNI polices probes
+  extraEgress: []
+```
+
+Enabling it without `kubeApiserver.cidrs` (or an apiserver selector with `matchLabels` or
+`matchExpressions`) fails the render. The apiserver is matched by `ipBlock` because on most
+clusters it is not a pod; on Cilium, `ipBlock` does not match node addresses unless
+`policy-cidr-match-mode: nodes` is set, so use a `CiliumNetworkPolicy` with `kube-apiserver`
+entities through `extraIngress`/`extraEgress` there instead.
+
 **There are no raw manifests any more.** `crates/weebo-si-operator/deploy/` used to carry a
 hand-written copy of the same objects; it had drifted to the point of not starting (the webhook
 lacked the required `--operator-identity`, no `POD_NAMESPACE`, RBAC behind the chart's, only one of
@@ -80,6 +112,10 @@ hand-edit it: `task recu` regenerates it whenever `crates/weebo-si-crd` is part 
 With no `WeeboSiConfig` object created yet, the webhook configuration is still a no-op: `KubeConfigStore` reports
 `Off` for every feature until one exists, so every DevWorkspace round-trips through the webhook
 unmutated. That is deliberately the state to leave a fresh install in — see *Rollout*, below.
+Deleting the singleton later returns to exactly this state, live, with no restart: every feature
+reads `Off` on the next watch event. It stops the features rather than rolling them back — objects
+already written stay where they are, unrepaired, because only a config that *says* `mode: Off`
+tears anything down. Set `mode: Off` first if the goal is a clean removal.
 
 ### Before creating a `WeeboSiConfig`
 

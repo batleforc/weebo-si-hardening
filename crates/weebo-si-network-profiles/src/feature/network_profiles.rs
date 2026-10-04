@@ -178,8 +178,16 @@ impl ReconcileFeature<NamespaceSubject> for NetworkProfiles {
             // Per the RFC's "the baseline is different: no usable variant means the feature
             // refuses to enforce at all" — writes nothing rather than approximating, and says
             // so through `unsupported` so `weebo_si_network_profile_unsupported` can report it.
+            //
+            // The live baseline is *held*, not left to fall out of `objects` as a `Delete`: a
+            // backend that moved (`Auto` resolving to a different engine) must not take the
+            // namespace's deny-all floor away from workspaces that are still running.
             return Ok(DesiredState {
                 unsupported: vec![config.baseline.clone()],
+                held: vec![ObjectKey {
+                    namespace: subject.namespace.clone(),
+                    name: BASELINE_NAME.to_string(),
+                }],
                 ..DesiredState::default()
             });
         };
@@ -205,6 +213,7 @@ impl ReconcileFeature<NamespaceSubject> for NetworkProfiles {
             body,
             // Never owned: a namespace outliving its workspaces must keep its floor.
             owner: None,
+            uid: None,
         }]))
     }
 }
@@ -274,6 +283,7 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
                 pod_selector: PodSelector::DevWorkspaceId(subject.workspace_id.clone()),
                 body,
                 owner: Some(subject.owner.clone()),
+                uid: None,
             });
         }
 
@@ -407,6 +417,10 @@ mod tests {
         };
         let desired = feature.desired(&subject, &context).unwrap();
         assert!(desired.objects.is_empty());
+        // And the live baseline is held: a backend that moved must not take the deny-all floor
+        // away from running workspaces.
+        assert_eq!(desired.held.len(), 1);
+        assert_eq!(desired.held[0].name, BASELINE_NAME);
     }
 
     fn team1() -> Team {

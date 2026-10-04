@@ -496,11 +496,12 @@ impl TokenReviewer {
                 .insert(key, (), now.plus_secs(REFUSED_TTL_SECS), now);
             return None;
         };
-        // Bounded by the cache's own TTL rather than by the token's `exp`, which a TokenReview
-        // does not report: an hour of "this token belongs to this namespace" is the same claim
-        // the apiserver just made, and the token is re-reviewed after it.
-        self.reviews
-            .insert(key, namespace.clone(), now.plus_secs(3_600), now);
+        // Bounded by the cache's own TTL and by the token's own `exp`, read unverified: the
+        // apiserver has just vouched for the token, so the claimed `exp` can only *shorten* how
+        // long this answer lives, and an expired token is never honoured for the rest of an hour.
+        if let Some(until) = review_lifetime(token, now) {
+            self.reviews.insert(key, namespace.clone(), until, now);
+        }
         if !client.is_empty() {
             self.known.insert(
                 Fingerprint::of(client),
@@ -510,6 +511,60 @@ impl TokenReviewer {
             );
         }
         Some(namespace)
+    }
+}
+
+/// Which namespace each pod address belongs to, from the labelled pods the watch holds.
+///
+/// A pod that is not `Running`, or is being deleted, no longer owns its address: the next pod to
+/// be handed that IP may be in another namespace, and a stale entry would resolve it as a
+/// workspace it is not. An address claimed by more than one namespace is dropped outright rather
+/// than resolved to whichever the iteration reached last.
+fn address_index<'a>(pods: impl IntoIterator<Item = &'a Pod>) -> HashMap<String, String> {
+    let mut rebuilt: HashMap<String, String> = HashMap::new();
+    let mut contested: HashSet<String> = HashSet::new();
+    for pod in pods {
+        let Some(namespace) = pod.namespace() else {
+            continue;
+        };
+        if pod.metadata.deletion_timestamp.is_some() {
+            continue;
+        }
+        let status = pod.status.as_ref();
+        if status.and_then(|status| status.phase.as_deref()) != Some("Running") {
+            continue;
+        }
+        for ip in status
+            .and_then(|status| status.pod_ips.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|ip| ip.ip)
+            .chain(status.and_then(|status| status.pod_ip.clone()))
+        {
+            match rebuilt.get(&ip) {
+                Some(existing) if *existing != namespace => {
+                    contested.insert(ip);
+                }
+                _ => {
+                    rebuilt.insert(ip, namespace.clone());
+                }
+            }
+        }
+    }
+    for ip in contested {
+        rebuilt.remove(&ip);
+    }
+    rebuilt
+}
+
+/// How long a reviewed token's answer may be cached: an hour, or until the token's own claimed
+/// `exp` if that is sooner. `None` when the token is already past it, so nothing is cached.
+fn review_lifetime(token: &str, now: Timestamp) -> Option<Timestamp> {
+    let ceiling = now.plus_secs(3_600);
+    match crate::adapters::oidc::unverified_exp(token) {
+        Some(exp) if exp <= now.as_secs() => None,
+        Some(exp) if exp < ceiling.as_secs() => Some(Timestamp::from_secs(exp)),
+        _ => Some(ceiling),
     }
 }
 
@@ -599,22 +654,8 @@ impl KubeWorkloadIdentity {
             let stream = reflector::reflector(writer, watcher(api, config)).default_backoff();
             let mut stream = std::pin::pin!(stream);
             while stream.next().await.is_some() {
-                let mut rebuilt = HashMap::new();
-                for pod in reader.state() {
-                    let Some(namespace) = pod.namespace() else {
-                        continue;
-                    };
-                    let status = pod.status.as_ref();
-                    for ip in status
-                        .and_then(|status| status.pod_ips.clone())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|ip| ip.ip)
-                        .chain(status.and_then(|status| status.pod_ip.clone()))
-                    {
-                        rebuilt.insert(ip, namespace.clone());
-                    }
-                }
+                let state = reader.state();
+                let rebuilt = address_index(state.iter().map(|pod| pod.as_ref()));
                 if let Ok(mut current) = index.write() {
                     *current = rebuilt;
                 }
@@ -802,6 +843,68 @@ mod tests {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 
+    fn pod(namespace: &str, ip: &str, phase: &str, deleting: bool) -> Pod {
+        let mut value = serde_json::json!({
+            "metadata": { "name": "p", "namespace": namespace },
+            "status": { "phase": phase, "podIP": ip },
+        });
+        if deleting {
+            value["metadata"]["deletionTimestamp"] = serde_json::json!("2026-01-01T00:00:00Z");
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_terminated_or_deleting_pod_does_not_own_its_address() {
+        let pods = [
+            pod("user-alice", "10.0.0.1", "Running", false),
+            pod("user-bob", "10.0.0.2", "Succeeded", false),
+            pod("user-carol", "10.0.0.3", "Running", true),
+        ];
+        let index = address_index(pods.iter());
+        assert_eq!(
+            index.get("10.0.0.1").map(String::as_str),
+            Some("user-alice")
+        );
+        assert!(!index.contains_key("10.0.0.2"));
+        assert!(!index.contains_key("10.0.0.3"));
+    }
+
+    #[test]
+    fn an_address_two_namespaces_claim_resolves_to_neither() {
+        let pods = [
+            pod("user-alice", "10.0.0.9", "Running", false),
+            pod("user-bob", "10.0.0.9", "Running", false),
+            pod("user-alice", "10.0.0.8", "Running", false),
+        ];
+        let index = address_index(pods.iter());
+        assert!(!index.contains_key("10.0.0.9"));
+        assert_eq!(
+            index.get("10.0.0.8").map(String::as_str),
+            Some("user-alice")
+        );
+    }
+
+    #[test]
+    fn a_reviewed_token_is_cached_no_longer_than_its_own_exp() {
+        let now = Timestamp::from_secs(10_000);
+        let token = |exp: u64| format!("h.{}.s", B64.encode(format!(r#"{{"exp":{exp}}}"#)));
+        // Sooner than the hour: capped at the token's own expiry.
+        assert_eq!(
+            review_lifetime(&token(10_600), now),
+            Some(Timestamp::from_secs(10_600))
+        );
+        // Later than the hour: the hour.
+        assert_eq!(
+            review_lifetime(&token(99_999), now),
+            Some(now.plus_secs(3_600))
+        );
+        // Already expired: not cached at all.
+        assert_eq!(review_lifetime(&token(9_000), now), None);
+        // Not a JWT payload: the hour, as before.
+        assert_eq!(review_lifetime("opaque", now), Some(now.plus_secs(3_600)));
+    }
+
     #[test]
     fn only_something_shaped_like_a_service_account_token_is_worth_an_api_call() {
         let payload = B64.encode(br#"{"kubernetes.io":{"namespace":"user-alice"}}"#);
@@ -901,7 +1004,9 @@ mod tests {
     #[tokio::test]
     async fn a_slow_apiserver_is_given_up_on_and_not_asked_again_at_once() {
         let (client, calls) = fake_apiserver(Duration::from_secs(5), true).await;
-        let reviewer = TokenReviewer::new(client, true, 100, Duration::from_millis(100));
+        // Wide enough that the request reaches the fake under a loaded test run, which the call count
+        // below relies on, and still far below the fake's five-second delay.
+        let reviewer = TokenReviewer::new(client, true, 100, Duration::from_millis(500));
         let now = Timestamp::from_secs(1_000);
         let started = std::time::Instant::now();
         assert!(reviewer.review(&sa_shaped(), "", now).await.is_none());

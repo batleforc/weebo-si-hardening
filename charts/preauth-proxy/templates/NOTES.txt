@@ -14,3 +14,22 @@ Reading the logs — one structured line per acquisition and per renewal is the 
 injection is working, since there are no metrics yet:
 
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "preauth-proxy.fullname" . }} -f
+{{- if not .Values.networkPolicy.enabled }}
+
+*** networkPolicy.enabled is false. ***
+Nothing in this release limits who can reach the proxy port, so any pod in the cluster can obtain
+the upstream credential from it. Before this carries real traffic, set:
+
+  networkPolicy.enabled=true
+  networkPolicy.gateway.namespaceSelector   the namespace of the router running the forward-auth
+                                            middleware (e.g. kubernetes.io/metadata.name: traefik)
+  networkPolicy.gateway.podSelector         that router's pods (e.g. app.kubernetes.io/name: traefik)
+
+At least one of the two must carry matchLabels or matchExpressions, or the render fails.
+{{- else }}
+
+NetworkPolicy "{{ include "preauth-proxy.fullname" . }}" admits only
+{{- with .Values.networkPolicy.gateway.namespaceSelector }} namespaces {{ toJson . }}{{ end }}
+{{- with .Values.networkPolicy.gateway.podSelector }} pods {{ toJson . }}{{ end }} to the proxy port.
+If routed requests start timing out, check those selectors against the router's real labels.
+{{- end }}

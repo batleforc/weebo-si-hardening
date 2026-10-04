@@ -99,11 +99,22 @@ credentials:
 # Off by default only because this chart cannot know where your gateway runs: a guessed selector
 # would either admit nothing (a broken install) or too much (a false sense of safety). Enabling it
 # without a gateway selector fails the render rather than admitting the whole namespace.
+#
+# To turn it on, set `enabled: true` and `gateway.namespaceSelector` and/or `gateway.podSelector`
+# to the pods that actually open the connection to this proxy: the router running the forward-auth
+# middleware (e.g. Traefik), since it is the router, not the auth service, that forwards the
+# request once auth passes. For Traefik in namespace `traefik`:
+#
+#   networkPolicy:
+#     enabled: true
+#     gateway:
+#       namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: traefik } }
+#       podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
 networkPolicy:
   enabled: false
-  # The forward-auth gateway's pods. Each is a full Kubernetes LabelSelector (`matchLabels`
-  # and/or `matchExpressions`), rendered as given — the same shape charts/endpoint-gateway's
-  # networkPolicy takes. Both given = those pods in those namespaces.
+  # The router running the forward-auth middleware (see above). Each is a full Kubernetes
+  # LabelSelector (`matchLabels` and/or `matchExpressions`), rendered as given — the same shape
+  # charts/endpoint-gateway's networkPolicy takes. Both given = those pods in those namespaces.
   gateway:
     namespaceSelector: {}
     #   matchLabels:

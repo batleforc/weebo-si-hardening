@@ -12,6 +12,13 @@
 #   scripts/e2e.sh diag [dir]            dump every pod, event and log worth reading after a failure
 #   scripts/e2e.sh down                  delete the cluster and the CA
 #
+# **Two directories.** `$E2E_STATE` (default `${TMPDIR:-/tmp}/weebo-si-e2e`) outlives a run on
+# purpose: it holds the rig's certificate authority, which the kind node bind-mounts when the
+# cluster is created and which every later `deploy` and the Rust suites read back (E2E_CA_FILE;
+# `.tasks/e2e.yaml` points it at `$E2E_STATE/ca.crt`), and `diag` writes there by default. `down`
+# deletes it. Everything else a run writes (the realm, the Corefile, packaged charts, image
+# archives) goes into a fresh `mktemp -d` that is removed when the script exits.
+#
 # Suites: workspace | kubearmor | endpoint-auth | identity. `task e2e SUITE=<suite>` runs the
 # whole sequence plus the Rust suite of the same name (crates/weebo-si-e2e/tests/<suite>.rs).
 #
@@ -27,7 +34,7 @@ CLUSTER=weebo-e2e
 DOMAIN=127.0.0.1.nip.io
 SSO_HOST="sso.$DOMAIN"
 ISSUER="https://$SSO_HOST/realms/che"
-STATE=/tmp/weebo-si-e2e
+STATE=${E2E_STATE:-${TMPDIR:-/tmp}/weebo-si-e2e}
 NAMESPACE=weebo-si-hardening
 REPO_ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
@@ -52,6 +59,12 @@ if [ -z "${E2E_RUNTIME:-}" ]; then
 fi
 KIND_EXPERIMENTAL_PROVIDER=$E2E_RUNTIME
 export KIND_EXPERIMENTAL_PROVIDER
+
+# Per-run scratch space, removed when the script exits however it exits.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/weebo-si-e2e-run.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'e2e: %s\n' "$*" >&2; exit 1; }
@@ -91,6 +104,9 @@ retry() {
 
 make_ca() {
   mkdir -p "$STATE"
+  # kind wants an absolute hostPath, and E2E_STATE may have been given as a relative one.
+  STATE=$(unset CDPATH; cd -- "$STATE" && pwd)
+  say "certificate authority in $STATE (kept until \`down\`)"
   [ -f "$STATE/ca.crt" ] && return 0
   openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
     -subj "/CN=weebo-si e2e CA" \
@@ -188,9 +204,9 @@ install_sso() {
   kubectl create namespace sso --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl -n sso create secret tls sso-tls --cert="$STATE/sso.crt" --key="$STATE/sso.key" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  realm_json > "$STATE/realm.json"
-  jq -e . "$STATE/realm.json" >/dev/null || die "the generated realm is not valid JSON"
-  kubectl -n sso create configmap realm --from-file=che-realm.json="$STATE/realm.json" \
+  realm_json > "$WORK/realm.json"
+  jq -e . "$WORK/realm.json" >/dev/null || die "the generated realm is not valid JSON"
+  kubectl -n sso create configmap realm --from-file=che-realm.json="$WORK/realm.json" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -f - >/dev/null <<MANIFEST
 apiVersion: apps/v1
@@ -253,8 +269,8 @@ MANIFEST
 # `*.127.0.0.1.nip.io` name to the ingress controller through CoreDNS, and the apiserver — on the
 # node's own network namespace, where cluster DNS does not exist — through /etc/hosts.
 cluster_dns() {
-  kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' > "$STATE/Corefile"
-  sed -i '/rewrite stop {/,/^ *}/d' "$STATE/Corefile"
+  kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' > "$WORK/Corefile"
+  sed -i '/rewrite stop {/,/^ *}/d' "$WORK/Corefile"
   awk '
     /^[[:space:]]*kubernetes / && !done {
       print "        rewrite stop {"
@@ -264,8 +280,8 @@ cluster_dns() {
       done = 1
     }
     { print }
-  ' "$STATE/Corefile" > "$STATE/Corefile.new"
-  kubectl -n kube-system create configmap coredns --from-file=Corefile="$STATE/Corefile.new" \
+  ' "$WORK/Corefile" > "$WORK/Corefile.new"
+  kubectl -n kube-system create configmap coredns --from-file=Corefile="$WORK/Corefile.new" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl -n kube-system rollout restart deploy/coredns >/dev/null
   kubectl -n kube-system rollout status deploy/coredns --timeout=180s >/dev/null
@@ -275,7 +291,7 @@ node_hosts() {
   ip=$(kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.spec.clusterIP}')
   [ -n "$ip" ] || die "no ingress-nginx ClusterIP yet"
   "$E2E_RUNTIME" exec "$CLUSTER-control-plane" sh -c \
-    "grep -v ' $SSO_HOST\$' /etc/hosts > /tmp/hosts.new && cat /tmp/hosts.new > /etc/hosts && echo '$ip $SSO_HOST' >> /etc/hosts"
+    "t=\$(mktemp) && grep -v ' $SSO_HOST\$' /etc/hosts > \"\$t\" && cat \"\$t\" > /etc/hosts && rm -f \"\$t\" && echo '$ip $SSO_HOST' >> /etc/hosts"
 }
 
 install_cert_manager() {
@@ -370,11 +386,21 @@ CLUSTER"
   wait_for 1800 "kubectl -n eclipse-che get checluster eclipse-che -o jsonpath='{.status.chePhase}' | grep -qx Active"
 }
 
+# kind does not expand environment variables in its config, so the CA's hostPath is substituted
+# into a per-run copy; scripts/kind-e2e.yaml keeps the default path as the placeholder.
+kind_config() {
+  placeholder=/tmp/weebo-si-e2e/ca.crt
+  grep -qF "$placeholder" "$REPO_ROOT/scripts/kind-e2e.yaml" ||
+    die "scripts/kind-e2e.yaml no longer mounts $placeholder; update kind_config"
+  sed "s|$placeholder|$STATE/ca.crt|" "$REPO_ROOT/scripts/kind-e2e.yaml"
+}
+
 up() {
   need kind kubectl helm jq openssl curl "$E2E_RUNTIME"
   make_ca
   if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-    kind create cluster --config "$REPO_ROOT/scripts/kind-e2e.yaml" --wait 300s
+    kind_config > "$WORK/kind-e2e.yaml"
+    kind create cluster --config "$WORK/kind-e2e.yaml" --wait 300s
   fi
   kubectl config use-context "kind-$CLUSTER" >/dev/null
 
@@ -577,11 +603,11 @@ addon_argocd() {
   kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=600s >/dev/null
 
   say "the in-cluster chart repository"
-  rm -rf "$STATE/charts" && mkdir -p "$STATE/charts"
-  helm package "$REPO_ROOT/e2e/charts/che-user" -d "$STATE/charts" >/dev/null
-  helm repo index "$STATE/charts" --url http://charts.charts.svc:8080 >/dev/null
+  rm -rf "$WORK/charts" && mkdir -p "$WORK/charts"
+  helm package "$REPO_ROOT/e2e/charts/che-user" -d "$WORK/charts" >/dev/null
+  helm repo index "$WORK/charts" --url http://charts.charts.svc:8080 >/dev/null
   kubectl create namespace charts --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  kubectl -n charts create configmap charts --from-file="$STATE/charts" \
+  kubectl -n charts create configmap charts --from-file="$WORK/charts" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -f - >/dev/null <<MANIFEST
 apiVersion: apps/v1
@@ -649,9 +675,9 @@ load_images() {
       kind load docker-image "localhost/$image:e2e" --name "$CLUSTER" >/dev/null
     else
       # kind cannot read podman's store directly; an archive is the portable hand-over.
-      "$E2E_RUNTIME" save -o "$STATE/$image.tar" "localhost/$image:e2e" >/dev/null
-      kind load image-archive "$STATE/$image.tar" --name "$CLUSTER" >/dev/null
-      rm -f "$STATE/$image.tar"
+      "$E2E_RUNTIME" save -o "$WORK/$image.tar" "localhost/$image:e2e" >/dev/null
+      kind load image-archive "$WORK/$image.tar" --name "$CLUSTER" >/dev/null
+      rm -f "$WORK/$image.tar"
     fi
   done
 }
@@ -679,13 +705,13 @@ deploy_operator() {
   # `--wait` returns once the webhook pods are Ready, which can be before kube-proxy routes the
   # Service to them — and a suite's first write then meets `connection refused` under
   # `failurePolicy: Fail`. A server-side dry run takes the apiserver's own path to the webhook.
-  cat > "$STATE/probe-devworkspace.yaml" <<'PROBE'
+  cat > "$WORK/probe-devworkspace.yaml" <<'PROBE'
 apiVersion: workspace.devfile.io/v1alpha2
 kind: DevWorkspace
 metadata: { name: e2e-webhook-probe, namespace: default }
 spec: { started: false, template: {} }
 PROBE
-  wait_for 180 "! kubectl apply --dry-run=server -f '$STATE/probe-devworkspace.yaml' 2>&1 | grep -q 'failed calling webhook'"
+  wait_for 180 "! kubectl apply --dry-run=server -f '$WORK/probe-devworkspace.yaml' 2>&1 | grep -q 'failed calling webhook'"
 }
 
 deploy_gateway() {
@@ -720,6 +746,8 @@ deploy() {
 
 # --- after a failure ----------------------------------------------------------------------------------
 
+# Kept on purpose, since it is what you read after a red run: `$E2E_STATE/diag` unless a directory
+# is given, and the path is printed at the end.
 diag() {
   out=${1:-$STATE/diag}
   mkdir -p "$out"

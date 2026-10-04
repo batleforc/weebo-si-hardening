@@ -282,6 +282,7 @@ mod tests {
             pod_selector: selector,
             body: RuleBody::opaque(b"rules".to_vec()),
             owner: None,
+            uid: None,
         }
     }
 

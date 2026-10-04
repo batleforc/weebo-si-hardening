@@ -203,21 +203,34 @@ async fn run(args: Args) -> u8 {
 
     let proxy = Arc::new(Proxy::new(config, cache, source, upstream));
 
+    // A signal that cannot be listened for must never *be* the shutdown: this future completing
+    // is what makes `serve` drain and exit, so an arm that fails to register waits forever
+    // instead of returning.
     let shutdown = Box::pin(async {
-        let mut term =
+        let term = async {
             match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(term) => term,
+                Ok(mut term) => {
+                    term.recv().await;
+                    log!("INFO", "SIGTERM, draining");
+                }
                 Err(err) => {
                     log!("WARN", "cannot listen for SIGTERM: {err}");
-                    return;
+                    std::future::pending::<()>().await;
                 }
-            };
-        tokio::select! {
-            _ = term.recv() => log!("INFO", "SIGTERM, draining"),
-            result = tokio::signal::ctrl_c() => match result {
+            }
+        };
+        let interrupt = async {
+            match tokio::signal::ctrl_c().await {
                 Ok(()) => log!("INFO", "SIGINT, draining"),
-                Err(err) => log!("WARN", "cannot listen for SIGINT: {err}"),
-            },
+                Err(err) => {
+                    log!("WARN", "cannot listen for SIGINT: {err}");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            () = term => {},
+            () = interrupt => {},
         }
     });
 

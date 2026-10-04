@@ -157,12 +157,12 @@ fn log_unguarded(request: &AdmissionRequest<DynamicObject>) {
 fn log_decision(write: &RegistryObjectWrite, denial: Option<&str>) {
     match denial {
         Some(reason) => println!(
-            "weebo-si-webhook: policy-guard deny namespace={} actor={} kind={} operation={:?} \
-             reason={reason}",
+            "weebo-si-webhook: policy-guard deny namespace={} actor={:?} kind={} operation={:?} \
+             reason={reason:?}",
             write.namespace, write.actor, write.kind, write.operation
         ),
         None => println!(
-            "weebo-si-webhook: policy-guard allow namespace={} actor={} kind={} operation={:?}",
+            "weebo-si-webhook: policy-guard allow namespace={} actor={:?} kind={} operation={:?}",
             write.namespace, write.actor, write.kind, write.operation
         ),
     }

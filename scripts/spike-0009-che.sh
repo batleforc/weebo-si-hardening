@@ -25,7 +25,9 @@ CLUSTER=weebo-che
 DOMAIN=127.0.0.1.nip.io
 SSO_HOST="sso.$DOMAIN"
 ISSUER="https://$SSO_HOST/realms/che"
-STATE=/tmp/weebo-si-che
+# The rig's certificate authority outlives a run on purpose: the kind node bind-mounts it when the
+# cluster is created and `up` re-reads it on every re-run. `down` deletes it.
+STATE=${SPIKE_CHE_STATE:-${TMPDIR:-/tmp}/weebo-si-che}
 REPO_ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
 export KIND_EXPERIMENTAL_PROVIDER
@@ -34,10 +36,25 @@ for tool in kind kubectl helm jq openssl curl; do
   command -v "$tool" >/dev/null 2>&1 || { printf '%s is required\n' "$tool" >&2; exit 2; }
 done
 
+# Everything else a run writes (the realm, the Corefile, the test user's token) lives in a per-run
+# directory, removed on exit along with any port-forward left running.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/weebo-si-che-run.XXXXXX")
+# shellcheck disable=SC2317,SC2329  # invoked from the EXIT trap below, which shellcheck cannot see.
+cleanup() {
+  if [ -n "${FORWARD_PID:-}" ]; then kill "$FORWARD_PID" 2>/dev/null || true; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # --- the certificate the apiserver has to trust before the cluster exists ------------------------
 
 make_ca() {
   mkdir -p "$STATE"
+  # kind wants an absolute hostPath, and SPIKE_CHE_STATE may have been given as a relative one.
+  STATE=$(unset CDPATH; cd -- "$STATE" && pwd)
+  printf 'certificate authority in %s (kept until "down")\n' "$STATE"
   [ -f "$STATE/sso-ca.crt" ] && return 0
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -subj "/CN=weebo-si spike CA" \
@@ -49,7 +66,17 @@ make_ca() {
   openssl x509 -req -in "$STATE/sso.csr" -days 3650 \
     -CA "$STATE/sso-ca.crt" -CAkey "$STATE/sso-ca.key" -CAcreateserial \
     -extfile "$STATE/sso.ext" -out "$STATE/sso.crt" 2>/dev/null
-  printf 'certificate authority in %s\n' "$STATE"
+}
+
+# kind does not expand environment variables in its config, so the CA's hostPath is substituted
+# into a per-run copy; scripts/kind-che.yaml keeps the default path as the placeholder.
+kind_config() {
+  placeholder=/tmp/weebo-si-che/sso-ca.crt
+  grep -qF "$placeholder" "$REPO_ROOT/scripts/kind-che.yaml" || {
+    printf 'scripts/kind-che.yaml no longer mounts %s; update kind_config\n' "$placeholder" >&2
+    exit 1
+  }
+  sed "s|$placeholder|$STATE/sso-ca.crt|" "$REPO_ROOT/scripts/kind-che.yaml"
 }
 
 # --- the realm ------------------------------------------------------------------------------------
@@ -165,8 +192,8 @@ install_sso() {
   kubectl -n sso create secret tls sso-tls \
     --cert="$STATE/sso.crt" --key="$STATE/sso.key" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  realm_json > "$STATE/realm.json"
-  kubectl -n sso create configmap realm --from-file=che-realm.json="$STATE/realm.json" \
+  realm_json > "$WORK/realm.json"
+  kubectl -n sso create configmap realm --from-file=che-realm.json="$WORK/realm.json" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -f - >/dev/null <<MANIFEST
 apiVersion: apps/v1
@@ -245,11 +272,11 @@ MANIFEST
 # once, including the per-workspace endpoint hosts nobody can enumerate in advance, which is why
 # this is a wildcard rewrite rather than a list of hosts entries.
 cluster_dns() {
-  kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' > "$STATE/Corefile"
+  kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' > "$WORK/Corefile"
   # Strip any rewrite this script inserted before inserting one, because `up` is meant to be
   # re-runnable and a guard that only skips leaves five identical rules behind the first time it
   # is wrong.
-  sed -i '/rewrite stop {/,/^ *}/d' "$STATE/Corefile"
+  sed -i '/rewrite stop {/,/^ *}/d' "$WORK/Corefile"
   awk '
     /^[[:space:]]*kubernetes / && !done {
       print "        rewrite stop {"
@@ -259,9 +286,9 @@ cluster_dns() {
       done = 1
     }
     { print }
-  ' "$STATE/Corefile" > "$STATE/Corefile.new"
+  ' "$WORK/Corefile" > "$WORK/Corefile.new"
   kubectl -n kube-system create configmap coredns \
-    --from-file=Corefile="$STATE/Corefile.new" --dry-run=client -o yaml |
+    --from-file=Corefile="$WORK/Corefile.new" --dry-run=client -o yaml |
     kubectl apply -f - >/dev/null
   kubectl -n kube-system rollout restart deploy/coredns >/dev/null
   kubectl -n kube-system rollout status deploy/coredns --timeout=180s >/dev/null
@@ -278,14 +305,15 @@ node_hosts() {
   # Rewritten in place rather than with `sed -i`: /etc/hosts is a bind mount inside the node, so
   # the rename sed does is "Device or resource busy".
   podman exec "$CLUSTER-control-plane" sh -c \
-    "grep -v ' $SSO_HOST\$' /etc/hosts > /tmp/hosts.new && cat /tmp/hosts.new > /etc/hosts && echo '$ip $SSO_HOST' >> /etc/hosts"
+    "t=\$(mktemp) && grep -v ' $SSO_HOST\$' /etc/hosts > \"\$t\" && cat \"\$t\" > /etc/hosts && rm -f \"\$t\" && echo '$ip $SSO_HOST' >> /etc/hosts"
   printf 'node resolves %s to %s\n' "$SSO_HOST" "$ip"
 }
 
 up() {
   make_ca
   if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-    kind create cluster --config "$REPO_ROOT/scripts/kind-che.yaml" --wait 300s
+    kind_config > "$WORK/kind-che.yaml"
+    kind create cluster --config "$WORK/kind-che.yaml" --wait 300s
   fi
 
   printf 'installing ingress-nginx\n'
@@ -421,11 +449,11 @@ token() {
 }
 
 rows() {
-  token > "$STATE/token"
+  token > "$WORK/token"
   forward
   "$REPO_ROOT/scripts/spike-0009.sh" --row 2
   "$REPO_ROOT/scripts/spike-0009.sh" --row 7 --issuer "$LOCAL_SSO"
-  "$REPO_ROOT/scripts/spike-0009.sh" --row 8 --token "$STATE/token"
+  "$REPO_ROOT/scripts/spike-0009.sh" --row 8 --token "$WORK/token"
   unforward
 }
 

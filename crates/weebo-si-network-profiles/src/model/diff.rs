@@ -51,6 +51,10 @@ impl Managed for ManagedObject {
             && self.body == other.body
             && self.owner == other.owner
     }
+
+    fn uid(&self) -> Option<&str> {
+        self.uid.as_deref()
+    }
 }
 
 /// The selector is what ties an object to the subject that wrote it — see
@@ -129,6 +133,7 @@ mod tests {
             pod_selector: PodSelector::Empty,
             body: PolicyBody::opaque(body.to_vec()),
             owner: None,
+            uid: None,
         }
     }
 
@@ -182,14 +187,29 @@ mod tests {
     }
 
     #[test]
-    fn the_delete_line_carries_the_backend_an_adapter_needs() {
-        let existing = [object("weebo-git", b"a")];
+    fn the_delete_line_carries_the_backend_and_listed_uid_an_adapter_needs() {
+        let mut live = object("weebo-git", b"a");
+        live.uid = Some("uid-listed".to_string());
+        let existing = [live];
         assert_eq!(
             compute_diff(&[], &existing),
             vec![Diff::Delete {
                 key: existing[0].key.clone(),
                 backend: Backend::NetworkPolicy,
+                uid: Some("uid-listed".to_string()),
             }]
+        );
+    }
+
+    #[test]
+    fn a_listed_uid_alone_does_not_rewrite_the_object() {
+        // A desired object never carries a uid; a live one always does.
+        let desired = object("weebo-git", b"a");
+        let mut existing = object("weebo-git", b"a");
+        existing.uid = Some("uid-listed".to_string());
+        assert_eq!(
+            compute_diff(std::slice::from_ref(&desired), &[existing]),
+            vec![Diff::Unchanged(desired.key.clone())]
         );
     }
 

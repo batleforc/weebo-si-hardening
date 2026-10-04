@@ -261,6 +261,82 @@ impl HostsConfig {
     }
 }
 
+impl HostsConfig {
+    /// Whether `host` belongs to `owner`, by the first pattern that reads a user out of it.
+    ///
+    /// **An ambiguous host goes to the owner only when no other reading is a real user.** A
+    /// template such as `{user}-{workspace}-{endpoint}` reads `alice-bob-ws-api` as user `alice`
+    /// *or* user `alice-bob`, and `alice-my-ws-api` (alice's workspace `my-ws`) as `alice` or
+    /// `alice-my`. A first-split parse would let `alice` claim `alice-bob`'s endpoints; refusing
+    /// every ambiguous host refuses `alice-bob` hers, and `alice` any workspace or endpoint with
+    /// a `-` in its name. So the host is `owner`'s when `owner` is one of the readings and
+    /// `is_user` says none of the others is somebody — `alice-bob` gets `alice-bob-ws-api` while
+    /// no `alice` exists, and when both do, neither gets it. A user created *after* a host was
+    /// admitted can still collide with it; two namespaces then claim one host, which the
+    /// gateway's catalogue denies as a conflict.
+    ///
+    /// Compared case-insensitively: the host is lowercased before it is read, so an owner
+    /// annotation of `Alice` has to be too, or the owner's own endpoint is refused. `is_user` is
+    /// handed lowercased readings and should compare the same way.
+    pub fn owned_by(&self, host: &str, owner: &str, is_user: impl Fn(&str) -> bool) -> bool {
+        let owner = owner.to_ascii_lowercase();
+        match self.reading(host) {
+            Reading::Users(users) => {
+                users.contains(&owner)
+                    && users
+                        .iter()
+                        .filter(|user| **user != owner)
+                        .all(|user| !is_user(user))
+            }
+            Reading::Unreadable => false,
+        }
+    }
+
+    /// Whether the patterns *definitely* read `host` as somebody else's — a user is read out of
+    /// it, `owner` is not among the users it could be, and so nothing about the host is ambiguous
+    /// in `owner`'s favour. `false` for a host no pattern reads at all: that is "unknown", which
+    /// the caller decides about, not "another's".
+    pub fn claimed_by_another(&self, host: &str, owner: &str) -> bool {
+        let owner = owner.to_ascii_lowercase();
+        match self.reading(host) {
+            Reading::Users(users) => !users.is_empty() && !users.contains(&owner),
+            Reading::Unreadable => false,
+        }
+    }
+
+    /// Every user the first matching pattern could read out of `host`, lowercased.
+    fn reading(&self, host: &str) -> Reading {
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        let suffix = self.suffix.to_ascii_lowercase();
+        let Some(stem) = host.strip_suffix(&suffix) else {
+            return Reading::Unreadable;
+        };
+        for pattern in &self.ownership {
+            if let Some(template) = pattern.template.as_deref() {
+                let users = template_users(template, stem);
+                if users.is_empty() {
+                    continue;
+                }
+                return Reading::Users(users);
+            }
+            if let Some(user) = pattern.owner_of(stem) {
+                return Reading::Users(std::collections::BTreeSet::from([
+                    user.to_ascii_lowercase()
+                ]));
+            }
+        }
+        Reading::Unreadable
+    }
+}
+
+/// What the ownership patterns read out of a host.
+enum Reading {
+    /// The users the first matching pattern could read — more than one means ambiguous.
+    Users(std::collections::BTreeSet<String>),
+    /// No pattern reads a user out of it.
+    Unreadable,
+}
+
 impl HostOwnership {
     /// The user this pattern reads out of `stem` — the host with its suffix removed.
     pub fn owner_of(&self, stem: &str) -> Option<String> {
@@ -333,6 +409,56 @@ fn match_template(template: &str, stem: &str) -> Option<String> {
     if rest.is_empty() { user } else { None }
 }
 
+/// Every user `{user}` could capture when `template` is matched against `stem` — all splits, not
+/// just the first. More than one entry means the host is ambiguous.
+fn template_users(template: &str, stem: &str) -> std::collections::BTreeSet<String> {
+    fn walk(
+        remaining: &str,
+        rest: &str,
+        user: Option<&str>,
+        out: &mut std::collections::BTreeSet<String>,
+    ) {
+        let Some(open) = remaining.find('{') else {
+            if rest == remaining
+                && let Some(user) = user
+            {
+                out.insert(user.to_owned());
+            }
+            return;
+        };
+        let Some(rest) = rest.strip_prefix(&remaining[..open]) else {
+            return;
+        };
+        let Some(close) = remaining[open..].find('}').map(|at| at + open) else {
+            return;
+        };
+        let name = &remaining[open + 1..close];
+        let after = &remaining[close + 1..];
+        let next_literal = &after[..after.find('{').unwrap_or(after.len())];
+
+        let mut candidates: Vec<(&str, &str)> = Vec::new();
+        if next_literal.is_empty() {
+            candidates.push((rest, ""));
+        } else {
+            candidates.extend(
+                rest.match_indices(next_literal)
+                    .map(|(at, _)| rest.split_at(at)),
+            );
+        }
+        for (value, tail) in candidates {
+            if value.is_empty() || value.contains('.') {
+                continue;
+            }
+            let user = if name == "user" { Some(value) } else { user };
+            walk(after, tail, user, out);
+        }
+    }
+
+    let mut out = std::collections::BTreeSet::new();
+    walk(template, stem, None, &mut out);
+    out
+}
+
 /// Idle connections each ingress-nginx worker keeps to the gateway for auth subrequests — enough
 /// for a browser's six parallel asset requests on several hosts at once, and cheap to hold.
 pub const NGINX_AUTH_KEEPALIVE: &str = "32";
@@ -371,7 +497,7 @@ pub struct GatewayRef {
     /// copying the *caller's* headers onto a fixed path, so on a default install the gate is
     /// handed no host and no path, a caller can state the `X-Forwarded-Host` it is judged
     /// against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the
-    /// gate does not put a name on. Six lines in the controller's own ConfigMap close all three —
+    /// gate does not put a name on. Seven lines in the controller's own ConfigMap close all three —
     /// and an annotation cannot, because a per-ingress `config-backend` snippet is emitted *after*
     /// the auth call and so rewrites what the application is handed rather than what the gate is
     /// asked. The lines therefore belong to whoever installed the controller, which is nobody this
@@ -383,7 +509,7 @@ pub struct GatewayRef {
     /// leaving it `false` raises `Degraded` with the reason. The gate still attaches, because a
     /// gate a knowing attacker can bypass is better than the endpoint being open to everyone.
     ///
-    /// The six lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
+    /// The seven lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*.
     #[serde(default)]
     pub haproxy_prerequisite: bool,
 }
@@ -554,13 +680,17 @@ impl Dialect {
                 );
             }
             Self::Nginx => {
+                // `$escaped_request_uri`, never `$request_uri`: the raw value carries the caller's
+                // own `?` and `&`, so `/x?&host=other` would otherwise state a second `host` in
+                // this URL and the gateway would decide about a host the caller chose.
+                //
                 // The request travels in the URL, not in a snippet: `allow-snippet-annotations`
                 // has been false by default since ingress-nginx 1.9, and turning it back on
                 // would trade one hardening control for another.
                 annotations.insert(
                     "nginx.ingress.kubernetes.io/auth-url".to_owned(),
                     format!(
-                        "{url}/auth?host=$host&uri=$request_uri&method=$request_method&proto=$scheme"
+                        "{url}/auth?host=$host&uri=$escaped_request_uri&method=$request_method&proto=$scheme"
                     ),
                 );
                 annotations.insert(
@@ -570,7 +700,7 @@ impl Dialect {
                 annotations.insert(
                     "nginx.ingress.kubernetes.io/auth-signin".to_owned(),
                     format!(
-                        "{}/oidc/start?rd=$scheme://$host$request_uri",
+                        "{}/oidc/start?rd=$scheme://$host$escaped_request_uri",
                         gateway.external_url
                     ),
                 );
@@ -1270,6 +1400,82 @@ mod tests {
         assert_eq!(hosts.owner_of("evil-ws-carol-42.weebo.si"), None);
     }
 
+    /// An `is_user` over a fixed set of usernames.
+    fn users(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |user| names.contains(&user)
+    }
+
+    #[test]
+    fn a_host_two_users_could_claim_is_owned_by_neither() {
+        let hosts = hosts();
+        let both = users(&["alice", "alice-bob", "bob"]);
+        // Unambiguous: one split, one user.
+        assert!(hosts.owned_by("alice-ws-api.weebo.si", "alice", &both));
+        assert!(!hosts.owned_by("alice-ws-api.weebo.si", "bob", &both));
+        // `alice-bob-ws-api` reads as user `alice` or user `alice-bob`, and both exist: a
+        // first-split parse let `alice` claim it. Refused in both directions.
+        assert!(!hosts.owned_by("alice-bob-ws-api.weebo.si", "alice", &both));
+        assert!(!hosts.owned_by("alice-bob-ws-api.weebo.si", "alice-bob", &both));
+        // Outside the suffix, or matching no pattern.
+        assert!(!hosts.owned_by("alice-ws-api.example.org", "alice", &both));
+        assert!(!hosts.owned_by("alice.weebo.si", "alice", &both));
+    }
+
+    #[test]
+    fn a_hyphenated_user_owns_their_host_while_no_other_reading_is_a_user() {
+        let hosts = hosts();
+        // No `alice`: the only real reading of `alice-bob-ws-api` is `alice-bob`.
+        let only_alice_bob = users(&["alice-bob"]);
+        assert!(hosts.owned_by("alice-bob-ws-api.weebo.si", "alice-bob", &only_alice_bob));
+        // And a non-user reading never lets somebody else in.
+        assert!(!hosts.owned_by("alice-bob-ws-api.weebo.si", "alice", &only_alice_bob));
+    }
+
+    #[test]
+    fn a_hyphenated_workspace_or_endpoint_stays_its_owners() {
+        let hosts = hosts();
+        let alice = users(&["alice"]);
+        // `alice-my-ws-api` reads as `alice` (workspace `my-ws` or `my`) or `alice-my`, and
+        // nobody is called `alice-my`.
+        assert!(hosts.owned_by("alice-my-ws-api.weebo.si", "alice", &alice));
+        assert!(hosts.owned_by("alice-ws-my-api.weebo.si", "alice", &alice));
+        // Once an `alice-my` exists, it is a real clash.
+        let clash = users(&["alice", "alice-my"]);
+        assert!(!hosts.owned_by("alice-my-ws-api.weebo.si", "alice", &clash));
+    }
+
+    #[test]
+    fn a_view_that_cannot_tell_who_exists_refuses_an_ambiguous_host() {
+        let hosts = hosts();
+        let everyone = |_: &str| true;
+        assert!(hosts.owned_by("alice-ws-api.weebo.si", "alice", everyone));
+        assert!(!hosts.owned_by("alice-bob-ws-api.weebo.si", "alice-bob", everyone));
+    }
+
+    #[test]
+    fn ownership_ignores_the_case_of_the_owner_annotation() {
+        let hosts = hosts();
+        let alice = users(&["alice"]);
+        assert!(hosts.owned_by("alice-ws-api.weebo.si", "Alice", &alice));
+        assert!(hosts.owned_by("Alice-WS-API.weebo.si", "alice", &alice));
+    }
+
+    #[test]
+    fn a_host_is_claimed_by_another_only_when_the_patterns_definitely_say_so() {
+        let hosts = hosts();
+        // Definitely bob's.
+        assert!(hosts.claimed_by_another("bob-ws-api.weebo.si", "alice"));
+        // Hers.
+        assert!(!hosts.claimed_by_another("alice-ws-api.weebo.si", "alice"));
+        // Ambiguous between `alice` and `alice-bob`: not definitely anyone else's *to alice*, and
+        // not definitely anyone else's to `alice-bob` either.
+        assert!(!hosts.claimed_by_another("alice-bob-ws-api.weebo.si", "alice"));
+        assert!(!hosts.claimed_by_another("alice-bob-ws-api.weebo.si", "alice-bob"));
+        // Read by no pattern, or outside the suffix: unknown, which the caller decides.
+        assert!(!hosts.claimed_by_another("alice.weebo.si", "bob"));
+        assert!(!hosts.claimed_by_another("bob-ws-api.example.org", "alice"));
+    }
+
     #[test]
     fn the_governed_set_is_a_suffix_minus_the_exclusions() {
         let hosts = hosts();
@@ -1299,9 +1505,16 @@ mod tests {
     fn nginx_carries_the_request_in_the_url_because_snippets_are_off_by_default() {
         let annotations = Dialect::Nginx.annotations(&gateway(Dialect::Nginx));
         let url = &annotations["nginx.ingress.kubernetes.io/auth-url"];
-        for variable in ["$host", "$request_uri", "$request_method", "$scheme"] {
+        for variable in [
+            "$host",
+            "$escaped_request_uri",
+            "$request_method",
+            "$scheme",
+        ] {
             assert!(url.contains(variable), "{url}");
         }
+        // The raw variable would let a caller's own `&host=` state a second `host`.
+        assert!(!url.contains("$request_uri"), "{url}");
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-response-headers"));
         assert!(annotations.contains_key("nginx.ingress.kubernetes.io/auth-signin"));
         // Without it ingress-nginx opens a fresh connection to the gateway per gated request.

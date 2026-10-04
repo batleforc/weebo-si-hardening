@@ -115,6 +115,7 @@ impl ReconcileFeature<NamespaceSubject> for RegistryConfigFeature {
 
         let mut objects = Vec::new();
         let mut refused = Vec::new();
+        let mut held = Vec::new();
 
         for key in &provenance.resolved {
             // A resolved key with no catalogue entry cannot happen against a configuration that
@@ -129,8 +130,15 @@ impl ReconcileFeature<NamespaceSubject> for RegistryConfigFeature {
             })?;
 
             for source in &entry.sources {
+                // Where this source's copy lives. A source that cannot be built this pass keeps
+                // its live copy exactly as it is (see `DesiredState::held`).
+                let copy_key = ObjectKey {
+                    namespace: subject.namespace.clone(),
+                    name: copy_name(key, &source.template_ref.name),
+                };
                 let Some(template) = self.templates.template(source.kind, &source.template_ref)
                 else {
+                    held.push(copy_key);
                     refused.push(RefusedTemplate {
                         entry: key.clone(),
                         kind: source.kind,
@@ -143,6 +151,7 @@ impl ReconcileFeature<NamespaceSubject> for RegistryConfigFeature {
                 // The whole of the content inspection this brick does. Everything below this
                 // line copies bytes it has not looked at.
                 if let Err(refusal) = mount::admit(&template.labels, &template.annotations) {
+                    held.push(copy_key);
                     refused.push(RefusedTemplate {
                         entry: key.clone(),
                         kind: source.kind,
@@ -153,10 +162,7 @@ impl ReconcileFeature<NamespaceSubject> for RegistryConfigFeature {
                 }
 
                 objects.push(ManagedObject {
-                    key: ObjectKey {
-                        namespace: subject.namespace.clone(),
-                        name: copy_name(key, &source.template_ref.name),
-                    },
+                    key: copy_key,
                     kind: source.kind,
                     entry: key.clone(),
                     labels: template.labels,
@@ -171,6 +177,7 @@ impl ReconcileFeature<NamespaceSubject> for RegistryConfigFeature {
             team: provenance.team,
             not_granted: provenance.dropped_not_granted,
             refused,
+            held,
         })
     }
 }
@@ -423,6 +430,14 @@ mod tests {
         );
         assert_eq!(desired.refused.len(), 1);
         assert_eq!(desired.refused[0].reason(), "not_found");
+        assert_eq!(
+            desired.held,
+            vec![ObjectKey {
+                namespace: NamespaceName::new("user-alice"),
+                name: "weebo-si-internal-npm-weebo-npm-token".to_string(),
+            }],
+            "the live copy of the source that did not resolve is held, not deleted"
+        );
         assert!(
             !desired.is_ready(),
             "half an entry is what a broken build looks like — the gauge has to say so"
@@ -464,6 +479,18 @@ mod tests {
         assert_eq!(
             desired.refused[0].refusal,
             Some(TemplateRefusal::MountShadowsPath)
+        );
+        // The refused ConfigMap source, and the Secret source this store does not hold at all.
+        assert_eq!(
+            desired.held.len(),
+            2,
+            "a refused template holds its live copy"
+        );
+        assert!(
+            desired
+                .held
+                .iter()
+                .any(|key| key.name == "weebo-si-internal-npm-weebo-npmrc")
         );
     }
 

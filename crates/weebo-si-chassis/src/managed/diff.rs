@@ -29,6 +29,18 @@ pub trait Managed: Clone {
     /// it differs (a provenance label, a resolved-at timestamp), and `PartialEq` would make
     /// every such field a write to the apiserver on every pass.
     fn content_eq(&self, other: &Self) -> bool;
+
+    /// The apiserver `metadata.uid` this object was listed with — `None` for a desired object,
+    /// which has never existed, and for a feature whose store does not read it back.
+    ///
+    /// Carried into [`Diff::Delete`] so an adapter can pin the delete to the object it actually
+    /// saw: a same-named object recreated between the list and the delete has a different uid,
+    /// and a delete preconditioned on the old one cannot remove it. Never part of
+    /// [`Managed::content_eq`] — a desired object never has one, so comparing it would turn every
+    /// object into an `Update` on every pass.
+    fn uid(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// One line of the diff between the desired objects and what a store reports exists now.
@@ -46,6 +58,9 @@ pub enum Diff<M: Managed> {
         key: ObjectKey,
         /// Which dialect it was written in.
         backend: M::Backend,
+        /// The uid it was listed with, per [`Managed::uid`] — the precondition an adapter pins
+        /// the delete to, so a delete can never reach a same-named object created since.
+        uid: Option<String>,
     },
     /// Present in both, identical.
     Unchanged(ObjectKey),
@@ -81,6 +96,7 @@ pub fn compute_diff<M: Managed>(desired: &[M], existing: &[M]) -> Vec<Diff<M>> {
             diffs.push(Diff::Delete {
                 key: present.key().clone(),
                 backend: present.backend(),
+                uid: present.uid().map(str::to_string),
             });
         }
     }
@@ -137,6 +153,7 @@ mod tests {
         backend: FakeBackend,
         body: Vec<u8>,
         note: String,
+        uid: Option<String>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +176,10 @@ mod tests {
         fn content_eq(&self, other: &Self) -> bool {
             self.backend == other.backend && self.body == other.body
         }
+
+        fn uid(&self) -> Option<&str> {
+            self.uid.as_deref()
+        }
     }
 
     fn object(name: &str, body: &[u8]) -> Fake {
@@ -170,6 +191,7 @@ mod tests {
             backend: FakeBackend::One,
             body: body.to_vec(),
             note: String::new(),
+            uid: None,
         }
     }
 
@@ -190,7 +212,36 @@ mod tests {
             vec![Diff::Delete {
                 key: existing[0].key.clone(),
                 backend: FakeBackend::One,
+                uid: None,
             }]
+        );
+    }
+
+    #[test]
+    fn a_delete_carries_the_uid_the_object_was_listed_with() {
+        // The precondition an adapter pins the delete to: without it, a same-named object
+        // recreated between the list and the delete would be deleted in its place.
+        let mut live = object("weebo-base", b"a");
+        live.uid = Some("uid-listed".to_string());
+        assert_eq!(
+            compute_diff(&[], std::slice::from_ref(&live)),
+            vec![Diff::Delete {
+                key: live.key.clone(),
+                backend: FakeBackend::One,
+                uid: Some("uid-listed".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_uid_alone_does_not_force_an_update() {
+        // A desired object never has a uid and a listed one always does.
+        let desired = object("weebo-base", b"a");
+        let mut existing = object("weebo-base", b"a");
+        existing.uid = Some("uid-listed".to_string());
+        assert_eq!(
+            compute_diff(std::slice::from_ref(&desired), &[existing]),
+            vec![Diff::Unchanged(desired.key.clone())]
         );
     }
 
@@ -273,6 +324,7 @@ mod tests {
             Diff::Delete {
                 key: obj.key.clone(),
                 backend: obj.backend,
+                uid: None,
             },
             Diff::Unchanged(obj.key.clone()),
         ];

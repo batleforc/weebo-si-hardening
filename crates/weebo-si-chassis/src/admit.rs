@@ -49,7 +49,7 @@ pub fn admit<S: Subject>(
     let mut mutations = Vec::new();
 
     for feature in registry.iter() {
-        let mode = gate.mode(feature.id(), subject.namespace());
+        let mode = gate.mode_for_admission(feature.id(), subject.namespace());
         if mode == FeatureMode::Off {
             continue;
         }

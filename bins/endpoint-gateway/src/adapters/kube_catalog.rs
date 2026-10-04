@@ -244,12 +244,7 @@ impl KubeCatalog {
 
         let (catalogue, overrides) = translate(&feature);
         let owners = owners_of(&stores.namespaces, &feature, &teams);
-        let mut team_of_user: HashMap<String, TeamName> = HashMap::new();
-        for owner in owners.values() {
-            if let (Some(team), username) = (owner.team.as_ref(), &owner.username) {
-                team_of_user.insert(username.clone(), TeamName::new(team.as_str()));
-            }
-        }
+        let team_of_user = team_of_user(owners.values());
 
         let mut endpoints = Vec::new();
         let mut refused = 0_usize;
@@ -283,6 +278,24 @@ impl KubeCatalog {
                     continue;
                 };
                 if !self.scope.governs(&host) {
+                    continue;
+                }
+                // Ownership is checked at admission, but admission exempts DevWorkspace Operator,
+                // the break-glass identities, `DryRun`, and every object that predates
+                // enforcement. An `Ingress` in alice's namespace for a host the patterns read as
+                // bob's would otherwise be indexed as alice's endpoint: bob's host denied by a
+                // conflict, or handed to alice if bob has none. Left out of the index it is a
+                // host nobody serves, which denies.
+                if feature
+                    .hosts
+                    .claimed_by_another(host.as_str(), &owner.username)
+                {
+                    println!(
+                        "WARN endpoint-gateway: {namespace}/{} names {}, which the ownership \
+                         patterns read as another user's; not indexed",
+                        ingress.name_any(),
+                        host.as_str()
+                    );
                     continue;
                 }
                 endpoints.push(IndexedEndpoint {
@@ -356,6 +369,27 @@ struct Stores {
 struct Owner {
     username: String,
     team: Option<weebo_si_crd::TeamName>,
+}
+
+/// The team each user belongs to, read off the namespaces they own.
+///
+/// A user who owns namespaces in two teams has no single team, and iterating a `HashMap` made the
+/// answer differ from one rebuild to the next — team-delegated access flipped on and off with no
+/// edit. The lexicographically smallest team name wins, so the answer is at least stable.
+fn team_of_user<'a>(owners: impl IntoIterator<Item = &'a Owner>) -> HashMap<String, TeamName> {
+    let mut team_of_user: HashMap<String, TeamName> = HashMap::new();
+    for owner in owners {
+        let (Some(team), username) = (owner.team.as_ref(), &owner.username) else {
+            continue;
+        };
+        match team_of_user.get(username) {
+            Some(existing) if existing.as_str() <= team.as_str() => {}
+            _ => {
+                team_of_user.insert(username.clone(), TeamName::new(team.as_str()));
+            }
+        }
+    }
+    team_of_user
 }
 
 fn spawn_reflector<S, K>(stream: S, notify: Arc<tokio::sync::Notify>)
@@ -446,6 +480,29 @@ fn raw_endpoint(ingress: &Ingress, owner: &Owner) -> RawEndpoint {
     }
 }
 
+/// Build the catalogue, dropping — and naming — any entry `Catalogue::new` would refuse.
+///
+/// An entry that claims both "no authentication" and a delegation list used to make the whole
+/// catalogue empty (`unwrap_or_default`), closing every endpoint with no hint why. Only the
+/// offending entry goes: its key is then unknown, so every endpoint naming it is indexed closed,
+/// which is the same fail-closed answer for the one entry that is wrong.
+fn catalogue_from(entries: Vec<(CatalogueKey, bool, BTreeSet<Delegation>)>) -> Catalogue {
+    let entries: Vec<_> = entries
+        .into_iter()
+        .filter(|(key, anonymous, delegation)| {
+            let bad = *anonymous && !delegation.is_empty();
+            if bad {
+                println!(
+                    "ERROR endpoint-gateway: catalogue entry {key:?} is both anonymous and \
+                     delegating; it is dropped and endpoints naming it are closed"
+                );
+            }
+            !bad
+        })
+        .collect();
+    Catalogue::new(entries).unwrap_or_default()
+}
+
 /// Translate the operator's configuration vocabulary into the decision's.
 ///
 /// Two vocabularies rather than one shared type, because the decision crate must stay free of
@@ -466,7 +523,7 @@ fn translate(feature: &ResolvedEndpointAuthConfig) -> (Catalogue, Vec<Override>)
                 .collect::<BTreeSet<_>>(),
         )
     });
-    let catalogue = Catalogue::new(entries).unwrap_or_default();
+    let catalogue = catalogue_from(entries.collect());
 
     let overrides = feature
         .overrides
@@ -524,5 +581,41 @@ impl EndpointCatalog for KubeCatalog {
 impl Teams for KubeCatalog {
     fn team_of(&self, username: &Username) -> Option<TeamName> {
         self.read().teams.get(username.as_str()).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner(username: &str, team: &str) -> Owner {
+        Owner {
+            username: username.to_owned(),
+            team: Some(weebo_si_crd::TeamName::new(team)),
+        }
+    }
+
+    #[test]
+    fn a_user_in_two_teams_gets_the_same_one_whatever_the_order() {
+        let a = owner("alice", "team-b");
+        let b = owner("alice", "team-a");
+        let forward = team_of_user([&a, &b]);
+        let backward = team_of_user([&b, &a]);
+        assert_eq!(forward["alice"].as_str(), "team-a");
+        assert_eq!(backward["alice"].as_str(), "team-a");
+    }
+
+    #[test]
+    fn an_anonymous_and_delegating_entry_is_dropped_alone() {
+        let catalogue = catalogue_from(vec![
+            (CatalogueKey::new("private"), false, BTreeSet::new()),
+            (
+                CatalogueKey::new("bad"),
+                true,
+                BTreeSet::from([Delegation::Team]),
+            ),
+        ]);
+        assert!(catalogue.profile(&CatalogueKey::new("private")).is_some());
+        assert!(catalogue.profile(&CatalogueKey::new("bad")).is_none());
     }
 }
