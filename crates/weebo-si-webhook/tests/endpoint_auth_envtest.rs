@@ -559,8 +559,8 @@ async fn the_gate_is_attached_pinned_and_refused_the_way_rfc_0009_says() {
         .await
         .expect_err("a developer may not drop their own gate");
     assert!(
-        format!("{error}").contains("managed by weebo-si-operator"),
-        "the refusal should say the gate is managed: {error}"
+        format!("{error}").contains("reserved for the break-glass identities"),
+        "the refusal should say bypass is reserved for break-glass: {error}"
     );
 
     // --- ...and an identity in breakGlassIdentities may -----------------------------------------
