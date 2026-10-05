@@ -18,6 +18,11 @@ spec:
     metadata:
       labels:
         {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 8 }}
+      annotations:
+        # The controller asks once, at start, what its ServiceAccount may watch, and leaves a
+        # feature inert when the grant is missing. Turning a `*.rbac.enabled` switch on changes
+        # only the RBAC, so without this the running pod never sees the new grant.
+        checksum/rbac: {{ include (print $.Template.BasePath "/rbac.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
       {{- with .Values.priorityClassName }}

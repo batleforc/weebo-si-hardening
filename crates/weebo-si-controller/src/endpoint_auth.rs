@@ -46,6 +46,12 @@ const FEATURE: &str = "endpoint-auth";
 /// do not (a `WeeboSiConfig` edit that changes the dialect, a controller restart).
 const REQUEUE: Duration = Duration::from_secs(300);
 
+/// How soon a replica that is not (yet) the leader looks again. Short, like every other loop's:
+/// a fresh controller reconciles every `Ingress` once before it wins the lease, and with
+/// [`REQUEUE`] here the leader-to-be sat on the whole cluster for five minutes before its first
+/// attachment.
+const NOT_LEADER_REQUEUE: Duration = Duration::from_secs(15);
+
 /// How often the shared `Middleware` is re-applied.
 const MIDDLEWARE_TICK: Duration = Duration::from_secs(30);
 
@@ -218,7 +224,7 @@ pub fn sweep(
 
 async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     if !ctx.is_leader.load(Ordering::Relaxed) {
-        return Ok(Action::requeue(REQUEUE));
+        return Ok(Action::requeue(NOT_LEADER_REQUEUE));
     }
     let Some(config) = read(&ctx.deps.config) else {
         return Ok(Action::requeue(REQUEUE));
