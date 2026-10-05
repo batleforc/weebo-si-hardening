@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.1](https://github.com/batleforc/weebo-si-hardening/compare/193c600ac679f6c6f62254cce9c6d062ab7c936c..v0.2.1) - 2026-10-05
+#### Bug Fixes
+- (**controller**) attach endpoint-auth without waiting five minutes - ([f91960b](https://github.com/batleforc/weebo-si-hardening/commit/f91960b51e63c0b2a3d9420d09734d4b07e662f9)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**endpoint-gateway**) read the pod address from X-Forwarded-For - ([193c600](https://github.com/batleforc/weebo-si-hardening/commit/193c600ac679f6c6f62254cce9c6d062ab7c936c)) - Max Batleforc, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.2.0](https://github.com/batleforc/weebo-si-hardening/compare/af9b4d9b501e44d0179704f66072aad3aa11487f..v0.2.0) - 2026-10-05
 #### Features
 - drop nginx-ingress - ([1fe4703](https://github.com/batleforc/weebo-si-hardening/commit/1fe47031aa271c99d4992032e9143d81cbee21a6)) - Max Batleforc
