@@ -460,7 +460,9 @@ pub struct SelfOriginConfig {
     /// `Auto` | `On` | `Off`.
     #[serde(default)]
     pub pod_network: PodNetwork,
-    /// The header the controller sets from the TCP peer, never the client.
+    /// The header the controller sets from the TCP peer, never the client. Its rightmost entry
+    /// is read. `X-Forwarded-For` for Traefik: its `forwardAuth` with `trustForwardHeader: false`
+    /// deletes `X-Real-Ip` from the `/auth` request and sets `X-Forwarded-For` alone.
     #[serde(default = "default_client_ip_header")]
     pub client_ip_header: String,
     /// Accept the workspace's own service-account token.
@@ -590,7 +592,7 @@ impl From<Cidr> for String {
 }
 
 fn default_client_ip_header() -> String {
-    "X-Real-Ip".to_owned()
+    "X-Forwarded-For".to_owned()
 }
 
 impl Default for SelfOriginConfig {

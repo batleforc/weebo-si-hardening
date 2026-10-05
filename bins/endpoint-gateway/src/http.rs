@@ -240,12 +240,8 @@ pub fn presented_from(
     headers: &HeaderMap,
     peer: Option<std::net::SocketAddr>,
 ) -> Presented {
-    let header = state
-        .config
-        .self_origin
-        .client_ip_header
-        .to_ascii_lowercase();
-    let stated = header_str(headers, &header).map(ClientAddress::new);
+    let stated = crate::state::stated_address(headers, &state.config.self_origin.client_ip_header)
+        .map(ClientAddress::new);
     let client_address = match (state.trusts_client_address(peer), stated) {
         (true, stated) => stated,
         // The header is not believed, so it is not read. Dropping it here rather than deciding
@@ -286,6 +282,25 @@ pub fn auth_request(
         },
         shape: shape_of(headers),
         preflight: state.config.preflight && is_preflight(headers, method),
+    }
+}
+
+/// Set once the missing client-address header has been logged, so the warning is one line per
+/// process rather than one per request.
+static MISSING_CLIENT_ADDRESS_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Pod-address identity is on and the controller sent `/auth` no address in `client_ip_header`.
+/// Counted every time and logged once: the request is still decided, only without the address.
+fn missing_client_address(state: &GatewayState) {
+    state.metrics.self_origin_missing_header();
+    if !MISSING_CLIENT_ADDRESS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "WARN endpoint-gateway: pod-address identity is on, but /auth received no {} \
+             header, so no workspace is recognised by its address. With Traefik's forwardAuth \
+             and trustForwardHeader: false, set self_origin.client_ip_header to X-Forwarded-For.",
+            state.config.self_origin.client_ip_header
+        );
     }
 }
 
@@ -359,6 +374,9 @@ async fn auth(
     }
 
     let mut presented = presented_from(&state, &headers, None);
+    if presented.client_address.is_none() && state.trusts_client_address(None) {
+        missing_client_address(&state);
+    }
 
     // The only I/O on this path, and it is deliberately *outside* the decision: a service-account
     // token that is not cached yet costs one `TokenReview`, and an opaque one costs one
@@ -1151,15 +1169,9 @@ async fn selftest(State(state): State<Arc<GatewayState>>, headers: HeaderMap) ->
     if presented.is_empty() || !known {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-    let address = header_str(
-        &headers,
-        &state
-            .config
-            .self_origin
-            .client_ip_header
-            .to_ascii_lowercase(),
-    )
-    .map(ClientAddress::new);
+    let address =
+        crate::state::stated_address(&headers, &state.config.self_origin.client_ip_header)
+            .map(ClientAddress::new);
     let namespace = address.as_ref().and_then(|address| {
         weebo_si_endpoint_auth::port::WorkloadIdentity::namespace_of_address(
             state.workloads.as_ref(),

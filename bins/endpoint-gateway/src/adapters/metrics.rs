@@ -263,6 +263,16 @@ impl GatewayMetrics {
             .inc();
     }
 
+    /// Record an `/auth` request that reached the decision with pod-address identity on but no
+    /// address in `client_ip_header` — the controller does not send that header to `/auth`, so
+    /// no workspace is ever recognised by its address. The probe cannot see this: it reads the
+    /// header on the controller's ordinary proxy path, not on the forward-auth one.
+    pub fn self_origin_missing_header(&self) {
+        self.self_origin
+            .with_label_values(&["missing_header"])
+            .inc();
+    }
+
     /// Publish the index's shape after a rebuild.
     pub fn indexed(&self, endpoints: usize, conflicts: usize, refused: usize, seconds: f64) {
         self.indexed_endpoints.set(endpoints as i64);

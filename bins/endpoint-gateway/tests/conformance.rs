@@ -79,6 +79,15 @@ const PER_CLIENT_VERIFY_BURST: usize = 20;
 const LAG_BUDGET: Duration = Duration::from_millis(5);
 const ALICE_POD_IP: &str = "10.42.0.7";
 const BOB_POD_IP: &str = "10.42.1.9";
+/// Carol's workspace pod has a loopback address, so the suite can *be* that pod: Linux routes all
+/// of `127.0.0.0/8` to `lo`, and a client bound to this address reaches Traefik with it as the
+/// connection's source — the only way to show a real pod address arriving at `/auth`.
+const CAROL_HOST: &str = "carol-ws-api.weebo.si";
+const CAROL_POD_IP: &str = "127.0.0.2";
+/// The header the gateway reads a workspace's address from. `X-Forwarded-For`, because Traefik's
+/// `forwardAuth` with `trustForwardHeader: false` deletes `X-Real-Ip` from the `/auth` request and
+/// sets `X-Forwarded-For` to the connection's address alone.
+const CLIENT_IP_HEADER: &str = "X-Forwarded-For";
 
 /// Everything the suite starts, killed in reverse order when it drops.
 struct Tree {
@@ -172,7 +181,7 @@ bearer:
   audiences: ["endpoint-gateway"]
 self_origin:
   pod_network: On
-  client_ip_header: X-Real-Ip
+  client_ip_header: {CLIENT_IP_HEADER}
   service_account_token: true
   trusted_proxy: any
 probe:
@@ -620,6 +629,8 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
     create_namespace(admin.clone(), "user-bob", "bob").await;
     create_workspace_pod(admin.clone(), "user-alice", "alice-ws", ALICE_POD_IP).await;
     create_workspace_pod(admin.clone(), "user-bob", "bob-ws", BOB_POD_IP).await;
+    create_namespace(admin.clone(), "user-carol", "carol").await;
+    create_workspace_pod(admin.clone(), "user-carol", "carol-ws", CAROL_POD_IP).await;
     let alice_token = service_account_token(admin.clone(), "user-alice", "workspace").await;
     let bob_token = service_account_token(admin.clone(), "user-bob", "workspace").await;
 
@@ -649,6 +660,27 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         )
         .await
         .expect("the Ingress should be created");
+    Api::<Ingress>::namespaced(admin.clone(), "user-carol")
+        .create(
+            &PostParams::default(),
+            &Ingress {
+                metadata: ObjectMeta {
+                    name: Some("carol-ws-api".to_string()),
+                    namespace: Some("user-carol".to_string()),
+                    ..Default::default()
+                },
+                spec: Some(IngressSpec {
+                    rules: Some(vec![IngressRule {
+                        host: Some(CAROL_HOST.to_string()),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("carol's Ingress should be created");
 
     // --- the process tree ---------------------------------------------------------------------
     let dir = tempfile::tempdir().expect("temp dir");
@@ -709,7 +741,16 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
         .danger_accept_invalid_certs(true)
         .resolve(ALICE_HOST, loopback)
         .resolve(BOB_HOST, loopback)
+        .resolve(CAROL_HOST, loopback)
         .resolve(CONTROL_HOST, loopback)
+        .build()
+        .expect("client should build");
+    // The same client, as carol's workspace pod: every connection leaves from her pod's address.
+    let from_carols_pod = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .local_address(CAROL_POD_IP.parse::<std::net::IpAddr>().ok())
+        .resolve(ALICE_HOST, loopback)
+        .resolve(CAROL_HOST, loopback)
         .build()
         .expect("client should build");
     wait_for(
@@ -840,33 +881,61 @@ async fn traefik_honours_every_promise_the_dialect_makes() {
     );
 
     // --- a forged client address is not an identity --------------------------------------------
-    // `X-Real-Ip` is what the gate resolves a workspace pod by. A caller stating another
-    // namespace's pod address must not become that namespace's owner — if this ever passes, every
-    // endpoint in the cluster is reachable by anyone who can guess a pod IP.
-    let forged = tree
-        .request(
-            &plain,
-            ALICE_HOST,
-            "/actuator/env",
-            &[("X-Real-Ip", ALICE_POD_IP)],
-            reqwest::Method::GET,
-        )
+    // `X-Forwarded-For` is what the gate resolves a workspace pod by. A caller stating another
+    // namespace's pod address — in that header or in `X-Real-Ip` — must not become that
+    // namespace's owner: if this ever passes, every endpoint in the cluster is reachable by anyone
+    // who can guess a pod IP.
+    for forged_header in [CLIENT_IP_HEADER, "X-Real-Ip"] {
+        let forged = tree
+            .request(
+                &plain,
+                ALICE_HOST,
+                "/actuator/env",
+                &[(forged_header, ALICE_POD_IP)],
+                reqwest::Method::GET,
+            )
+            .await;
+        // The gateway here is configured with `trusted_proxy: any` — it *would* believe an
+        // address that reached it. It challenges because `forwardAuth` with
+        // `trustForwardHeader: false` drops the client's `X-Forwarded-*` and `X-Real-Ip` and
+        // sets `X-Forwarded-For` from the connection, which is exactly what the dialect is
+        // relying on and exactly what only a real router can demonstrate.
+        assert_eq!(
+            forged.status,
+            reqwest::StatusCode::UNAUTHORIZED,
+            "a client-stated pod address in {forged_header} must not be an identity, and \
+             nothing identified this caller at all: {}",
+            forged.body
+        );
+    }
+
+    // --- a real pod address is an identity, and only of its own namespace ----------------------
+    // The other half of the row above, and the one that went unasserted while the gateway read
+    // `X-Real-Ip`: the forged address was refused because the header never reached `/auth` at
+    // all, so no workspace was ever recognised by its address either. Here the connection itself
+    // leaves from carol's pod address, with no credential of any kind.
+    let carols_own = tree
+        .get(&from_carols_pod, CAROL_HOST, "/actuator/env")
         .await;
-    assert_ne!(
-        forged.status,
-        reqwest::StatusCode::OK,
-        "a client-stated pod address must not be an identity: {}",
-        forged.body
-    );
-    // And the mechanism is worth stating, because the gateway here is configured with
-    // `trusted_proxy: any` — it *would* believe an `X-Real-Ip` that reached it. It denies because
-    // Traefik overwrote the client's copy with the address it saw on the connection, which is
-    // exactly what the dialect is relying on and exactly what only a real router can demonstrate.
     assert_eq!(
-        forged.status,
-        reqwest::StatusCode::UNAUTHORIZED,
-        "and the answer is a challenge, not a 403: nothing identified this caller at all: {}",
-        forged.body
+        carols_own.status,
+        reqwest::StatusCode::OK,
+        "carol's workspace must reach her own endpoint by its address alone: {}",
+        carols_own.body
+    );
+    assert!(
+        carols_own.body.to_lowercase().contains("x-forwarded-host:"),
+        "and the request must actually have been carried to the application: {}",
+        carols_own.body
+    );
+    let carol_at_alice = tree
+        .get(&from_carols_pod, ALICE_HOST, "/actuator/env")
+        .await;
+    assert_eq!(
+        carol_at_alice.status,
+        reqwest::StatusCode::FORBIDDEN,
+        "carol's pod is recognised as hers, and refused at alice's endpoint: {}",
+        carol_at_alice.body
     );
 
     // --- a workspace service-account token is an identity, and only of its own namespace -------
@@ -1464,7 +1533,7 @@ async fn cost_matrix(
             200,
             30,
             LAG_SAMPLES,
-            &|_| auth("/api").header("x-real-ip", ALICE_POD_IP),
+            &|_| auth("/api").header(CLIENT_IP_HEADER, ALICE_POD_IP),
             None,
         )
         .await,
@@ -1550,7 +1619,7 @@ async fn cost_matrix(
         .await,
     );
     // The limiter, exercised rather than assumed: one client (the address a router states in
-    // `X-Real-Ip`) sending fresh forged tokens. Past the per-client burst the gateway must stop
+    // `X-Forwarded-For`) sending fresh forged tokens. Past the per-client burst the gateway must stop
     // asking the apiserver — the throttled counter moves by the overflow, and the row's median
     // falls to an answer with no round trip in it. Without the header, the direct rows above
     // are held to the global limit only, which is why they each paid a `TokenReview`.
@@ -1567,10 +1636,12 @@ async fn cost_matrix(
         0,
         FLOOD_SAMPLES,
         &|round| {
-            auth("/api").header("x-real-ip", "198.51.100.7").header(
-                "authorization",
-                bearer(&forged_token(alice_token, 10_000 + round)),
-            )
+            auth("/api")
+                .header(CLIENT_IP_HEADER, "198.51.100.7")
+                .header(
+                    "authorization",
+                    bearer(&forged_token(alice_token, 10_000 + round)),
+                )
         },
         None,
     )
@@ -1620,7 +1691,7 @@ async fn cost_matrix(
             FLOOD_SAMPLES,
             &|round| {
                 auth("/api")
-                    .header("x-real-ip", "203.0.113.9")
+                    .header(CLIENT_IP_HEADER, "203.0.113.9")
                     .header("authorization", bearer(&forged_oidc_bearer(round)))
             },
             None,

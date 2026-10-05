@@ -181,7 +181,13 @@ config:
     # annotation on the revocation ConfigMap, removed by an admin). `On` trusts it from the start;
     # `Off` never does. `Auto` with the probe disabled is effectively `Off`.
     podNetwork: Auto
-    clientIpHeader: X-Real-Ip
+    # Where `/auth` finds the caller's address; its rightmost entry is read. `X-Forwarded-For`
+    # for Traefik: the operator's `Middleware` sets `trustForwardHeader: false`, so `forwardAuth`
+    # deletes `X-Real-Ip` from the `/auth` request and sets `X-Forwarded-For` to the connection's
+    # address alone. haproxy-ingress forwards only `x-real-ip` (its `auth-headers-request`): set
+    # `X-Real-Ip` there. A header that never arrives counts as
+    # `weebo_si_endpoint_auth_self_origin_total{result="missing_header"}`.
+    clientIpHeader: X-Forwarded-For
     serviceAccountToken: true
     # Which connections may state a caller's address. `any` is right on a forward-auth
     # deployment, where the only thing that calls `/auth` is the ingress controller. With

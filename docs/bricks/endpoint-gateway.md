@@ -123,6 +123,12 @@ intervals lapses. A forgery seen by any replica is recorded as the
 pod-address identity off on every replica until an admin removes it. `Auto` with the probe
 disabled is effectively `Off`, and says so at startup.
 
+The probe goes through the controller's ordinary proxy path, not through `forwardAuth`, so it
+cannot tell whether `client_ip_header` reaches `/auth` at all. With Traefik it does not when the
+header is `X-Real-Ip`: `trustForwardHeader: false` deletes it from the `/auth` request and sets
+`X-Forwarded-For` alone, which is why that is the default. A trusted gateway that receives no
+address counts `self_origin_total{result="missing_header"}` and logs one `WARN`.
+
 **Service-account tokens** cost a `TokenReview` only inside limits: the token's unverified `iss`
 must be this cluster's service-account issuer (read from the gateway's own mounted token; skipped
 if unknown) and a claimed `exp` must be in the future; concurrent requests with one token share a
@@ -232,7 +238,9 @@ bearer:
   foreign: Reject # Reject | Passthrough
 self_origin:
   pod_network: Auto # Auto | On | Off
-  client_ip_header: X-Real-Ip
+  # Rightmost entry read. X-Forwarded-For for Traefik (forwardAuth with trustForwardHeader: false
+  # deletes X-Real-Ip from the /auth request); X-Real-Ip for haproxy-ingress.
+  client_ip_header: X-Forwarded-For
   service_account_token: true
   # Who may state a caller's address: `any`, `off`, or `cidrs:` — real networks
   # ("10.128.0.0/14", "fd00::/8", a bare address, or a legacy whole-octet prefix like "10.128.").
@@ -346,7 +354,8 @@ usually a claim-mapping regression rather than an attack. Alert on any
 `revocations_refused_total` (each is a logout not in effect) and on
 `self_origin_probe_total{result="forged"}`. `self_origin_total{result="unknown_address"}`
 being the whole series is a diagnosis rather than an alert: the cluster SNATs, and workspaces
-should use the service-account token path.
+should use the service-account token path. Any `self_origin_total{result="missing_header"}` is a
+misconfiguration: `client_ip_header` names a header the controller does not send to `/auth`.
 
 ## Carrying traffic: the OpenShift shape — deferred
 

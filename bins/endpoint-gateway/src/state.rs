@@ -692,16 +692,27 @@ pub fn limit_key(
     peer: Option<std::net::SocketAddr>,
 ) -> String {
     peer_may_state_address(trusted, peer)
-        .then(|| {
-            headers
-                .get(header.to_ascii_lowercase())
-                .and_then(|value| value.to_str().ok())
-                .map(|value| value.trim().to_owned())
-        })
+        .then(|| stated_address(headers, header).map(str::to_owned))
         .flatten()
-        .filter(|value| !value.is_empty())
         .or_else(|| peer.map(|peer| peer.ip().to_string()))
         .unwrap_or_default()
+}
+
+/// The address a client-address header states: its **rightmost** entry.
+///
+/// `X-Forwarded-For` is a list each proxy appends to, so only its last entry was written by the
+/// proxy that called this gateway; every entry before it is whatever the client sent. Traefik's
+/// `forwardAuth` with `trustForwardHeader: false` sends exactly one, the connection's own
+/// address. A single-valued header such as `X-Real-Ip` is its own last entry.
+pub fn stated_address<'a>(headers: &'a axum::http::HeaderMap, header: &str) -> Option<&'a str> {
+    headers
+        .get_all(header.to_ascii_lowercase())
+        .iter()
+        .next_back()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// The host cookie `payload` slides into at `now`, or `None` when it should not be re-minted.
@@ -818,6 +829,36 @@ mod tests {
             ),
             "10.128.0.5"
         );
+    }
+
+    #[test]
+    fn the_stated_address_is_the_rightmost_entry_the_nearest_proxy_wrote() {
+        let mut headers = axum::http::HeaderMap::new();
+        // Traefik's forwardAuth with trustForwardHeader: false: one entry, the connection's.
+        headers.insert("x-forwarded-for", "fd00:10:245::7b20".parse().unwrap());
+        assert_eq!(
+            stated_address(&headers, "X-Forwarded-For"),
+            Some("fd00:10:245::7b20")
+        );
+        // A proxy that appends: whatever the client put first is not the address.
+        headers.insert(
+            "x-forwarded-for",
+            "10.42.0.7, 198.51.100.7".parse().unwrap(),
+        );
+        assert_eq!(
+            stated_address(&headers, "X-Forwarded-For"),
+            Some("198.51.100.7")
+        );
+        // Repeated header lines: the last one is the nearest proxy's.
+        headers.append("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        assert_eq!(
+            stated_address(&headers, "X-Forwarded-For"),
+            Some("203.0.113.9")
+        );
+        // Absent, or empty after the last comma: nothing is stated.
+        assert_eq!(stated_address(&headers, "X-Real-Ip"), None);
+        headers.insert("x-real-ip", "10.42.0.7, ".parse().unwrap());
+        assert_eq!(stated_address(&headers, "X-Real-Ip"), None);
     }
 
     #[test]
