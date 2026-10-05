@@ -39,6 +39,13 @@ use crate::ns_store::KubeNsStore;
 /// The default `namespaceSelection.annotation`, used until (and unless) a config overrides it.
 pub const DEFAULT_ANNOTATION: &str = "hardening.weebo.io/dwoc";
 
+fn read_identity(identity: &Arc<RwLock<Option<IdentityConfig>>>) -> Option<IdentityConfig> {
+    identity
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 fn mode_value(mode: FeatureMode) -> i64 {
     match mode {
         FeatureMode::Off => 0,
@@ -61,6 +68,9 @@ pub struct KubeConfigStore {
     registry_config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     endpoint_auth: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
     identity: Arc<RwLock<Option<IdentityConfig>>>,
+    /// Ticks once each time a sync leaves `identity` different from before, sent after the
+    /// handle is written: a loop woken by it reads the new value, never the old one.
+    identity_changes: tokio::sync::watch::Sender<()>,
     resolved_backend: Arc<RwLock<Backend>>,
     /// The engine `kubearmor-policy` resolved. A second handle rather than a variant of
     /// `resolved_backend`: the two features resolve different enums against different
@@ -109,6 +119,7 @@ impl KubeConfigStore {
         let registry_config = Arc::new(RwLock::new(None));
         let endpoint_auth = Arc::new(RwLock::new(None));
         let identity = Arc::new(RwLock::new(None));
+        let (identity_changes, _) = tokio::sync::watch::channel(());
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
         let metrics = Metrics::register(registry).map_err(|err| {
@@ -144,6 +155,7 @@ impl KubeConfigStore {
         let registry_config_for_task = Arc::clone(&registry_config);
         let endpoint_auth_for_task = Arc::clone(&endpoint_auth);
         let identity_for_task = Arc::clone(&identity);
+        let identity_changes_for_task = identity_changes.clone();
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
         let annotation_key_for_task = Arc::clone(&annotation_key);
@@ -155,26 +167,32 @@ impl KubeConfigStore {
             loop {
                 use futures_util::StreamExt;
                 match stream.next().await {
-                    Some(Ok(())) => sync_from_store(
-                        &store_for_task,
-                        &team_store_for_task,
-                        &teams_for_task,
-                        &dwoc_pin_for_task,
-                        &network_profiles_for_task,
-                        &policy_guard_for_task,
-                        &image_policy_for_task,
-                        &kubearmor_policy_for_task,
-                        &registry_config_for_task,
-                        &endpoint_auth_for_task,
-                        &identity_for_task,
-                        &resolved_backend_for_task,
-                        &resolved_runtime_backend_for_task,
-                        &annotation_key_for_task,
-                        dwoc_catalog_for_task.as_ref(),
-                        capabilities_for_task.as_ref(),
-                        runtime_capabilities_for_task.as_ref(),
-                        &metrics,
-                    ),
+                    Some(Ok(())) => {
+                        let before = read_identity(&identity_for_task);
+                        sync_from_store(
+                            &store_for_task,
+                            &team_store_for_task,
+                            &teams_for_task,
+                            &dwoc_pin_for_task,
+                            &network_profiles_for_task,
+                            &policy_guard_for_task,
+                            &image_policy_for_task,
+                            &kubearmor_policy_for_task,
+                            &registry_config_for_task,
+                            &endpoint_auth_for_task,
+                            &identity_for_task,
+                            &resolved_backend_for_task,
+                            &resolved_runtime_backend_for_task,
+                            &annotation_key_for_task,
+                            dwoc_catalog_for_task.as_ref(),
+                            capabilities_for_task.as_ref(),
+                            runtime_capabilities_for_task.as_ref(),
+                            &metrics,
+                        );
+                        if read_identity(&identity_for_task) != before {
+                            identity_changes_for_task.send_replace(());
+                        }
+                    }
                     Some(Err(_)) => {}
                     None => break,
                 }
@@ -224,6 +242,7 @@ impl KubeConfigStore {
             registry_config,
             endpoint_auth,
             identity,
+            identity_changes,
             resolved_backend,
             resolved_runtime_backend,
             namespace_view,
@@ -235,6 +254,13 @@ impl KubeConfigStore {
     /// off in a cluster that never asked for it.
     pub fn identity_config(&self) -> Arc<RwLock<Option<IdentityConfig>>> {
         Arc::clone(&self.identity)
+    }
+
+    /// Wakes each time `spec.features.identity` changes, once [`Self::identity_config`] already
+    /// holds the new value. The `WeeboSiUser` loop re-plans everybody on it: a template, an
+    /// allow-list or the mode changing is a change to every person's objects.
+    pub fn identity_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.identity_changes.subscribe()
     }
 
     /// The `Arc` `weebo-si-dwoc-pin`'s `DwocPin::new` should be constructed with. `None` until

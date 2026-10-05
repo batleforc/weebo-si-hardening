@@ -863,6 +863,7 @@ fn identity_ctx(
         client: client.clone(),
         deps: IdentityDeps {
             config: Arc::new(std::sync::RwLock::new(Some(identity_config(mode)))),
+            config_changes: tokio::sync::watch::channel(()).1,
             authentik: Arc::new(KubeProvisioner::authentik_user(client.clone())) as _,
             workspace: Arc::new(KubeProvisioner::argo_application(client)) as _,
             observer: Arc::new(FakeObserver::default()) as _,

@@ -267,6 +267,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         IdentityMetrics::register(&prometheus_registry).map_err(|err| err.to_string())?;
     let identity = weebo_si_controller::IdentityDeps {
         config: config_store.identity_config(),
+        config_changes: config_store.identity_changes(),
         authentik: Arc::new(KubeProvisioner::authentik_user(client.clone())) as _,
         workspace: Arc::new(KubeProvisioner::argo_application(client.clone())) as _,
         observer: Arc::new(identity_metrics) as _,

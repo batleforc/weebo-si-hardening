@@ -22,6 +22,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::api::{ListParams, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Api, Client, ResourceExt};
 use serde_json::json;
@@ -50,6 +51,9 @@ pub struct IdentityDeps {
     /// `spec.features.identity`, hot-reloaded. `None` — the feature absent from the singleton —
     /// is the off switch: both loops still report, neither writes anything anywhere.
     pub config: Arc<RwLock<Option<IdentityConfig>>>,
+    /// Ticks once `config` holds a changed `spec.features.identity`. Every person is re-planned
+    /// on it, rather than at their next requeue.
+    pub config_changes: tokio::sync::watch::Receiver<()>,
     /// The `AuthentikUser` handle.
     pub authentik: Arc<dyn Provisioner>,
     /// The Argo CD `Application` handle.
@@ -101,14 +105,38 @@ pub async fn spawn(client: Client, deps: IdentityDeps, is_leader: Arc<AtomicBool
             .await;
     });
 
-    let users: Api<WeeboSiUser> = Api::all(client);
+    let users: Api<WeeboSiUser> = Api::all(client.clone());
+    let teams: Api<WeeboSiTeam> = Api::all(client);
+    let config_changes =
+        futures_util::stream::unfold(ctx.deps.config_changes.clone(), |mut changes| async move {
+            changes.changed().await.ok().map(|()| ((), changes))
+        });
     tokio::spawn(async move {
-        Controller::new(users, WatcherConfig::default())
+        let controller = Controller::new(users, WatcherConfig::default());
+        // A member's Application is rendered from their team's template, so a team edit has to
+        // re-plan every member now, not at their next REQUEUE — which never comes while the lease
+        // flaps, and left Applications rendering a template the team had already dropped.
+        let members = controller.store();
+        controller
+            .watches(teams, WatcherConfig::default(), move |team| {
+                members_of(&team, &members.state())
+            })
+            .reconcile_all_on(config_changes)
             .shutdown_on_signal()
             .run(reconcile_user, error_policy, ctx)
             .for_each(|_| futures_util::future::ready(()))
             .await;
     });
+}
+
+/// The members a team change re-queues: every `WeeboSiUser` whose `spec.team` names it.
+fn members_of(team: &WeeboSiTeam, users: &[Arc<WeeboSiUser>]) -> Vec<ObjectRef<WeeboSiUser>> {
+    let name = team.team_name();
+    users
+        .iter()
+        .filter(|user| user.spec.team.as_ref() == Some(&name))
+        .map(|user| ObjectRef::from(&**user))
+        .collect()
 }
 
 fn error_policy<K>(_object: Arc<K>, err: &Error, _ctx: Arc<Ctx>) -> Action {
@@ -538,4 +566,65 @@ async fn patch_user_status(
     .await
     .map(|_| ())
     .map_err(|err| Error(format!("patching the status of user {name}: {err}")))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use weebo_si_crd::{
+        Selector, TeamName, Username, WeeboSiTeamSpec, WeeboSiUserSpec, team::TeamFeatures,
+    };
+
+    use super::*;
+
+    fn team(name: &str) -> WeeboSiTeam {
+        WeeboSiTeam::new(
+            name,
+            WeeboSiTeamSpec {
+                display_name: None,
+                priority: 100,
+                namespace_selector: Selector::default(),
+                features: TeamFeatures::default(),
+                identity: Default::default(),
+                workspace: Default::default(),
+            },
+        )
+    }
+
+    fn user(name: &str, team: Option<&str>) -> Arc<WeeboSiUser> {
+        Arc::new(WeeboSiUser::new(
+            name,
+            WeeboSiUserSpec {
+                username: Username::new(name),
+                display_name: None,
+                email: None,
+                team: team.map(TeamName::new),
+                active: true,
+                authentik: None,
+                che: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn a_team_change_requeues_its_members_and_nobody_else() {
+        let users = vec![
+            user("max", Some("weebo")),
+            user("sam", Some("other")),
+            user("ivan", None),
+            user("lea", Some("weebo")),
+        ];
+
+        let requeued: Vec<String> = members_of(&team("weebo"), &users)
+            .into_iter()
+            .map(|reference| reference.name)
+            .collect();
+
+        assert_eq!(requeued, vec!["max".to_string(), "lea".to_string()]);
+    }
 }
