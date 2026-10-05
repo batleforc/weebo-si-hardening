@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.0](https://github.com/batleforc/weebo-si-hardening/compare/af9b4d9b501e44d0179704f66072aad3aa11487f..v0.2.0) - 2026-10-05
+#### Features
+- drop nginx-ingress - ([1fe4703](https://github.com/batleforc/weebo-si-hardening/commit/1fe47031aa271c99d4992032e9143d81cbee21a6)) - Max Batleforc
+- cspell fix - ([90e792f](https://github.com/batleforc/weebo-si-hardening/commit/90e792f73cccd619653bc3116e6a31f86b9beb73)) - Max Batleforc
+- correction path traversal - ([af9b4d9](https://github.com/batleforc/weebo-si-hardening/commit/af9b4d9b501e44d0179704f66072aad3aa11487f)) - Max Batleforc
+#### Bug Fixes
+- (**controller**) re-plan users when their team or the identity config changes - ([0c8980a](https://github.com/batleforc/weebo-si-hardening/commit/0c8980ad95980bba96bf2d248b83b62b99c6807d)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- e2E - ([e5356ec](https://github.com/batleforc/weebo-si-hardening/commit/e5356ec0fbba4d18290c4c15a8583aed22a8b0e6)) - Max Batleforc
+
+- - -
+
 ## [v0.1.1](https://github.com/batleforc/weebo-si-hardening/compare/f8b1dc4fc7632e408a335cb3f33680cf261538f7..v0.1.1) - 2026-10-04
 #### Bug Fixes
 - test - ([f8b1dc4](https://github.com/batleforc/weebo-si-hardening/commit/f8b1dc4fc7632e408a335cb3f33680cf261538f7)) - Max Batleforc
