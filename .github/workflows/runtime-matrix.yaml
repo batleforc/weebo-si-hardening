@@ -95,6 +95,22 @@ jobs:
               | awk "\$1 ~ \"^/sys/devices/\" || \$2 == \"tmpfs\" || \$2 == \"devtmpfs\" {print \$1}" \
               | sort -r | while read -r m; do while umount "$m" 2>/dev/null; do echo "unmounted $m"; done; done
             echo "after:"; findmnt -rno TARGET,FSTYPE -R /sys'
+      - name: Drop kind's product-files hook
+        # The same product files are bind-mounted into every container by a createContainer hook in
+        # containerd's base OCI spec. Inside a user namespace it cannot run (`fork/exec
+        # /kind/bin/mount-product-files.sh: permission denied`), so no user-namespaced sandbox
+        # starts. Remove the hook from the throwaway node's base spec and restart containerd.
+        run: |
+          node=weebo-runtimes-control-plane
+          spec=$(docker exec "$node" sh -c "grep -oE '/etc/containerd/[^\"]+\.json' /etc/containerd/config.toml | head -1")
+          echo "base spec: $spec"
+          docker exec "$node" cat "$spec" | jq '.hooks // {} | keys'
+          docker exec "$node" cat "$spec" \
+            | jq 'if .hooks then .hooks |= with_entries(.value |= map(select(.path | test("mount-product-files") | not))) else . end' \
+            > "$RUNNER_TEMP/base.json"
+          docker cp "$RUNNER_TEMP/base.json" "$node:$spec"
+          docker exec "$node" systemctl restart containerd
+          kubectl wait --for=condition=Ready node --all --timeout=120s
       - name: Matrix at baseline, then privileged
         run: |
           for level in baseline privileged; do
