@@ -569,7 +569,12 @@
         "unshare",
         "mount",
         "umount2",
-        "pivot_root"
+        "pivot_root",
+        "open_tree",
+        "move_mount",
+        "mount_setattr",
+        "sethostname",
+        "setns"
       ]
     },
     {

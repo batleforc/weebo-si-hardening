@@ -35,11 +35,20 @@ CAPS='["CAP_AUDIT_WRITE","CAP_CHOWN","CAP_DAC_OVERRIDE","CAP_FOWNER","CAP_FSETID
 # nested `podman run`. Upstream allows them only with CAP_SYS_ADMIN, which a workspace never
 # holds; inside the user namespace a build creates it does, and the kernel then checks that
 # namespace's capabilities, so the filter is what stands in the way.
+#
+# container-build-chroot: chroot isolation, masked /proc — a pod without user namespaces.
 #   clone, unshare  create the user namespace (clone: fork/exec with namespace flags)
 #   mount, umount2  the overlay storage and the build's mounts
 #   pivot_root      crun entering a nested container's root (`podman run`)
-# clone3 keeps upstream's ENOSYS: glibc falls back to clone, which is allowed.
-BUILD_ALLOW='["clone","unshare","mount","umount2","pivot_root"]'
+BUILD_CHROOT_ALLOW='["clone","unshare","mount","umount2","pivot_root"]'
+# container-build: OCI isolation, in a `hostUsers: false` pod with `procMount: Unmasked` — the
+# target. crun then builds a real container: the chroot set, plus
+#   open_tree, move_mount, mount_setattr  crun's id-mapped and read-only mounts of /sys and /proc
+#   sethostname                           the build container's UTS namespace
+#   setns                                 joining the namespaces it created
+BUILD_ALLOW='["clone","unshare","mount","umount2","pivot_root","open_tree","move_mount",
+"mount_setattr","sethostname","setns"]'
+# clone3 keeps upstream's ENOSYS in both: glibc falls back to clone, which is allowed.
 # The kernel keyring stays closed. ENOSYS rather than EPERM: runc and crun skip joining a session
 # keyring on ENOSYS and fail on EPERM.
 BUILD_ENOSYS='["keyctl","add_key","request_key"]'
@@ -75,13 +84,18 @@ override() {
     ] + [$rule + {names: $names}])'
 }
 
+build_profile() {
+  override "$1" '{"action":"SCMP_ACT_ALLOW"}' \
+    | override "$BUILD_ENOSYS" '{"action":"SCMP_ACT_ERRNO","errnoRet":38}'
+}
+
 generate() {
   out=$1
   mkdir -p "$out/weebo"
   resolve > "$out/weebo/workspace.json"
-  override "$BUILD_ALLOW" '{"action":"SCMP_ACT_ALLOW"}' < "$out/weebo/workspace.json" \
-    | override "$BUILD_ENOSYS" '{"action":"SCMP_ACT_ERRNO","errnoRet":38}' \
-    > "$out/weebo/container-build.json"
+  build_profile "$BUILD_ALLOW" < "$out/weebo/workspace.json" > "$out/weebo/container-build.json"
+  build_profile "$BUILD_CHROOT_ALLOW" < "$out/weebo/workspace.json" \
+    > "$out/weebo/container-build-chroot.json"
   # Recording only: what the build profile would refuse is logged instead. Never on a node that
   # runs real workspaces — any pod naming it is unfiltered.
   jq --sort-keys '.defaultAction = "SCMP_ACT_LOG" | del(.defaultErrnoRet)' \
@@ -98,7 +112,7 @@ file_entry() {
     "$(jq -c . "$out/weebo/$1" | base64 | tr -d '\n')"
 }
 
-# OpenShift: the two production profiles onto every worker. Generated, so it cannot drift from
+# OpenShift: the three production profiles onto every worker. Generated, so it cannot drift from
 # the JSON next to it. The recording profile is deliberately left out.
 machineconfig() {
   cat <<'EOF'
@@ -118,6 +132,7 @@ spec:
 EOF
   file_entry workspace.json
   file_entry container-build.json
+  file_entry container-build-chroot.json
 }
 
 case "${1:-gen}" in
@@ -129,8 +144,8 @@ case "${1:-gen}" in
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     generate "$tmp"
-    for f in weebo/workspace.json weebo/container-build.json weebo/container-build-log.json \
-      machineconfig-worker.yaml; do
+    for f in weebo/workspace.json weebo/container-build.json weebo/container-build-chroot.json \
+      weebo/container-build-log.json machineconfig-worker.yaml; do
       if ! cmp -s "$tmp/$f" "$DIR/$f"; then
         echo "seccomp-profiles: deploy/seccomp/$f is stale — run task seccomp:gen" >&2
         exit 1

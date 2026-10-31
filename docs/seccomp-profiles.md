@@ -2,15 +2,22 @@
 
 [RFC 0013](./rfc/0013-pod-security.md) puts every workspace namespace under a Pod Security level.
 A team doing container builds needs `baseline`, and `baseline` does not require a seccomp profile.
-This page covers the two `Localhost` profiles that give those teams a syscall filter anyway: what
-they contain, how they were measured, and how they reach the nodes.
+This page covers the `Localhost` profiles that give those teams a syscall filter anyway: what they
+contain, how they were measured, and how they reach the nodes.
+
+A build workspace is isolated in two layers: a **user namespace** for the pod (`hostUsers:
+false`), which makes an escape land on the node as an unprivileged UID, and one of these
+**profiles**, which narrows the kernel surface a build reaches. The first limits what an escape is
+worth. The second makes one harder: creating nested user namespaces and mounting inside them is
+where most recent kernel privilege escalations start, and a build has to do both.
 
 ## The profiles
 
 | File | `localhostProfile` | For |
 | --- | --- | --- |
 | [`deploy/seccomp/weebo/workspace.json`](../deploy/seccomp/weebo/workspace.json) | `weebo/workspace.json` | Any workspace. The upstream default, the same on every container runtime. |
-| [`deploy/seccomp/weebo/container-build.json`](../deploy/seccomp/weebo/container-build.json) | `weebo/container-build.json` | Workspaces that run rootless `podman` / `buildah`. |
+| [`deploy/seccomp/weebo/container-build.json`](../deploy/seccomp/weebo/container-build.json) | `weebo/container-build.json` | Build workspaces with `hostUsers: false` and `procMount: Unmasked`: rootless `podman` / `buildah` with OCI isolation. **The target.** |
+| [`deploy/seccomp/weebo/container-build-chroot.json`](../deploy/seccomp/weebo/container-build-chroot.json) | `weebo/container-build-chroot.json` | Build workspaces on nodes without user namespaces: chroot isolation only. |
 | [`deploy/seccomp/weebo/container-build-log.json`](../deploy/seccomp/weebo/container-build-log.json) | `weebo/container-build-log.json` | **Test nodes only.** The build profile, but anything it would refuse is logged and allowed. |
 
 All three are generated, never edited by hand:
@@ -44,53 +51,60 @@ The generator resolves each condition once, and writes profiles without any:
   (`CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_BPF`...) is dropped. A rule excluded for one of them is
   kept.
 
-The `restricted` level drops every capability. Rules gated on a capability the container does not
+The pod's user namespace does not change this: capabilities are then held over that namespace,
+and the same rules apply. The `restricted` level drops every capability. Rules gated on a capability the container does not
 hold stay harmless: the kernel's own capability check still refuses the call.
 
-### What the build profile adds
+### What the build profiles add
 
 The workspace profile, plus:
 
-| Syscalls | Action | Why |
-| --- | --- | --- |
-| `clone`, `unshare` | allow, without argument filter | create the user namespace a rootless build runs in |
-| `mount`, `umount2` | allow | overlay storage, and the build's own mounts |
-| `pivot_root` | allow | crun entering a nested container's root (`podman run`) |
-| `keyctl`, `add_key`, `request_key` | `ENOSYS` | the kernel keyring stays closed; runc and crun skip the session keyring on `ENOSYS` |
+| Syscalls | `container-build-chroot` | `container-build` | Why |
+| --- | --- | --- | --- |
+| `clone`, `unshare` | allow | allow | create the user namespace a rootless build runs in (`clone` without argument filter) |
+| `mount`, `umount2` | allow | allow | overlay storage, and the build's own mounts |
+| `pivot_root` | allow | allow | crun entering a nested container's root (`podman run`) |
+| `open_tree`, `move_mount`, `mount_setattr` | — | allow | crun's id-mapped and read-only mounts of `/sys` and `/proc` for an OCI build container |
+| `sethostname` | — | allow | the build container's UTS namespace |
+| `setns` | — | allow | joining the namespaces crun created |
+| `keyctl`, `add_key`, `request_key` | `ENOSYS` | `ENOSYS` | the kernel keyring stays closed; runc and crun skip the session keyring on `ENOSYS` |
 
-`clone3` keeps upstream's `ENOSYS`: glibc then falls back to `clone`.
+`clone3` keeps upstream's `ENOSYS` in both: glibc then falls back to `clone`.
 
 Inside the user namespace a build creates, the process holds `CAP_SYS_ADMIN` over that namespace,
 and the kernel checks those capabilities, not the host's. Upstream refuses these calls for any
 container without `CAP_SYS_ADMIN`, so for a rootless build the seccomp filter is the only thing in
-the way. Everything else upstream reserves for `CAP_SYS_ADMIN` stays refused: `setns`, `bpf`,
-`perf_event_open`, `syslog`, `quotactl`, `sethostname`, and the new mount API (`fsopen`,
-`move_mount`, ...).
+the way. Everything else upstream reserves for `CAP_SYS_ADMIN` stays refused: `bpf`,
+`perf_event_open`, `syslog`, `quotactl`, `setdomainname`, `fsopen`, `fsconfig`, `fsmount`,
+`fspick`.
 
 ## How it was measured
 
 Each candidate was tested as a workspace runs: as a non-root user, with `/dev/fuse`, with the
-runtime's default capabilities and no `CAP_SYS_ADMIN`, under rootless podman.
+runtime's default capabilities and no `CAP_SYS_ADMIN`, under rootless podman — so inside a user
+namespace, as in a `hostUsers: false` pod. `--security-opt unmask=ALL` stands in for
+`procMount: Unmasked`.
 
 ```bash
 podman run --rm --user build --device /dev/fuse --security-opt label=disable \
+  --security-opt unmask=ALL \
   --security-opt seccomp=deploy/seccomp/weebo/container-build.json \
   -v ./ctx:/ctx:Z quay.io/buildah/stable:latest \
-  buildah build --storage-driver=overlay -t t /ctx
+  buildah build --isolation oci --network host --storage-driver=overlay -t t /ctx
 ```
 
-Scenarios: `buildah build` (chroot isolation, as `quay.io/buildah/stable` sets it), `podman build`
-and a nested `podman run` (`quay.io/podman/stable`).
+The `Containerfile` has a `RUN` step, so the build really starts a container.
 
-| Profile | `buildah build` | `podman build` | `podman run` |
-| --- | --- | --- | --- |
-| podman's default (`containers/common`, = CRI-O's `RuntimeDefault`) | ✅ | ✅ | ✅ |
-| `workspace.json` (= containerd/moby `RuntimeDefault`) | ❌ `unshare(CLONE_NEWUSER)` | ❌ `cannot clone` | ❌ `cannot clone` |
-| `container-build.json` | ✅ | ✅ | ✅ |
+| Profile | `/proc` | `buildah` chroot | `podman build` | `podman run` | `buildah` OCI |
+| --- | --- | --- | --- | --- | --- |
+| podman's default (`containers/common`, = CRI-O's `RuntimeDefault`) | masked | ✅ | ✅ | ✅ | ❌ `/proc/sys` |
+| `workspace.json` (= containerd/moby `RuntimeDefault`) | either | ❌ `unshare(CLONE_NEWUSER)` | ❌ `cannot clone` | ❌ `cannot clone` | ❌ `unshare(CLONE_NEWUSER)` |
+| `container-build-chroot.json` | masked | ✅ | ✅ | ✅ | ❌ |
+| `container-build-chroot.json` | unmasked | — | ✅ | ✅ | ❌ `open_tree /sys` |
+| `container-build.json` | masked | ✅ | ✅ | ✅ | — |
+| `container-build.json` | unmasked | — | ✅ | ✅ | ✅ |
 
-The five added syscalls were found by elimination. Starting from a broader set (the five, plus
-`setns`, `umount`, `sethostname`, `setdomainname`, `clone3` and the new mount API), each was
-removed in turn:
+The syscalls were found by elimination: starting from a broader set, each was removed in turn.
 
 | Removed | Result |
 | --- | --- |
@@ -99,24 +113,32 @@ removed in turn:
 | `mount` | `overlay: failed to make mount private` |
 | `umount2` | build fails after `failed to unmount check directory` |
 | `pivot_root` | nested `podman run`: `crun: pivot_root: Operation not permitted` |
-| any other | all three scenarios pass |
+| `open_tree` | OCI build: `open_tree /sys: Operation not permitted` |
+| `move_mount` | OCI build: `move mount to /proc/self/fd/…` refused |
+| `mount_setattr` | OCI build: `mount_setattr /sys: Operation not permitted` |
+| `sethostname` | OCI build: `sethostname: Operation not permitted` |
+| `setns` | OCI build: `did not get container start message from parent` |
+| `umount`, `setdomainname`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `clone3` | every scenario passes |
 
 Versions: podman 5.8.9, buildah 1.43.5, crun 1.28, kernel 7.2.13 (Fedora 44), on 2026-10-31.
 
-**Measure again when podman or crun changes in the workspace image.** A newer crun may move to the
-new mount API and need `fsopen` / `fsmount` / `move_mount`. Two ways to find out:
+**Builds use the pod's network.** An OCI build with pasta, rootless podman's default network, needs
+`/dev/net/tun`. A pod has no `/dev/net/tun` by default, and the build fails even unconfined.
+`--network host` (or `netns="host"` in the workspace image's `containers.conf`) puts the build in
+the pod's network namespace. That is also the one `network-profiles` writes policy for, so a build
+reaches exactly what its workspace reaches.
+
+A caveat on `podman build` with `BUILDAH_ISOLATION=oci`: it passed even under the chroot profile,
+which suggests podman did not switch isolation. `buildah build --isolation oci` is the reference
+for OCI isolation.
+
+**Measure again when podman or crun changes in the workspace image.** A newer crun may use more of
+the new mount API and need `fsopen` / `fsmount`. Two ways to find out:
 
 - Run the same commands with the fleet's workspace image instead of `quay.io/*/stable`.
 - On a **test node**, use `weebo/container-build-log.json`. What the build profile would refuse is
   allowed and logged to the audit log (`type=SECCOMP`) instead. Each logged syscall is a candidate
   to add. Never install it on a node that runs real workspaces: any pod naming it is unfiltered.
-
-### What seccomp does not fix
-
-`buildah build --isolation oci` fails on `open /proc/sys/net/ipv4/ping_group_range`, even with
-podman's own default profile. That is a masked `/proc/sys`, not a syscall: it is Che's
-container-run mode (unmasked `/proc`, user namespaces), and it is a `procMount` and Pod Security
-level question. See RFC 0013's *Unresolved questions*.
 
 ## Installing on the nodes
 
@@ -127,7 +149,7 @@ a profile that is missing on its node fails with `CreateContainerError`.
 ### OpenShift
 
 [`deploy/seccomp/machineconfig-worker.yaml`](../deploy/seccomp/machineconfig-worker.yaml) is
-generated with the two production profiles embedded. The log profile is deliberately left out.
+generated with the three production profiles embedded. The log profile is deliberately left out.
 
 ```bash
 oc apply -f deploy/seccomp/machineconfig-worker.yaml   # the worker pool reboots, node by node
@@ -141,11 +163,12 @@ oc get scc container-build -o jsonpath='{.seccompProfiles}'
 ```
 
 If `localhost/weebo/container-build.json` is not listed, use a copy of that SCC with it added to
-`seccompProfiles`, granted the same way Che grants the original.
+`seccompProfiles`, granted the same way Che grants the original. The SCC must also allow user
+namespaces for the pod and `procMount: Unmasked`.
 
 ### Kubernetes
 
-The same two files, by whatever manages the nodes' configuration: the image the nodes boot from,
+The same files, by whatever manages the nodes' configuration: the image the nodes boot from,
 a configuration management tool, or Security Profiles Operator `SeccompProfile` objects. Security
 Profiles Operator writes under `operator/<namespace>/`, so `localhostProfile` changes accordingly.
 
@@ -163,7 +186,8 @@ nodes:
 ## Using a profile
 
 The profile is chosen in the DWOC a team's workspaces use. That DWOC is routed by `dwoc-pin`
-([RFC 0002](./rfc/0002-weebo-si-operator.md)):
+([RFC 0002](./rfc/0002-weebo-si-operator.md)). A build team's DWOC sets the user namespace, the
+unmasked `/proc` and the profile together:
 
 ```yaml
 apiVersion: controller.devfile.io/v1alpha1
@@ -173,13 +197,20 @@ metadata:
   namespace: weebo-si-hardening
 config:
   workspace:
+    hostUsers: false
     podSecurityContext:
       seccompProfile:
         type: Localhost
         localhostProfile: weebo/container-build.json
+    containerSecurityContext:
+      procMount: Unmasked
 ```
 
+On nodes without user namespaces, drop `hostUsers` and `procMount`, and use
+`weebo/container-build-chroot.json`: builds then run with chroot isolation only.
+
 The team's Pod Security level stays `baseline`. Builds also need `allowPrivilegeEscalation` for
-`newuidmap`/`newgidmap`, which `restricted` refuses whatever the seccomp profile. Every other team
-keeps `RuntimeDefault`, or uses `weebo/workspace.json` on a cluster that mixes runtimes and wants
-one filter everywhere.
+`newuidmap`/`newgidmap`, which `restricted` refuses whatever the seccomp profile. Whether the
+pinned standards version admits `procMount: Unmasked` with `hostUsers: false` is an open question
+in RFC 0013. Every other team keeps `RuntimeDefault`, or uses `weebo/workspace.json` on a cluster
+that mixes runtimes, and is worth giving `hostUsers: false` too where the nodes support it.
