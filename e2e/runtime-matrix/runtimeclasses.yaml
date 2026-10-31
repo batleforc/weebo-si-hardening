@@ -1,0 +1,38 @@
+# The runtime classes scripts/runtime-matrix-k8s.sh compares. Apply on a test cluster whose nodes
+# have the matching handler installed; a class whose handler is missing makes its Pods fail at
+# sandbox creation, which the matrix reports rather than hides.
+#
+# Handler names are the ones the Talos system extensions register in containerd. Check them on a
+# node before trusting a result:
+#   talosctl -n <node> read /etc/cri/conf.d/   (one *.part per extension)
+#
+#   crun     siderolabs/crun            installed on weebo-si
+#   youki    siderolabs/youki           installed on weebo-si
+#   gvisor   siderolabs/gvisor          not installed on weebo-si
+#   kata     siderolabs/kata-containers not installed on weebo-si
+#
+# `default` in the matrix is not a RuntimeClass: it is a Pod without runtimeClassName, which runs
+# on the node's default handler (runc under containerd).
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: crun
+handler: crun
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: youki
+handler: youki
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+handler: kata

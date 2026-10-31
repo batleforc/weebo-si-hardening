@@ -80,7 +80,8 @@ the way. Everything else upstream reserves for `CAP_SYS_ADMIN` stays refused: `b
 
 ## How it was measured
 
-Each candidate was tested as a workspace runs: as a non-root user, with `/dev/fuse`, with the
+Each candidate was tested as a workspace runs: as a non-root user, with `/dev/fuse` (and again
+without it, see below), with the
 runtime's default capabilities and no `CAP_SYS_ADMIN`, under rootless podman — so inside a user
 namespace, as in a `hostUsers: false` pod. `--security-opt unmask=ALL` stands in for
 `procMount: Unmasked`.
@@ -187,7 +188,9 @@ The rest of the platform is already in place there:
 
 - **User namespaces.** `UserNamespacesSupport=true` on the apiserver and the kubelet, and
   `user.max_user_namespaces` raised to 11255.
-- **`/dev/fuse`.** The `fuse3` extension.
+- **`/dev/fuse`.** The `fuse3` extension is on the node, but a pod gets no `/dev/fuse` without a
+  device plugin. Builds do not need it: every scenario passes without it, on the kernel's native
+  overlay in a user namespace ([`runtime-matrix.md`](./runtime-matrix.md)).
 - **Runtimes.** containerd with runc by default. The `crun`, `youki` and `wasmedge` extensions add
   runtime handlers, but no `RuntimeClass` declares them, so every workspace runs on runc. See
   *Container runtimes* below.
@@ -242,16 +245,16 @@ needs come from the tools *inside* the workspace (buildah, podman, and the crun 
 the lists above do not depend on the node's runtime. What does depend on it is whether the pod
 can have a user namespace at all.
 
-| Handler (Talos extension) | For workspaces | Why |
+| Handler (Talos extension) | For workspaces | Status |
 | --- | --- | --- |
-| runc (containerd default) | **yes**, today's default | applies OCI seccomp profiles and supports `hostUsers: false` with containerd 2 |
-| crun (`siderolabs/crun`) | yes, if a `RuntimeClass` is added | applies OCI seccomp profiles, supports user namespaces; the measurements here ran with crun 1.28 as the outer runtime |
-| youki (`siderolabs/youki`) | not until measured | applies seccomp; its support for Kubernetes user namespaces (id-mapped mounts) is not verified |
+| runc (containerd default) | **yes**, today's default | measured locally (runc 1.5.2): same result as crun on every scenario |
+| crun (`siderolabs/crun`) | yes, if a `RuntimeClass` is added | measured locally (crun 1.28) |
+| youki (`siderolabs/youki`) | not until measured | cluster tier only; user-namespace support unverified |
+| gVisor, Kata | not installed | cluster tier only; by default neither applies the pod's seccomp profile — see the matrix |
 | wasmedge (`siderolabs/wasmedge`) | no | runs WebAssembly modules, not a workspace image |
 
-Nothing here needs a new runtime: runc, the default, covers the build setup. Switching workspaces
-to crun would only align the node's runtime with the one these measurements used, through a
-`RuntimeClass` and the DWOC.
+Nothing here needs a new runtime: runc, the default, covers the build setup. The comparison of
+the others, and the harness that runs it, is [`runtime-matrix.md`](./runtime-matrix.md).
 
 ## Using a profile
 

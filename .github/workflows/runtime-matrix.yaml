@@ -1,0 +1,88 @@
+name: Runtime matrix
+# RFC 0013's seccomp profiles against nested builds and runs, per container runtime: the matrix
+# docs/runtime-matrix.md describes, so a profile change, a runtime bump or a new runtime is
+# measured the same way every time. Both tables land in the job summary.
+#
+#   local  rootless podman with each runtime as its OCI runtime, `check` mode: a cell that differs
+#          from what scripts/runtime-matrix.sh expects fails the job. Runs on pull requests that
+#          touch the profiles or the harness, because that is where a regression would come from.
+#   kind   the same scenarios as Pods with `hostUsers: false` on a kind cluster, once with the
+#          namespace at Pod Security `baseline` and once at `privileged`, so an admission refusal
+#          and a runtime failure read apart. kind ships runc only; youki, gVisor and Kata need a
+#          test cluster with their handlers (`task runtimes:k8s`). Reported, never failing: it is
+#          the measurement RFC 0013's open questions wait on.
+#
+# `task runtimes:local` and `task runtimes:k8s` are the same runs on a laptop or a test cluster.
+on:
+  pull_request:
+    paths:
+      - "deploy/seccomp/**"
+      - "scripts/seccomp-profiles.sh"
+      - "scripts/runtime-matrix*.sh"
+      - "e2e/runtime-matrix/**"
+      - ".github/workflows/runtime-matrix.yaml"
+  schedule:
+    # Mondays 03:30 UTC: runtimes and images move weekly at most.
+    - cron: "30 3 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runtime-matrix-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # = RUNC_VERSION in scripts/runtime-matrix.sh. The checksum is the release's runc.sha256sum.
+  RUNC_VERSION: "1.5.2"
+  RUNC_SHA256: "599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488"
+  # = .github/workflows/e2e.yaml, and the node image digest in e2e/runtime-matrix/kind.yaml.
+  KIND_VERSION: "v0.31.0"
+  KIND_SHA256: "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa"
+jobs:
+  local:
+    name: local tier (podman)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install runc
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/runc" \
+            "https://github.com/opencontainers/runc/releases/download/v${RUNC_VERSION}/runc.amd64"
+          echo "${RUNC_SHA256}  $RUNNER_TEMP/runc" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/runc"
+      - name: Matrix
+        env:
+          RUNC_BIN: ${{ runner.temp }}/runc
+          OUT: ${{ runner.temp }}/local.md
+        run: |
+          RUNTIMES="runc"
+          if command -v crun >/dev/null 2>&1; then RUNTIMES="crun runc"; fi
+          export RUNTIMES
+          status=0
+          ./scripts/runtime-matrix.sh check || status=$?
+          { echo "## Local tier (rootless podman)"; echo; cat "$OUT"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  kind:
+    name: cluster tier (kind, runc)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install kind
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/kind" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
+      - name: Cluster
+        run: kind create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s
+      - name: Matrix at baseline, then privileged
+        run: |
+          for level in baseline privileged; do
+            PSA_LEVEL=$level NAMESPACE="weebo-runtime-matrix-$level" OUT="$RUNNER_TEMP/$level.md" \
+              ./scripts/runtime-matrix-k8s.sh
+            { echo "## Cluster tier, Pod Security \`$level\`"; echo; cat "$RUNNER_TEMP/$level.md"; echo; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          done

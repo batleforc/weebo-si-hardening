@@ -382,7 +382,7 @@ In both build profiles the kernel keyring answers `ENOSYS`, and `clone3` keeps u
 
 Each syscall was found by elimination: removed one at a time, each breaks at least one scenario.
 The scenarios were `buildah build` (chroot isolation and OCI isolation), `podman build` and a nested
-`podman run`. Each ran as a non-root user, with `/dev/fuse`, without `CAP_SYS_ADMIN`, inside a user
+`podman run`. Each ran as a non-root user, without `/dev/fuse`, without `CAP_SYS_ADMIN`, inside a user
 namespace, with `/proc` masked and unmasked. The chroot set is enough while `/proc` is masked, and
 OCI isolation needs the other five: crun's id-mapped and read-only mounts of `/sys` and `/proc`
 (`open_tree`, `move_mount`, `mount_setattr`), the build container's hostname (`sethostname`) and
@@ -416,13 +416,15 @@ patch per platform:
 A pod naming a profile that is missing on its node does not start, so the files are rolled out
 **before** a DWOC references them.
 
-**The node's runtime does not change the lists.** The syscalls come from the tools inside the
-workspace, which ship their own crun. What the node's runtime decides is whether the pod gets a
-user namespace and whether it applies the profile. On weebo-si, containerd runs workspaces on runc
-— the `crun`, `youki` and `wasmedge` extensions are installed, but no `RuntimeClass` declares them —
-and runc does both. crun would too, and is what the measurements used as the outer runtime.
-youki's support for Kubernetes user namespaces is unverified, and wasmedge runs WebAssembly, not
-workspace images.
+**The node's runtime does not change the lists, as far as measured.** The syscalls come from the
+tools inside the workspace, which ship their own crun. What the node's runtime decides is whether
+the pod gets a user namespace and whether it applies the profile. On weebo-si, containerd runs
+workspaces on runc — the `crun`, `youki` and `wasmedge` extensions are installed, but no
+`RuntimeClass` declares them. runc 1.5.2 and crun 1.28 give the same result on every scenario.
+youki, gVisor and Kata are measured in the cluster tier of the runtime matrix
+([`../runtime-matrix.md`](../runtime-matrix.md)). By default, gVisor and Kata do not apply the
+pod's seccomp profile at all, so for them the comparison is between their sandbox and this filter,
+not about which syscalls they need.
 
 **Che does not set any of this on Kubernetes.** che-operator forces
 `disableContainerBuildCapabilities: true` outside OpenShift, so it never adds the build settings
@@ -694,11 +696,14 @@ for, and what the runbook must say.
   `violations` gauge and the `audit` CLI both depend on it. If it does not, the CLI can fall back
   to a raw request, and the gauge waits.
 - **Do the build profiles hold on the fleet's runtime?** (Not blocking.) Measured
-  with podman 5.8, buildah 1.43 and crun 1.28 on kernel 7.2. A newer crun may use more of the new
-  mount API (`fsopen`, `fsmount`, ...) and need it. The kind e2e repeats the measurement with
-  the fleet's workspace image, and `container-build-log.json` finds what is missing on a test node.
+  with podman 5.8, buildah 1.43 and crun 1.28 on kernel 7.2, under runc 1.5.2 and crun 1.28. A
+  newer crun may use more of the new mount API (`fsopen`, `fsmount`, ...) and need it. The runtime
+  matrix's local tier fails on that in CI, and `weebo-container-build-log.json` finds what is
+  missing on a test node.
 - **Does `baseline` admit `procMount: Unmasked` with `hostUsers: false` at the pinned version?**
-  (Blocking for build teams.) KEP-4265 relaxes the check for user-namespaced pods. If the pinned
+  (Blocking for build teams.) KEP-4265 relaxes the check for user-namespaced pods. The runtime
+  matrix's cluster tier answers it: its namespace runs at `baseline`, and an admission refusal is a
+  cell. If the pinned
   version has the relaxation, build teams stay at `baseline`. If not, either `version` moves to
   one that has it, or build teams need `privileged` under the `ceiling`, which this RFC would
   rather not ship. `pods audit --level baseline` on a build workspace answers it.
@@ -739,7 +744,12 @@ for, and what the runbook must say.
 - [ ] e2e on kind: a privileged pod refused at `Enforce`, restored labels at `Off`.
 - [x] `Localhost` seccomp profiles: `scripts/seccomp-profiles.sh`, `deploy/seccomp/`,
       `task seccomp:gen` / `seccomp:check` (in `task lint`), measured against nested builds.
-- [ ] kind e2e: mount `deploy/seccomp/weebo` on the nodes, a build team's workspace
+- [x] Runtime matrix: `scripts/runtime-matrix.sh` (podman, `check` mode) and
+      `scripts/runtime-matrix-k8s.sh` (Pods per runtime class, Pod Security level as a result),
+      `task runtimes:*`, the `runtime-matrix` workflow, `docs/runtime-matrix.md`.
+- [ ] Runtime matrix, cluster tier: the `default` row on kind (CI), then crun, youki, gVisor and
+      Kata on a test cluster.
+- [ ] kind e2e: mount `deploy/seccomp/profiles` on the nodes, a build team's workspace
       (`hostUsers: false`, `procMount: Unmasked`) builds an image with OCI isolation under
       `profiles/weebo-container-build.json`, and fails under `RuntimeDefault`.
 - [ ] e2e on OpenShift: `ObserveSynced` reports a looser SCC grant; the MachineConfig and an SCC

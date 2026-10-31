@@ -1,0 +1,36 @@
+version: "3"
+
+# The runtime matrix (docs/runtime-matrix.md): RFC 0013's seccomp profiles against nested builds
+# and runs, per container runtime. .github/workflows/runtime-matrix.yaml runs both tiers.
+
+vars:
+  KIND: '{{ .KIND | default "kind" }}'
+
+tasks:
+  local:
+    desc: "Runtime matrix, local tier: rootless podman with each runtime (RUNTIMES, default 'crun runc'), checked against the expected results"
+    cmds:
+      - '{{.ROOT_DIR}}/scripts/runtime-matrix.sh check'
+
+  k8s:
+    desc: "Runtime matrix, cluster tier, against the current kubectl context (RUNTIME_CLASSES, PSA_LEVEL; nodes need deploy/seccomp/ and e2e/runtime-matrix/runtimeclasses.yaml)"
+    cmds:
+      - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh'
+
+  k8s:clean:
+    desc: "Delete the namespace the cluster tier works in"
+    cmds:
+      - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh clean'
+
+  kind:
+    desc: "Create the weebo-runtimes kind cluster (default runtime only) and run the cluster tier on it at Pod Security baseline"
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - '{{.KIND}} get clusters 2>/dev/null | grep -qx weebo-runtimes || {{.KIND}} create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s'
+      - kubectl config use-context kind-weebo-runtimes
+      - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh'
+
+  kind:down:
+    desc: "Delete the weebo-runtimes kind cluster"
+    cmds:
+      - '{{.KIND}} delete cluster --name weebo-runtimes'

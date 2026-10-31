@@ -13,6 +13,7 @@ includes:
   e2e: ./.tasks/e2e.yaml
   docs: ./.tasks/docs.yaml
   seccomp: ./.tasks/seccomp.yaml
+  runtimes: ./.tasks/runtimes.yaml
 
 tasks:
   init:
