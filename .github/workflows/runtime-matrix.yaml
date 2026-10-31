@@ -80,16 +80,20 @@ jobs:
         run: kind create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s
       - name: Unmask the node's /sys
         # A Pod with `hostUsers: false` mounts its own sysfs, and the kernel allows that inside a user
-        # namespace only when the sysfs it would reveal is fully visible already. Docker masks paths
-        # under the kind node's /sys with tmpfs (or /dev/null) overmounts, so every user-namespaced
-        # sandbox fails with `error mounting "sysfs" to rootfs at "/sys": operation not permitted`.
-        # A real node has no such masks. Lift them on this throwaway node only.
+        # namespace only when the sysfs it would reveal is fully visible already: nothing mounted
+        # over a file or a non-empty directory. kind bind-mounts its own product_name and
+        # product_uuid over /sys/devices/virtual/dmi/id/ (product_uuid twice), so every
+        # user-namespaced sandbox fails with `error mounting "sysfs" to rootfs at "/sys": operation
+        # not permitted`. A real node has no such overmounts, and a one-node cluster does not need
+        # a unique product_uuid. Lift them, and any tmpfs mask, on this throwaway node only. The
+        # kernel's own mounts on empty directories (cgroup, debugfs, configfs...) are fine.
         run: |
           node=weebo-runtimes-control-plane
           docker exec "$node" sh -c '
             echo "before:"; findmnt -rno TARGET,FSTYPE,SOURCE -R /sys
-            findmnt -rno TARGET,FSTYPE -R /sys | awk "\$2 == \"tmpfs\" || \$2 == \"devtmpfs\" {print \$1}" \
-              | sort -r | while read -r m; do umount "$m" && echo "unmounted $m"; done
+            findmnt -rno TARGET,FSTYPE -R /sys \
+              | awk "\$1 ~ \"^/sys/devices/\" || \$2 == \"tmpfs\" || \$2 == \"devtmpfs\" {print \$1}" \
+              | sort -r | while read -r m; do while umount "$m" 2>/dev/null; do echo "unmounted $m"; done; done
             echo "after:"; findmnt -rno TARGET,FSTYPE -R /sys'
       - name: Matrix at baseline, then privileged
         run: |
