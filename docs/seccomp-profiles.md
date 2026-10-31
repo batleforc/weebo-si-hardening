@@ -15,10 +15,10 @@ where most recent kernel privilege escalations start, and a build has to do both
 
 | File | `localhostProfile` | For |
 | --- | --- | --- |
-| [`deploy/seccomp/weebo/workspace.json`](../deploy/seccomp/weebo/workspace.json) | `weebo/workspace.json` | Any workspace. The upstream default, the same on every container runtime. |
-| [`deploy/seccomp/weebo/container-build.json`](../deploy/seccomp/weebo/container-build.json) | `weebo/container-build.json` | Build workspaces with `hostUsers: false` and `procMount: Unmasked`: rootless `podman` / `buildah` with OCI isolation. **The target.** |
-| [`deploy/seccomp/weebo/container-build-chroot.json`](../deploy/seccomp/weebo/container-build-chroot.json) | `weebo/container-build-chroot.json` | Build workspaces on nodes without user namespaces: chroot isolation only. |
-| [`deploy/seccomp/weebo/container-build-log.json`](../deploy/seccomp/weebo/container-build-log.json) | `weebo/container-build-log.json` | **Test nodes only.** The build profile, but anything it would refuse is logged and allowed. |
+| [`deploy/seccomp/profiles/weebo-workspace.json`](../deploy/seccomp/profiles/weebo-workspace.json) | `profiles/weebo-workspace.json` | Any workspace. The upstream default, the same on every container runtime. |
+| [`deploy/seccomp/profiles/weebo-container-build.json`](../deploy/seccomp/profiles/weebo-container-build.json) | `profiles/weebo-container-build.json` | Build workspaces with `hostUsers: false` and `procMount: Unmasked`: rootless `podman` / `buildah` with OCI isolation. **The target.** |
+| [`deploy/seccomp/profiles/weebo-container-build-chroot.json`](../deploy/seccomp/profiles/weebo-container-build-chroot.json) | `profiles/weebo-container-build-chroot.json` | Build workspaces on nodes without user namespaces: chroot isolation only. |
+| [`deploy/seccomp/profiles/weebo-container-build-log.json`](../deploy/seccomp/profiles/weebo-container-build-log.json) | `profiles/weebo-container-build-log.json` | **Test nodes only.** The build profile, but anything it would refuse is logged and allowed. |
 
 All three are generated, never edited by hand:
 
@@ -88,7 +88,7 @@ namespace, as in a `hostUsers: false` pod. `--security-opt unmask=ALL` stands in
 ```bash
 podman run --rm --user build --device /dev/fuse --security-opt label=disable \
   --security-opt unmask=ALL \
-  --security-opt seccomp=deploy/seccomp/weebo/container-build.json \
+  --security-opt seccomp=deploy/seccomp/profiles/weebo-container-build.json \
   -v ./ctx:/ctx:Z quay.io/buildah/stable:latest \
   buildah build --isolation oci --network host --storage-driver=overlay -t t /ctx
 ```
@@ -158,15 +158,45 @@ for OCI isolation.
 the new mount API and need `fsopen` / `fsmount`. Two ways to find out:
 
 - Run the same commands with the fleet's workspace image instead of `quay.io/*/stable`.
-- On a **test node**, use `weebo/container-build-log.json`. What the build profile would refuse is
+- On a **test node**, use `profiles/weebo-container-build-log.json`. What the build profile would refuse is
   allowed and logged to the audit log (`type=SECCOMP`) instead. Each logged syscall is a candidate
   to add. Never install it on a node that runs real workspaces: any pod naming it is unfiltered.
 
 ## Installing on the nodes
 
-The kubelet reads `Localhost` profiles relative to `/var/lib/kubelet/seccomp/`, so the files go to
-`/var/lib/kubelet/seccomp/weebo/`. **Install them before any DWOC references them:** a pod naming
-a profile that is missing on its node fails with `CreateContainerError`.
+The kubelet reads `Localhost` profiles relative to `/var/lib/kubelet/seccomp/`. Every profile
+goes to `/var/lib/kubelet/seccomp/profiles/`, the directory Talos writes its
+`machine.seccompProfiles` to, so `localhostProfile: profiles/weebo-<name>.json` is the same on
+every platform. **Install them before any DWOC references them:** a pod naming a profile that is
+missing on its node fails with `CreateContainerError`.
+
+### Talos (weebo-si)
+
+[`deploy/seccomp/talos-patch.yaml`](../deploy/seccomp/talos-patch.yaml) is a generated machine
+config patch with the three production profiles. The recording profile is left out.
+
+```bash
+talosctl -n <node> patch mc --patch @deploy/seccomp/talos-patch.yaml
+```
+
+In weebo-si the machine configuration is the Pulumi program in `1.pulu-init`, which already
+installs a hand-written `ci-build.json` this way. The entries go next to it, under
+`machine.seccompProfiles`. Talos writes the files without a reboot.
+
+The rest of the platform is already in place there:
+
+- **User namespaces.** `UserNamespacesSupport=true` on the apiserver and the kubelet, and
+  `user.max_user_namespaces` raised to 11255.
+- **`/dev/fuse`.** The `fuse3` extension.
+- **Runtimes.** containerd with runc by default. The `crun`, `youki` and `wasmedge` extensions add
+  runtime handlers, but no `RuntimeClass` declares them, so every workspace runs on runc. See
+  *Container runtimes* below.
+
+How `ci-build.json` compares: it is close to `weebo-container-build-chroot.json`, and allows
+`mount` and `unshare` like it. It lacks `pivot_root` (nested `podman run`), the five OCI-isolation
+syscalls, and the syscalls added to the kernel and to moby's profile since it was written
+(`futex_waitv`, `mseal`, `map_shadow_stack`...). It allows `clone3` without restriction, where the
+generated profiles return `ENOSYS`. Replacing it with the generated profiles keeps one source.
 
 ### OpenShift
 
@@ -184,7 +214,7 @@ container builds:
 oc get scc container-build -o jsonpath='{.seccompProfiles}'
 ```
 
-If `localhost/weebo/container-build.json` is not listed, use a copy of that SCC with it added to
+If `localhost/profiles/weebo-container-build.json` is not listed, use a copy of that SCC with it added to
 `seccompProfiles`, granted the same way Che grants the original. The SCC must also allow user
 namespaces for the pod and `procMount: Unmasked`.
 
@@ -200,10 +230,28 @@ For kind, mount the directory into each node:
 nodes:
   - role: worker
     extraMounts:
-      - hostPath: ./deploy/seccomp/weebo
-        containerPath: /var/lib/kubelet/seccomp/weebo
+      - hostPath: ./deploy/seccomp/profiles
+        containerPath: /var/lib/kubelet/seccomp/profiles
         readOnly: true
 ```
+
+## Container runtimes
+
+The profile is applied by the node's runtime to the workspace container. The syscalls a build
+needs come from the tools *inside* the workspace (buildah, podman, and the crun they ship), so
+the lists above do not depend on the node's runtime. What does depend on it is whether the pod
+can have a user namespace at all.
+
+| Handler (Talos extension) | For workspaces | Why |
+| --- | --- | --- |
+| runc (containerd default) | **yes**, today's default | applies OCI seccomp profiles and supports `hostUsers: false` with containerd 2 |
+| crun (`siderolabs/crun`) | yes, if a `RuntimeClass` is added | applies OCI seccomp profiles, supports user namespaces; the measurements here ran with crun 1.28 as the outer runtime |
+| youki (`siderolabs/youki`) | not until measured | applies seccomp; its support for Kubernetes user namespaces (id-mapped mounts) is not verified |
+| wasmedge (`siderolabs/wasmedge`) | no | runs WebAssembly modules, not a workspace image |
+
+Nothing here needs a new runtime: runc, the default, covers the build setup. Switching workspaces
+to crun would only align the node's runtime with the one these measurements used, through a
+`RuntimeClass` and the DWOC.
 
 ## Using a profile
 
@@ -223,16 +271,16 @@ config:
     podSecurityContext:
       seccompProfile:
         type: Localhost
-        localhostProfile: weebo/container-build.json
+        localhostProfile: profiles/weebo-container-build.json
     containerSecurityContext:
       procMount: Unmasked
 ```
 
 On nodes without user namespaces, drop `hostUsers` and `procMount`, and use
-`weebo/container-build-chroot.json`: builds then run with chroot isolation only.
+`profiles/weebo-container-build-chroot.json`: builds then run with chroot isolation only.
 
 The team's Pod Security level stays `baseline`. Builds also need `allowPrivilegeEscalation` for
 `newuidmap`/`newgidmap`, which `restricted` refuses whatever the seccomp profile. Whether the
 pinned standards version admits `procMount: Unmasked` with `hostUsers: false` is an open question
-in RFC 0013. Every other team keeps `RuntimeDefault`, or uses `weebo/workspace.json` on a cluster
+in RFC 0013. Every other team keeps `RuntimeDefault`, or uses `profiles/weebo-workspace.json` on a cluster
 that mixes runtimes, and is worth giving `hostUsers: false` too where the nodes support it.
