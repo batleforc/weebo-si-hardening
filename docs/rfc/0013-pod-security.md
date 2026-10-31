@@ -178,7 +178,6 @@ next time it is created.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `mode` | enum | — | required, per the chassis |
 | `namespaceSelector` | LabelSelector | none | per the chassis — the rollout knob |
 | `default` | `restricted` \| `baseline` \| `privileged` | — | required. The level of a namespace belonging to no team, or to a team that sets none. |
@@ -222,7 +221,6 @@ For a resolved `(level, warnLevel)`, exactly six labels and one annotation, on t
 
 | Key | Value |
 | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `pod-security.kubernetes.io/enforce` | `level` |
 | `pod-security.kubernetes.io/enforce-version` | `version` |
 | `pod-security.kubernetes.io/warn` | `warnLevel` |
@@ -267,7 +265,6 @@ Seccomp is where `baseline` and `restricted` differ most, and where `baseline` i
 
 | Level | What it requires of `seccompProfile` | A pod that sets nothing |
 | --- | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `privileged` | nothing | runs with the node's default |
 | `baseline` | must not be `Unconfined` | **admitted**, and runs with the node's default |
 | `restricted` | must be `RuntimeDefault` or `Localhost`, set explicitly on the pod or on every container | **refused** |
@@ -378,7 +375,6 @@ moby's default profile, pinned by tag and checksum:
 
 | Profile | `localhostProfile` | For | Allowed beyond the workspace profile |
 | --- | --- | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | workspace | `profiles/weebo-workspace.json` | every team, optional | nothing: the upstream default, the same on every runtime and versioned here |
 | container-build | `profiles/weebo-container-build.json` | build teams, with `hostUsers: false` and `procMount: Unmasked` — the target | `clone`, `unshare`, `mount`, `umount2`, `pivot_root`, `open_tree`, `move_mount`, `mount_setattr`, `sethostname`, `setns` |
 | container-build-chroot | `profiles/weebo-container-build-chroot.json` | build teams on nodes without user namespaces | `clone`, `unshare`, `mount`, `umount2`, `pivot_root` |
@@ -465,7 +461,6 @@ team. The lever is then the SCC grant, not a label. The choice is the `backend` 
 
 | `backend` | Behaviour |
 | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `Auto` (default) | `ObserveSynced` when the cluster serves `security.openshift.io/v1`, otherwise `Labels` |
 | `Labels` | write the labels, as described above |
 | `ObserveSynced` | write nothing, compare the synced level with the resolved one |
@@ -490,7 +485,6 @@ needs the same RBAC as the write. The operator's service account is never used.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `weebo_si_pod_security_namespaces` | gauge | `level`, `state` ∈ `applied`/`stricter_existing`/`pending` |
 | `weebo_si_pod_security_reconcile_total` | counter | `result` ∈ `applied`/`unchanged`/`restored`/`clamped`/`not_tightening`/`stricter_existing`/`looser_synced`/`previous_lost`/`error` |
 | `weebo_si_pod_security_drift_total` | counter | none — a label this feature owns was changed by someone else and re-applied |
