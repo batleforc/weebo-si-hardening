@@ -330,7 +330,11 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
     let workdir = tempfile::tempdir().expect("tempdir");
     let kubeconfig = write_kubeconfig(workdir.path(), &env_test);
     let health_port = free_port().expect("a free port");
-    let log = workdir.path().join("controller.log");
+    // `PERF_CONTROLLER_LOG` keeps the controller's log past the run (CI uploads it).
+    let log = std::env::var_os("PERF_CONTROLLER_LOG").map_or_else(
+        || workdir.path().join("controller.log"),
+        std::path::PathBuf::from,
+    );
     let spawned = Instant::now();
     let mut controller = Controller {
         child: Command::new(env!("CARGO_BIN_EXE_weebo-si-operator"))
@@ -341,7 +345,10 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
             ])
             .env("KUBECONFIG", &kubeconfig)
             .env("POD_NAMESPACE", OPERATOR_NAMESPACE)
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                std::env::var("PERF_RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            )
             // Telemetry writes to stdout: both streams go to the log a failure prints.
             .stdout(std::fs::File::create(&log).expect("controller log"))
             .stderr(
@@ -410,14 +417,21 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
             created.lock().await.insert(name, at);
         });
     }
-    while let Some(result) = creations.join_next().await {
-        result.expect("namespace task");
-    }
 
+    // Polled while the fleet is still being created, not after: on a slow runner creating 500
+    // namespaces takes seconds, and a poll that started only at the end would charge that time
+    // to the controller.
     let policies: Api<NetworkPolicy> = Api::all(client.clone());
     let mut latencies: HashMap<String, Duration> = HashMap::new();
+    let mut fleet_created = None;
     let deadline = fleet_started + budget_fleet.max(Duration::from_secs(30)) * 3;
     while latencies.len() < fleet {
+        while let Some(result) = creations.try_join_next() {
+            result.expect("namespace task");
+        }
+        if fleet_created.is_none() && creations.is_empty() {
+            fleet_created = Some(fleet_started.elapsed());
+        }
         let seen = Instant::now();
         let list = policies
             .list(&ListParams::default().labels(MANAGED_BY))
@@ -445,6 +459,11 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
     }
     let fleet_time = fleet_started.elapsed();
     let converge_cpu = cpu_seconds(pid) - cpu_before;
+    let slowest = latencies
+        .iter()
+        .max_by_key(|(_, latency)| **latency)
+        .map(|(namespace, _)| namespace.clone())
+        .unwrap_or_default();
     let mut sorted: Vec<Duration> = latencies.into_values().collect();
     sorted.sort();
     let (p50, p99, max) = (
@@ -486,6 +505,12 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
             within: ready <= budget_start,
         },
         Row {
+            what: "fleet created (apiserver)",
+            measured: secs(fleet_created.unwrap_or(fleet_time)),
+            budget: "—".into(),
+            within: true,
+        },
+        Row {
             what: "baseline latency p50",
             measured: secs(p50),
             budget: "—".into(),
@@ -499,7 +524,7 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
         },
         Row {
             what: "baseline latency max",
-            measured: secs(max),
+            measured: format!("{} ({slowest})", secs(max)),
             budget: "—".into(),
             within: true,
         },

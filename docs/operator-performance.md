@@ -30,8 +30,9 @@ and a real cluster's network round trip — envtest is loopback, so latencies he
 | Memory resident after idle (`VmRSS`) | ≤ 64 MiB | `PERF_BUDGET_RSS_MIB` | The steady state the memory request should be sized for. |
 
 Latency is timed from each namespace's `create` returning to the first list that shows its
-baseline. The list polls every 100 ms and starts once the whole fleet is created, so early
-namespaces read slower than they were: the figure errs on the pessimistic side.
+baseline. The list polls every 100 ms while the fleet is still being created, so a figure is at
+most 100 ms pessimistic. Polling only once the fleet existed would charge the controller with the
+apiserver's creation time, several seconds on a CI runner.
 
 The defaults sit well above the first local measurement below: a shared CI runner is slower
 and noisier than a laptop, and the nightly converges 500 namespaces, not 300. Tighten them once
@@ -39,16 +40,21 @@ the nightly trend is known.
 
 ## What was measured
 
-### 2026-10-31, release build, laptop, 500 namespaces, 30 s idle
+### 2026-10-31, release build, laptop, 500 namespaces
+
+After the fixes below; 20 runs in a row, all within budget. One of them:
 
 | Measure | Measured |
 | --- | --- |
 | Start → `/readyz` | 0.67 s |
-| Baseline latency p50 / p99 / max | 0.10 s / 0.21 s / 2.09 s |
-| Whole fleet converged | 2.27 s |
-| CPU spent converging | 0.28 s |
+| Fleet created (the apiserver's own share) | 0.28 s |
+| Baseline latency p50 / p99 / max | 0.09 s / 0.61 s / 0.61 s |
+| Whole fleet converged | 0.86 s |
+| CPU spent converging | 0.32 s |
 | CPU idle | 0.0 m |
-| Memory peak / resident after idle | 45.5 MiB / 45.5 MiB |
+| Memory peak / resident after idle | 44.9 MiB / 44.9 MiB |
+
+The max across the 20 runs stayed between 0.21 s and 0.63 s.
 
 The resident figure is above the chart's controller memory request (`32Mi`): the request
 under-reserves what the process actually holds. Raising it to `48Mi` is a chart change of its
@@ -62,6 +68,22 @@ Add the first nightly run's table here, with its date and run link, once it has 
 namespaces measured p99 and max at 60 s against a p50 of 0.1 s. The loops' Namespace watch can
 deliver a new namespace before the shared namespace index has it. The gate, which reads labels
 from that index, then answered `Off`, and the namespace was rechecked after `OFF_RECHECK`, 60 s.
-`weebo_si_controller::workspace::off_recheck` now retries a namespace the index has not seen
-after 2 s instead. `network-profiles`, `kubearmor-policy` and `registry-config` share it. After
-the fix, the same run gives a max of 2.09 s and a fleet time of 2.27 s.
+`weebo_si_controller::workspace::off_recheck` now retries a namespace the index had not seen
+after 0.5 s instead. `network-profiles`, `kubearmor-policy` and `registry-config` share it.
+
+The first version of that fix still lost one namespace in about ten runs. It looked the
+namespace up *after* the gate had answered `Off`, and the index could receive it between the two
+reads: "seen" then meant the slow recheck for exactly the namespace the gate had missed. Every
+call site now samples the index (`workspace::indexed`) *before* asking the gate.
+
+**The controller could hang at startup, never ready** (fixed 2026-10-31). About one start in ten
+never reached `/readyz`. During the hang the apiserver answered the stuck request's URL in under
+10 ms. The request had gone out on a keep-alive connection the client's pool handed over in a
+broken state, and kube sets no read timeout, so it waited forever. In a cluster that is a pod that
+never becomes ready, and that liveness never restarts. hyper 1.12.0 and hyper-util 0.1.21, whose
+legacy client pool fixes shipped in September 2026, end it: 60 starts in a row, no hang.
+
+**Debugging a red run.** The workflow uploads the controller's log as an artifact when the job
+fails. Locally, `PERF_CONTROLLER_LOG=<file>` keeps the log, and `PERF_RUST_LOG` sets its filter,
+for example `info,kube_client=debug,hyper_util=debug` to see every request and connection. The
+table's *baseline latency max* row names the slowest namespace, to look up in that log.
