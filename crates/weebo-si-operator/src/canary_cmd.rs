@@ -11,7 +11,7 @@
 //! network namespace is not the one under test.
 
 use weebo_si_network_profiles::CanaryVerdict;
-use weebo_si_runtime::{DEFAULT_CANARY_IMAGE, KubeCanary};
+use weebo_si_network_profiles_adapters::{DEFAULT_CANARY_IMAGE, KubeCanary};
 
 use crate::cli::flag;
 

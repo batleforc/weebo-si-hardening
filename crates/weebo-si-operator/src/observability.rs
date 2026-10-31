@@ -1,95 +1,58 @@
-//! `/healthz`, `/readyz` and `/metrics`, per RFC 0002's *Observability contract*.
+//! `/readyz`, `/livez`, `/healthz` and `/metrics`, per RFC 0002's *Observability contract* and
+//! RFC 0012.
 //!
-//! `/healthz` answers as soon as the process serves; `/readyz` answers only once the caller
-//! marks it ready (every watch cache synced), so a pod that cannot see one of them receives no
-//! admission traffic instead of guessing.
+//! Readiness and liveness are `weebo-kit-runtime`'s [`Health`]: `/readyz` answers only once the
+//! caller marks the process ready (every watch cache synced), so a pod that cannot see one of
+//! them receives no admission traffic instead of guessing; `/livez` fails once a component —
+//! a watch erroring in a loop — has kept failing past the kit's threshold, so the kubelet
+//! restarts a pod that would otherwise sit `Ready` doing nothing. `/healthz` is the kit's alias
+//! of `/readyz`; the chart's liveness probe points at `/livez`, never at it.
+//!
+//! `/metrics` stays the `prometheus` crate's registry: the metric names are a contract, and the
+//! kit's OpenTelemetry exporter derives names of its own (RFC 0012, *Data and state*).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Router, http::StatusCode};
 use prometheus::{Encoder, Registry, TextEncoder};
+use weebo_kit_runtime::Health;
 
-/// Flips to `true` once every watch cache this process depends on has synced.
-#[derive(Clone, Default)]
-pub struct Ready(Arc<AtomicBool>);
+/// How long a component may keep failing before `/livez` reports the process dead.
+pub const LIVENESS_THRESHOLD: Duration = weebo_kit_runtime::health::DEFAULT_LIVENESS_THRESHOLD;
 
-impl Ready {
-    pub fn mark_ready(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    /// Fail `/readyz` again — on shutdown, so the Service stops routing here before the
-    /// listener closes.
-    pub fn mark_not_ready(&self) {
-        self.0.store(false, Ordering::Relaxed);
-    }
-
-    fn is_ready(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
+/// A fresh, not-yet-ready health handle.
+pub fn health() -> Arc<Health> {
+    Arc::new(Health::new(LIVENESS_THRESHOLD))
 }
 
-/// Serve `/healthz`, `/readyz` and `/metrics` on `addr` until the process exits.
-pub async fn serve(addr: SocketAddr, ready: Ready, registry: Registry) -> std::io::Result<()> {
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route(
-            "/readyz",
-            get(move || {
-                let ready = ready.clone();
-                async move {
-                    if ready.is_ready() {
-                        (StatusCode::OK, "ok")
-                    } else {
-                        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
-                    }
+/// Serve the probes and `/metrics` on `addr` until the process exits.
+pub async fn serve(
+    addr: SocketAddr,
+    health: Arc<Health>,
+    registry: Registry,
+) -> std::io::Result<()> {
+    let app = weebo_kit_runtime::health::routes(health).route(
+        "/metrics",
+        get(move || {
+            let registry = registry.clone();
+            async move {
+                let encoder = TextEncoder::new();
+                let families = registry.gather();
+                let mut buffer = Vec::new();
+                if encoder.encode(&families, &mut buffer).is_err() {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
                 }
-            }),
-        )
-        .route(
-            "/metrics",
-            get(move || {
-                let registry = registry.clone();
-                async move {
-                    let encoder = TextEncoder::new();
-                    let families = registry.gather();
-                    let mut buffer = Vec::new();
-                    if encoder.encode(&families, &mut buffer).is_err() {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
-                    }
-                    (
-                        StatusCode::OK,
-                        String::from_utf8_lossy(&buffer).into_owned(),
-                    )
-                }
-            }),
-        );
+                (
+                    StatusCode::OK,
+                    String::from_utf8_lossy(&buffer).into_owned(),
+                )
+            }
+        }),
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
-}
-
-/// Resolves on the first SIGTERM or SIGINT. If a handler cannot be installed the corresponding
-/// future never resolves, so the other signal still works.
-pub async fn shutdown_signal() {
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut stream) => {
-                stream.recv().await;
-            }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-    let interrupt = async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    tokio::select! {
-        () = terminate => {},
-        () = interrupt => {},
-    }
 }

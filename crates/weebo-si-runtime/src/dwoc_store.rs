@@ -40,11 +40,7 @@ impl KubeDwocStore {
         let watcher_config = watcher::Config::default();
         let stream = reflector::reflector(writer, watcher(api, watcher_config)).default_backoff();
 
-        tokio::spawn(async move {
-            use futures_util::StreamExt;
-            let mut stream = std::pin::pin!(stream);
-            while stream.next().await.is_some() {}
-        });
+        tokio::spawn(crate::watch::drive("devworkspaceoperatorconfigs", stream));
 
         reader.wait_until_ready().await.map_err(|err| {
             kube::Error::Discovery(kube::error::DiscoveryError::MissingResource(

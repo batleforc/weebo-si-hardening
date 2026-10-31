@@ -1,0 +1,251 @@
+---
+title: WeeboSiTeam
+description: spec of the WeeboSiTeam CRD.
+full: true
+---
+
+- **API version:** `hardening.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** `wsteam`
+- **Guide:** [Teams and users](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/teams-and-users.md)
+
+`spec` of the `WeeboSiTeam` CRD.
+
+## Example
+
+```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: my-team
+spec:
+  namespaceSelector:
+    matchLabels:
+      weebo.io/team: team-1
+```
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `displayName` | `string` | no |  | A human label. Nothing branches on it — the team's identity is `metadata.name`. |
+| [`features`](#spec.features) | `object` | no | `{}` | What this team is entitled to, per feature. |
+| [`identity`](#spec.identity) | `object` | no |  | What this team's members are outside Kubernetes. |
+| [`namespaceSelector`](#spec.namespaceSelector) | `object` | yes |  | The namespaces that belong to this team. |
+| `priority` | `integer` | no | `1000` | Precedence when a namespace matches more than one team: lowest wins, ties break on name. |
+| [`workspace`](#spec.workspace) | `object` | no |  | What each member gets deployed for them. |
+
+### `spec.features` [#spec.features]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`dwocPin`](#spec.features.dwocPin) | `object` | no |  | This team's `dwoc-pin` catalogue and default, per RFC 0002. |
+| [`endpointAuth`](#spec.features.endpointAuth) | `object` | no |  | This team's `endpoint-auth` catalogue and default, per RFC 0009. |
+| [`imagePolicy`](#spec.features.imagePolicy) | `object` | no |  | This team's `image-policy` catalogue and defaults, per RFC 0005. |
+| [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | This team's `kubearmor-policy` catalogue and defaults, per RFC 0006. |
+| [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | This team's `network-profiles` catalogue and defaults, per RFC 0004. |
+| [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | This team's `registry-config` catalogue and defaults, per RFC 0007. |
+
+### `spec.features.dwocPin` [#spec.features.dwocPin]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.dwocPin.catalog) | `object[]` | no | `[]` | This team's catalogue entries, merged into the cluster catalogue at resolution. |
+| `default` | `string` | yes |  | The entry a namespace of this team gets when it names none. |
+
+### `spec.features.dwocPin.catalog[]` [#spec.features.dwocPin.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an annotation, or a resolved decision names. |
+| `name` | `string` | yes |  | The `DevWorkspaceOperatorConfig`'s name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.endpointAuth` [#spec.features.endpointAuth]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.endpointAuth.catalog) | `object[]` | no | `[]` | This team's access profiles, merged into the cluster catalogue at resolution. |
+| `default` | `string` | yes |  | The key an endpoint of this team resolves to when it names none. Singular: an endpoint resolves to exactly one profile. |
+
+### `spec.features.endpointAuth.catalog[]` [#spec.features.endpointAuth.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `anonymous` | `boolean` | no | `false` | No authentication at all. `delegation` is rejected on an anonymous entry. |
+| `delegation` | `string[]` | no | `[]` | Who else, besides the owner, this profile lets in.<br /><br />Values: `"Team"`, `"UsersAndGroups"` |
+| `key` | `string` | yes |  | The key a grant, an annotation or a path rule names. |
+
+### `spec.features.imagePolicy` [#spec.features.imagePolicy]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.imagePolicy.catalog) | `object[]` | no | `[]` | This team's catalogue entries, merged into the cluster catalogue at resolution. |
+| `default` | `string[]` | no | `[]` | The entries a workspace of this team gets when it names none. May be empty, which means the platform set and this team's cluster-level default and nothing else. |
+
+### `spec.features.imagePolicy.catalog[]` [#spec.features.imagePolicy.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or the top-level `default` names. |
+| `patterns` | `string[]` | yes |  | The image patterns this entry permits. Non-empty; parsed by `weebo-si-image-policy`, and held here as the text an admin wrote so the CRD stays readable by `kubectl` and GitOps. |
+
+### `spec.features.kubearmorPolicy` [#spec.features.kubearmorPolicy]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.kubearmorPolicy.catalog) | `object[]` | no | `[]` | This team's catalogue entries, merged into the cluster catalogue at resolution. |
+| `default` | `string[]` | no | `[]` | The runtime profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way. |
+
+### `spec.features.kubearmorPolicy.catalog[]` [#spec.features.kubearmorPolicy.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`templateRef`](#spec.features.kubearmorPolicy.catalog.templateRef) | `object` | yes |  | The `KubeArmorPolicy` object this entry copies its rule content from. |
+
+### `spec.features.kubearmorPolicy.catalog[].templateRef` [#spec.features.kubearmorPolicy.catalog.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.networkProfiles` [#spec.features.networkProfiles]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.networkProfiles.catalog) | `object[]` | no | `[]` | This team's catalogue entries, merged into the cluster catalogue at resolution. |
+| `default` | `string[]` | no | `[]` | The profiles a workspace of this team gets when it names none. May be empty: the cluster baseline applies either way. |
+
+### `spec.features.networkProfiles.catalog[]` [#spec.features.networkProfiles.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`variants`](#spec.features.networkProfiles.catalog.variants) | `object[]` | yes |  | This profile's variants, at most one per [`Backend`]. |
+
+### `spec.features.networkProfiles.catalog[].variants[]` [#spec.features.networkProfiles.catalog.variants]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | yes |  | Which dialect this variant is written in.<br /><br />Values: `"NetworkPolicy"`, `"Cilium"` |
+| [`templateRef`](#spec.features.networkProfiles.catalog.variants.templateRef) | `object` | yes |  | The template object this variant copies `policyTypes`/`ingress`/`egress` from. |
+
+### `spec.features.networkProfiles.catalog[].variants[].templateRef` [#spec.features.networkProfiles.catalog.variants.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.registryConfig` [#spec.features.registryConfig]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.registryConfig.catalog) | `object[]` | no | `[]` | This team's catalogue entries, merged into the cluster catalogue at resolution. |
+| `default` | `string[]` | no | `[]` | The entries a namespace of this team gets when it names none. May be empty, which means this team mounts nothing by default. |
+
+### `spec.features.registryConfig.catalog[]` [#spec.features.registryConfig.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ecosystem` | `string` | no | `"Other"` | Metric label and CLI grouping only — never a branch.<br /><br />Values: `"Npm"`, `"Pypi"`, `"Cargo"`, `"Go"`, `"Maven"`, `"RubyGems"`, `"Composer"`, `"Conda"`, `"Terraform"`, `"OpenVsx"`, `"Other"` |
+| `key` | `string` | yes |  | The short identifier a grant or a namespace annotation names. |
+| [`sources`](#spec.features.registryConfig.catalog.sources) | `object[]` | yes |  | The objects this entry expands into: at least one, at most one per `{kind, name, namespace}` triple. |
+
+### `spec.features.registryConfig.catalog[].sources[]` [#spec.features.registryConfig.catalog.sources]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | Which kind of object `template_ref` names.<br /><br />Values: `"ConfigMap"`, `"Secret"` |
+| [`templateRef`](#spec.features.registryConfig.catalog.sources.templateRef) | `object` | yes |  | The object an admin authored, copied verbatim into each granted namespace. |
+
+### `spec.features.registryConfig.catalog[].sources[].templateRef` [#spec.features.registryConfig.catalog.sources.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.identity` [#spec.identity]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`authentik`](#spec.identity.authentik) | `object` | no |  | The identity provider half. |
+
+### `spec.identity.authentik` [#spec.identity.authentik]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `groupRefs` | `string[]` | no |  | Authentik group **names** — `AuthentikGroup.spec.name`, resolved by the upstream operator against its own API, never against Kubernetes. Each is checked against `spec.features.identity.authentik.allowedGroupRefs` before anything is created. |
+
+### `spec.namespaceSelector` [#spec.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.namespaceSelector.matchExpressions[]` [#spec.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.workspace` [#spec.workspace]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`che`](#spec.workspace.che) | `object` | no |  | The Eclipse Che workspace application, as an Argo CD template rendered per person. |
+
+### `spec.workspace.che` [#spec.workspace.che]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`destination`](#spec.workspace.che.destination) | `object` | yes |  | Where it is deployed. |
+| `mode` | `string` | yes |  | Required when the block is present, per the chassis rule that a behaviour nobody wrote down does not run: `Off` keeps the template without acting on it, which is how a team stops provisioning for everybody without losing what it configured.<br /><br />Values: `"Off"`, `"Ensure"` |
+| `name` | `string` | no |  | The `Application`'s own name, templated. Defaults to `{OBJECT_NAME}`. |
+| `project` | `string` | yes |  | The Argo CD project, which is the outer fence this operator relies on rather than reimplements. Checked against `spec.features.identity.che.allowedProjects`. |
+| [`source`](#spec.workspace.che.source) | `object` | yes |  | Where the chart comes from. |
+| [`syncPolicy`](#spec.workspace.che.syncPolicy) | `object` | no |  | Passed through verbatim — this operator has no opinion on how Argo syncs. |
+
+### `spec.workspace.che.destination` [#spec.workspace.che.destination]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | The cluster's registered name in Argo CD. Exactly one of `server` and `name` is required. |
+| `namespace` | `string` | yes |  | The namespace, templated. Its rendered value is what `{USER_NAMESPACE}` binds to everywhere else, so it is resolved first and cannot name that variable itself. |
+| `server` | `string` | no |  | The cluster API URL. Exactly one of `server` and `name` is required. |
+
+### `spec.workspace.che.source` [#spec.workspace.che.source]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `chart` | `string` | no |  | A Helm chart name. Exactly one of `chart` and `path` is required. |
+| `path` | `string` | no |  | A path inside a git repository. Exactly one of `chart` and `path` is required. |
+| `repoUrl` | `string` | yes |  | The chart repository or the git repository. Prefix-checked against `spec.features.identity.che.allowedRepoUrls`. |
+| `targetRevision` | `string` | yes |  | Chart version, git revision, or branch. |
+| `values` | `object` | no |  | The base Helm values every member of this team gets, templated. A person's own `spec.che.values` is deep-merged over this.<br /><br />Free-form, and the only free-form field in this crate — see [`crate::free_form`]. |
+
+### `spec.workspace.che.syncPolicy` [#spec.workspace.che.syncPolicy]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`automated`](#spec.workspace.che.syncPolicy.automated) | `object` | no |  | Automated sync, absent for manual. |
+| `options` | `string[]` | no | `[]` | Sync options, e.g. `CreateNamespace=true`. |
+
+### `spec.workspace.che.syncPolicy.automated` [#spec.workspace.che.syncPolicy.automated]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `prune` | `boolean` | no | `false` | Delete resources no longer in the chart. |
+| `selfHeal` | `boolean` | no | `false` | Revert drift written by hand. |
+
+## Build a manifest
+
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
+
+<CrdForm kind="WeeboSiTeam" />

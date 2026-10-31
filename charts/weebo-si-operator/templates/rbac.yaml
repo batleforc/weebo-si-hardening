@@ -117,6 +117,12 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
+  # RFC 0012: every reconcile loop publishes a Warning Event on the object a failed pass was about,
+  # through kube's `Recorder` — `events.k8s.io/v1`, created once and patched as a series when it
+  # repeats. Controller role only: the webhook role never publishes one.
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
   - apiGroups: ["workspace.devfile.io"]
     resources: ["devworkspaces"]
     verbs: ["get", "list", "watch"]
@@ -149,7 +155,7 @@ rules:
   # `nodes` for the `kubearmor.io/enforcer` label, `pods` for `spec.nodeName`, joined behind
   # NodeEnforcerView to answer "is a policy written here actually enforced". RBAC has no
   # field-level grant for either, so the projection is enforced in the watch stream before
-  # anything reaches a cache — see crates/weebo-si-runtime/src/node_enforcer.rs.
+  # anything reaches a cache — see crates/weebo-si-kubearmor-policy-adapters/src/node_enforcer.rs.
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]

@@ -4,7 +4,7 @@
 
 use weebo_si_crd::Backend;
 use weebo_si_network_profiles::Capabilities;
-use weebo_si_runtime::KubeCapabilities;
+use weebo_si_network_profiles_adapters::KubeCapabilities;
 
 /// Every backend this binary knows how to write, in the order `Auto` resolution prefers them —
 /// see `weebo_si_network_profiles::backend::resolve_backend`.

@@ -1,0 +1,30 @@
+---
+title: weebo-si-hardening
+description: One operator hardening every Eclipse Che workspace of the Weebo SI, configured by three cluster-scoped resources.
+---
+
+`weebo-si-operator` runs as two roles — an admission webhook and a
+controller — and carries every runtime hardening feature of the platform.
+Nothing happens until a feature is switched on in the cluster-wide
+`WeeboSiConfig`, and each one goes `Off` → `DryRun` → `Enforce` on its own.
+
+| Kind | What it says |
+| --- | --- |
+| `WeeboSiConfig` | The singleton (named `cluster`, any other name is ignored): which features run, in which mode, for which namespaces, with the platform's own catalogues. |
+| `WeeboSiTeam` | A team: the namespaces it owns (by label) and its per-feature catalogues and grants. |
+| `WeeboSiUser` | A person: their team, and optionally the Authentik account and Argo CD workspace application provisioned for them. |
+
+<Callout type="info">
+  This site carries the generated CRD reference. The design of every
+  feature (its RFC), the operator's runbooks (install, rollout, rollback,
+  logs, metrics) and the architecture are plain markdown in the repository's
+  [`docs/`](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/readme.md), so a change to them reads in a diff.
+</Callout>
+
+## Get started
+
+<Cards>
+  <Card title="Install via Helm" description="Bring up the operator, with every feature off." href="/docs/guides/install" />
+  <Card title="The features" description="What each one does, and where its runbook is." href="/docs/guides/features" />
+  <Card title="CRD reference" description="Every field of every resource." href="/docs/crds/weebosiconfig" />
+</Cards>

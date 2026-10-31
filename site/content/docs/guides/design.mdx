@@ -1,0 +1,13 @@
+---
+title: Design and architecture
+description: Where the RFCs and the architecture notes live, and how the operator is built.
+---
+
+Every brick is designed in an RFC before it is built — these components
+rewrite and refuse other people's workloads. The RFCs, the architecture
+conventions and the internals are markdown in the repository:
+
+- [RFC process and index](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/readme.md)
+- [How the operator works inside](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/architecture/operator-internals.md) — the crates, the two roles, an admission request and a reconcile end to end
+- [Hexagonal layering](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/architecture/hexagonal.md) and [repository layout](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/architecture/repo-layout.md)
+- [CI](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/ci.md) — every gate and what it blocks

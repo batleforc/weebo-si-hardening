@@ -30,7 +30,7 @@ struct Inner<K: Resource> {
 }
 
 /// Namespace → keys of the objects the watch holds there. Cheap to clone; clones share state.
-pub(crate) struct NsIndex<K: Resource>
+pub struct NsIndex<K: Resource>
 where
     K::DynamicType: Clone + Eq + Hash,
 {
@@ -56,7 +56,7 @@ where
 {
     /// An empty index for objects of `dyntype` — the same one the paired store's writer was
     /// built with, so the keys this index hands out look up in that store.
-    pub(crate) fn new(dyntype: K::DynamicType) -> Self {
+    pub fn new(dyntype: K::DynamicType) -> Self {
         Self {
             dyntype,
             inner: Arc::new(RwLock::new(Inner {
@@ -75,7 +75,7 @@ where
 
     /// Fold one watch event in. Call it on the stream *before* `reflector` so the index is never
     /// behind the store at readiness.
-    pub(crate) fn observe(&self, event: &watcher::Event<K>) {
+    pub fn observe(&self, event: &watcher::Event<K>) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         match event {
             watcher::Event::Apply(obj) => {
@@ -110,7 +110,7 @@ where
     }
 
     /// Every object `store` currently holds in namespace `ns`.
-    pub(crate) fn objects_in(&self, store: &Store<K>, ns: &str) -> Vec<Arc<K>>
+    pub fn objects_in(&self, store: &Store<K>, ns: &str) -> Vec<Arc<K>>
     where
         K: Clone,
     {

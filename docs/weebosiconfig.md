@@ -5,8 +5,8 @@ Every hardening feature in this repo is configured by one object: a cluster-scop
 it is required, what it defaults to, and what happens when it is wrong.
 
 This is the *reference*. Each feature's **why** is its RFC and each feature's **how to roll it
-out** is [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) — or, for the two kinds
-below and the `identity` feature, [`bricks/teams-and-users.md`](./bricks/teams-and-users.md).
+out** is its brick page, listed in [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) —
+or, for the two kinds below and the `identity` feature, [`bricks/teams-and-users.md`](./bricks/teams-and-users.md).
 The two other kinds have their own field references: [`weebositeam.md`](./weebositeam.md) and
 [`weebosiuser.md`](./weebosiuser.md). When this page and an RFC disagree, the RFC is right and
 this page is a bug.
@@ -22,8 +22,10 @@ weebo-si-operator features     # which features this build actually contains
 kubectl explain weebosiconfig.spec.features --recursive
 ```
 
-To build one without hand-writing YAML, the [config generator](https://batleforc.github.io/weebo-si-hardening/#WeeboSiConfig) renders a form
-from this same schema, validates as you type and prints the object.
+To build one without hand-writing YAML, the [documentation site](https://batleforc.github.io/weebo-si-hardening/docs/crds/weebosiconfig)
+renders a form from this same schema, validates as you type and prints the object; its
+[CRD IDE](https://batleforc.github.io/weebo-si-hardening/docs/ide) composes the config, its teams and
+their users together.
 
 ## The object
 
@@ -351,7 +353,7 @@ rather than ignored at runtime.
 | --- | --- | --- |
 | [`dwocPin`](#featuresdwocpin) | [0002](./rfc/0002-weebo-si-operator.md) | `DevWorkspace` (mutating admission) |
 | [`networkProfiles`](#featuresnetworkprofiles) | [0004](./rfc/0004-network-profiles.md) | `Namespace`, `DevWorkspace` (reconcile) |
-| [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy` (validating admission) |
+| [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy`, `KubeArmorPolicy`, catalogued `ConfigMap`/`Secret` copies (validating admission) |
 | [`imagePolicy`](#featuresimagepolicy) | [0005](./rfc/0005-image-policy.md) | `DevWorkspace`, `Pod` (validating admission) |
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
@@ -592,7 +594,7 @@ kubearmorPolicy:
 namespace in scope as the `kubearmor-file-posture` / `kubearmor-network-posture` /
 `kubearmor-capabilities-posture` annotations, and it is what happens to an operation **no rule
 matched**. Moving one to `Block` denies everything the templates did not think to allow — read
-the rollout in [`bricks/weebo-si-operator.md`](./bricks/weebo-si-operator.md) before doing it.
+the rollout in [`bricks/kubearmor-policy.md`](./bricks/kubearmor-policy.md) before doing it.
 
 Check the cluster first: `weebo-si-operator backends kubearmor --verbose` answers both whether
 the CRD is served and which nodes can actually enforce a policy.

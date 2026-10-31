@@ -40,9 +40,9 @@ const WEBHOOK_TOKEN: &str = "rbac-envtest-webhook-token";
 const CONTROLLER_TOKEN: &str = "rbac-envtest-controller-token";
 
 const DEVWORKSPACE_OPERATOR_CONFIG_CRD: &str =
-    include_str!("../../weebo-si-webhook/tests/fixtures/devworkspaceoperatorconfig-crd.yaml");
+    include_str!("../../weebo-si-envtest-support/fixtures/devworkspaceoperatorconfig-crd.yaml");
 const DEVWORKSPACE_CRD: &str =
-    include_str!("../../weebo-si-webhook/tests/fixtures/devworkspace-crd.yaml");
+    include_str!("../../weebo-si-envtest-support/fixtures/devworkspace-crd.yaml");
 
 #[derive(serde::Deserialize)]
 struct KindProbe {
@@ -274,6 +274,35 @@ async fn create_weebosiconfig(client: kube::Client) {
     )
     .await
     .expect("the admin identity should be able to create the config");
+}
+
+/// The `events.k8s.io/v1` shape of [`test_event`] — the API kube's `Recorder` publishes through.
+fn test_series_event(name: &str) -> k8s_openapi::api::events::v1::Event {
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
+    k8s_openapi::api::events::v1::Event {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(RELEASE_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        event_time: Some(MicroTime(k8s_openapi::jiff::Timestamp::now())),
+        reporting_controller: Some("weebo-si-operator".to_string()),
+        reporting_instance: Some("rbac-envtest".to_string()),
+        action: Some("Reconcile".to_string()),
+        reason: Some("RbacEnvtest".to_string()),
+        note: Some("emitted by the RBAC envtest suite".to_string()),
+        type_: Some("Normal".to_string()),
+        // Same constraint as `test_event`: the apiserver wants the regarded object's namespace
+        // to match the Event's own.
+        regarding: Some(ObjectReference {
+            api_version: Some("hardening.weebo.io/v1alpha1".to_string()),
+            kind: Some("WeeboSiConfig".to_string()),
+            name: Some(weebo_si_crd::SINGLETON_NAME.to_string()),
+            namespace: Some(RELEASE_NAMESPACE.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 fn test_event(name: &str) -> Event {
@@ -588,6 +617,15 @@ async fn controller_role_matches_the_documented_grants() {
         .await
         .expect("the controller role should be able to create events");
 
+    // RFC 0012: what kube's `Recorder` writes, an `events.k8s.io/v1` Event.
+    Api::<k8s_openapi::api::events::v1::Event>::namespaced(controller.clone(), RELEASE_NAMESPACE)
+        .create(
+            &PostParams::default(),
+            &test_series_event("controller-series-should-pass"),
+        )
+        .await
+        .expect("the controller role should be able to create events.k8s.io events");
+
     Api::<Lease>::namespaced(controller.clone(), RELEASE_NAMESPACE)
         .create(
             &PostParams::default(),
@@ -660,7 +698,7 @@ async fn controller_role_matches_the_documented_grants() {
 // would assert nothing and pass.
 
 const KUBEARMOR_POLICY_CRD: &str =
-    include_str!("../../weebo-si-runtime/tests/fixtures/kubearmorpolicy-crd.yaml");
+    include_str!("../../weebo-si-envtest-support/fixtures/kubearmorpolicy-crd.yaml");
 
 fn kubearmor_resource() -> kube::api::ApiResource {
     let gvk = GroupVersionKind::gvk("security.kubearmor.com", "v1", "KubeArmorPolicy");

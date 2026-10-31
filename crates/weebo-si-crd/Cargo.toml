@@ -1,7 +1,7 @@
 [package]
 name = "weebo-si-crd"
 version = "0.1.0"
-description = "The WeeboSiConfig CRD: its schema, and the config it carries"
+description = "The WeeboSiConfig, WeeboSiTeam and WeeboSiUser CRDs: their schema, and the config they carry"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

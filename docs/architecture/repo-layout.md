@@ -4,26 +4,40 @@ Single Cargo workspace, two families of members.
 
 ```text
 Cargo.toml              # [workspace] — shared deps, shared lints, shared edition
-bins/                   # simple binaries: one job, no ports, no adapters
-├── passwd-append/
-└── preauth-proxy/
-crates/                        # libraries and the non-trivial bricks
-├── weebo-si-crd/               # the WeeboSiConfig CRD schema — kube-derive, k8s-openapi, schemars
-├── weebo-si-chassis/           # operator-wide runtime abstractions: Feature<S>, Registry<S>, ports
-├── weebo-si-dwoc-pin/          # the dwoc-pin feature — depends on crd + chassis only
-├── weebo-si-runtime/           # watch-backed outbound adapters, shared by webhook and controller
-├── weebo-si-webhook/           # the admission webhook adapter (axum)
-├── weebo-si-controller/        # the WeeboSiConfig reconcile loop
-├── weebo-si-operator/          # the bin — sole composition root, sole binary
-└── weebo-si-envtest-support/   # dev-only: a real ephemeral kube-apiserver for the envtest tier
-charts/                 # one Helm chart per deployable brick, alongside its bins/crates/ deploy/ artifacts
+bins/                   # binaries that are not the operator
+├── passwd-append/      # flat: one job, no ports, no adapters
+├── preauth-proxy/      # hexagonal, its own chart
+└── endpoint-gateway/   # hexagonal, its own chart; decisions come from crates/weebo-si-endpoint-auth
+crates/                          # the operator: one crate per layer, two per feature
+├── weebo-si-crd/                 # the three CRDs and every feature's config — kube-derive, schemars
+├── weebo-si-chassis/             # Feature<S>, Registry<S>, admit(), ports, managed diff — no kube, no serde
+├── weebo-si-<feature>/           # the decision, one per feature — depends on crd + chassis only:
+│                                 #   dwoc-pin, network-profiles, policy-guard, image-policy,
+│                                 #   kubearmor-policy, registry-config, endpoint-auth, identity
+├── weebo-si-<feature>-adapters/  # what talks to the cluster for it (RFC 0012): stores, metrics,
+│                                 #   admission routes, loops — every feature but dwoc-pin
+├── weebo-si-runtime/             # shared adapters: the config and namespace caches, watch driving
+├── weebo-si-webhook/             # shared admission: the DevWorkspace route, extract, render, metrics
+├── weebo-si-controller/          # shared reconcile: WeeboSiConfig status, Events and retry
+├── weebo-si-operator/            # the bin — sole composition root, sole binary
+├── weebo-si-envtest-support/     # dev-only: a real ephemeral kube-apiserver, and the CRD fixtures
+└── weebo-si-e2e/                 # test-only: the nightly kind + Eclipse Che suites
+charts/                 # one Helm chart per deployable brick
 ├── weebo-si-operator/
+├── endpoint-gateway/
 └── preauth-proxy/
-scripts/                # repo plumbing, POSIX sh (RFC validation and index generation)
-docs/
+e2e/                    # fixtures for the nightly end-to-end suites
+scripts/                # repo plumbing, POSIX sh (RFC validation and index generation, CRD regen, e2e rigs)
+docs/                   # plain markdown: RFCs, architecture, runbooks
 ├── rfc/
-└── architecture/
+├── architecture/
+└── bricks/
+site/                   # the documentation site (Fumadocs, @weebo/operator-docs): the generated
+                        # CRD reference, form and IDE, published on GitHub Pages
 ```
+
+How the operator's crates fit together at run time is
+[`operator-internals.md`](./operator-internals.md).
 
 `scripts/` holds repo tooling, not product code — it never ships in an image. POSIX `sh`, because
 it runs in the pre-commit hook where "works on my shell" is not a guarantee we get.
@@ -47,6 +61,12 @@ binary.
 - **`crates/`** — everything else: anything that talks to the Kubernetes API, anything that
   makes a decision someone might want to configure, anything that has to be tested without the
   system it drives. These follow [`hexagonal.md`](./hexagonal.md).
+
+`preauth-proxy` and `endpoint-gateway` break the first rule and live in `bins/` anyway: each is a
+standalone process with its own chart, outside the operator's composition root, and each keeps its
+hexagonal layers as modules inside the one crate rather than as separate crates. What actually
+separates the two directories today is "part of the operator's workspace of layered crates" versus
+"a deployable of its own".
 
 A `bins/` member that grows a second reason to change is a candidate for promotion to
 `crates/`. That move is a refactor, not a RFC — see the RFC process for what needs one.

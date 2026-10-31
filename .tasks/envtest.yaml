@@ -89,6 +89,11 @@ tasks:
       # Serialised: each test owns an apiserver, and running several at once only multiplies
       # the memory footprint for no wall-clock gain.
       - cargo test --workspace --features envtest --test envtest -- --test-threads=1
+      # RFC 0012 moved the suites that drive several features' adapters at once next to the
+      # composition root that links them all: the admission stack against a real apiserver calling
+      # back into it, and the controller's status and identity loops.
+      - cargo test --workspace --features envtest --test admission_envtest -- --test-threads=1
+      - cargo test --workspace --features envtest --test controller_envtest -- --test-threads=1
       # RFC 0006's suite is its own target rather than more cases in weebo-si-runtime's
       # `envtest`: it installs a KubeArmorPolicy CRD fixture into the apiserver, and a suite
       # that installs a CRD should not share one with a suite that assumes a bare cluster.

@@ -23,12 +23,12 @@ them is a deliberate commit, never something that happens to a green build.
 | [`build-weebo-si-operator`](../.github/workflows/build-weebo-si-operator.yaml) | any of the 14 `weebo-si-*` crates its binary links, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`build-endpoint-gateway`](../.github/workflows/build-endpoint-gateway.yaml) | `bins/endpoint-gateway/**`, `crates/weebo-si-crd/**`, `crates/weebo-si-endpoint-auth/**`, `Cargo.toml`, `Cargo.lock` · daily | same |
 | [`test`](../.github/workflows/test.yaml) | any Rust or manifest change | `cargo fmt --check`, `clippy -D warnings`, the suite, the deferred OpenShift tier, RFC 0009's decision budget, a release build |
-| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, `bins/endpoint-gateway/**`, manifests | all five envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip — plus RFC 0009's dialect conformance suite, which drives a real Traefik |
+| [`envtest`](../.github/workflows/envtest.yaml) | `crates/**`, `bins/endpoint-gateway/**`, manifests | all seven envtest suites, live against a real ephemeral `kube-apiserver` — `REQUIRE_ENVTEST` makes a broken setup a failure, not a silent skip — plus RFC 0009's dialect conformance suite, which drives a real Traefik |
 | [`perf`](../.github/workflows/perf.yaml) | nightly · manual | nothing on its own — it measures. The conformance cost matrix and the gateway's in-process `cost` test on a **release** build, both tables in the job summary; fails only if a budget or a status assertion breaks. See [`endpoint-auth-performance.md`](./endpoint-auth-performance.md) |
 | [`e2e`](../.github/workflows/e2e.yaml) | nightly · manual, per suite | any of the four end-to-end suites against a kind cluster running real Eclipse Che — see [End to end](#end-to-end) |
 | [`helm`](../.github/workflows/helm.yaml) | `charts/**` | `helm lint` and `helm template` for all three charts, every certificate-provider variant and both endpoint-auth dialect shapes |
-| [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `scripts/**`, `.hooks/**`, `charts/weebo-si-operator/crds/**`, configs | a malformed RFC, a stale RFC index, a stale `docs/generator/schemas.js`, shellcheck, markdownlint, cspell |
-| [`pages`](../.github/workflows/pages.yaml) | `docs/generator/**`, the chart's CRDs, on `main` · manual | a stale `docs/generator/schemas.js`; then publishes the [config generator](https://batleforc.github.io/weebo-si-hardening/) to GitHub Pages |
+| [`repo`](../.github/workflows/repo.yaml) | `docs/**`, `site/**`, `scripts/**`, `.hooks/**`, `charts/weebo-si-operator/crds/**`, configs | a malformed RFC, a stale RFC index, a stale site CRD reference, a site that fails lint, types or build, shellcheck, markdownlint, cspell |
+| [`pages`](../.github/workflows/pages.yaml) | `site/**`, the chart's CRDs, on `main` · manual | a stale site CRD reference; then publishes the [documentation site](https://batleforc.github.io/weebo-si-hardening/) to GitHub Pages |
 | [`dep-audit`](../.github/workflows/dep-audit.yaml) | manifests, `deny.toml` · daily | `cargo deny check advisories bans licenses sources` |
 | [`postmortem`](../.github/workflows/postmortem.yaml) | manifests · daily | a HIGH supply-chain vulnerability |
 | [`codeql`](../.github/workflows/codeql.yaml) | Rust changes · weekly | CodeQL alerts |
@@ -51,7 +51,11 @@ add it in both places — or better, notice that this is exactly the drift the t
 lists invite. There are five as of 2026-09-23: RFC 0009's `openshift_envtest`
 covers the `OpenShiftRoute` dialect's **admission** half against a `Route` CRD,
 which is a different fact from the deferred tier above — that one is about a
-router nobody has run this against, and this one needed no router at all.
+router nobody has run this against, and this one needed no router at all. Seven as of
+2026-10-31: RFC 0012 moved each suite next to the crate whose adapters it tests, and the two
+that drive several features at once — `admission_envtest` and `controller_envtest` — next to the
+composition root in `crates/weebo-si-operator/tests/`. The CRD fixtures every suite installs live
+in `crates/weebo-si-envtest-support/fixtures/`.
 
 **The conformance suite skips itself when its tools are missing, so CI installs them.**
 `bins/endpoint-gateway/tests/conformance.rs` needs both the envtest binaries and
@@ -230,14 +234,14 @@ tab. The scan reports; a separate step fails the build.
 ## Running the gates locally
 
 ```bash
-task lint            # fmt, clippy, shellcheck, RFC format, crd + generator-schema freshness, helm lint, actionlint
+task lint            # fmt, clippy, shellcheck, RFC format, crd + site CRD reference freshness, helm lint, actionlint
 task test            # the whole suite
 task audit           # cargo-deny + trivy fs (covers charts/ too — see task helm:lint's own comment)
 task supply-chain    # postmortem, the same scanner version CI pins
 task ci:lint         # actionlint on the workflow files alone
 task ci:image BRICK=passwd-append   # build + scan one image as CI does (bins/ or crates/, e.g. BRICK=weebo-si-operator)
 task e2e:build && task e2e:run SUITE=workspace   # one end-to-end suite on a local kind cluster
-task docs:generator  # the config generator on http://127.0.0.1:8765
+task docs:site       # the documentation site on http://localhost:3000 (task docs:deps first)
 ```
 
 `task supply-chain` is deliberately **not** part of `task audit`: it goes over

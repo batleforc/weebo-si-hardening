@@ -2,7 +2,7 @@
 //!
 //! `resolve` is the "explain the decision" command every feature in this project has, and it
 //! carries more weight here than elsewhere for one reason: this brick's metrics deliberately
-//! carry no namespace label (see [`weebo_si_runtime::registry_metrics`]), so "which namespace is
+//! carry no namespace label (see [`weebo_si_registry_config_adapters::registry_metrics`]), so "which namespace is
 //! degraded, and why" is answered here and in the controller log rather than by a time series.
 //!
 //! `check` is the pre-flight — validate every catalogue entry against its template *before* the

@@ -24,7 +24,7 @@ const OWNER_KIND: &str = "DevWorkspace";
 
 /// The `metadata.ownerReferences` value for `owner`, or `None` for an unowned object (the
 /// baseline) — in which case the caller leaves the field out of its apply entirely.
-pub(crate) fn owner_references_json(owner: Option<&Owner>) -> Option<Value> {
+pub fn owner_references_json(owner: Option<&Owner>) -> Option<Value> {
     owner.map(|owner| {
         json!([{
             "apiVersion": owner.api_version,
@@ -41,7 +41,7 @@ pub(crate) fn owner_references_json(owner: Option<&Owner>) -> Option<Value> {
 /// `DevWorkspace` entry, ignoring any other owner something else may have added. Reading back
 /// exactly the shape [`owner_references_json`] writes is what keeps an adopted object from being
 /// rewritten on every pass.
-pub(crate) fn owner_from_references(references: Option<&[OwnerReference]>) -> Option<Owner> {
+pub fn owner_from_references(references: Option<&[OwnerReference]>) -> Option<Owner> {
     references?
         .iter()
         .find(|reference| reference.kind == OWNER_KIND)

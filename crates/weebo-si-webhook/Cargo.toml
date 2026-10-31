@@ -1,32 +1,25 @@
 [package]
 name = "weebo-si-webhook"
 version = "0.1.0"
-description = "The dwoc-pin mutating admission webhook: AdmissionReview in, JSON Patch out"
+description = "The admission adapters: one axum router per feature, AdmissionReview in, JSON Patch or allow/deny out"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+tracing = { workspace = true }
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-dwoc-pin = { version = "0.1.0", path = "../weebo-si-dwoc-pin" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
-weebo-si-policy-guard = { version = "0.1.0", path = "../weebo-si-policy-guard" }
-weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
-weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
-# RFC 0009's compiler, so that what admission accepts and what the gateway compiles are the *same*
-# function rather than two that agree today: a rule list the webhook admits and the gateway then
-# drops is a hole nobody sees. The crate is `serde` + `serde_yaml_bw` + `sha2` and nothing else,
-# which is what makes depending on it from the operator cheap.
-weebo-si-endpoint-auth = { version = "0.1.0", path = "../weebo-si-endpoint-auth" }
 axum = { workspace = true }
 kube = { workspace = true, features = ["admission", "client"] }
 k8s-openapi = { workspace = true }
 serde_json = { workspace = true }
 json-patch = { workspace = true }
 jsonptr = { workspace = true }
-tokio = { workspace = true }
 prometheus = { workspace = true }
 
 [features]

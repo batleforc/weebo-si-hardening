@@ -1,0 +1,14 @@
+{
+  "title": "weebo-si-hardening",
+  "pages": [
+    "index",
+    "ide",
+    "---Getting started---",
+    "guides/install",
+    "guides/features",
+    "guides/observability",
+    "guides/design",
+    "---Reference---",
+    "...crds"
+  ]
+}

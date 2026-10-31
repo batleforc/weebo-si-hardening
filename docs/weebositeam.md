@@ -20,7 +20,7 @@ weebo-si-operator crd weebositeams
 kubectl explain weebositeam.spec --recursive
 ```
 
-To build one without hand-writing YAML, the [config generator](https://batleforc.github.io/weebo-si-hardening/#WeeboSiTeam) renders a form
+To build one without hand-writing YAML, the [documentation site](https://batleforc.github.io/weebo-si-hardening/docs/crds/weebositeam) renders a form
 from this same schema, validates as you type and prints the object.
 
 > **A `WeeboSiTeam` is a security object.** Whoever may write one decides which DevWorkspace

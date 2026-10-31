@@ -19,7 +19,7 @@
 # deletes it. Everything else a run writes (the realm, the Corefile, packaged charts, image
 # archives) goes into a fresh `mktemp -d` that is removed when the script exits.
 #
-# Suites: workspace | kubearmor | endpoint-auth | identity. `task e2e SUITE=<suite>` runs the
+# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade. `task e2e SUITE=<suite>` runs the
 # whole sequence plus the Rust suite of the same name (crates/weebo-si-e2e/tests/<suite>.rs).
 #
 # **Every upstream is pinned**, unlike the spike rig this grew out of (scripts/spike-0009-che.sh):
@@ -646,10 +646,10 @@ MANIFEST
 
 addons() {
   case "${1:-}" in
-    workspace | endpoint-auth) ;;
+    workspace | endpoint-auth | upgrade) ;;
     kubearmor) addon_kubearmor ;;
     identity) addon_authentik; addon_argocd ;;
-    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity)" ;;
+    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade)" ;;
   esac
 }
 
@@ -717,6 +717,18 @@ PROBE
   wait_for 180 "! kubectl apply --dry-run=server -f '$WORK/probe-devworkspace.yaml' 2>&1 | grep -q 'failed calling webhook'"
 }
 
+# The upgrade suite starts from the last release published before RFC 0012 — its chart from the
+# OCI registry, its images from GHCR — and the Rust suite runs the `helm upgrade` to this build.
+# Needs the GHCR packages public (todo.md F3) or a pull secret on the cluster.
+deploy_previous_operator() {
+  version=${E2E_PREVIOUS_VERSION:-0.2.1}
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl label namespace "$NAMESPACE" hardening.weebo.io/exclude=true --overwrite >/dev/null
+  helm upgrade --install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
+    --version "$version" -n "$NAMESPACE" -f "$REPO_ROOT/e2e/values/weebo-si-operator.yaml" \
+    --set namespace.create=false --wait --timeout 10m
+}
+
 deploy_gateway() {
   kubectl -n "$NAMESPACE" create secret generic endpoint-gateway-session-keys \
     --from-literal=keys="$(openssl rand -base64 32)" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -733,12 +745,17 @@ deploy_gateway() {
 deploy() {
   suite=${1:-}
   case "$suite" in
-    workspace | kubearmor | endpoint-auth | identity) ;;
+    workspace | kubearmor | endpoint-auth | identity | upgrade) ;;
     *) die "deploy: unknown suite '$suite'" ;;
   esac
   kubectl config use-context "kind-$CLUSTER" >/dev/null
   say "loading the :e2e images"
   load_images
+  if [ "$suite" = upgrade ]; then
+    say "weebo-si-operator ${E2E_PREVIOUS_VERSION:-0.2.1}, the release the suite upgrades from"
+    deploy_previous_operator
+    return
+  fi
   say "weebo-si-operator (suite $suite)"
   deploy_operator "$suite"
   if [ "$suite" = endpoint-auth ]; then

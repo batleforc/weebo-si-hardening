@@ -93,18 +93,19 @@ spec:
             periodSeconds: 5
             failureThreshold: 3
           # The initial lists (every namespace, and with KubeArmor every workspace pod and node)
-          # can outlast a liveness probe on a large cluster. `/healthz` is served from the first
-          # instant, so this mostly guards a process that never gets that far.
+          # can outlast a liveness probe on a large cluster. `/livez` answers from the first instant
+          # and fails only once a watch has kept failing for minutes (RFC 0012), so this mostly guards
+          # a process that never gets that far. Not `/healthz`: it is an alias of `/readyz`.
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http-health
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 60
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http-health
             periodSeconds: 10
             timeoutSeconds: 2

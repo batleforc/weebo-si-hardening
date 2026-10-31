@@ -94,6 +94,7 @@ fails if it is stale.
 | [0009](./0009-endpoint-auth.md) | endpoint-auth | `Accepted` | `crates/weebo-si-endpoint-auth` |
 | [0010](./0010-endpoint-auth-openshift.md) | endpoint-auth on OpenShift | `Draft` | `bins/endpoint-gateway` |
 | [0011](./0011-teams-and-users.md) | teams and users as objects | `Implemented` | `crates/weebo-si-crd` |
+| [0012](./0012-operator-kit-migration.md) | operator kit migration | `Accepted` | `crates/weebo-si-operator` |
 
 <!-- rfc-index:end -->
 

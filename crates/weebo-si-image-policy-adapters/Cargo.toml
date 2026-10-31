@@ -1,0 +1,43 @@
+[package]
+name = "weebo-si-image-policy-adapters"
+version = "0.1.0"
+description = "image-policy's adapters: its two admission routes and their metrics"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
+kube = { workspace = true, features = ["client", "runtime", "admission"] }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true }
+prometheus = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+json-patch = { workspace = true }
+jsonptr = { workspace = true }
+
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
+envtest = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy", features = ["testing"] }
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "runtime", "admission", "rustls-tls", "ring"] }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+serde_yaml_bw = { workspace = true }
+
+[lints]
+workspace = true

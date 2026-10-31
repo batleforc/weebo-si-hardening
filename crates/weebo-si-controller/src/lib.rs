@@ -1,155 +1,70 @@
-//! The `WeeboSiConfig` reconcile loop — see RFC 0002, the controller role — and, per RFC 0004,
-//! the `network-profiles` `Namespace`/`DevWorkspace` reconcile loops.
+//! The controller role's shared half (RFC 0012): the `WeeboSiConfig` status loop (RFC 0002), the
+//! Event and retry policy every loop uses, the workspace helpers the template-driven features
+//! share, and [`ControllerShared`] — what the composition root hands every feature's adapters
+//! crate. The features' own loops live in their adapters crates.
 
-pub mod endpoint_auth;
-pub mod identity;
-pub mod kubearmor_policy;
-pub mod network_profiles;
+pub mod events;
 pub mod reconcile;
-pub mod registry_config;
+pub mod workspace;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use futures_util::StreamExt;
 use kube::runtime::Controller;
+use kube::runtime::events::Recorder;
 use kube::runtime::watcher::Config;
 use kube::{Api, Client};
-use kube_leader_election::{LeaseLock, LeaseLockParams, LeaseLockResult};
 use weebo_si_crd::WeeboSiConfig;
+use weebo_si_runtime::{KubeConfigStore, KubeDwocStore, KubeNsStore};
 
-pub use endpoint_auth::EndpointAuthDeps;
-pub use identity::{IdentityDeps, reconcile_team, reconcile_user};
-pub use kubearmor_policy::KubeArmorPolicyDeps;
-pub use network_profiles::NetworkProfilesDeps;
 pub use reconcile::{Ctx, Error, error_policy, reconcile as reconcile_fn};
-pub use registry_config::RegistryConfigDeps;
 
-/// Leader election parameters. Not optional fields on [`run`] itself — constructing this at all
-/// is the caller's decision to enable leader election, matching the CLI's `--leader-election`
-/// flag being off by default.
-pub struct LeaderElection {
-    /// The namespace the `Lease` object lives in — typically this pod's own namespace.
-    pub namespace: String,
-    /// This replica's identity in the lease — typically this pod's name.
-    pub holder_id: String,
+/// What every feature's reconcile loops may use, built once by the composition root
+/// (`weebo-si-operator controller`) and handed to each adapters crate's `spawn_controllers`
+/// (RFC 0012). Adding a feature adds one call, not a field.
+pub struct ControllerShared {
+    /// The client every loop reads and writes through.
+    pub client: Client,
+    /// The `WeeboSiConfig`/`WeeboSiTeam` cache: the feature gate and every feature's live config.
+    pub config_store: Arc<KubeConfigStore>,
+    /// Every namespace's labels and selection annotation.
+    pub ns_store: Arc<KubeNsStore>,
+    /// Every `DevWorkspaceOperatorConfig`, for the `dwoc-pin` catalogue check.
+    pub dwoc_store: Arc<KubeDwocStore>,
+    /// The registry `/metrics` serves; each feature registers its own series on it.
+    pub prometheus: prometheus::Registry,
+    /// The one Event recorder of the process (see [`events::recorder`]).
+    pub recorder: Recorder,
+    /// This pod's own namespace: where the templates live and what is never a target.
+    pub operator_namespace: String,
+    /// Whether the cluster serves, and this role may watch, `CiliumNetworkPolicy`.
+    pub cilium_enabled: bool,
+    /// Whether the cluster serves, and this role may watch, `KubeArmorPolicy`.
+    pub kubearmor_enabled: bool,
+    /// The image `network-profiles`' enforcement canary runs (`--canary-image`).
+    pub canary_image: String,
 }
 
-/// Run the reconcile loop until the process is asked to stop. Runs to completion of the input
-/// stream, which in practice means "forever" — `kube-runtime`'s watcher retries on its own.
+/// Run the `WeeboSiConfig` status loop until the process is asked to stop. Every feature's own
+/// loops are spawned before, by its adapters crate.
 ///
-/// Without `leader_election`, every replica reconciles — safe for exactly one replica, per RFC
-/// 0002's original single-replica assumption. With it, every replica watches (kube-runtime gives
-/// every replica the same stream), but only the lease holder's [`reconcile::reconcile`] actually
-/// writes; the rest requeue without acting. `network_profiles`, `kubearmor_policy` and
-/// `registry_config`, when `Some`, share the same `is_leader` flag — one lease covers every loop
-/// this role runs.
-pub async fn run(
-    client: Client,
-    leader_election: Option<LeaderElection>,
-    network_profiles: Option<NetworkProfilesDeps>,
-    kubearmor_policy: Option<KubeArmorPolicyDeps>,
-    registry_config: Option<RegistryConfigDeps>,
-    endpoint_auth: Option<EndpointAuthDeps>,
-    identity: Option<IdentityDeps>,
-) {
-    let is_leader = Arc::new(AtomicBool::new(leader_election.is_none()));
+/// **Leader election is the caller's.** With more than one replica, the composition root takes
+/// the lease first (`weebo-kit-runtime::leader::acquire_leadership`, RFC 0012) and starts any loop
+/// only once it holds it; the kit exits the process the moment the lease may be lost, so no loop
+/// ever runs on a replica that is not the leader.
+pub async fn run(shared: &ControllerShared) {
     let ctx = Arc::new(Ctx {
-        client: client.clone(),
-        is_leader: Arc::clone(&is_leader),
+        client: shared.client.clone(),
+        recorder: shared.recorder.clone(),
     });
-
-    if let Some(deps) = network_profiles {
-        network_profiles::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
-    }
-
-    if let Some(deps) = kubearmor_policy {
-        kubearmor_policy::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
-    }
-
-    if let Some(deps) = registry_config {
-        registry_config::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
-    }
-
-    if let Some(deps) = endpoint_auth {
-        endpoint_auth::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
-    }
-
-    if let Some(deps) = identity {
-        identity::spawn(client.clone(), deps, Arc::clone(&is_leader)).await;
-    }
-
-    let api: Api<WeeboSiConfig> = Api::all(client.clone());
-    let controller = Controller::new(api, Config::default())
+    let api: Api<WeeboSiConfig> = Api::all(shared.client.clone());
+    Controller::new(api, Config::default())
         .shutdown_on_signal()
-        .run(reconcile_fn, error_policy, ctx)
-        .for_each(|_| futures_util::future::ready(()));
-
-    match leader_election {
-        Some(election) => {
-            let leadership = LeaseLock::new(
-                client,
-                &election.namespace,
-                LeaseLockParams {
-                    holder_id: election.holder_id,
-                    lease_name: "weebo-si-controller-leader".to_string(),
-                    lease_ttl: Duration::from_secs(15),
-                },
-            );
-            tokio::select! {
-                () = controller => {},
-                () = run_leader_election(&leadership, Arc::clone(&is_leader)) => {},
-            }
-            // Shutting down: stop acting as leader first, then hand the lease back so the next
-            // replica takes over now rather than after the lease's TTL runs out.
-            // Only the holder has a lease to give back: `step_down` on any other replica answers
-            // `ReleaseLockWhenNotLeading`, which is not an error worth a log line on every
-            // rollout.
-            let was_leader = is_leader.swap(false, Ordering::Relaxed);
-            if was_leader
-                && let Ok(Err(err)) =
-                    tokio::time::timeout(RENEW_TIMEOUT, leadership.step_down()).await
-            {
-                eprintln!("ERROR weebo-si-controller: releasing the leader lease: {err}");
-            }
-        }
-        None => controller.await,
-    }
+        .run(
+            |object, ctx| events::tracked(Arc::clone(&object), reconcile_fn(object, ctx)),
+            error_policy,
+            ctx,
+        )
+        .for_each(|_| futures_util::future::ready(()))
+        .await;
 }
-
-/// Acquire-or-renew the lease every 5s, keeping `is_leader` current. Demotes as well as
-/// promotes: `try_acquire_or_renew` returns `Ok(NotAcquired)` (not an `Err`) when another
-/// instance holds the lease, so a leader that fails to renew in time must have this loop clear
-/// `is_leader` itself — otherwise a stale leader keeps reconciling alongside the new one
-/// (split-brain).
-///
-/// Each attempt is bounded by [`RENEW_TIMEOUT`], well inside the lease's 15s TTL: an apiserver
-/// call that hangs would otherwise leave `is_leader` true after the lease expired and another
-/// replica took it — the same split-brain, reached by waiting rather than by failing.
-async fn run_leader_election(leadership: &LeaseLock, is_leader: Arc<AtomicBool>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
-    loop {
-        match tokio::time::timeout(RENEW_TIMEOUT, leadership.try_acquire_or_renew()).await {
-            Ok(Ok(lease)) => {
-                let acquired = matches!(lease, LeaseLockResult::Acquired(_));
-                is_leader.store(acquired, Ordering::Relaxed);
-            }
-            Ok(Err(err)) => {
-                eprintln!("ERROR weebo-si-controller: leader election: {err}");
-                is_leader.store(false, Ordering::Relaxed);
-            }
-            Err(_) => {
-                eprintln!(
-                    "ERROR weebo-si-controller: leader election: renew timed out after {}s",
-                    RENEW_TIMEOUT.as_secs()
-                );
-                is_leader.store(false, Ordering::Relaxed);
-            }
-        }
-        interval.tick().await;
-    }
-}
-
-/// How long one acquire-or-renew may take before this replica stops considering itself leader.
-const RENEW_TIMEOUT: Duration = Duration::from_secs(4);

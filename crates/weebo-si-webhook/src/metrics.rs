@@ -131,7 +131,7 @@ mod tests {
         let metrics = WebhookMetrics::register(&registry).expect("metrics should register");
         assert_eq!(unguarded_series(&registry), Vec::new());
 
-        metrics.unguarded("policy-guard", crate::VALIDATE_KUBEARMOR_POLICIES_PATH);
+        metrics.unguarded("policy-guard", "/validate/v1/kubearmorpolicies");
         assert_eq!(
             unguarded_series(&registry),
             vec![(
@@ -148,9 +148,9 @@ mod tests {
     fn the_two_guard_routes_are_distinguishable_under_one_feature_label() {
         let registry = prometheus::Registry::new();
         let metrics = WebhookMetrics::register(&registry).expect("metrics should register");
-        metrics.unguarded("policy-guard", crate::VALIDATE_NETWORK_POLICIES_PATH);
-        metrics.unguarded("policy-guard", crate::VALIDATE_NETWORK_POLICIES_PATH);
-        metrics.unguarded("policy-guard", crate::VALIDATE_REGISTRY_CONFIGS_PATH);
+        metrics.unguarded("policy-guard", "/validate/v1/networkpolicies");
+        metrics.unguarded("policy-guard", "/validate/v1/networkpolicies");
+        metrics.unguarded("policy-guard", "/validate/v1/registryconfigs");
 
         assert_eq!(
             unguarded_series(&registry),

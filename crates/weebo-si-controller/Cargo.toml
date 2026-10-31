@@ -1,26 +1,26 @@
 [package]
 name = "weebo-si-controller"
 version = "0.1.0"
-description = "The WeeboSiConfig reconcile loop: validate, and report status"
+description = "The reconcile loops: WeeboSiConfig status, one controller per reconcile feature, leader election"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+tracing = { workspace = true }
+# RFC 0012: Events and the retry policy.
+weebo-kit-runtime = { workspace = true }
+weebo-kit-domain = { workspace = true }
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
-weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity" }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+prometheus = { workspace = true }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
-weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
-weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy" }
-weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
-tokio = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
-kube-leader-election = { workspace = true }
 
 [features]
 # Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).

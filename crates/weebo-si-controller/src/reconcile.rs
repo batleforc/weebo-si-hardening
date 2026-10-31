@@ -8,12 +8,14 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::api::{ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
+
+use crate::events::{self, ReasonCode};
+use kube::runtime::events::Recorder;
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     FeatureMode, FeatureState, FeatureStatus, SINGLETON_NAME, WeeboSiConfig, WeeboSiConfigStatus,
@@ -26,7 +28,7 @@ pub struct Ctx {
     pub client: Client,
     /// Whether this replica currently holds the leader lease. `true` unconditionally when
     /// leader election is disabled (the single-replica default) — see [`crate::run`].
-    pub is_leader: Arc<AtomicBool>,
+    pub recorder: Recorder,
 }
 
 /// Something that stopped a reconcile from completing. Never panics the loop — `kube-runtime`
@@ -47,9 +49,6 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     // A non-leader observes the same watch stream (kube-runtime gives every replica one) but
     // never writes — only one replica's status patch should ever land, and "did nothing" is a
     // cheap, safe requeue rather than a wasted write that could race the real leader's.
-    if !ctx.is_leader.load(Ordering::Relaxed) {
-        return Ok(Action::requeue(Duration::from_secs(15)));
-    }
 
     let api: Api<WeeboSiConfig> = Api::all(ctx.client.clone());
     let generation = config.metadata.generation.unwrap_or(0);
@@ -424,7 +423,11 @@ async fn patch_status(
 
 /// `kube-runtime`'s `Controller` calls this when [`reconcile`] returns an error — logs and
 /// requeues rather than propagating a panic into the reconcile loop.
-pub fn error_policy(_config: Arc<WeeboSiConfig>, error: &Error, _ctx: Arc<Ctx>) -> Action {
-    eprintln!("ERROR weebo-si-controller: {error}");
-    Action::requeue(Duration::from_secs(30))
+pub fn error_policy(object: Arc<WeeboSiConfig>, error: &Error, ctx: Arc<Ctx>) -> Action {
+    events::retry(
+        &ctx.recorder,
+        object.as_ref(),
+        ReasonCode::ConfigReconcileFailed,
+        error,
+    )
 }

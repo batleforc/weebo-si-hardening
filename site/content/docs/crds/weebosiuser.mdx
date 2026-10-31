@@ -1,0 +1,57 @@
+---
+title: WeeboSiUser
+description: spec of the WeeboSiUser CRD.
+full: true
+---
+
+- **API version:** `hardening.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** `wsuser`
+- **Guide:** [Teams and users](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/teams-and-users.md)
+
+`spec` of the `WeeboSiUser` CRD.
+
+## Example
+
+```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiUser
+metadata:
+  name: my-user
+spec:
+  username: alice
+```
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `active` | `boolean` | no | `true` | `false` suspends provisioning without deleting anything: the `AuthentikUser` is written with `isActive: false` and the application is left alone. |
+| [`authentik`](#spec.authentik) | `object` | no |  | The identity provider half. |
+| [`che`](#spec.che) | `object` | no |  | The workspace half. |
+| `displayName` | `string` | no |  | Passed to Authentik as `name`. Defaults to the username. |
+| `email` | `string` | no |  | Required when `authentik.mode` is not `Off`, because `AuthentikUser` requires it. |
+| `team` | `string` | no |  | The `WeeboSiTeam` this person belongs to. Empty is legal and reported: a person with no team has no entitlement and no workspace, which is a person who is not finished rather than an error. |
+| `username` | `string` | yes |  | The Kubernetes identity. Two objects claiming one username is a violation on both — an identity resolving to two sets of entitlements has no correct reading. |
+
+### `spec.authentik` [#spec.authentik]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `groupRefs` | `string[]` | no | `[]` | Groups this person gets **in addition** to their team's. Every entry is checked against `spec.features.identity.authentik.allowedGroupRefs`. |
+| `mode` | `string` | yes |  | Required when the block is present, per the chassis rule: a behaviour nobody wrote down does not run.<br /><br />Values: `"Off"`, `"Ensure"` |
+| `name` | `string` | no |  | The `AuthentikUser`'s own name. Defaults to this object's `metadata.name`. |
+
+### `spec.che` [#spec.che]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `mode` | `string` | yes |  | Required when the block is present.<br /><br />Values: `"Off"`, `"Ensure"` |
+| `namespace` | `string` | no |  | Overrides the namespace the team's `destination.namespace` template renders to. The override is what `{USER_NAMESPACE}` binds to everywhere else, so one field moves the whole application. |
+| `values` | `object` | no |  | Helm values deep-merged **over** the team's. A person narrows or tunes; the team's block is what they start from. |
+
+## Build a manifest
+
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
+
+<CrdForm kind="WeeboSiUser" />

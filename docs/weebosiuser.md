@@ -23,7 +23,7 @@ weebo-si-operator crd weebosiusers
 kubectl explain weebosiuser.spec --recursive
 ```
 
-To build one without hand-writing YAML, the [config generator](https://batleforc.github.io/weebo-si-hardening/#WeeboSiUser) renders a form
+To build one without hand-writing YAML, the [documentation site](https://batleforc.github.io/weebo-si-hardening/docs/crds/weebosiuser) renders a form
 from this same schema, validates as you type and prints the object.
 
 **A `WeeboSiUser` is admin-only, like a team.** Whoever may write one decides which team somebody

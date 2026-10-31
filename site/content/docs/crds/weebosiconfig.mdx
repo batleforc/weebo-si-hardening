@@ -1,0 +1,533 @@
+---
+title: WeeboSiConfig
+description: spec of the WeeboSiConfig CRD.
+full: true
+---
+
+- **API version:** `hardening.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** none
+- **Guide:** [The configuration reference](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/weebosiconfig.md)
+
+`spec` of the `WeeboSiConfig` CRD.
+
+## Example
+
+```yaml
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiConfig
+metadata:
+  name: my-config
+spec:
+  features:
+    dwocPin:
+      mode: DryRun
+      catalog:
+        - key: baseline
+          name: weebo-hardened-config
+          namespace: eclipse-che
+      default: baseline
+```
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`features`](#spec.features) | `object` | no | `{}` | One optional field per registered feature.<br /><br />`spec.teams` used to sit beside this and does not any more: RFC 0011 moved teams to their own `WeeboSiTeam` objects, and removed the field rather than deprecating it. A manifest still carrying it is pruned by the API server, which reads as "my teams vanished" — the loud failure a hard cut should have. |
+
+### `spec.features` [#spec.features]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`dwocPin`](#spec.features.dwocPin) | `object` | no |  | `spec.features.dwocPin`. |
+| [`endpointAuth`](#spec.features.endpointAuth) | `object` | no |  | `spec.features.endpointAuth`, per RFC 0009. |
+| [`identity`](#spec.features.identity) | `object` | no |  | `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems other than this cluster's own, and the only one with allow-lists of its own. |
+| [`imagePolicy`](#spec.features.imagePolicy) | `object` | no |  | `spec.features.imagePolicy`, per RFC 0005. |
+| [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | `spec.features.kubearmorPolicy`, per RFC 0006. |
+| [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | `spec.features.networkProfiles`, per RFC 0004. |
+| [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
+| [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
+
+### `spec.features.dwocPin` [#spec.features.dwocPin]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.dwocPin.catalog) | `object[]` | yes |  | Every DWOC a workspace is permitted to run with. |
+| `default` | `string` | yes |  | The entry for a namespace belonging to no team. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.dwocPin.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/dwoc","onUnknownKey":"Default"}` | The namespace annotation naming a catalogue key. |
+| [`namespaceSelector`](#spec.features.dwocPin.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| `onMissingTarget` | `string` | no | `"Skip"` | What to do when the resolved entry does not point at a live DWOC.<br /><br />Values: `"Skip"`, `"Deny"` |
+
+### `spec.features.dwocPin.catalog[]` [#spec.features.dwocPin.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an annotation, or a resolved decision names. |
+| `name` | `string` | yes |  | The `DevWorkspaceOperatorConfig`'s name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.dwocPin.namespaceSelection` [#spec.features.dwocPin.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/dwoc"` | Namespace annotation naming a catalogue key. The empty string disables namespace selection entirely. |
+| `onUnknownKey` | `string` | no | `"Default"` | What to do when that annotation names a key the namespace cannot reach.<br /><br />Values: `"Default"`, `"Deny"` |
+
+### `spec.features.dwocPin.namespaceSelector` [#spec.features.dwocPin.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.dwocPin.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.dwocPin.namespaceSelector.matchExpressions[]` [#spec.features.dwocPin.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.endpointAuth` [#spec.features.endpointAuth]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `breakGlassIdentities` | `string[]` | no | `[]` | Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
+| [`catalog`](#spec.features.endpointAuth.catalog) | `object[]` | yes |  | The catalogue of access profiles. |
+| `default` | `string` | yes |  | The key a namespace belonging to no team resolves to. |
+| [`endpointSelection`](#spec.features.endpointAuth.endpointSelection) | `object` | no | `{"annotation":"hardening.weebo.io/access","onUnknownKey":"Default"}` | How an endpoint names its key. |
+| [`gateway`](#spec.features.endpointAuth.gateway) | `object` | yes |  | Where the gateway is and which router attaches to it. |
+| [`hosts`](#spec.features.endpointAuth.hosts) | `object` | yes |  | Which hosts this feature governs. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.endpointAuth.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| [`overrides`](#spec.features.endpointAuth.overrides) | `object[]` | no | `[]` | Ordered, first match wins; may only narrow. |
+| [`owner`](#spec.features.endpointAuth.owner) | `object` | yes |  | How a namespace names its owner, and which identity DevWorkspace Operator writes as. |
+| [`selfOrigin`](#spec.features.endpointAuth.selfOrigin) | `object` | no | `{"podNetwork":"Auto","serviceAccountToken":true}` | Whether, and how, a workspace may prove it is itself. |
+
+### `spec.features.endpointAuth.catalog[]` [#spec.features.endpointAuth.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `anonymous` | `boolean` | no | `false` | No authentication at all. `delegation` is rejected on an anonymous entry. |
+| `delegation` | `string[]` | no | `[]` | Who else, besides the owner, this profile lets in.<br /><br />Values: `"Team"`, `"UsersAndGroups"` |
+| `key` | `string` | yes |  | The key a grant, an annotation or a path rule names. |
+
+### `spec.features.endpointAuth.endpointSelection` [#spec.features.endpointAuth.endpointSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | yes |  | The annotation DevWorkspace Operator copies from the devfile endpoint onto the routing object. |
+| `onUnknownKey` | `string` | yes |  | RFC 0002 semantics for a key the catalogue does not define.<br /><br />Values: `"Default"`, `"Deny"` |
+
+### `spec.features.endpointAuth.gateway` [#spec.features.endpointAuth.gateway]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedMiddlewares` | `string[]` | no | `[]` | Traefik only: middleware names an `Ingress` may carry **after** ours. |
+| `clusterDomain` | `string` | no | `"cluster.local"` | The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.<br /><br />Qualified rather than left to the search path because not every router resolves through it: a proxy with its own resolver applies no search domains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`. |
+| [`custom`](#spec.features.endpointAuth.gateway.custom) | `object` | no |  | `Custom` only: the annotations this cluster's controller wants, and the keys the template declares it owns. |
+| `dialect` | `string` | yes |  | Which router this cluster runs.<br /><br />Values: `"Traefik"`, `"HaproxyIngress"`, `"OpenShiftRoute"`, `"Custom"` |
+| `enforcement` | `string` | no | `"Enforce"` | Whether the gate's own verdict is answered or only counted.<br /><br />Values: `"Observe"`, `"Enforce"` |
+| `externalUrl` | `string` | yes |  | Where a browser is sent to sign in. |
+| `haproxyPrerequisite` | `boolean` | no | `false` | `HaproxyIngress` only: the admin asserts that this cluster's haproxy-ingress controller carries the `config-frontend` prerequisite.<br /><br />**Why this is an assertion and not a check.** That controller builds its auth request by copying the *caller's* headers onto a fixed path, so on a default install the gate is handed no host and no path, a caller can state the `X-Forwarded-Host` it is judged against, and a caller's own `X-Auth-Request-User` reaches the application on any allow the gate does not put a name on. Seven lines in the controller's own ConfigMap close all three — and an annotation cannot, because a per-ingress `config-backend` snippet is emitted *after* the auth call and so rewrites what the application is handed rather than what the gate is asked. The lines therefore belong to whoever installed the controller, which is nobody this operator can write to, own, or pin with `policy-guard`.<br /><br />Nothing can verify it afterwards either: the header a controller sets and the header a caller sends are the same header, with nothing left to compare against. So this is the `Custom` dialect's bargain in a field — enabling the dialect *is* the assertion — and leaving it `false` raises `Degraded` with the reason. The gate still attaches, because a gate a knowing attacker can bypass is better than the endpoint being open to everyone.<br /><br />The seven lines are in `docs/bricks/endpoint-gateway.md`, under *Ground truth*. |
+| [`service`](#spec.features.endpointAuth.gateway.service) | `object` | yes |  | The gateway's in-cluster `Service`. |
+
+### `spec.features.endpointAuth.gateway.custom` [#spec.features.endpointAuth.gateway.custom]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotations` | `map[string]` | yes |  | The annotations to write. `${gateway_url}`, `${gateway_external_url}` and `${middleware}` are substituted. |
+| `managedKeys` | `string[]` | no | `[]` | The annotation keys this template owns, declared rather than discovered: the guard pins them by value and cannot read them out of a rendered string. A key written but not declared is a configuration violation, not an unguarded annotation. |
+
+### `spec.features.endpointAuth.gateway.service` [#spec.features.endpointAuth.gateway.service]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | Its name. |
+| `namespace` | `string` | yes |  | Its namespace. |
+| `port` | `integer` | yes |  | Its port.<br /><br />Constraints: `minimum: 0`, `maximum: 65535` |
+
+### `spec.features.endpointAuth.hosts` [#spec.features.endpointAuth.hosts]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `exclude` | `string[]` | no | `[]` | Hosts the gate never attaches to: the Che gateway's own, and the gateway's own. |
+| [`ownership`](#spec.features.endpointAuth.hosts.ownership) | `object[]` | no | `[]` | How a host names the user who owns it — first match wins. |
+| `suffix` | `string` | yes |  | The only suffix this feature governs. Must start with a dot. |
+
+### `spec.features.endpointAuth.hosts.ownership[]` [#spec.features.endpointAuth.hosts.ownership]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `regex` | `string` | no |  | An anchored regex with a named `user` capture, for a naming scheme no template describes. |
+| `template` | `string` | no |  | A template over `{user}`, `{workspace}` and `{endpoint}`, matched against the host with the suffix removed. `{user}` is the capture that matters; the others are wildcards that may not contain a dot. |
+
+### `spec.features.endpointAuth.namespaceSelector` [#spec.features.endpointAuth.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.endpointAuth.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.endpointAuth.namespaceSelector.matchExpressions[]` [#spec.features.endpointAuth.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.endpointAuth.overrides[]` [#spec.features.endpointAuth.overrides]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowed` | `string[]` | no |  | Keys this user may reach, intersected with the team's. |
+| `default` | `string` | no |  | A default of its own, which must survive the intersection like any other key. |
+| `delegation` | `string[]` | no |  | A delegation ceiling. `Some([])` is the hard form: this user may not share an endpoint at all, whichever catalogue key they reach.<br /><br />Values: `"Team"`, `"UsersAndGroups"` |
+| [`match`](#spec.features.endpointAuth.overrides.match) | `object` | yes |  | Who it applies to. |
+
+### `spec.features.endpointAuth.overrides[].match` [#spec.features.endpointAuth.overrides.match]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`namespaceSelector`](#spec.features.endpointAuth.overrides.match.namespaceSelector) | `object` | no |  | Namespaces, by label. |
+| `users` | `string[]` | no | `[]` | Usernames. `contractor-*` matches by prefix. |
+
+### `spec.features.endpointAuth.overrides[].match.namespaceSelector` [#spec.features.endpointAuth.overrides.match.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.endpointAuth.overrides.match.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.endpointAuth.overrides[].match.namespaceSelector.matchExpressions[]` [#spec.features.endpointAuth.overrides.match.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.endpointAuth.owner` [#spec.features.endpointAuth.owner]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `devworkspaceOperatorIdentity` | `string` | yes |  | The full `system:serviceaccount:<ns>:<name>` DevWorkspace Operator creates these objects as. Row 2 of the guard table is inert if this is wrong, and every workspace endpoint stops being created. |
+| `namespaceAnnotation` | `string` | yes |  | The namespace annotation Che writes the username into. |
+
+### `spec.features.endpointAuth.selfOrigin` [#spec.features.endpointAuth.selfOrigin]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `podNetwork` | `string` | no | `"Auto"` | Trust the client address the controller reported.<br /><br />Values: `"Auto"`, `"On"`, `"Off"` |
+| `serviceAccountToken` | `boolean` | no | `true` | Accept the workspace's own service-account token — the answer where the address does not survive the network path. |
+
+### `spec.features.identity` [#spec.features.identity]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`authentik`](#spec.features.identity.authentik) | `object` | no | `{"allowedGroupRefs":[]}` | The identity provider half. |
+| [`che`](#spec.features.identity.che) | `object` | no | `{"allowedProjects":[],"allowedRepoUrls":[],"applicationNamespace":"argocd"}` | The workspace half. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`. `DryRun` plans everything and writes nothing, which is the same computation with the write withheld.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+
+### `spec.features.identity.authentik` [#spec.features.identity.authentik]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedGroupRefs` | `string[]` | no | `[]` | Authentik group names a team or a person may request. `team-*` matches by prefix. Empty allows none, which is why a cluster that turns this feature on with no list provisions users with no group rather than users with every group. |
+
+### `spec.features.identity.che` [#spec.features.identity.che]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedProjects` | `string[]` | no | `[]` | Argo CD projects a team template may name. Empty allows none. |
+| `allowedRepoUrls` | `string[]` | no | `[]` | Chart or git repositories a team template may name. `https://charts.weebo.io/*` matches by prefix. Empty allows none. |
+| `applicationNamespace` | `string` | no | `"argocd"` | The one namespace `Application` objects are created in. One namespace is what keeps this operator's RBAC to one namespace, so it is a cluster-level field and never a team's. |
+
+### `spec.features.imagePolicy` [#spec.features.imagePolicy]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.imagePolicy.catalog) | `object[]` | yes |  | Every entry a workspace may be granted. Required, non-empty. |
+| `default` | `string[]` | yes |  | Applied to a namespace belonging to no team, and to a team with no grant. Required; may be empty, which means the platform set and nothing else. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.imagePolicy.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/image-policy"}` | The namespace annotation naming an entry key list. |
+| [`namespaceSelector`](#spec.features.imagePolicy.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhooks' own scope. |
+| `onNotGranted` | `string` | no | `"Default"` | What to do when a workspace names an entry key its team's grant does not allow.<br /><br />Reuses `dwoc-pin`'s [`OnUnknownKey`] rather than `network-profiles`' `OnNotGranted`: the two enums are the same `Default`/`Deny` pair, and a third copy of it would be a third place to keep in step. The field name is this RFC's own (`onNotGranted`), because that is the vocabulary its *Contract* table uses.<br /><br />Values: `"Default"`, `"Deny"` |
+| [`platform`](#spec.features.imagePolicy.platform) | `object` | no | `{"builtin":true,"extra":[]}` | The always-allowed platform pattern set. |
+| [`variables`](#spec.features.imagePolicy.variables) | `map[object]` | no | `{}` | Additional pattern variables beyond the two built in, name → binding. Declaring one is the opt-in to an annotation-sourced value, and to the RBAC dependency RFC 0005's *Security considerations* spends a section on. |
+| [`workspaceSelection`](#spec.features.imagePolicy.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/image-policy"}` | The devfile attribute naming an entry key list. |
+
+### `spec.features.imagePolicy.catalog[]` [#spec.features.imagePolicy.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or the top-level `default` names. |
+| `patterns` | `string[]` | yes |  | The image patterns this entry permits. Non-empty; parsed by `weebo-si-image-policy`, and held here as the text an admin wrote so the CRD stays readable by `kubectl` and GitOps. |
+
+### `spec.features.imagePolicy.namespaceSelection` [#spec.features.imagePolicy.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/image-policy"` | Namespace annotation naming a comma-separated entry key list. The empty string disables this selection step entirely. |
+
+### `spec.features.imagePolicy.namespaceSelector` [#spec.features.imagePolicy.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.imagePolicy.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.imagePolicy.namespaceSelector.matchExpressions[]` [#spec.features.imagePolicy.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.imagePolicy.platform` [#spec.features.imagePolicy.platform]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `builtin` | `boolean` | no | `true` | Whether the compiled-in platform patterns apply. The compiled-in list is explicitly **not** contract (RFC 0005's *Stability*) — it tracks Che and DevWorkspace Operator. |
+| `extra` | `string[]` | no | `[]` | Additional always-allowed patterns, for an admin who mirrors the platform images into their own registry. |
+
+### `spec.features.imagePolicy.variables[key]` [#spec.features.imagePolicy.variables]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `fromNamespaceAnnotation` | `string` | yes |  | The namespace annotation key this variable's value is read from. |
+
+### `spec.features.imagePolicy.workspaceSelection` [#spec.features.imagePolicy.workspaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `attribute` | `string` | no | `"hardening.weebo.io/image-policy"` | DevWorkspace attribute naming a comma-separated entry key list. The empty string disables this selection step entirely. |
+
+### `spec.features.kubearmorPolicy` [#spec.features.kubearmorPolicy]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `baseline` | `string` | yes |  | The profile applied to every workspace pod in scope, never negotiable.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`catalog`](#spec.features.kubearmorPolicy.catalog) | `object[]` | yes |  | Every runtime profile a workspace may be granted. |
+| [`enforcement`](#spec.features.kubearmorPolicy.enforcement) | `object` | no | `{"backend":"Auto","defaultPosture":{"capabilities":"Audit","file":"Audit","network":"Audit"}}` | The enforcement engine and the default posture written onto namespaces in scope. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.kubearmorPolicy.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/kubearmor-policy"}` | The namespace annotation naming a runtime profile key list. |
+| [`namespaceSelector`](#spec.features.kubearmorPolicy.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
+| `onNotGranted` | `string` | no | `"Default"` | What to do when a workspace names a key its team's grant does not allow.<br /><br />Values: `"Default"`, `"Deny"` |
+| [`workspaceSelection`](#spec.features.kubearmorPolicy.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/kubearmor-policy"}` | The devfile attribute naming a runtime profile key list. |
+
+### `spec.features.kubearmorPolicy.catalog[]` [#spec.features.kubearmorPolicy.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`templateRef`](#spec.features.kubearmorPolicy.catalog.templateRef) | `object` | yes |  | The `KubeArmorPolicy` object this entry copies its rule content from. |
+
+### `spec.features.kubearmorPolicy.catalog[].templateRef` [#spec.features.kubearmorPolicy.catalog.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.kubearmorPolicy.enforcement` [#spec.features.kubearmorPolicy.enforcement]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | no | `"Auto"` | Which engine to write policy for.<br /><br />Values: `"Auto"`, `"KubeArmor"` |
+| [`defaultPosture`](#spec.features.kubearmorPolicy.enforcement.defaultPosture) | `object` | no | `{"capabilities":"Audit","file":"Audit","network":"Audit"}` | What happens in each rule domain when nothing matches. |
+
+### `spec.features.kubearmorPolicy.enforcement.defaultPosture` [#spec.features.kubearmorPolicy.enforcement.defaultPosture]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `capabilities` | `string` | no | `"Audit"` | Unmatched capability use.<br /><br />Values: `"Audit"`, `"Block"` |
+| `file` | `string` | no | `"Audit"` | Unmatched file *and process* operations.<br /><br />Values: `"Audit"`, `"Block"` |
+| `network` | `string` | no | `"Audit"` | Unmatched network operations.<br /><br />Values: `"Audit"`, `"Block"` |
+
+### `spec.features.kubearmorPolicy.namespaceSelection` [#spec.features.kubearmorPolicy.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/kubearmor-policy"` | Namespace annotation naming a comma-separated key list. The empty string disables this selection step entirely. |
+
+### `spec.features.kubearmorPolicy.namespaceSelector` [#spec.features.kubearmorPolicy.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.kubearmorPolicy.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.kubearmorPolicy.namespaceSelector.matchExpressions[]` [#spec.features.kubearmorPolicy.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.kubearmorPolicy.workspaceSelection` [#spec.features.kubearmorPolicy.workspaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `attribute` | `string` | no | `"hardening.weebo.io/kubearmor-policy"` | DevWorkspace attribute naming a comma-separated key list. The empty string disables this selection step entirely. |
+
+### `spec.features.networkProfiles` [#spec.features.networkProfiles]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `baseline` | `string` | yes |  | The profile applied to every namespace in scope, never negotiable.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`catalog`](#spec.features.networkProfiles.catalog) | `object[]` | yes |  | Every profile a workspace may be granted. |
+| [`enforcement`](#spec.features.networkProfiles.enforcement) | `object` | no | `{"backend":"Auto","canary":{"enabled":true,"intervalSeconds":300}}` | The enforcement backend and its canary. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.networkProfiles.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/network-profiles"}` | The namespace annotation naming a profile key list. |
+| [`namespaceSelector`](#spec.features.networkProfiles.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
+| `onNotGranted` | `string` | no | `"Default"` | What to do when a workspace names a profile key its team's grant does not allow.<br /><br />Values: `"Default"`, `"Deny"` |
+| [`workspaceSelection`](#spec.features.networkProfiles.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/network-profiles"}` | The devfile attribute naming a profile key list. |
+
+### `spec.features.networkProfiles.catalog[]` [#spec.features.networkProfiles.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| [`variants`](#spec.features.networkProfiles.catalog.variants) | `object[]` | yes |  | This profile's variants, at most one per [`Backend`]. |
+
+### `spec.features.networkProfiles.catalog[].variants[]` [#spec.features.networkProfiles.catalog.variants]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | yes |  | Which dialect this variant is written in.<br /><br />Values: `"NetworkPolicy"`, `"Cilium"` |
+| [`templateRef`](#spec.features.networkProfiles.catalog.variants.templateRef) | `object` | yes |  | The template object this variant copies `policyTypes`/`ingress`/`egress` from. |
+
+### `spec.features.networkProfiles.catalog[].variants[].templateRef` [#spec.features.networkProfiles.catalog.variants.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.networkProfiles.enforcement` [#spec.features.networkProfiles.enforcement]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | no | `"Auto"` | Which policy dialect to write.<br /><br />Values: `"Auto"`, `"NetworkPolicy"`, `"Cilium"` |
+| [`canary`](#spec.features.networkProfiles.enforcement.canary) | `object` | no | `{"enabled":true,"intervalSeconds":300}` | The periodic enforcement probe. |
+
+### `spec.features.networkProfiles.enforcement.canary` [#spec.features.networkProfiles.enforcement.canary]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | yes |  | Whether the canary probe runs. |
+| `intervalSeconds` | `integer` | yes |  | How often the probe runs.<br /><br />Constraints: `minimum: 0` |
+
+### `spec.features.networkProfiles.namespaceSelection` [#spec.features.networkProfiles.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/network-profiles"` | Namespace annotation naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+
+### `spec.features.networkProfiles.namespaceSelector` [#spec.features.networkProfiles.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.networkProfiles.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.networkProfiles.namespaceSelector.matchExpressions[]` [#spec.features.networkProfiles.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.networkProfiles.workspaceSelection` [#spec.features.networkProfiles.workspaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `attribute` | `string` | no | `"hardening.weebo.io/network-profiles"` | DevWorkspace attribute naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+
+### `spec.features.policyGuard` [#spec.features.policyGuard]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedIdentities` | `string[]` | no | `[]` | Identities exempt from the guard's rules, in addition to the operator's own. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.policyGuard.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+
+### `spec.features.policyGuard.namespaceSelector` [#spec.features.policyGuard.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.policyGuard.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.policyGuard.namespaceSelector.matchExpressions[]` [#spec.features.policyGuard.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.registryConfig` [#spec.features.registryConfig]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.registryConfig.catalog) | `object[]` | yes |  | Every entry a namespace may be granted. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.registryConfig.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/registry-config"}` | The namespace annotation naming a registry key list. |
+| [`namespaceSelector`](#spec.features.registryConfig.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
+| `onNotGranted` | `string` | no | `"Default"` | What to do when a namespace names a key its team's grant does not allow.<br /><br />Values: `"Default"`, `"Deny"` |
+
+### `spec.features.registryConfig.catalog[]` [#spec.features.registryConfig.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ecosystem` | `string` | no | `"Other"` | Metric label and CLI grouping only — never a branch.<br /><br />Values: `"Npm"`, `"Pypi"`, `"Cargo"`, `"Go"`, `"Maven"`, `"RubyGems"`, `"Composer"`, `"Conda"`, `"Terraform"`, `"OpenVsx"`, `"Other"` |
+| `key` | `string` | yes |  | The short identifier a grant or a namespace annotation names. |
+| [`sources`](#spec.features.registryConfig.catalog.sources) | `object[]` | yes |  | The objects this entry expands into: at least one, at most one per `{kind, name, namespace}` triple. |
+
+### `spec.features.registryConfig.catalog[].sources[]` [#spec.features.registryConfig.catalog.sources]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | Which kind of object `template_ref` names.<br /><br />Values: `"ConfigMap"`, `"Secret"` |
+| [`templateRef`](#spec.features.registryConfig.catalog.sources.templateRef) | `object` | yes |  | The object an admin authored, copied verbatim into each granted namespace. |
+
+### `spec.features.registryConfig.catalog[].sources[].templateRef` [#spec.features.registryConfig.catalog.sources.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.registryConfig.namespaceSelection` [#spec.features.registryConfig.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/registry-config"` | Namespace annotation naming a comma-separated registry key list. The empty string disables this selection step entirely, leaving the grant's `default` as the only source. |
+
+### `spec.features.registryConfig.namespaceSelector` [#spec.features.registryConfig.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.registryConfig.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.registryConfig.namespaceSelector.matchExpressions[]` [#spec.features.registryConfig.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+## Build a manifest
+
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
+
+<CrdForm kind="WeeboSiConfig" />

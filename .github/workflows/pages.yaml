@@ -1,16 +1,15 @@
 name: Pages
-# Publishes the config generator (docs/generator/) to GitHub Pages: a static page, a form per CRD
-# built from the operator's schema. The repository's Pages source must be set to "GitHub Actions"
-# (Settings › Pages) once, by hand. Nothing is built here — the page is its own files — but the
-# schemas it carries are checked against the chart's CRDs first, so a stale form is never
-# published.
+# Publishes the documentation site (site/, RFC 0012) to GitHub Pages: a static export of a
+# Fumadocs site on @weebo/operator-docs — the CRD reference, form and IDE generated from the
+# chart's CRDs, and the pages pointing at docs/. The repository's Pages source must be set to
+# "GitHub Actions" (Settings › Pages) once, by hand. The CRD reference is checked against the
+# chart's CRDs first, so a stale page is never published.
 on:
   push:
     branches: ["main"]
     paths:
-      - "docs/generator/**"
+      - "site/**"
       - "charts/weebo-si-operator/crds/**"
-      - "scripts/docs-schemas.sh"
       - ".github/workflows/pages.yaml"
   workflow_dispatch:
 permissions:
@@ -22,17 +21,30 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    name: Package docs/generator
+    name: Build site/
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: docs/generator/schemas.js is not stale
-        run: ./scripts/docs-schemas.sh --check
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+      - run: npm ci --no-audit --no-fund
+      - name: The CRD reference is not stale
+        run: |
+          npm run gen:crds
+          git diff --exit-code -- content/docs/crds public/crd-schemas
+      # GitHub Pages serves the project under /weebo-si-hardening.
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_BASE_PATH: /weebo-si-hardening
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: docs/generator
+          path: site/out
 
   deploy:
     name: Deploy to GitHub Pages

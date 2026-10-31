@@ -83,6 +83,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,6 +135,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "async-trait"
+version = "0.1.92"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -239,6 +256,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64ct"
@@ -699,7 +722,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "axum",
- "base64",
+ "base64 0.22.1",
  "futures-util",
  "hyper",
  "hyper-util",
@@ -708,7 +731,7 @@ dependencies = [
  "kube",
  "prometheus",
  "rand 0.9.5",
- "reqwest",
+ "reqwest 0.12.28",
  "ring",
  "rustls",
  "serde",
@@ -845,6 +868,7 @@ checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -866,6 +890,17 @@ name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
 
 [[package]]
 name = "futures-io"
@@ -1196,7 +1231,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -1349,6 +1384,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1491,7 +1535,7 @@ version = "10.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hmac",
@@ -1515,7 +1559,7 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c6922f6afe80418dd6019818af5d0d34584c371780ff09b9752370c25b4abb"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "jiff",
  "schemars",
  "serde",
@@ -1541,7 +1585,7 @@ version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31e940a73033a7c5c7918b5ece7851d84571b58be25e937198da37fa13f116d3"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "either",
  "futures",
@@ -1602,21 +1646,6 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "kube-leader-election"
-version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c0fbeb1ff2aa855f0cab552655aa6e4a5ffc56aced22a81371bacd32fefcf8"
-dependencies = [
- "jiff",
- "k8s-openapi",
- "kube",
- "log",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1701,6 +1730,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1734,6 +1772,15 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "num-bigint"
@@ -1815,6 +1862,95 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "opentelemetry"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry",
+ "reqwest 0.13.5",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a"
+dependencies = [
+ "http",
+ "httpdate",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.5",
+ "thiserror 2.0.20",
+ "tokio",
+ "tonic",
+ "tonic-types",
+]
+
+[[package]]
+name = "opentelemetry-prometheus"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b52a5722eb64d198d6b6f1189e6b75a3c5ddfd224f48ede00c4330e0f11c66"
+dependencies = [
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prometheus",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1890,7 +2026,7 @@ version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "serde_core",
 ]
 
@@ -2096,6 +2232,38 @@ dependencies = [
  "parking_lot",
  "protobuf",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
+dependencies = [
+ "prost",
 ]
 
 [[package]]
@@ -2344,7 +2512,7 @@ version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-core",
@@ -2377,6 +2545,37 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "webpki-roots",
+]
+
+[[package]]
+name = "reqwest"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -2657,7 +2856,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser 0.0.7",
@@ -2751,7 +2950,7 @@ version = "2.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "659d74d982f3ee009c27f34a1fc84d84828095d58ea210ce31705833188c8e27"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "granit-parser 1.1.0",
  "indexmap",
  "itoa",
@@ -2782,6 +2981,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -2990,6 +3198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3082,6 +3299,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3097,6 +3325,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic"
+version = "0.14.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2cdfc673aabd30fe8fee92e65837b644c37c5d47f0f97ae6d5e0f1237d15e1b"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "h2",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-timeout",
+ "hyper-util",
+ "percent-encoding",
+ "pin-project",
+ "sync_wrapper",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "tonic-prost"
+version = "0.14.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eba464054e2226f182a34489b8b079bf4c6e3e7ab5fd7fc30e024f24aa92a484"
+dependencies = [
+ "bytes",
+ "prost",
+ "tonic",
+]
+
+[[package]]
+name = "tonic-types"
+version = "0.14.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccbb6c31deb8e99dcdf87df19c5289b7838a600da74a8224baa671e52fe7c5ad"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3104,7 +3382,9 @@ checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
 dependencies = [
  "futures-core",
  "futures-util",
+ "indexmap",
  "pin-project-lite",
+ "slab",
  "sync_wrapper",
  "tokio",
  "tokio-util",
@@ -3119,7 +3399,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bitflags 2.13.1",
  "bytes",
  "futures-util",
@@ -3176,6 +3456,65 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-opentelemetry"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe"
+dependencies = [
+ "js-sys",
+ "opentelemetry",
+ "smallvec",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "web-time",
+]
+
+[[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "serde",
+ "serde_json",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -3247,6 +3586,12 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "version_check"
@@ -3382,6 +3727,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-kit-api"
+version = "0.25.1"
+dependencies = [
+ "k8s-openapi",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "weebo-kit-application"
+version = "0.25.1"
+dependencies = [
+ "async-trait",
+ "k8s-openapi",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "weebo-kit-api",
+]
+
+[[package]]
+name = "weebo-kit-domain"
+version = "0.25.1"
+
+[[package]]
+name = "weebo-kit-runtime"
+version = "0.25.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "axum-server",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-prometheus",
+ "opentelemetry_sdk",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "weebo-kit-api",
+ "weebo-kit-application",
+ "weebo-kit-domain",
+]
+
+[[package]]
 name = "weebo-si-chassis"
 version = "0.1.0"
 dependencies = [
@@ -3395,17 +3794,19 @@ dependencies = [
  "futures-util",
  "k8s-openapi",
  "kube",
- "kube-leader-election",
+ "prometheus",
  "serde_json",
  "serde_yaml_bw",
  "tokio",
+ "tracing",
+ "weebo-kit-domain",
+ "weebo-kit-runtime",
  "weebo-si-chassis",
  "weebo-si-crd",
  "weebo-si-envtest-support",
  "weebo-si-identity",
  "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
- "weebo-si-network-profiles",
  "weebo-si-registry-config",
  "weebo-si-runtime",
 ]
@@ -3436,7 +3837,7 @@ dependencies = [
 name = "weebo-si-e2e"
 version = "0.1.0"
 dependencies = [
- "reqwest",
+ "reqwest 0.12.28",
  "rustls",
  "serde_json",
 ]
@@ -3452,11 +3853,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-endpoint-auth-adapters"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-server",
+ "futures-util",
+ "json-patch",
+ "jsonptr",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-endpoint-auth",
+ "weebo-si-envtest-support",
+ "weebo-si-kubearmor-policy-adapters",
+ "weebo-si-network-profiles",
+ "weebo-si-network-profiles-adapters",
+ "weebo-si-policy-guard",
+ "weebo-si-runtime",
+ "weebo-si-webhook",
+]
+
+[[package]]
 name = "weebo-si-envtest-support"
 version = "0.1.0"
 dependencies = [
  "kube",
- "reqwest",
+ "reqwest 0.12.28",
  "rustls",
  "secrecy",
  "tempfile",
@@ -3474,11 +3907,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-identity-adapters"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-identity",
+ "weebo-si-runtime",
+]
+
+[[package]]
 name = "weebo-si-image-policy"
 version = "0.1.0"
 dependencies = [
  "weebo-si-chassis",
  "weebo-si-crd",
+]
+
+[[package]]
+name = "weebo-si-image-policy-adapters"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "json-patch",
+ "jsonptr",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-image-policy",
+ "weebo-si-runtime",
+ "weebo-si-webhook",
 ]
 
 [[package]]
@@ -3491,12 +3971,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-kubearmor-policy-adapters"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-kubearmor-policy",
+ "weebo-si-network-profiles",
+ "weebo-si-runtime",
+]
+
+[[package]]
 name = "weebo-si-network-profiles"
 version = "0.1.0"
 dependencies = [
  "tokio",
  "weebo-si-chassis",
  "weebo-si-crd",
+]
+
+[[package]]
+name = "weebo-si-network-profiles-adapters"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-network-profiles",
+ "weebo-si-policy-guard",
+ "weebo-si-runtime",
 ]
 
 [[package]]
@@ -3512,16 +4038,28 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_bw",
+ "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "weebo-kit-runtime",
  "weebo-si-chassis",
  "weebo-si-controller",
  "weebo-si-crd",
  "weebo-si-dwoc-pin",
+ "weebo-si-endpoint-auth-adapters",
  "weebo-si-envtest-support",
+ "weebo-si-identity",
+ "weebo-si-identity-adapters",
  "weebo-si-image-policy",
+ "weebo-si-image-policy-adapters",
  "weebo-si-kubearmor-policy",
+ "weebo-si-kubearmor-policy-adapters",
  "weebo-si-network-profiles",
+ "weebo-si-network-profiles-adapters",
+ "weebo-si-policy-guard-adapters",
  "weebo-si-registry-config",
+ "weebo-si-registry-config-adapters",
  "weebo-si-runtime",
  "weebo-si-webhook",
 ]
@@ -3535,6 +4073,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-policy-guard-adapters"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "json-patch",
+ "jsonptr",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-policy-guard",
+ "weebo-si-registry-config",
+ "weebo-si-runtime",
+ "weebo-si-webhook",
+]
+
+[[package]]
 name = "weebo-si-registry-config"
 version = "0.1.0"
 dependencies = [
@@ -3544,7 +4108,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "weebo-si-runtime"
+name = "weebo-si-registry-config-adapters"
 version = "0.1.0"
 dependencies = [
  "futures-util",
@@ -3556,10 +4120,33 @@ dependencies = [
  "serde_json",
  "serde_yaml_bw",
  "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-network-profiles",
+ "weebo-si-registry-config",
+ "weebo-si-runtime",
+]
+
+[[package]]
+name = "weebo-si-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde_json",
+ "serde_yaml_bw",
+ "tokio",
+ "tracing",
+ "weebo-kit-runtime",
  "weebo-si-chassis",
  "weebo-si-crd",
  "weebo-si-envtest-support",
- "weebo-si-identity",
  "weebo-si-image-policy",
  "weebo-si-kubearmor-policy",
  "weebo-si-network-profiles",
@@ -3583,15 +4170,12 @@ dependencies = [
  "serde_yaml_bw",
  "tempfile",
  "tokio",
+ "tracing",
  "weebo-si-chassis",
  "weebo-si-crd",
  "weebo-si-dwoc-pin",
- "weebo-si-endpoint-auth",
  "weebo-si-envtest-support",
- "weebo-si-image-policy",
  "weebo-si-network-profiles",
- "weebo-si-policy-guard",
- "weebo-si-registry-config",
  "weebo-si-runtime",
 ]
 

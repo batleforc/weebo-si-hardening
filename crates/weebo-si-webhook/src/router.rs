@@ -48,11 +48,11 @@ fn log_admission(
         })
         .unwrap_or_else(|| "<unchanged>".to_string());
     match denial {
-        Some(reason) => println!(
-            "weebo-si-webhook: deny namespace={namespace} workspace={workspace} current={current} reason={reason}"
+        Some(reason) => tracing::info!(
+            "deny namespace={namespace} workspace={workspace} current={current} reason={reason}"
         ),
-        None => println!(
-            "weebo-si-webhook: allow namespace={namespace} workspace={workspace} current={current} target={target}"
+        None => tracing::info!(
+            "allow namespace={namespace} workspace={workspace} current={current} target={target}"
         ),
     }
 }

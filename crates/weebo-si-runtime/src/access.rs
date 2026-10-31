@@ -158,14 +158,14 @@ where
                 Err(err) => {
                     let elapsed = started.elapsed();
                     if elapsed.saturating_add(delay) > policy.budget {
-                        eprintln!(
-                            "ERROR weebo-si-operator: could not ask whether {verb} {what} is \
+                        tracing::error!(
+                            "could not ask whether {verb} {what} is \
                              allowed after {attempts} attempts over {elapsed:?} ({err}); giving up"
                         );
                         return Err(err);
                     }
-                    eprintln!(
-                        "WARN weebo-si-operator: could not ask whether {verb} {what} is allowed \
+                    tracing::warn!(
+                        "could not ask whether {verb} {what} is allowed \
                          ({err}); retrying in {delay:?}"
                     );
                     tokio::time::sleep(delay).await;

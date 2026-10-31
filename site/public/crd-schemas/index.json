@@ -1,0 +1,29 @@
+[
+  {
+    "kind": "WeeboSiConfig",
+    "singular": "weebosiconfig",
+    "scope": "Cluster",
+    "apiVersion": "hardening.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
+  },
+  {
+    "kind": "WeeboSiTeam",
+    "singular": "weebositeam",
+    "scope": "Cluster",
+    "apiVersion": "hardening.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
+  },
+  {
+    "kind": "WeeboSiUser",
+    "singular": "weebosiuser",
+    "scope": "Cluster",
+    "apiVersion": "hardening.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
+  }
+]

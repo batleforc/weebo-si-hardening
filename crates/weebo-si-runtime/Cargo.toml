@@ -9,19 +9,19 @@ repository.workspace = true
 
 [dependencies]
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
-weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
 weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy" }
-weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }
 prometheus = { workspace = true }
 futures-util = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
+# RFC 0012: watch failures feed the process's liveness; logs go through `tracing`.
+weebo-kit-runtime = { workspace = true }
+tracing = { workspace = true }
 
 [features]
 # Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).

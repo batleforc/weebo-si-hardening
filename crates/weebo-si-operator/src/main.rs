@@ -98,9 +98,9 @@ fn main() -> ExitCode {
         // because the questions it asks (a CRD, then every node's label) have no counterpart
         // on the network side.
         Some("backends") => match args.get(2).map(String::as_str) {
-            None => run_async(backends_cmd::run()),
+            None => run_admin(backends_cmd::run()),
             Some("kubearmor") => {
-                run_async(kubearmor_cmd::run(cli::has_flag(&args[3..], "--verbose")))
+                run_admin(kubearmor_cmd::run(cli::has_flag(&args[3..], "--verbose")))
             }
             Some(other) => {
                 eprintln!("weebo-si-operator: unrecognized backends target '{other}'");
@@ -108,10 +108,10 @@ fn main() -> ExitCode {
                 ExitCode::from(exit::USAGE)
             }
         },
-        Some("canary") => run_async(canary_cmd::run(&args[2..])),
-        Some("images") => run_async(images_cmd::run(&args[2..])),
-        Some("registry") => run_async(registry_cmd::run(&args[2..])),
-        Some("teams") => run_async(teams_cmd::run(&args[2..])),
+        Some("canary") => run_admin(canary_cmd::run(&args[2..])),
+        Some("images") => run_admin(images_cmd::run(&args[2..])),
+        Some("registry") => run_admin(registry_cmd::run(&args[2..])),
+        Some("teams") => run_admin(teams_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::from(exit::OK)
@@ -126,6 +126,20 @@ fn main() -> ExitCode {
             ExitCode::from(exit::USAGE)
         }
     }
+}
+
+/// An admin subcommand: run from a workstation, its stdout is its output. What the adapters it
+/// shares with the two roles log goes to stderr, `WARN` and up unless `RUST_LOG` says otherwise —
+/// not through the roles' telemetry, which writes to stdout.
+fn run_admin(future: impl std::future::Future<Output = Result<(), String>>) -> ExitCode {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .try_init();
+    run_async(future)
 }
 
 fn run_async(future: impl std::future::Future<Output = Result<(), String>>) -> ExitCode {

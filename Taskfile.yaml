@@ -21,11 +21,11 @@ tasks:
       - cog install-hook -a -o
 
   recu:
-    desc: "Regenerate everything derived from source: the RFC index, crd.yaml when its schema is staged, and the generator's schemas"
+    desc: "Regenerate everything derived from source: the RFC index, crd.yaml when its schema is staged, and the site's CRD reference"
     cmds:
       - task: rfc:index
       - task: crd:gen
-      - task: docs:schemas
+      - task: docs:gen
 
   lint:
     desc: "Format, lint and validate the repo (run by the pre-commit hook)"

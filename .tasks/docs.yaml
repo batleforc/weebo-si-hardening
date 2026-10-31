@@ -1,21 +1,47 @@
 version: "3"
 
+# The documentation site (site/, RFC 0012): a Fumadocs site on @weebo/operator-docs. The CRD
+# reference under site/content/docs/crds/ and site/public/crd-schemas/ is generated from the
+# chart's CRDs and committed, like the CRDs themselves.
+
+vars:
+  SITE_DIR: "{{.ROOT_DIR}}/site"
+
 tasks:
-  schemas:
-    desc: "Regenerate docs/generator/schemas.js (the config generator's CRD schemas) from charts/weebo-si-operator/crds/"
+  deps:
+    desc: "Install the documentation site's dependencies (npm ci in site/)"
+    dir: "{{.SITE_DIR}}"
     cmds:
-      - "{{.ROOT_DIR}}/scripts/docs-schemas.sh"
+      - npm ci --no-audit --no-fund
+
+  gen:
+    desc: "Regenerate the site's CRD reference from charts/weebo-si-operator/crds/ (skipped, with a note, before `task docs:deps`)"
+    dir: "{{.SITE_DIR}}"
+    cmds:
+      - |
+        if [ ! -d node_modules ]; then
+          echo "docs:gen skipped — run 'task docs:deps' once; CI checks the reference either way"
+          exit 0
+        fi
+        npm run --silent gen:crds
 
   check:
-    desc: "Validate docs/generator/schemas.js is not stale against the chart's CRDs (run by task lint)"
+    desc: "Fail if the site's CRD reference is stale against the chart's CRDs (run by task lint once site/ has its dependencies)"
+    dir: "{{.SITE_DIR}}"
     cmds:
-      - "{{.ROOT_DIR}}/scripts/docs-schemas.sh --check"
+      - task: gen
+      - git diff --exit-code -- content/docs/crds public/crd-schemas
 
-  generator:
-    desc: "Serve the config generator (docs/generator/) on http://127.0.0.1:{{.PORT}} — also opens fine straight from disk"
-    vars:
-      PORT: '{{.PORT | default "8765"}}'
-    dir: "{{.ROOT_DIR}}/docs/generator"
+  site:
+    desc: "Serve the documentation site on http://localhost:3000"
+    dir: "{{.SITE_DIR}}"
     cmds:
-      - echo "config generator on http://127.0.0.1:{{.PORT}}/"
-      - python3 -m http.server {{.PORT}} --bind 127.0.0.1
+      - npm run dev
+
+  build:
+    desc: "Lint, type-check and statically export the documentation site into site/out/"
+    dir: "{{.SITE_DIR}}"
+    cmds:
+      - npm run lint
+      - npm run types:check
+      - npm run build

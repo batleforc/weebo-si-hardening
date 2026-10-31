@@ -1,0 +1,97 @@
+{
+  "apiVersion": "hardening.weebo.io/v1alpha1",
+  "kind": "WeeboSiUser",
+  "scope": "Cluster",
+  "served": [
+    "v1alpha1"
+  ],
+  "description": "`spec` of the `WeeboSiUser` CRD.",
+  "properties": {
+    "active": {
+      "default": true,
+      "description": "`false` suspends provisioning without deleting anything: the `AuthentikUser` is written\nwith `isActive: false` and the application is left alone.",
+      "type": "boolean"
+    },
+    "authentik": {
+      "description": "The identity provider half.",
+      "nullable": true,
+      "properties": {
+        "groupRefs": {
+          "default": [],
+          "description": "Groups this person gets **in addition** to their team's. Every entry is checked against\n`spec.features.identity.authentik.allowedGroupRefs`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "Required when the block is present, per the chassis rule: a behaviour nobody wrote down\ndoes not run.",
+          "enum": [
+            "Off",
+            "Ensure"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "The `AuthentikUser`'s own name. Defaults to this object's `metadata.name`.",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "che": {
+      "description": "The workspace half.",
+      "nullable": true,
+      "properties": {
+        "mode": {
+          "description": "Required when the block is present.",
+          "enum": [
+            "Off",
+            "Ensure"
+          ],
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Overrides the namespace the team's `destination.namespace` template renders to. The\noverride is what `{USER_NAMESPACE}` binds to everywhere else, so one field moves the whole\napplication.",
+          "nullable": true,
+          "type": "string"
+        },
+        "values": {
+          "description": "Helm values deep-merged **over** the team's. A person narrows or tunes; the team's block\nis what they start from.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "displayName": {
+      "description": "Passed to Authentik as `name`. Defaults to the username.",
+      "nullable": true,
+      "type": "string"
+    },
+    "email": {
+      "description": "Required when `authentik.mode` is not `Off`, because `AuthentikUser` requires it.",
+      "nullable": true,
+      "type": "string"
+    },
+    "team": {
+      "description": "The `WeeboSiTeam` this person belongs to. Empty is legal and reported: a person with no\nteam has no entitlement and no workspace, which is a person who is not finished rather\nthan an error.",
+      "nullable": true,
+      "type": "string"
+    },
+    "username": {
+      "description": "The Kubernetes identity. Two objects claiming one username is a violation on both — an\nidentity resolving to two sets of entitlements has no correct reading.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "username"
+  ],
+  "type": "object"
+}

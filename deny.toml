@@ -60,3 +60,6 @@ deny = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# weebo-operator-kit is consumed as a git dependency pinned to a tag (RFC 0012), as every weebo
+# operator consumes it.
+allow-git = ["https://github.com/batleforc/weebo-operator-kit"]

@@ -1,0 +1,18 @@
+---
+title: The features
+description: Each feature, the field that switches it on, and where its runbook and design live.
+---
+
+| Feature | `spec.features.…` | What it does | Runbook | Design |
+| --- | --- | --- | --- | --- |
+| `dwoc-pin` | `dwocPin` | Pins every `DevWorkspace` to an admin-authored DevWorkspace Operator config | [operator](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/weebo-si-operator.md) | [RFC 0002](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0002-weebo-si-operator.md) |
+| `network-profiles` | `networkProfiles` | `NetworkPolicy`/`CiliumNetworkPolicy` baseline and granted profiles per workspace namespace | [network-profiles](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/network-profiles.md) | [RFC 0004](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0004-network-profiles.md) |
+| `policy-guard` | `policyGuard` | Refuses anyone but the operator a write to the policies it owns | [network-profiles](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/network-profiles.md) | [RFC 0008](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0008-policy-guard-coverage.md) |
+| `image-policy` | `imagePolicy` | Which container images a workspace may run, per team | [image-policy](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/image-policy.md) | [RFC 0005](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0005-image-policy.md) |
+| `kubearmor-policy` | `kubearmorPolicy` | What the process inside the image may do, through KubeArmor | [kubearmor-policy](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/kubearmor-policy.md) | [RFC 0006](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0006-kubearmor-policy.md) |
+| `registry-config` | `registryConfig` | Package-manager configuration copied into every workspace namespace of a team | [registry-config](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/registry-config.md) | [RFC 0007](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0007-registry-config.md) |
+| `endpoint-auth` | `endpointAuth` | Who may reach a workspace endpoint on its own FQDN | [endpoint-gateway](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/endpoint-gateway.md) | [RFC 0009](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0009-endpoint-auth.md) |
+| `identity` | `identity` | The Authentik account and Argo CD application a `WeeboSiUser` maps to | [teams and users](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/teams-and-users.md) | [RFC 0011](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0011-teams-and-users.md) |
+
+Every field of every feature, with its default and what a wrong value does:
+[`docs/weebosiconfig.md`](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/weebosiconfig.md).

@@ -92,7 +92,8 @@ jobs:
       # 0009's — ran locally and never in CI. A suite CI does not run is a suite that is already
       # broken and nobody knows it, which is worse than not having written it.
       #
-      # The list is five now (RFC 0009's `OpenShiftRoute` admission tier joined it), and it is
+      # The list is seven now (RFC 0012 moved the multi-feature admission and controller suites
+      # next to the composition root, as `admission_envtest` and `controller_envtest`), and it is
       # still two lists that have to be edited together — see docs/ci.md, which says so about
       # the last time they drifted.
       #
@@ -100,7 +101,7 @@ jobs:
       # memory footprint for no wall-clock gain.
       - name: Run the envtest suites
         run: |
-          for suite in envtest kubearmor_envtest registry_envtest endpoint_auth_envtest openshift_envtest; do
+          for suite in envtest admission_envtest controller_envtest kubearmor_envtest registry_envtest endpoint_auth_envtest openshift_envtest; do
             echo "::group::$suite"
             cargo test --workspace --features envtest --test "$suite" --locked -- --test-threads=1
             echo "::endgroup::"

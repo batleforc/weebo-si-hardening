@@ -33,8 +33,15 @@ use weebo_si_network_profiles::Capabilities;
 use weebo_si_network_profiles::resolve_backend;
 
 use crate::dwoc_store::KubeDwocStore;
-use crate::network_metrics::backend_label;
 use crate::ns_store::KubeNsStore;
+
+/// The `backend` label — the enum's own name, matching `hardening.weebo.io/backend`'s value.
+pub fn backend_label(backend: Backend) -> &'static str {
+    match backend {
+        Backend::NetworkPolicy => "NetworkPolicy",
+        Backend::Cilium => "Cilium",
+    }
+}
 
 /// The default `namespaceSelection.annotation`, used until (and unless) a config overrides it.
 pub const DEFAULT_ANNOTATION: &str = "hardening.weebo.io/dwoc";
@@ -91,7 +98,7 @@ impl KubeConfigStore {
     /// sync here is visible there without either polling the other. `dwoc_catalog` is used only
     /// to compute the `weebo_si_dwoc_pin_catalog_entries` gauge. `capabilities` resolves
     /// `networkProfiles.enforcement.backend` on every sync — a snapshot from one discovery run
-    /// at boot, per [`crate::kube_capabilities::KubeCapabilities`]'s own documented
+    /// at boot, per `weebo_si_network_profiles_adapters::KubeCapabilities`'s own documented
     /// simplification, not re-run here.
     #[allow(
         clippy::too_many_arguments,
@@ -193,7 +200,7 @@ impl KubeConfigStore {
                             identity_changes_for_task.send_replace(());
                         }
                     }
-                    Some(Err(_)) => {}
+                    Some(Err(err)) => crate::watch::report("weebosiconfigs", &err),
                     None => break,
                 }
             }

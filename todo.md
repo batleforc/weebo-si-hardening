@@ -115,8 +115,8 @@ Legend: `[ ]` open · `[x]` done · `[~]` deliberately deferred (reason inline)
   → Containerfiles on `rust:1.98.1-alpine3.24@sha256:…`; helm, markdownlint-cli2, cspell, semgrep, cargo-cyclonedx pinned.
 - [x] **M11 — downloads in CI/tasks not checksum-verified.**
   → envtest (SHA-512) and Traefik (SHA-256) tarballs verified in CI; local task verifies too.
-- [~] **M12 — readiness never un-marked** when a watch fails permanently.
-  → Deferred: un-marking readiness needs per-reflector health plumbing through every store; a watch that loses its grant keeps retrying with backoff and logs every failure. Shutdown now un-marks readiness (webhook), which was the case that dropped traffic.
+- [x] **M12 — readiness never un-marked** when a watch fails permanently.
+  → RFC 0012: every store drives its watch through `weebo_si_runtime::watch`, which reports each error to `weebo-kit-runtime`'s `Health`; a watch failing for 5 minutes fails `/livez` and the kubelet restarts the pod (liveness, not readiness: a restart is the remedy, and dropping a `Fail` webhook out of its Service would refuse every write it covers). Shutdown still un-marks readiness.
 
 ## Low
 
@@ -128,8 +128,8 @@ Legend: `[ ]` open · `[x]` done · `[~]` deliberately deferred (reason inline)
   → Only `__weebo_grant` is removed from the query.
 - [x] **L4 — passwd-append: login-name collision appends a duplicate name.**
   → Name taken by another UID → refuse with WARN (exit 0, exit 3 under `--strict`); passwd now scanned as bytes, so non-UTF-8 GECOS no longer exits 1.
-- [~] **L5 — reconcile error policy retries at a flat 30 s.**
-  → Deferred: flat 30 s per-object requeue is bounded load (kube-runtime de-duplicates the queue); exponential backoff is an improvement, not a production risk.
+- [x] **L5 — reconcile error policy retries at a flat 30 s.**
+  → RFC 0012: every loop's error policy is `weebo_si_controller::events::retry` — `weebo-kit-runtime`'s `retry_after_error`, backing off 30 s → 5 min per object while it keeps failing, reset by a successful pass, and publishing a `Warning` Event on the object.
 - [x] **L6 — `task ci:image` cannot build `crates/weebo-si-operator`; local tasks lack `--locked`.**
   → `task ci:image` finds `bins/` or `crates/`; `--locked` on local cargo tasks.
 - [x] **L7 — `render.rs` treats a `null` parent as present** (unverified).

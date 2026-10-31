@@ -18,6 +18,14 @@ weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy" }
 weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
 weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
 weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
+# RFC 0012: one adapters crate per feature — the composition root calls each one's functions.
+weebo-si-network-profiles-adapters = { version = "0.1.0", path = "../weebo-si-network-profiles-adapters" }
+weebo-si-kubearmor-policy-adapters = { version = "0.1.0", path = "../weebo-si-kubearmor-policy-adapters" }
+weebo-si-registry-config-adapters = { version = "0.1.0", path = "../weebo-si-registry-config-adapters" }
+weebo-si-image-policy-adapters = { version = "0.1.0", path = "../weebo-si-image-policy-adapters" }
+weebo-si-policy-guard-adapters = { version = "0.1.0", path = "../weebo-si-policy-guard-adapters" }
+weebo-si-endpoint-auth-adapters = { version = "0.1.0", path = "../weebo-si-endpoint-auth-adapters" }
+weebo-si-identity-adapters = { version = "0.1.0", path = "../weebo-si-identity-adapters" }
 # `client` alone builds no TLS backend at all (kube-client's own `default` feature bundles
 # `ring` for exactly this reason, but the workspace disables kube's default features so every
 # crate opts in explicitly) — without `rustls-tls` + `ring`, `Client::try_default()` fails at
@@ -30,11 +38,14 @@ kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
-axum-server = { workspace = true }
 prometheus = { workspace = true }
 serde_yaml_bw = { workspace = true }
 serde_json = { workspace = true }
 rustls = { workspace = true }
+# RFC 0012: telemetry, health, shutdown, the webhook server.
+weebo-kit-runtime = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]
 # Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
@@ -42,9 +53,19 @@ envtest = []
 
 [dev-dependencies]
 weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
-kube = { workspace = true, features = ["client", "rustls-tls", "ring"] }
+# `admission_envtest` and `controller_envtest` drive several features' adapters together against
+# one apiserver, so they live here, next to the composition root that links them all (RFC 0012).
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+weebo-si-identity = { version = "0.1.0", path = "../weebo-si-identity", features = ["testing"] }
+weebo-si-kubearmor-policy = { version = "0.1.0", path = "../weebo-si-kubearmor-policy", features = ["testing"] }
+weebo-si-registry-config = { version = "0.1.0", path = "../weebo-si-registry-config", features = ["testing"] }
+weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles", features = ["testing"] }
+weebo-si-image-policy = { version = "0.1.0", path = "../weebo-si-image-policy", features = ["testing"] }
+kube = { workspace = true, features = ["client", "runtime", "admission", "rustls-tls", "ring"] }
 k8s-openapi = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+axum-server = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_bw = { workspace = true }

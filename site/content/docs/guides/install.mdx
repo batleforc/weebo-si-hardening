@@ -1,0 +1,31 @@
+---
+title: Install via Helm
+description: The chart, its prerequisites, and the state a fresh install is left in.
+---
+
+The chart is the one supported install path, published on every release as
+`oci://ghcr.io/batleforc/charts/weebo-si-operator`.
+
+```bash
+kubectl create namespace weebo-si-hardening
+kubectl label namespace weebo-si-hardening hardening.weebo.io/exclude=true
+helm install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
+  --version <x.y.z> -n weebo-si-hardening --set namespace.create=false \
+  --set certificates.provider=cert-manager   # or openshift, or none
+```
+
+The namespace is created and labelled first, so the operator's own pods are
+never admitted through its own webhook.
+
+<Callout type="warn">
+  Every webhook of the DevWorkspace path is `failurePolicy: Fail`: while the
+  webhook is down, no workspace starts. Keep the chart's two replicas and
+  its `PodDisruptionBudget`s. The break-glass is deleting the webhook
+  configuration — see the operator page's *Rollback*.
+</Callout>
+
+With no `WeeboSiConfig` yet, every feature is `Off` and every request
+round-trips through the webhook unchanged — the state to leave a fresh
+install in. The five-step rollout, the rollback levels and the install
+checklist are in the operator's runbook:
+[`docs/bricks/weebo-si-operator.md`](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/weebo-si-operator.md).

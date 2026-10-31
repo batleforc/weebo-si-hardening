@@ -108,6 +108,18 @@ kube-leader-election = "0.44"
 # Driving kube-runtime's reflector streams (weebo-si-runtime's watch-backed caches).
 futures-util = "0.3"
 
+# The plumbing every weebo operator shares (RFC 0012): telemetry, health, shutdown, the TLS
+# webhook server, leader election, requeue and Events. Pinned by tag; a kit release is a
+# dependency bump, reviewed as one. Keep `kube` and `k8s-openapi` on the kit's versions, or two
+# copies get linked.
+weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.25.1", version = "0.25.1" }
+# The `Reason` trait and `reason_codes!`: what the kit's Events and retry policy take.
+weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.25.1", version = "0.25.1" }
+# What the kit's telemetry installs: the `tracing` macros every role logs through.
+tracing = "0.1"
+# The admin subcommands' own subscriber: warnings to stderr, so stdout stays their output.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
+
 # `endpoint-gateway`'s sealed cookies (RFC 0009's *Two cookies, on purpose*). AES-256-GCM from
 # RustCrypto: pure Rust, no C toolchain, and an AEAD rather than a signature because a session
 # cookie carries claims that are the identity provider's business and not the browser's.
@@ -166,3 +178,12 @@ expect_used = "warn"
 panic = "deny"
 todo = "warn"
 unimplemented = "deny"
+
+# TEMPORARY — RFC 0012. The kit's `webhook_server::spawn_with` and `controller::reconciled` are
+# not released yet: build against the sibling checkout until weebo-operator-kit v0.26.0 is
+# tagged, then bump `weebo-kit-runtime` above to that tag and delete this section. Never pushed
+# as is.
+[patch."https://github.com/batleforc/weebo-operator-kit"]
+weebo-kit-runtime = { path = "../operator/weebo-operator-kit/crates/weebo-kit-runtime" }
+weebo-kit-domain = { path = "../operator/weebo-operator-kit/crates/weebo-kit-domain" }
+weebo-kit-api = { path = "../operator/weebo-operator-kit/crates/weebo-kit-api" }

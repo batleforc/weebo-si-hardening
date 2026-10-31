@@ -1,0 +1,22 @@
+---
+title: Observability
+description: Logs, probes, Events and metrics of both roles.
+---
+
+Both roles run on [`weebo-operator-kit`](https://batleforc.github.io/weebo-operator-kit/)'s
+runtime ([RFC 0012](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0012-operator-kit-migration.md)).
+
+- **Logs** — `tracing`, one line per decision, never the admitted object.
+  `LOG_FORMAT=json` for a log pipeline, `RUST_LOG` for the level,
+  `OTEL_EXPORTER_OTLP_ENDPOINT` for OTLP traces.
+- **Probes** on `:8081` — `/readyz` (caches synced, not shutting down),
+  `/livez` (no watch failing for more than 5 minutes), `/healthz` (an alias
+  of `/readyz`).
+- **Events** — a failed reconcile pass publishes a `Warning` Event on the
+  object it was about, and backs off 30 s → 5 min.
+- **Metrics** — Prometheus on `:8081/metrics`; the series and the alerts to
+  wire are in each runbook's *Observability* section.
+
+```console
+kubectl get events -A --field-selector reportingComponent=weebo-si-operator
+```

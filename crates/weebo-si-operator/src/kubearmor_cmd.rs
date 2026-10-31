@@ -12,7 +12,7 @@ use kube::api::{Api, ListParams};
 use kube::{Client, ResourceExt};
 use weebo_si_crd::{KUBEARMOR_ENFORCER_LABEL, RuntimeBackend};
 use weebo_si_kubearmor_policy::Capabilities;
-use weebo_si_runtime::KubeArmorCapabilities;
+use weebo_si_kubearmor_policy_adapters::KubeArmorCapabilities;
 
 /// Exit code when the cluster does not serve the CRD at all — distinct from a connection failure,
 /// so a pipeline can tell "KubeArmor is not installed here" from "I could not ask".
