@@ -10,7 +10,7 @@ name: Runtime matrix
 #          namespace at Pod Security `baseline` and once at `privileged`, so an admission refusal
 #          and a runtime failure read apart. kind ships runc only; youki, gVisor and Kata need a
 #          test cluster with their handlers (`task runtimes:k8s`). Reported, never failing: it is
-#          the measurement RFC 0013's open questions wait on.
+#          the measurement RFC 0013's open questions wait on. Same triggers as the local tier.
 #
 # `task runtimes:local` and `task runtimes:k8s` are the same runs on a laptop or a test cluster.
 on:
@@ -65,7 +65,6 @@ jobs:
 
   kind:
     name: cluster tier (kind, runc)
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

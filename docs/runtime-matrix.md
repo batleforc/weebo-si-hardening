@@ -119,7 +119,7 @@ docker, which is what CI uses, it works.
 
 [`runtime-matrix`](../.github/workflows/runtime-matrix.yaml) runs the local tier in `check` mode
 on pull requests that touch the profiles or the harness, weekly, and on demand. The kind tier runs
-weekly and on demand, at `baseline` and then `privileged`, so an admission refusal and a runtime
+on the same triggers, at `baseline` and then `privileged`, so an admission refusal and a runtime
 failure can be told apart. The kind tier only reports. Both tables go to the job summary.
 
 ## Adding a runtime
