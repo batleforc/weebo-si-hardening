@@ -29,6 +29,18 @@ ignore = [
   # What unblocks it: `rsa` shipping constant-time padding (RustCrypto/RSA#626), or jsonwebtoken
   # splitting `rust_crypto` so RSA verification does not drag in the private-key half.
   "RUSTSEC-2023-0071",
+  # RUSTSEC-2026-0387 — `crypto-bigint` operations meant to be constant-time (subtraction, zero
+  # counting, division, Montgomery multiplication) can branch on secret data. Fixed in 0.7.6 only.
+  #
+  # Same path, same reasoning as the `rsa` entry above: `crypto-bigint` 0.5 comes in through
+  # `elliptic-curve` 0.13 → `p256`/`p384`, which jsonwebtoken's `rust_crypto` feature uses for
+  # `endpoint-gateway` to **verify** ES256/ES384 signatures against the identity provider's public
+  # JWKS keys. Verification works on public inputs only: no private scalar exists in that process,
+  # so a timing sidechannel has no secret to leak. `elliptic-curve` 0.13 cannot take
+  # `crypto-bigint` 0.7, so a lockfile update cannot fix it.
+  #
+  # What unblocks it: jsonwebtoken moving onto the RustCrypto 0.14 elliptic-curve line.
+  "RUSTSEC-2026-0387",
 ]
 
 [licenses]

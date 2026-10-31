@@ -112,9 +112,9 @@ futures-util = "0.3"
 # webhook server, leader election, requeue and Events. Pinned by tag; a kit release is a
 # dependency bump, reviewed as one. Keep `kube` and `k8s-openapi` on the kit's versions, or two
 # copies get linked.
-weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.25.1", version = "0.25.1" }
+weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.26.0", version = "0.26.0" }
 # The `Reason` trait and `reason_codes!`: what the kit's Events and retry policy take.
-weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.25.1", version = "0.25.1" }
+weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.26.0", version = "0.26.0" }
 # What the kit's telemetry installs: the `tracing` macros every role logs through.
 tracing = "0.1"
 # The admin subcommands' own subscriber: warnings to stderr, so stdout stays their output.
@@ -178,12 +178,3 @@ expect_used = "warn"
 panic = "deny"
 todo = "warn"
 unimplemented = "deny"
-
-# TEMPORARY — RFC 0012. The kit's `webhook_server::spawn_with` and `controller::reconciled` are
-# not released yet: build against the sibling checkout until weebo-operator-kit v0.26.0 is
-# tagged, then bump `weebo-kit-runtime` above to that tag and delete this section. Never pushed
-# as is.
-[patch."https://github.com/batleforc/weebo-operator-kit"]
-weebo-kit-runtime = { path = "../operator/weebo-operator-kit/crates/weebo-kit-runtime" }
-weebo-kit-domain = { path = "../operator/weebo-operator-kit/crates/weebo-kit-domain" }
-weebo-kit-api = { path = "../operator/weebo-operator-kit/crates/weebo-kit-api" }
