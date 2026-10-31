@@ -12,6 +12,7 @@ includes:
   spike: ./.tasks/spike.yaml
   e2e: ./.tasks/e2e.yaml
   docs: ./.tasks/docs.yaml
+  seccomp: ./.tasks/seccomp.yaml
 
 tasks:
   init:
@@ -33,6 +34,7 @@ tasks:
       - task: rust:fmt
       - task: rust:clippy
       - task: shell:lint
+      - task: seccomp:check
       - task: rfc:check
       - task: crd:check
       - task: docs:check

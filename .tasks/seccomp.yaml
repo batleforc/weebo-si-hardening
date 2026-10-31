@@ -1,0 +1,12 @@
+version: "3"
+
+tasks:
+  gen:
+    desc: "Regenerate the RFC 0013 Localhost seccomp profiles and their MachineConfig under deploy/seccomp/"
+    cmds:
+      - '{{.ROOT_DIR}}/scripts/seccomp-profiles.sh gen'
+
+  check:
+    desc: "Fail if deploy/seccomp/ differs from a regeneration from the pinned upstream profile"
+    cmds:
+      - '{{.ROOT_DIR}}/scripts/seccomp-profiles.sh check'

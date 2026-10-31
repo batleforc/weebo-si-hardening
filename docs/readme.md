@@ -21,6 +21,7 @@ Pages](https://batleforc.github.io/weebo-si-hardening/), whose pages point back 
 | [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
 | [`endpoint-auth-performance.md`](./endpoint-auth-performance.md) | What the endpoint-auth gate costs per credential and protocol, where the time goes, and the improvements that follow. |
 | [`operator-performance.md`](./operator-performance.md) | The controller's resource budget — start, convergence, idle CPU, memory — how it is measured, and what was measured. |
+| [`seccomp-profiles.md`](./seccomp-profiles.md) | The `Localhost` seccomp profiles for workspace nodes (RFC 0013): what they allow, how they were measured, how they reach the nodes. |
 
 ## Reading order for a newcomer
 
