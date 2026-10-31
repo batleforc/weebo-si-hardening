@@ -36,14 +36,12 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, FeatureId};
 use weebo_si_controller::events::{self, ReasonCode, Regarding};
+use weebo_si_controller::workspace::off_recheck;
 use weebo_si_crd::{FeatureMode, NamespaceName, RegistryCatalog, ResolvedRegistryConfig};
 use weebo_si_network_profiles::is_excluded_namespace;
 use weebo_si_registry_config::{
     NamespaceSubject, ObjectStore, ReconcileObserver, ReconcileOutcome, RegistryConfigFeature,
 };
-
-/// How soon a namespace the feature does not reach is looked at again.
-const OFF_RECHECK: Duration = Duration::from_secs(60);
 
 /// This feature's identifier, as the gate and the log lines name it.
 const FEATURE: &str = "registry-config";
@@ -190,7 +188,10 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(OFF_RECHECK));
+        return Ok(Action::requeue(off_recheck(
+            ctx.deps.namespace_view.as_ref(),
+            &name,
+        )));
     }
 
     let annotation_key = {

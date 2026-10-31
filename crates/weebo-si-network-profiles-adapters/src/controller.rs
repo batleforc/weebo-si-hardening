@@ -33,11 +33,9 @@ use weebo_si_network_profiles::{
 };
 
 pub use weebo_si_controller::workspace::{
-    devworkspace_id, devworkspace_owner, devworkspace_resource, held_warnings, warn_held,
+    devworkspace_id, devworkspace_owner, devworkspace_resource, held_warnings, off_recheck,
+    warn_held,
 };
-
-/// How soon a namespace the feature does not reach is looked at again.
-const OFF_RECHECK: Duration = Duration::from_secs(60);
 
 /// How often the enforcement canary's verdict is refreshed when `enforcement.canary.enabled` is
 /// set but `intervalSeconds` is not usable (zero). The CRD's own default is 300s; this only
@@ -181,7 +179,10 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(OFF_RECHECK));
+        return Ok(Action::requeue(off_recheck(
+            ctx.deps.namespace_view.as_ref(),
+            &name,
+        )));
     }
 
     let teams = ctx.deps.gate.teams();
@@ -226,7 +227,10 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(OFF_RECHECK));
+        return Ok(Action::requeue(off_recheck(
+            ctx.deps.namespace_view.as_ref(),
+            &namespace,
+        )));
     }
 
     let Some(workspace_id) = devworkspace_id(&obj) else {

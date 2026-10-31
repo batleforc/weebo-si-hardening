@@ -45,11 +45,8 @@ use weebo_si_kubearmor_policy::{
 use weebo_si_network_profiles::is_excluded_namespace;
 
 use weebo_si_controller::workspace::{
-    devworkspace_id, devworkspace_owner, devworkspace_resource, warn_held,
+    devworkspace_id, devworkspace_owner, devworkspace_resource, off_recheck, warn_held,
 };
-
-/// How soon a namespace the feature does not reach is looked at again.
-const OFF_RECHECK: Duration = Duration::from_secs(60);
 
 /// This feature's identifier, as the gate and the log lines name it.
 const FEATURE: &str = "kubearmor-policy";
@@ -249,7 +246,10 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(OFF_RECHECK));
+        return Ok(Action::requeue(off_recheck(
+            ctx.deps.namespace_view.as_ref(),
+            &name,
+        )));
     }
 
     let teams = ctx.deps.gate.teams();
@@ -307,7 +307,10 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(OFF_RECHECK));
+        return Ok(Action::requeue(off_recheck(
+            ctx.deps.namespace_view.as_ref(),
+            &namespace,
+        )));
     }
 
     let Some(workspace_id) = devworkspace_id(&obj) else {

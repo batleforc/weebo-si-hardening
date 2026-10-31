@@ -1,9 +1,35 @@
 //! What the reconcile loops over workspaces share: reading a `DevWorkspace`'s id and owner
-//! reference, and the `held` warning every template-driven feature logs.
+//! reference, the `held` warning every template-driven feature logs, and how soon a namespace the
+//! gate answered `Off` for is looked at again.
+
+use std::time::Duration;
 
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
 use weebo_si_chassis::managed::{ObjectKey, Owner};
-use weebo_si_crd::DEVWORKSPACE_ID_LABEL;
+use weebo_si_chassis::port::namespace_view::NamespaceView;
+use weebo_si_crd::{DEVWORKSPACE_ID_LABEL, NamespaceName};
+
+/// How soon a namespace the feature does not reach is looked at again.
+pub const OFF_RECHECK: Duration = Duration::from_secs(60);
+
+/// How soon a namespace the namespace index has not seen yet is looked at again.
+pub const UNINDEXED_RECHECK: Duration = Duration::from_secs(2);
+
+/// When to reconcile again a namespace the gate answered `Off` for.
+///
+/// The gate reads the namespace's labels from the shared namespace index, a watch of its own. A
+/// loop's watch can deliver a new namespace before that index has it, and the gate then answers
+/// `Off` for a namespace the feature does reach. Waiting [`OFF_RECHECK`] then leaves a new
+/// workspace namespace without its baseline for a minute: `perf_envtest` saw it for about 1% of
+/// 500 namespaces created at once. A namespace the index has not seen is retried in seconds
+/// instead; one it has seen really is out of scope, and keeps the slow recheck.
+pub fn off_recheck(view: &dyn NamespaceView, namespace: &NamespaceName) -> Duration {
+    if view.facts(namespace).is_some() {
+        OFF_RECHECK
+    } else {
+        UNINDEXED_RECHECK
+    }
+}
 
 /// The DevWorkspace's id — the value its pods carry as `controller.devfile.io/devworkspace_id`,
 /// which every profile object selects on.
@@ -80,5 +106,29 @@ pub fn held_warnings(feature: &str, held: &[ObjectKey]) -> Vec<String> {
 pub fn warn_held(feature: &str, held: &[ObjectKey]) {
     for line in held_warnings(feature, held) {
         tracing::warn!("{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use weebo_si_chassis::NamespaceFacts;
+    use weebo_si_chassis::port::namespace_view::testing::FakeNamespaceView;
+
+    use super::*;
+
+    #[test]
+    fn a_namespace_the_index_has_not_seen_is_retried_in_seconds() {
+        let view = FakeNamespaceView::new([]);
+        assert_eq!(
+            off_recheck(&view, &NamespaceName::new("new-user-che")),
+            UNINDEXED_RECHECK
+        );
+    }
+
+    #[test]
+    fn a_namespace_the_index_has_seen_keeps_the_slow_recheck() {
+        let name = NamespaceName::new("out-of-scope");
+        let view = FakeNamespaceView::new([(name.clone(), NamespaceFacts::default())]);
+        assert_eq!(off_recheck(&view, &name), OFF_RECHECK);
     }
 }
