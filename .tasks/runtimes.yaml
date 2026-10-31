@@ -5,6 +5,8 @@ version: "3"
 
 vars:
   KIND: '{{ .KIND | default "kind" }}'
+  # The engine kind runs its nodes with (docker, or podman with KIND_EXPERIMENTAL_PROVIDER=podman).
+  ENGINE: '{{ .ENGINE | default "docker" }}'
 
 tasks:
   local:
@@ -13,7 +15,7 @@ tasks:
       - '{{.ROOT_DIR}}/scripts/runtime-matrix.sh check'
 
   k8s:
-    desc: "Runtime matrix, cluster tier, against the current kubectl context (RUNTIME_CLASSES, PSA_LEVEL; nodes need deploy/seccomp/ and e2e/runtime-matrix/runtimeclasses.yaml)"
+    desc: "Runtime matrix, cluster tier, against the current kubectl context, printed not checked (RUNTIME_CLASSES, PSA_LEVEL; nodes need deploy/seccomp/ and e2e/runtime-matrix/runtimeclasses.yaml)"
     cmds:
       - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh'
 
@@ -23,12 +25,13 @@ tasks:
       - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh clean'
 
   kind:
-    desc: "Create the weebo-runtimes kind cluster (default runtime only) and run the cluster tier on it at Pod Security baseline"
+    desc: "Create the weebo-runtimes kind cluster (default runtime only), let it start user-namespaced Pods, and run the cluster tier on it at Pod Security baseline, checked"
     dir: '{{.ROOT_DIR}}'
     cmds:
       - '{{.KIND}} get clusters 2>/dev/null | grep -qx weebo-runtimes || {{.KIND}} create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s'
       - kubectl config use-context kind-weebo-runtimes
-      - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh'
+      - 'ENGINE={{.ENGINE}} e2e/runtime-matrix/kind-userns.sh'
+      - '{{.ROOT_DIR}}/scripts/runtime-matrix-k8s.sh check'
 
   kind:down:
     desc: "Delete the weebo-runtimes kind cluster"

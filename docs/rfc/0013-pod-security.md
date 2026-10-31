@@ -178,6 +178,7 @@ next time it is created.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `mode` | enum | — | required, per the chassis |
 | `namespaceSelector` | LabelSelector | none | per the chassis — the rollout knob |
 | `default` | `restricted` \| `baseline` \| `privileged` | — | required. The level of a namespace belonging to no team, or to a team that sets none. |
@@ -221,6 +222,7 @@ For a resolved `(level, warnLevel)`, exactly six labels and one annotation, on t
 
 | Key | Value |
 | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `pod-security.kubernetes.io/enforce` | `level` |
 | `pod-security.kubernetes.io/enforce-version` | `version` |
 | `pod-security.kubernetes.io/warn` | `warnLevel` |
@@ -265,6 +267,7 @@ Seccomp is where `baseline` and `restricted` differ most, and where `baseline` i
 
 | Level | What it requires of `seccompProfile` | A pod that sets nothing |
 | --- | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `privileged` | nothing | runs with the node's default |
 | `baseline` | must not be `Unconfined` | **admitted**, and runs with the node's default |
 | `restricted` | must be `RuntimeDefault` or `Localhost`, set explicitly on the pod or on every container | **refused** |
@@ -357,9 +360,11 @@ under *Future work*.
 
 **The level stays `baseline`.** Builds still need `allowPrivilegeEscalation` for
 `newuidmap`/`newgidmap`, which `restricted` refuses. Whether `baseline` admits `procMount:
-Unmasked` on a pod with `hostUsers: false` depends on the pinned standards version: KEP-4265
-relaxes that check for user-namespaced pods, and `pods audit` shows whether the pinned version
-has the relaxation. See *Unresolved questions*.
+Unmasked` on a pod with `hostUsers: false`: KEP-4265 relaxes that check for user-namespaced pods,
+and the runtime matrix measured it on Kubernetes 1.35 with `enforce-version: latest`. Every build
+workspace Pod was admitted at `baseline`, `procMount: Unmasked` included, and ran as expected. A
+`version` pinned below the release that carries the relaxation would refuse them; `pods audit`
+says so before `Enforce`.
 
 **Node prerequisites.** User namespaces need the `UserNamespacesSupport` feature (enabled by
 default in recent Kubernetes releases), a runtime that supports them (containerd 2 or CRI-O), and
@@ -373,6 +378,7 @@ moby's default profile, pinned by tag and checksum:
 
 | Profile | `localhostProfile` | For | Allowed beyond the workspace profile |
 | --- | --- | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | workspace | `profiles/weebo-workspace.json` | every team, optional | nothing: the upstream default, the same on every runtime and versioned here |
 | container-build | `profiles/weebo-container-build.json` | build teams, with `hostUsers: false` and `procMount: Unmasked` — the target | `clone`, `unshare`, `mount`, `umount2`, `pivot_root`, `open_tree`, `move_mount`, `mount_setattr`, `sethostname`, `setns` |
 | container-build-chroot | `profiles/weebo-container-build-chroot.json` | build teams on nodes without user namespaces | `clone`, `unshare`, `mount`, `umount2`, `pivot_root` |
@@ -420,7 +426,9 @@ A pod naming a profile that is missing on its node does not start, so the files 
 tools inside the workspace, which ship their own crun. What the node's runtime decides is whether
 the pod gets a user namespace and whether it applies the profile. On weebo-si, containerd runs
 workspaces on runc — the `crun`, `youki` and `wasmedge` extensions are installed, but no
-`RuntimeClass` declares them. runc 1.5.2 and crun 1.28 give the same result on every scenario.
+`RuntimeClass` declares them. runc 1.5.2 and crun 1.28 give the same result on every scenario,
+and so does a kind node's containerd 2.2 / runc 1.2.9 running the scenarios as Pods with
+`hostUsers: false`.
 youki, gVisor and Kata are measured in the cluster tier of the runtime matrix
 ([`../runtime-matrix.md`](../runtime-matrix.md)). By default, gVisor and Kata do not apply the
 pod's seccomp profile at all, so for them the comparison is between their sandbox and this filter,
@@ -457,6 +465,7 @@ team. The lever is then the SCC grant, not a label. The choice is the `backend` 
 
 | `backend` | Behaviour |
 | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `Auto` (default) | `ObserveSynced` when the cluster serves `security.openshift.io/v1`, otherwise `Labels` |
 | `Labels` | write the labels, as described above |
 | `ObserveSynced` | write nothing, compare the synced level with the resolved one |
@@ -481,6 +490,7 @@ needs the same RBAC as the write. The operator's service account is never used.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |
 | `weebo_si_pod_security_namespaces` | gauge | `level`, `state` ∈ `applied`/`stricter_existing`/`pending` |
 | `weebo_si_pod_security_reconcile_total` | counter | `result` ∈ `applied`/`unchanged`/`restored`/`clamped`/`not_tightening`/`stricter_existing`/`looser_synced`/`previous_lost`/`error` |
 | `weebo_si_pod_security_drift_total` | counter | none — a label this feature owns was changed by someone else and re-applied |
@@ -700,13 +710,13 @@ for, and what the runbook must say.
   newer crun may use more of the new mount API (`fsopen`, `fsmount`, ...) and need it. The runtime
   matrix's local tier fails on that in CI, and `weebo-container-build-log.json` finds what is
   missing on a test node.
-- **Does `baseline` admit `procMount: Unmasked` with `hostUsers: false` at the pinned version?**
-  (Blocking for build teams.) KEP-4265 relaxes the check for user-namespaced pods. The runtime
-  matrix's cluster tier answers it: its namespace runs at `baseline`, and an admission refusal is a
-  cell. If the pinned
-  version has the relaxation, build teams stay at `baseline`. If not, either `version` moves to
-  one that has it, or build teams need `privileged` under the `ceiling`, which this RFC would
-  rather not ship. `pods audit --level baseline` on a build workspace answers it.
+- ~~**Does `baseline` admit `procMount: Unmasked` with `hostUsers: false` at the pinned
+  version?**~~ Answered, 2026-10-31: yes on Kubernetes 1.35 at `enforce-version: latest`. The
+  runtime matrix's cluster tier ran every build scenario at `baseline` on kind: each Pod passed a
+  server-side dry run and ran with the same result as at `privileged`. What remains is the
+  `version` the fleet pins: it must be a release with KEP-4265's relaxation, or build teams would
+  need `privileged` under the `ceiling`, which this RFC will not ship. `pods audit --level
+  baseline` on a build workspace checks it before `Enforce`.
 - **Che's container-build and container-run modes, level by level.** (Not blocking, to be
   measured.) The build setup above is designed to fit `baseline`. Step 0 of the rollout measures
   it on the real fleet, and the brick doc records the result.
@@ -747,8 +757,9 @@ for, and what the runbook must say.
 - [x] Runtime matrix: `scripts/runtime-matrix.sh` (podman, `check` mode) and
       `scripts/runtime-matrix-k8s.sh` (Pods per runtime class, Pod Security level as a result),
       `task runtimes:*`, the `runtime-matrix` workflow, `docs/runtime-matrix.md`.
-- [ ] Runtime matrix, cluster tier: the `default` row on kind (CI), then crun, youki, gVisor and
-      Kata on a test cluster.
+- [x] Runtime matrix, cluster tier: the `default` (runc) row on kind, in CI and checked, at
+      `baseline` and `privileged`.
+- [ ] Runtime matrix, cluster tier: crun, youki, gVisor and Kata on a test cluster.
 - [ ] kind e2e: mount `deploy/seccomp/profiles` on the nodes, a build team's workspace
       (`hostUsers: false`, `procMount: Unmasked`) builds an image with OCI isolation under
       `profiles/weebo-container-build.json`, and fails under `RuntimeDefault`.
@@ -774,3 +785,4 @@ for, and what the runbook must say.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |

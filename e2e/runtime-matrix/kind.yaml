@@ -6,9 +6,10 @@
 #   task runtimes:kind:down   delete it
 #
 # Same node image as scripts/kind-e2e.yaml. User namespaces are on by default from Kubernetes
-# 1.33, so `hostUsers: false` needs no feature gate here. Whether a user-namespaced Pod can start
-# depends on the host: under rootless podman the node itself only has 65536 IDs, fewer than the
-# kubelet hands out, and the matrix says so instead of failing silently.
+# 1.33, so `hostUsers: false` needs no feature gate here. The node still cannot start such a Pod
+# until e2e/runtime-matrix/kind-userns.sh has lifted kind's /sys overmounts and product-files hook;
+# `task runtimes:kind` and CI run it. Under rootless podman the node itself only has 65536 IDs,
+# fewer than the kubelet hands out, and the matrix's preflight says so.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: weebo-runtimes

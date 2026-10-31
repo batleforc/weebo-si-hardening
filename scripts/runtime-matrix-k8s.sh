@@ -3,6 +3,7 @@
 # Pods, one per runtime class × profile × scenario, the way a build workspace would run.
 #
 #   scripts/runtime-matrix-k8s.sh           run against the current kubectl context
+#   scripts/runtime-matrix-k8s.sh check     same, and fail if a cell differs from what is expected
 #   scripts/runtime-matrix-k8s.sh clean     delete the namespace it works in
 #
 # Each Pod has `hostUsers: false`, the profile as a `Localhost` seccomp profile, the runtime class
@@ -79,6 +80,19 @@ pod_failure() { # name
   kubectl -n "$NAMESPACE" get events --field-selector "involvedObject.name=$1" \
     --sort-by=.firstTimestamp -o jsonpath='{range .items[*]}{.reason}: {.message}{"\n"}{end}' \
     < /dev/null 2>/dev/null | grep -m 1 -E '^(FailedCreatePodSandBox|Failed|FailedMount):' || true
+}
+
+# What a profile should do, as in scripts/runtime-matrix.sh. A sandboxed runtime that ignores the
+# pod's filter (gVisor, Kata by default) passes under weebo-workspace and fails `check`: that is
+# the point of the row.
+expected() { # profile proc
+  case "$1:$2" in
+    weebo-container-build:*) echo pass ;;
+    weebo-workspace:*) echo fail ;;
+    weebo-container-build-chroot:masked) echo pass ;;
+    weebo-container-build-chroot:unmasked) echo fail ;;
+    *) echo "" ;;
+  esac
 }
 
 pod_yaml() { # name image proc runtime_class profile command
@@ -186,6 +200,14 @@ for rc in $RUNTIME_CLASSES; do
         fi
         kubectl -n "$NAMESPACE" delete pod "$name" --wait=false >/dev/null 2>&1 || true
       fi
+      exp=$(expected "$profile" "$proc")
+      got=fail
+      [ "$cell" = "✅" ] && got=pass
+      case "$cell" in "❌ admission"*|admitted*|"❌ timeout"*|"❌ apply"*|"❌ CreateContainer"*|"❌ ErrImage"*|"❌ ImagePull"*) got=broken ;; esac
+      if [ -n "$exp" ] && [ "$got" != "$exp" ]; then
+        cell="$cell ⚠ expected $exp"
+        echo x >> "$tmp/mismatches"
+      fi
       echo "| $rc | $profile | $id ($proc) | $cell |" >> "$table"
     done
   done
@@ -195,3 +217,9 @@ done
 if [ -s "$notes" ]; then { echo; cat "$notes"; } >> "$table"; fi
 cat "$table"
 if [ -n "${OUT:-}" ]; then cp "$table" "$OUT"; fi
+mismatches=0
+[ -f "$tmp/mismatches" ] && mismatches=$(wc -l < "$tmp/mismatches")
+if [ "${1:-}" = check ] && [ "$mismatches" -gt 0 ]; then
+  echo "runtime-matrix-k8s: $mismatches cell(s) differ from what is expected" >&2
+  exit 1
+fi

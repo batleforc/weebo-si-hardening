@@ -98,7 +98,12 @@ What the nodes need:
   [`e2e/runtime-matrix/runtimeclasses.yaml`](../e2e/runtime-matrix/runtimeclasses.yaml) and the
   matching handler.
 
-A missing profile or handler shows up as a `CreateContainerError` cell, not as a hang.
+Each Pod first goes through a server-side dry run, so the Pod Security answer is recorded even
+when nothing can start. Then, per runtime class, a preflight Pod (busybox, `hostUsers: false`,
+`RuntimeDefault`) must succeed. If it does not, the cells read `admitted, not run` and the node's
+first error is printed in full under the table, after a minute instead of a timeout per cell. A
+missing profile or handler shows up as a `CreateContainerError` cell. `check` mode fails on any
+cell that differs from the *Expected* column, as in the local tier.
 
 Use a test cluster, not weebo-si: the matrix creates Pods that build images and run nested
 containers, at whichever Pod Security level it is given.
@@ -106,9 +111,24 @@ containers, at whichever Pod Security level it is given.
 On kind (`default` class only, since kind nodes ship runc alone):
 
 ```bash
-task runtimes:kind        # creates weebo-runtimes from e2e/runtime-matrix/kind.yaml, runs the matrix
+task runtimes:kind        # creates weebo-runtimes, lets it run user-namespaced Pods, runs the matrix
 task runtimes:kind:down
 ```
+
+A kind node cannot start a Pod with `hostUsers: false` as it comes, for two reasons a real node
+does not have. [`e2e/runtime-matrix/kind-userns.sh`](../e2e/runtime-matrix/kind-userns.sh) lifts
+both, and the task and CI run it:
+
+1. A user-namespaced Pod mounts its own sysfs. The kernel allows that only when the sysfs it
+   would reveal is fully visible already, with nothing mounted over a file or a non-empty
+   directory. kind bind-mounts its own `product_name` and `product_uuid` over
+   `/sys/devices/virtual/dmi/id/`, so every sandbox fails with `error mounting "sysfs" to rootfs
+   at "/sys": operation not permitted`.
+2. A `createContainer` hook in containerd's base OCI spec mounts the same files into every
+   container and cannot run inside a user namespace: `fork/exec
+   /kind/bin/mount-product-files.sh: permission denied`.
+
+A Talos or OpenShift node has neither, so this is a kind workaround, not something weebo-si needs.
 
 kind could not start a node on a Fedora laptop under rootless podman with SELinux enforcing:
 `mount: must be superuser`, then `can't read /etc/containerd/config.toml`. A plain kind
@@ -120,7 +140,7 @@ docker, which is what CI uses, it works.
 [`runtime-matrix`](../.github/workflows/runtime-matrix.yaml) runs the local tier in `check` mode
 on pull requests that touch the profiles or the harness, weekly, and on demand. The kind tier runs
 on the same triggers, at `baseline` and then `privileged`, so an admission refusal and a runtime
-failure can be told apart. The kind tier only reports. Both tables go to the job summary.
+failure can be told apart, also in `check` mode. Both tables go to the job summary.
 
 ## Adding a runtime
 
@@ -151,7 +171,23 @@ the choice does not change the profiles.
 native overlay inside a user namespace. On a containerd node, a pod has no `/dev/fuse` without a
 device plugin, so this matters for weebo-si.
 
-### Cluster tier
+Measured again in CI the same day (GitHub runner, Ubuntu, kernel 7.0, crun 1.14.1 and runc 1.5.2):
+identical cells.
 
-Not measured yet. The kind tier's first CI run will give the `default` (runc) row, and answer the
-`baseline` admission question. youki, gVisor and Kata need a test cluster with their handlers.
+### Cluster tier, kind, 2026-10-31
+
+GitHub runner, kernel 7.0.0-azure; kind v0.31.0, node v1.35.0, containerd 2.2.0, runc 1.2.9;
+`hostUsers: false`; namespace at `enforce-version: latest`.
+
+| Runtime class | Pod Security | `weebo-container-build` | `weebo-container-build-chroot` | `weebo-workspace` |
+| --- | --- | --- | --- | --- |
+| `default` (runc 1.2.9) | `baseline` | ✅ 5/5 | ✅ masked 3/3, ❌ unmasked 2/2 | ❌ 5/5 (`unshare(CLONE_NEWUSER)` / `cannot clone`) |
+| `default` (runc 1.2.9) | `privileged` | same | same | same |
+
+**`baseline` admits a build workspace.** Every Pod, `procMount: Unmasked` with `hostUsers: false`
+included, passed admission at `baseline` and ran exactly as at `privileged`. That answers RFC
+0013's blocking question for 1.35 at `latest`.
+
+The cells are the local tier's, so as Pods with a user namespace, runc still applies the profile
+and the scenarios need nothing more. crun, youki, gVisor and Kata need a test cluster with their
+handlers.

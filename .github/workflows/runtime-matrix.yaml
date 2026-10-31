@@ -9,8 +9,8 @@ name: Runtime matrix
 #   kind   the same scenarios as Pods with `hostUsers: false` on a kind cluster, once with the
 #          namespace at Pod Security `baseline` and once at `privileged`, so an admission refusal
 #          and a runtime failure read apart. kind ships runc only; youki, gVisor and Kata need a
-#          test cluster with their handlers (`task runtimes:k8s`). Reported, never failing: it is
-#          the measurement RFC 0013's open questions wait on. Same triggers as the local tier.
+#          test cluster with their handlers (`task runtimes:k8s`). `check` mode, like the local
+#          tier: a cell that differs from what is expected fails the job. Same triggers.
 #
 # `task runtimes:local` and `task runtimes:k8s` are the same runs on a laptop or a test cluster.
 on:
@@ -78,47 +78,20 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
       - name: Cluster
         run: kind create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s
-      - name: Unmask the node's /sys
-        # A Pod with `hostUsers: false` mounts its own sysfs, and the kernel allows that inside a user
-        # namespace only when the sysfs it would reveal is fully visible already: nothing mounted
-        # over a file or a non-empty directory. kind bind-mounts its own product_name and
-        # product_uuid over /sys/devices/virtual/dmi/id/ (product_uuid twice), so every
-        # user-namespaced sandbox fails with `error mounting "sysfs" to rootfs at "/sys": operation
-        # not permitted`. A real node has no such overmounts, and a one-node cluster does not need
-        # a unique product_uuid. Lift them, and any tmpfs mask, on this throwaway node only. The
-        # kernel's own mounts on empty directories (cgroup, debugfs, configfs...) are fine.
-        run: |
-          node=weebo-runtimes-control-plane
-          docker exec "$node" sh -c '
-            echo "before:"; findmnt -rno TARGET,FSTYPE,SOURCE -R /sys
-            findmnt -rno TARGET,FSTYPE -R /sys \
-              | awk "\$1 ~ \"^/sys/devices/\" || \$2 == \"tmpfs\" || \$2 == \"devtmpfs\" {print \$1}" \
-              | sort -r | while read -r m; do while umount "$m" 2>/dev/null; do echo "unmounted $m"; done; done
-            echo "after:"; findmnt -rno TARGET,FSTYPE -R /sys'
-      - name: Drop kind's product-files hook
-        # The same product files are bind-mounted into every container by a createContainer hook in
-        # containerd's base OCI spec. Inside a user namespace it cannot run (`fork/exec
-        # /kind/bin/mount-product-files.sh: permission denied`), so no user-namespaced sandbox
-        # starts. Remove the hook from the throwaway node's base spec and restart containerd.
-        run: |
-          node=weebo-runtimes-control-plane
-          spec=$(docker exec "$node" sh -c "grep -oE '/etc/containerd/[^\"]+\.json' /etc/containerd/config.toml | head -1")
-          echo "base spec: $spec"
-          docker exec "$node" cat "$spec" | jq '.hooks // {} | keys'
-          docker exec "$node" cat "$spec" \
-            | jq 'if .hooks then .hooks |= with_entries(.value |= map(select(.path | test("mount-product-files") | not))) else . end' \
-            > "$RUNNER_TEMP/base.json"
-          docker cp "$RUNNER_TEMP/base.json" "$node:$spec"
-          docker exec "$node" systemctl restart containerd
-          kubectl wait --for=condition=Ready node --all --timeout=120s
+      - name: Let the node start user-namespaced Pods
+        # kind's own /sys overmounts and product-files hook stop every `hostUsers: false` sandbox;
+        # the script says why and lifts both on this throwaway node.
+        run: e2e/runtime-matrix/kind-userns.sh
       - name: Matrix at baseline, then privileged
         run: |
+          status=0
           for level in baseline privileged; do
             PSA_LEVEL=$level NAMESPACE="weebo-runtime-matrix-$level" OUT="$RUNNER_TEMP/$level.md" POD_TIMEOUT=180 \
-              ./scripts/runtime-matrix-k8s.sh
+              ./scripts/runtime-matrix-k8s.sh check || status=1
             { echo "## Cluster tier, Pod Security \`$level\`"; echo; cat "$RUNNER_TEMP/$level.md"; echo; } \
               >> "$GITHUB_STEP_SUMMARY"
           done
+          exit "$status"
       - name: Node diagnostics
         if: always()
         # What a failed preflight needs to be read: the runner's kernel (user namespaces need
