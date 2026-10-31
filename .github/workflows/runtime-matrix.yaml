@@ -78,6 +78,19 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
       - name: Cluster
         run: kind create cluster --config e2e/runtime-matrix/kind.yaml --wait 300s
+      - name: Unmask the node's /sys
+        # A Pod with `hostUsers: false` mounts its own sysfs, and the kernel allows that inside a user
+        # namespace only when the sysfs it would reveal is fully visible already. Docker masks paths
+        # under the kind node's /sys with tmpfs (or /dev/null) overmounts, so every user-namespaced
+        # sandbox fails with `error mounting "sysfs" to rootfs at "/sys": operation not permitted`.
+        # A real node has no such masks. Lift them on this throwaway node only.
+        run: |
+          node=weebo-runtimes-control-plane
+          docker exec "$node" sh -c '
+            echo "before:"; findmnt -rno TARGET,FSTYPE,SOURCE -R /sys
+            findmnt -rno TARGET,FSTYPE -R /sys | awk "\$2 == \"tmpfs\" || \$2 == \"devtmpfs\" {print \$1}" \
+              | sort -r | while read -r m; do umount "$m" && echo "unmounted $m"; done
+            echo "after:"; findmnt -rno TARGET,FSTYPE -R /sys'
       - name: Matrix at baseline, then privileged
         run: |
           for level in baseline privileged; do
