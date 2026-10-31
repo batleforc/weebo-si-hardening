@@ -147,7 +147,7 @@ dependency rule. A feature's domain still depends on `weebo-si-chassis` and `wee
 | `weebo-kit-runtime::events`, `conditions`, `status` | yes | the hand-written status patch in `controller/src/reconcile.rs` and `identity.rs` | |
 | `weebo-kit-runtime::shared` (`SharedWatches`) | partly | duplicate `Namespace` watches across loops | typed kinds only (`DynamicType = ()`). `DevWorkspace`, `CiliumNetworkPolicy` and `KubeArmorPolicy` are `DynamicObject` here and stay on plain watchers until they get typed derives |
 | `weebo-kit-testkit` | **no** | — | see *Changelog*, 2026-10-31: it lacks what our suites rely on |
-| `weebo-kit-perf` | **not yet** | — | see *Changelog*: it measures the kit's own reconcile metrics |
+| `weebo-kit-perf` | **no** | — | see *Changelog*: it measures the kit's own reconcile metrics. Our budget is measured by `perf_envtest` instead ([`operator-performance.md`](../operator-performance.md)) |
 | `weebo-kit-domain::Reason`/`reason_codes!` | later | free-text denial reasons | *Future work*: denial reasons become a contract only if we want them to |
 | `weebo-kit-api`, `-application`, `-adapters` | no | — | secret stores and instance references: si-hardening has none |
 | `charts/weebo-operator-lib` | **no** | — | it renders one Deployment and a `ValidatingWebhookConfiguration` on the operator's own group only. We need two Deployments, mutating configurations, and rules on core, `workspace.devfile.io`, `networking.k8s.io`, `cilium.io`, `security.kubearmor.com` and `route.openshift.io` |
@@ -349,8 +349,9 @@ Not blocking:
 
 ## Future work
 
-- **A resource budget with `weebo-kit-perf`**, once the two prerequisites below exist: the loops
-  emitting the kit's reconcile metrics alongside ours, and a harness that runs without Go.
+- **Moving the resource budget onto `weebo-kit-perf`**, once our loops emit the kit's reconcile
+  metrics and its harness runs without Go. Until then `perf_envtest` measures it — see the
+  *Changelog*.
 
 - **OpenTelemetry metrics**, with a test pinning every exported name to the contract list.
 - **Reason codes for denials** (`weebo-kit-domain::reason_codes!`). Today a denial reason is free
@@ -392,7 +393,7 @@ nightly e2e green with no expected value edited, and `task crd:check` clean with
 - [x] Dedup: nothing left to do — see *Changelog*
 - [x] Docs site: `site/` on `@weebo/operator-docs`, the CRD reference generated from the
       chart's `crds/`, published to GitHub Pages in place of `docs/generator/`, which is removed
-- [~] Perf: deferred to *Future work* — see *Changelog*
+- [x] Perf: a budget of our own, measured by `perf_envtest` on a release build — see *Changelog*
 - [ ] Docs updated: `operator-internals.md` (crate map, *Adding a feature*), `repo-layout.md`,
       each brick page's *Reading the logs* and *Observability*, and `ci.md`
 - [ ] RFC flipped to `Implemented`
@@ -421,3 +422,4 @@ nightly e2e green with no expected value edited, and `task crd:check` clean with
 | 2026-10-31 | *e2e*: the `upgrade` suite is written (script, test, nightly matrix) but has not run yet: it needs the e2e kind cluster with Che and the GHCR packages public (`todo.md` F3) |
 | 2026-10-31 | *Perf* deferred. `weebo-kit-perf` runs the binary against `weebo-kit-testkit`'s envtest (Go and `libclang` at build, which this RFC already declined), hands it its metrics address through `WEEBO_METRICS_ADDR` (our contract is `--health-addr`), and judges the kit's `<prefix>_reconcile_total`/`_duration_seconds`, which our loops do not emit because the metric names stayed ours. A budget measured without its reconcile half would read green for the wrong reason |
 | 2026-10-31 | Liveness probe moves to `/livez`: the kit serves `/healthz` as an alias of `/readyz`. Found while reading `weebo-kit-runtime::health` for the *Health* step |
+| 2026-10-31 | *Perf*: the budget lands without `weebo-kit-perf`. `crates/weebo-si-operator/tests/perf_envtest.rs` spawns the release `controller` binary against the suites' own envtest harness (no Go), converges a fleet of workspace namespaces under `network-profiles`, and reads start time, baseline latency, idle CPU and memory from `/readyz` and `/proc`. The nightly `operator-perf` workflow runs it; the budget and its measurements are in [`operator-performance.md`](../operator-performance.md). Its first 500-namespace run found a namespace waiting 60 s for its baseline when the loop's watch beat the namespace index; `workspace::off_recheck` retries an unindexed namespace after 2 s |

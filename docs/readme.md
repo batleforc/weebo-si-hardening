@@ -20,6 +20,7 @@ Pages](https://batleforc.github.io/weebo-si-hardening/), whose pages point back 
 | [`../site/`](../site/README.md) | The generated CRD reference, with a form and an editor per CRD — [published on GitHub Pages](https://batleforc.github.io/weebo-si-hardening/). |
 | [`ci.md`](./ci.md) | Every CI gate, what it blocks, and how to run it locally. |
 | [`endpoint-auth-performance.md`](./endpoint-auth-performance.md) | What the endpoint-auth gate costs per credential and protocol, where the time goes, and the improvements that follow. |
+| [`operator-performance.md`](./operator-performance.md) | The controller's resource budget — start, convergence, idle CPU, memory — how it is measured, and what was measured. |
 
 ## Reading order for a newcomer
 

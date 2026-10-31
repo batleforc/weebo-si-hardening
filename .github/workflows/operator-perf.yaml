@@ -1,0 +1,67 @@
+name: Operator perf
+# The operator's resource budget (RFC 0012 *Future work*), measured on a **release** build: the
+# `controller` binary itself, against an envtest apiserver, brings a fleet of workspace namespaces
+# under network-profiles while the test reads its start time, convergence latency, idle CPU and
+# memory from the outside. The table lands in the job summary; the run fails when a figure is over
+# its budget. docs/operator-performance.md is what to read it against.
+#
+# Its own workflow rather than a job in perf.yaml: that one measures the endpoint-auth gate a
+# request crosses, this one the operator process a Deployment runs — two budgets, two owners, and
+# a red one should not hide the other.
+#
+# Nightly and on demand, never on a pull request, for the same reason as perf.yaml: a release
+# build is minutes the per-change workflows do not need to pay. `task envtest:operator-perf` is the
+# same run on a laptop.
+on:
+  schedule:
+    # 02:55 UTC — after perf.yaml's 02:40, so the two do not share a runner's noisy neighbour.
+    - cron: "55 2 * * *"
+  workflow_dispatch:
+    inputs:
+      namespaces:
+        description: How many workspace namespaces to converge
+        type: string
+        default: "500"
+      idle_seconds:
+        description: How long the idle CPU window lasts
+        type: string
+        default: "60"
+permissions:
+  contents: read
+concurrency:
+  group: operator-perf-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  perf:
+    name: operator budget (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The same pins and checksum as envtest.yaml — bump them together.
+      ENVTEST_K8S_VERSION: "1.32.0"
+      ENVTEST_SHA512: "3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+      KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
+      # A missing apiserver is a failure here, not a green skip: a perf run that measured nothing
+      # must not look like one that measured well.
+      REQUIRE_ENVTEST: "1"
+      PERF_NAMESPACES: ${{ inputs.namespaces || '500' }}
+      PERF_IDLE_SECONDS: ${{ inputs.idle_seconds || '60' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "1.98.1" # = rust-toolchain.toml and the Containerfiles' base image
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: operator-perf-release
+      - name: Fetch the envtest binaries
+        run: |
+          mkdir -p "$KUBEBUILDER_ASSETS"
+          curl -fsSL -o /tmp/envtest.tar.gz \
+            "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v${ENVTEST_K8S_VERSION}/envtest-v${ENVTEST_K8S_VERSION}-linux-amd64.tar.gz"
+          echo "${ENVTEST_SHA512}  /tmp/envtest.tar.gz" | sha512sum -c -
+          tar xzf /tmp/envtest.tar.gz -C "$KUBEBUILDER_ASSETS" --strip-components=2
+      - name: The controller's budget — start, convergence, idle CPU, memory
+        run: |
+          cargo test --release -p weebo-si-operator --features envtest --test perf_envtest --locked \
+            -- --nocapture
