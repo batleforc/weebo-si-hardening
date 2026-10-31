@@ -86,3 +86,13 @@ jobs:
             { echo "## Cluster tier, Pod Security \`$level\`"; echo; cat "$RUNNER_TEMP/$level.md"; echo; } \
               >> "$GITHUB_STEP_SUMMARY"
           done
+      - name: Node diagnostics
+        if: always()
+        # What a failed preflight needs to be read: the runner's kernel (user namespaces need
+        # idmapped mounts on the node's filesystem), the node's runtimes, and containerd's own errors.
+        run: |
+          uname -r
+          node=weebo-runtimes-control-plane
+          docker exec "$node" sh -c 'containerd --version; runc --version | head -1; findmnt -no FSTYPE /var/lib/containerd /var/lib/kubelet' || true
+          docker exec "$node" journalctl -u containerd -u kubelet --no-pager \
+            | grep -iE 'userns|idmap|user namespace|sandbox' | grep -iE 'error|fail' | tail -n 20 || true
