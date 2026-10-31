@@ -24,6 +24,7 @@
 #   NAMESPACE        Default: weebo-runtime-matrix.
 #   POD_TIMEOUT      seconds to wait for one Pod. Default: 300.
 #   OUT              also write the table to this file.
+#   RENDER_ONLY      set to 1 to print the Pods' YAML and touch no cluster.
 set -eu
 
 RUNTIME_CLASSES=${RUNTIME_CLASSES:-default}
@@ -51,10 +52,12 @@ if [ "${1:-}" = clean ]; then
   exit 0
 fi
 
+if [ "${RENDER_ONLY:-}" != 1 ]; then
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl label namespace "$NAMESPACE" --overwrite \
   "pod-security.kubernetes.io/enforce=$PSA_LEVEL" \
   "pod-security.kubernetes.io/enforce-version=$PSA_VERSION" >/dev/null
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -82,13 +85,15 @@ pod_yaml() { # name image proc runtime_class profile command
 
 for rc in $RUNTIME_CLASSES; do
   for profile in $PROFILES; do
-    echo "$SCENARIOS" | while IFS='|' read -r id image proc cmd; do
+    # printf, not echo: dash's echo would expand the \n inside a command into a line break.
+    printf '%s\n' "$SCENARIOS" | while IFS='|' read -r id image proc cmd; do
       if [ -n "${SCENARIOS_ONLY:-}" ]; then
         case " $SCENARIOS_ONLY " in *" $id "*) ;; *) continue ;; esac
       fi
       name=$(printf '%s-%s-%s' "$rc" "$profile" "$id" | sed 's/weebo-//; s/container-build/cb/' | cut -c 1-63)
-      kubectl -n "$NAMESPACE" delete pod "$name" --ignore-not-found --wait=true >/dev/null
       pod_yaml "$name" "$image" "$proc" "$rc" "$profile" "$cmd" > "$tmp/pod.yaml"
+      if [ "${RENDER_ONLY:-}" = 1 ]; then echo "---"; cat "$tmp/pod.yaml"; continue; fi
+      kubectl -n "$NAMESPACE" delete pod "$name" --ignore-not-found --wait=true >/dev/null < /dev/null
       if ! kubectl apply -f "$tmp/pod.yaml" > "$tmp/apply" 2>&1; then
         cell="❌ admission: $(tr '\n' ' ' < "$tmp/apply" | sed 's/.*violates/violates/' | cut -c 1-110 | tr '|' '/')"
       else
@@ -117,6 +122,12 @@ for rc in $RUNTIME_CLASSES; do
           sleep 3
           waited=$((waited + 3))
         done
+        if [ "$cell" = "❌ timeout" ]; then
+          last=$(kubectl -n "$NAMESPACE" get events --field-selector "involvedObject.name=$name" \
+            --sort-by=.lastTimestamp -o jsonpath='{range .items[-1:]}{.reason}: {.message}{end}' \
+            < /dev/null 2>/dev/null | cut -c 1-100 | tr '|' '/')
+          cell="❌ timeout (${phase:-?}${waiting:+/$waiting}) ${last}"
+        fi
         kubectl -n "$NAMESPACE" delete pod "$name" --wait=false >/dev/null 2>&1 || true
       fi
       echo "| $rc | $profile | $id ($proc) | $cell |" >> "$table"
@@ -124,5 +135,6 @@ for rc in $RUNTIME_CLASSES; do
   done
 done
 
+[ "${RENDER_ONLY:-}" = 1 ] && exit 0
 cat "$table"
 if [ -n "${OUT:-}" ]; then cp "$table" "$OUT"; fi

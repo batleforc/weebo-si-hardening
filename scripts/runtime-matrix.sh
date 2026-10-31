@@ -77,7 +77,8 @@ for rt in $RUNTIMES; do
   bin=$(resolve_runtime "$rt")
   version=$("$bin" --version 2>/dev/null | head -n 1)
   for profile in $PROFILES; do
-    echo "$SCENARIOS" | while IFS='|' read -r id image user proc cmd; do
+    # printf, not echo: dash's echo would expand the \n inside a command into a line break.
+    printf '%s\n' "$SCENARIOS" | while IFS='|' read -r id image user proc cmd; do
       unmask=""
       [ "$proc" = unmasked ] && unmask="--security-opt unmask=ALL"
       # shellcheck disable=SC2086 # $unmask is one option or nothing
