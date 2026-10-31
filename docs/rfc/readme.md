@@ -95,6 +95,8 @@ fails if it is stale.
 | [0010](./0010-endpoint-auth-openshift.md) | endpoint-auth on OpenShift | `Draft` | `bins/endpoint-gateway` |
 | [0011](./0011-teams-and-users.md) | teams and users as objects | `Implemented` | `crates/weebo-si-crd` |
 | [0012](./0012-operator-kit-migration.md) | operator kit migration | `Accepted` | `crates/weebo-si-operator` |
+| [0013](./0013-pod-security.md) | pod-security | `Draft` | `crates/weebo-si-pod-security` |
+| [0014](./0014-resource-quotas.md) | resource-quotas | `Draft` | `crates/weebo-si-resource-quotas` |
 
 <!-- rfc-index:end -->
 
