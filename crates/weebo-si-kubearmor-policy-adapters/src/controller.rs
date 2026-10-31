@@ -45,7 +45,7 @@ use weebo_si_kubearmor_policy::{
 use weebo_si_network_profiles::is_excluded_namespace;
 
 use weebo_si_controller::workspace::{
-    devworkspace_id, devworkspace_owner, devworkspace_resource, off_recheck, warn_held,
+    devworkspace_id, devworkspace_owner, devworkspace_resource, indexed, off_recheck, warn_held,
 };
 
 /// This feature's identifier, as the gate and the log lines name it.
@@ -200,6 +200,8 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         return Ok(Action::await_change());
     }
 
+    // Sampled before the gate, never after: see `off_recheck`.
+    let was_indexed = indexed(ctx.deps.namespace_view.as_ref(), &name);
     let mode = ctx.deps.gate.mode(FeatureId::new(FEATURE), &name);
     if mode == FeatureMode::Off {
         // `mode: Off` is a rollback: the baseline comes away and the posture annotations with it,
@@ -246,10 +248,7 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(off_recheck(
-            ctx.deps.namespace_view.as_ref(),
-            &name,
-        )));
+        return Ok(Action::requeue(off_recheck(was_indexed)));
     }
 
     let teams = ctx.deps.gate.teams();
@@ -302,15 +301,14 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         return Ok(Action::await_change());
     }
 
+    // Sampled before the gate, never after: see `off_recheck`.
+    let was_indexed = indexed(ctx.deps.namespace_view.as_ref(), &namespace);
     let mode = ctx.deps.gate.mode(FeatureId::new(FEATURE), &namespace);
     if mode == FeatureMode::Off {
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
-        return Ok(Action::requeue(off_recheck(
-            ctx.deps.namespace_view.as_ref(),
-            &namespace,
-        )));
+        return Ok(Action::requeue(off_recheck(was_indexed)));
     }
 
     let Some(workspace_id) = devworkspace_id(&obj) else {

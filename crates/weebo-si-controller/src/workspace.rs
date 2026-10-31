@@ -13,22 +13,34 @@ use weebo_si_crd::{DEVWORKSPACE_ID_LABEL, NamespaceName};
 pub const OFF_RECHECK: Duration = Duration::from_secs(60);
 
 /// How soon a namespace the namespace index has not seen yet is looked at again.
-pub const UNINDEXED_RECHECK: Duration = Duration::from_secs(2);
+pub const UNINDEXED_RECHECK: Duration = Duration::from_millis(500);
 
-/// When to reconcile again a namespace the gate answered `Off` for.
+/// When to reconcile again a namespace the gate answered `Off` for, given whether the namespace
+/// index held it **before** the gate was asked.
 ///
 /// The gate reads the namespace's labels from the shared namespace index, a watch of its own. A
 /// loop's watch can deliver a new namespace before that index has it, and the gate then answers
 /// `Off` for a namespace the feature does reach. Waiting [`OFF_RECHECK`] then leaves a new
 /// workspace namespace without its baseline for a minute: `perf_envtest` saw it for about 1% of
-/// 500 namespaces created at once. A namespace the index has not seen is retried in seconds
-/// instead; one it has seen really is out of scope, and keeps the slow recheck.
-pub fn off_recheck(view: &dyn NamespaceView, namespace: &NamespaceName) -> Duration {
-    if view.facts(namespace).is_some() {
+/// 500 namespaces created at once. A namespace the index had not seen is retried after half a
+/// second instead (a retry costs one index lookup, and the lag it waits out is short); one it had
+/// seen really is out of scope, and keeps the slow recheck.
+///
+/// Sample `indexed` before calling the gate, never after: the index can receive the namespace
+/// between the two reads, and a lookup made after an `Off` would then read "seen" and pick the
+/// slow recheck for exactly the namespace the gate could not see. Sampled first, "seen" means the
+/// gate saw it too — a live namespace never leaves the index.
+pub fn off_recheck(indexed: bool) -> Duration {
+    if indexed {
         OFF_RECHECK
     } else {
         UNINDEXED_RECHECK
     }
+}
+
+/// Whether the namespace index holds `namespace` — the sample [`off_recheck`] takes.
+pub fn indexed(view: &dyn NamespaceView, namespace: &NamespaceName) -> bool {
+    view.facts(namespace).is_some()
 }
 
 /// The DevWorkspace's id — the value its pods carry as `controller.devfile.io/devworkspace_id`,
@@ -120,7 +132,7 @@ mod tests {
     fn a_namespace_the_index_has_not_seen_is_retried_in_seconds() {
         let view = FakeNamespaceView::new([]);
         assert_eq!(
-            off_recheck(&view, &NamespaceName::new("new-user-che")),
+            off_recheck(indexed(&view, &NamespaceName::new("new-user-che"))),
             UNINDEXED_RECHECK
         );
     }
@@ -129,6 +141,6 @@ mod tests {
     fn a_namespace_the_index_has_seen_keeps_the_slow_recheck() {
         let name = NamespaceName::new("out-of-scope");
         let view = FakeNamespaceView::new([(name.clone(), NamespaceFacts::default())]);
-        assert_eq!(off_recheck(&view, &name), OFF_RECHECK);
+        assert_eq!(off_recheck(indexed(&view, &name)), OFF_RECHECK);
     }
 }
