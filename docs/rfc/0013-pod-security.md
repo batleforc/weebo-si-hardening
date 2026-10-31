@@ -305,7 +305,8 @@ written for builds, not `Unconfined`.
 
 #### A build workspace: user namespace, then a filter
 
-A build team's workspace is isolated in two layers, and seccomp is the second one.
+A build team's workspace — one that builds images, and one that runs containers in Che's
+container-run mode — is isolated in two layers, and seccomp is the second one.
 
 1. **A user namespace for the pod** (`hostUsers: false`). The workspace's UIDs, root included, map
    to an unprivileged range on the node, and its capabilities only count inside its own user
@@ -337,6 +338,22 @@ config:
 `containers.conf`). The pod's network namespace is the one `network-profiles` writes policy for, so
 a build reaches exactly what its workspace reaches. The alternative, pasta, needs `/dev/net/tun`,
 which a pod does not get by default, and gives a build its own network namespace for no gain.
+
+**Running containers needs nothing more from seccomp.** Che's container-run mode — `podman run`,
+detached services with `exec`, pods, `--userns=keep-id`, custom networks — was measured under
+`container-build.json` with no syscall added. It does need `/dev/net/tun`, which that mode gives
+the workspace, for pasta: a nested container then gets its own network namespace, but its traffic
+still leaves through the pod's, so `network-profiles` still applies to it, and a published port
+stays inside the pod unless a Service or a route exposes it. The chroot profile is not enough for
+it, which is fine: container-run requires user namespaces anyway.
+
+**Nested containers are invisible to `image-policy`.** [RFC 0005](./0005-image-policy.md)'s pod
+webhook sees the images in the workspace pod's spec. An image pulled by `podman run` or by a
+build's `FROM` inside the workspace never appears in any spec, so no team grant applies to it. What
+bounds it today is the network: a workspace pulls only from registries its network profiles reach.
+The control that would name images is a containers `policy.json` and `registries.conf` in the
+workspace, injected per team, which is [RFC 0007](./0007-registry-config.md)'s mechanism. Listed
+under *Future work*.
 
 **The level stays `baseline`.** Builds still need `allowPrivilegeEscalation` for
 `newuidmap`/`newgidmap`, which `restricted` refuses. Whether `baseline` admits `procMount:
@@ -678,6 +695,10 @@ for, and what the runbook must say.
   more than that team's level allows, before any workspace fails to start. This needs a way to
   evaluate a security context without reimplementing the standards, possibly a server-side
   dry-run of a sample pod.
+- **An image policy for nested containers**: a containers `policy.json` (and `registries.conf`)
+  injected per team by `registry-config`, built from the same catalogue as `image-policy`, so a
+  `podman run` or a build's `FROM` inside a workspace is held to the team's grant. Until then, the
+  network profile is what bounds it.
 - **`arm64` profiles.** The generator resolves for one architecture; an `arm64` pool needs its own
   output, with the same Multi-arch trigger as [RFC 0001](./0001-passwd-append.md).
 - **Security Profiles Operator as the distribution on Kubernetes**, with profile recording to keep

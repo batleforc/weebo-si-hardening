@@ -302,6 +302,7 @@
     "uploaders",
     "urlencode",
     "userinfo",
+    "userns",
     "utoipa",
     "validatingwebhookconfiguration",
     "valkey",

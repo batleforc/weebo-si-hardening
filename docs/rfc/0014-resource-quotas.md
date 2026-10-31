@@ -370,6 +370,9 @@ granted profiles. Nothing in a workspace reaches this feature.
   and the number of processes are not counted unless the template names them
   (`requests.ephemeral-storage` is supported, PID limits are a kubelet setting). The template is
   where an admin adds them.
+- **Nested containers.** Containers a workspace runs itself (Che's container-run mode, a build's
+  `RUN` steps) are processes inside the workspace container, so they count against that
+  container's limits and the namespace's quota. They cannot get around either.
 - **Being within quota and still mining.** A quota bounds the damage, it does not detect it.
   Spotting a workspace that uses its full CPU limit for hours is
   [`kubearmor-policy`](./0006-kubearmor-policy.md)'s and monitoring's job.

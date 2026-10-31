@@ -128,6 +128,28 @@ Versions: podman 5.8.9, buildah 1.43.5, crun 1.28, kernel 7.2.13 (Fedora 44), on
 the pod's network namespace. That is also the one `network-profiles` writes policy for, so a build
 reaches exactly what its workspace reaches.
 
+### Running containers (Che's container-run mode)
+
+`container-build.json` also covers running containers, with no syscall added. Measured in the same
+setup, with `/dev/net/tun` as that mode provides it:
+
+| Scenario | `container-build.json` | `container-build-chroot.json` |
+| --- | --- | --- |
+| `podman run` with pasta networking | ✅ | ❌ `pasta failed` |
+| `podman run -d`, then `exec` and `stop` | ✅ | ❌ |
+| `podman pod create` and a container in it | ✅ | — |
+| `podman run --userns=keep-id` | ✅ | — |
+| `podman network create` and a container on it | ✅ | — |
+| egress from a nested container | ✅ | — |
+
+Publishing a port (`-p`) could not be checked here: it failed the same way with every syscall
+allowed, so the cause is this test setup, not the profile. To check on the kind e2e.
+
+A nested container's traffic leaves through the pod's network namespace, so `network-profiles`
+applies to it. A published port stays inside the pod unless a Service or a route exposes it.
+**The images it runs are not checked by `image-policy`**, which only sees the pod's own spec: see
+RFC 0013's *Future work* for the per-team `policy.json` that would close that.
+
 A caveat on `podman build` with `BUILDAH_ISOLATION=oci`: it passed even under the chroot profile,
 which suggests podman did not switch isolation. `buildah build --isolation oci` is the reference
 for OCI isolation.
