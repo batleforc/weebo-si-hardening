@@ -42,7 +42,7 @@ use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -221,6 +221,10 @@ impl Controller {
         self.child.id()
     }
 
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().ok().flatten()
+    }
+
     fn log_tail(&self) -> String {
         let log = std::fs::read_to_string(&self.log).unwrap_or_default();
         let lines: Vec<&str> = log.lines().collect();
@@ -328,7 +332,7 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
     let health_port = free_port().expect("a free port");
     let log = workdir.path().join("controller.log");
     let spawned = Instant::now();
-    let controller = Controller {
+    let mut controller = Controller {
         child: Command::new(env!("CARGO_BIN_EXE_weebo-si-operator"))
             .args([
                 "controller",
@@ -337,9 +341,15 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
             ])
             .env("KUBECONFIG", &kubeconfig)
             .env("POD_NAMESPACE", OPERATOR_NAMESPACE)
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&log).expect("controller log"))
+            .env("RUST_LOG", "info")
+            // Telemetry writes to stdout: both streams go to the log a failure prints.
+            .stdout(std::fs::File::create(&log).expect("controller log"))
+            .stderr(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&log)
+                    .expect("controller log"),
+            )
             .spawn()
             .expect("the controller binary should start"),
         log,
@@ -350,6 +360,12 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
     let ready = loop {
         if http_get(health_port, "/readyz").is_some_and(|(status, _)| status == 200) {
             break spawned.elapsed();
+        }
+        if let Some(status) = controller.exited() {
+            panic!(
+                "the controller exited before it was ready ({status}):\n{}",
+                controller.log_tail()
+            );
         }
         assert!(
             spawned.elapsed() < Duration::from_secs(60),
