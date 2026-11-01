@@ -18,10 +18,12 @@
     reason = "an integration test's assertions ARE its documentation; a failed expect/panic is the test failing"
 )]
 
+use std::collections::BTreeMap;
+
 use weebo_si_e2e::{
     Cleanup, DOMAIN, Endpoint, Ingress, Namespace, OPERATOR_NAMESPACE, RECONCILE, Value, Workspace,
-    WorkspaceSpec, apply, gateway_metric_sum, get, json, kubectl, must, set_features, team, text,
-    wait_until,
+    WorkspaceSpec, apply, ca_file, gateway_metric_sum, get, json, kubectl, must, set_features,
+    team, text, try_apply, wait_until,
 };
 
 fn endpoint_auth() -> Value {
@@ -48,8 +50,8 @@ fn endpoint_auth() -> Value {
     })
 }
 
-/// Team `payments` — alice's and carol's namespaces — reaches `team` and `open` on top of the
-/// cluster's `private`.
+/// Team `payments` — alice's and carol's namespaces — reaches `team`, `shared` and `open` on top
+/// of the cluster's `private`.
 fn payments_team() -> Cleanup {
     team(
         "e2e-payments",
@@ -59,6 +61,7 @@ fn payments_team() -> Cleanup {
             "features": { "endpointAuth": {
                 "catalog": [
                     { "key": "team", "delegation": ["Team"] },
+                    { "key": "shared", "delegation": ["Team", "UsersAndGroups"] },
                     { "key": "open", "anonymous": true, "delegation": [] },
                 ],
                 "default": "private",
@@ -301,10 +304,33 @@ fn an_open_rule_serves_one_path_to_anybody_and_nothing_else() {
     assert_eq!((code, body.as_str()), (200, "ok\n"));
     let (code, _) = unauthenticated(&ingress, &served.host, "/");
     assert_eq!(code, 401, "every other path stays behind the gate");
-    let (code, _, _) = status(&ingress, &served.host, "/healthz/../", None);
-    assert_ne!(
-        code, 200,
-        "a path that normalises elsewhere must not ride the open rule"
+
+    // The path-confusion corpus, through the real router. Sent with `curl --path-as-is`, not
+    // with the Rust client: `reqwest` collapses `.` and `..` before the request leaves the
+    // process, so a dot-segment attempt would arrive already normalised and the assertion would
+    // pass without having tested anything. An attacker's client does no such favour.
+    // cspell:ignore fheaders -- a fragment of the `%2f` encodings below, not a word
+    for attempt in [
+        "/healthz/../",
+        "/healthz/../headers",
+        "/healthz/..%2fheaders",
+        "/healthz%2f..%2fheaders",
+        "/./healthz/../headers",
+        "//healthz/../headers",
+        "/healthz/./../headers",
+        "/healthz/%2e%2e/headers",
+    ] {
+        let code = raw_get(&ingress, &served.host, attempt);
+        assert_ne!(
+            code, 200,
+            "{attempt:?} reached the workspace: the gate and Traefik disagree about what path \
+             this request has"
+        );
+    }
+    assert_eq!(
+        raw_get(&ingress, &served.host, "/healthz"),
+        200,
+        "the open path must still answer when asked for literally"
     );
 }
 
@@ -396,11 +422,18 @@ fn a_developer_cannot_take_the_gate_off_their_own_endpoint() {
         "jsonpath={.items[0].metadata.name}",
     ]);
 
+    let chain = format!("{OPERATOR_NAMESPACE}-weebo-si-endpoint-auth@kubernetescrd");
     for (key, value) in [
-        ("hardening.weebo.io/endpoint-auth", "bypass"),
+        ("hardening.weebo.io/endpoint-auth", "bypass".to_string()),
         (
             "traefik.ingress.kubernetes.io/router.middlewares",
-            "default-nothing@kubernetescrd",
+            "default-nothing@kubernetescrd".to_string(),
+        ),
+        // Prepended, with the gate still in the chain: a middleware that runs before
+        // `forwardAuth` rewrites what the gate is asked about, so the chain is pinned by value.
+        (
+            "traefik.ingress.kubernetes.io/router.middlewares",
+            format!("default-nothing@kubernetescrd,{chain}"),
         ),
     ] {
         let err = kubectl(&[
@@ -702,5 +735,442 @@ fn the_gate_costs_a_short_in_cluster_hop_on_connections_it_keeps() {
         opened <= 4.0,
         "{SAMPLES} gated requests opened {opened} connections to the gateway — Traefik is not \
          keeping its `forwardAuth` connections"
+    );
+}
+
+// --- helpers for the rows below ------------------------------------------------------------------
+
+/// `GET` with `curl --path-as-is`: the request line exactly as written, through the port-forward.
+fn raw_get(ingress: &Ingress, host: &str, path: &str) -> u16 {
+    let output = std::process::Command::new("curl")
+        .args([
+            "--silent",
+            "--path-as-is",
+            "--cacert",
+            &ca_file(),
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--resolve",
+            &format!("{host}:{}:127.0.0.1", ingress.port),
+            &ingress.url(host, path),
+        ])
+        .output()
+        .expect("curl should run");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| {
+            panic!(
+                "curl should report a status for {path:?}: {:?}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })
+}
+
+/// The JSON a token endpoint answers a password grant with.
+fn password_grant(
+    ingress: &Ingress,
+    realm: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+    user: &str,
+) -> Value {
+    let mut form = vec![
+        ("grant_type", "password"),
+        ("client_id", client_id),
+        ("username", user),
+        ("password", user),
+        ("scope", "openid"),
+    ];
+    if let Some(secret) = client_secret {
+        form.push(("client_secret", secret));
+    }
+    ingress
+        .client
+        .post(ingress.url(
+            &format!("sso.{DOMAIN}"),
+            &format!("/realms/{realm}/protocol/openid-connect/token"),
+        ))
+        .form(&form)
+        .send()
+        .and_then(reqwest::blocking::Response::json)
+        .unwrap_or_else(|err| panic!("token for {user} on {realm}/{client_id}: {err}"))
+}
+
+/// Split an absolute `https://` URL into its host and the rest, so it can be re-addressed to the
+/// port-forward. Every `Location` in the sign-in flow is absolute and carries no port.
+fn split_url(url: &str) -> (String, String) {
+    let rest = url
+        .strip_prefix("https://")
+        .unwrap_or_else(|| panic!("not an https URL: {url}"));
+    match rest.find('/') {
+        Some(at) => (rest[..at].to_string(), rest[at..].to_string()),
+        None => (rest.to_string(), "/".to_string()),
+    }
+}
+
+/// The cookies a browser would hold, per host: name → value, no attributes.
+#[derive(Default)]
+struct Jar(BTreeMap<String, BTreeMap<String, String>>);
+
+impl Jar {
+    fn absorb(&mut self, host: &str, response: &reqwest::blocking::Response) {
+        for header in response.headers().get_all("set-cookie") {
+            let Ok(header) = header.to_str() else {
+                continue;
+            };
+            let pair = header.split(';').next().unwrap_or(header);
+            let Some((name, value)) = pair.split_once('=') else {
+                continue;
+            };
+            let host = self.0.entry(host.to_string()).or_default();
+            if value.is_empty() {
+                host.remove(name.trim());
+            } else {
+                host.insert(name.trim().to_string(), value.trim().to_string());
+            }
+        }
+    }
+
+    fn header(&self, host: &str) -> String {
+        self.0
+            .get(host)
+            .map(|cookies| {
+                cookies
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default()
+    }
+
+    fn get(&self, host: &str, name: &str) -> Option<String> {
+        self.0
+            .get(host)
+            .and_then(|cookies| cookies.get(name))
+            .cloned()
+    }
+}
+
+/// One step of the browser's walk: `GET` the URL with the jar's cookies for its host, as a
+/// navigation, absorbing what it sets. Returns the status and the `Location`.
+fn walk(ingress: &Ingress, jar: &mut Jar, url: &str) -> (u16, String, String) {
+    let (host, rest) = split_url(url);
+    let response = settled(|| {
+        ingress
+            .client
+            .get(ingress.url(&host, &rest))
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Cookie", jar.header(&host))
+            .send()
+            .unwrap_or_else(|err| panic!("GET {url}: {err}"))
+    });
+    jar.absorb(&host, &response);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let code = response.status().as_u16();
+    (code, location, response.text().unwrap_or_default())
+}
+
+/// Sign `user` in through the real flow — the gate's redirect, `/host-session`, `/oidc/start`,
+/// Keycloak's login form, `/oidc/callback`, the grant — and return the host cookie minted for
+/// `host`, with the jar as the browser would hold it.
+fn sign_in(ingress: &Ingress, host: &str, user: &str) -> (Jar, String) {
+    let mut jar = Jar::default();
+    let mut url = format!("https://{host}/");
+    // Hop by hop, so a wrong turn names the hop it took.
+    let mut hops = 0;
+    loop {
+        hops += 1;
+        assert!(
+            hops < 12,
+            "the sign-in flow did not settle after {hops} hops; last at {url}"
+        );
+        let (code, location, body) = walk(ingress, &mut jar, &url);
+        match code {
+            302 | 303 => {
+                url = location;
+                // The grant has been redeemed: the host cookie is set, and the redirect is to
+                // the endpoint without it.
+                if let Some(cookie) = jar.get(host, "__Host-weebo-endpoint") {
+                    return (jar, cookie);
+                }
+            }
+            200 if body.contains("kc-form-login") => {
+                // Keycloak's login page: post the form where it says to.
+                let action = body
+                    .split("kc-form-login")
+                    .nth(1)
+                    .and_then(|form| form.split("action=\"").nth(1))
+                    .and_then(|rest| rest.split('"').next())
+                    .unwrap_or_else(|| panic!("no form action in Keycloak's login page: {body}"))
+                    .replace("&amp;", "&");
+                let (sso_host, rest) = split_url(&action);
+                let response = ingress
+                    .client
+                    .post(ingress.url(&sso_host, &rest))
+                    .header("Cookie", jar.header(&sso_host))
+                    .form(&[("username", user), ("password", user), ("credentialId", "")])
+                    .send()
+                    .unwrap_or_else(|err| panic!("POST {action}: {err}"));
+                jar.absorb(&sso_host, &response);
+                assert_eq!(
+                    response.status().as_u16(),
+                    302,
+                    "Keycloak did not accept {user}'s password: {}",
+                    response.text().unwrap_or_default()
+                );
+                url = response
+                    .headers()
+                    .get("location")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            other => panic!("unexpected {other} at {url} during sign-in: {body}"),
+        }
+    }
+}
+
+/// A navigation to `host` carrying one host cookie and nothing else.
+fn with_host_cookie(ingress: &Ingress, host: &str, cookie: &str) -> (u16, String, String) {
+    let response = settled(|| {
+        ingress
+            .client
+            .get(ingress.url(host, "/"))
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Cookie", format!("__Host-weebo-endpoint={cookie}"))
+            .send()
+            .unwrap_or_else(|err| panic!("GET https://{host}/: {err}"))
+    });
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (
+        response.status().as_u16(),
+        location,
+        response.text().unwrap_or_default(),
+    )
+}
+
+// --- the rows RFC 0009's end-to-end line asks for, through the real stack -----------------------
+
+#[test]
+fn a_teammate_is_shut_out_once_an_override_narrows_the_owner() {
+    let _team = setup();
+    let alice = Namespace::workspace("alice", "gate-override", Some("payments"));
+    let _carol = Namespace::workspace("carol", "gate-override", Some("payments"));
+    let served = serve(
+        &alice,
+        "narrowed",
+        json!({ "hardening.weebo.io/access": "team" }),
+    );
+    let ingress = Ingress::open();
+
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("carol")));
+    assert_eq!(code, 200, "carol shares alice's team");
+
+    // The admin takes sharing away from alice — the hard form of an override, a delegation
+    // ceiling of nothing — while leaving her the keys. The endpoint still says `team`, still
+    // compiles, and the team is no longer in it: an override can only ever take away.
+    let mut narrowed = endpoint_auth();
+    narrowed["overrides"] = json!([{
+        "match": { "users": ["alice"] },
+        "delegation": [],
+    }]);
+    set_features(json!({ "endpointAuth": narrowed }));
+    wait_until("the gateway to apply the override", RECONCILE, || {
+        let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("carol")));
+        if code == 403 {
+            Ok(())
+        } else {
+            Err(format!("carol still gets {code}"))
+        }
+    });
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("alice")));
+    assert_eq!(
+        code, 200,
+        "the owner keeps their own endpoint under an override"
+    );
+}
+
+#[test]
+fn a_user_the_owner_named_opens_a_shared_endpoint_without_being_a_teammate() {
+    let _team = setup();
+    let ns = Namespace::workspace("alice", "gate-shared", Some("payments"));
+    let served = serve(
+        &ns,
+        "shared",
+        json!({
+            "hardening.weebo.io/access": "shared",
+            "hardening.weebo.io/allow-users": "bob",
+        }),
+    );
+    let ingress = Ingress::open();
+
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("bob")));
+    assert_eq!(code, 200, "bob is named on the endpoint");
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("carol")));
+    assert_eq!(code, 200, "`shared` delegates to the team too");
+}
+
+#[test]
+fn a_token_for_another_audience_an_id_token_and_another_issuers_token_are_all_refused() {
+    let _team = setup();
+    let ns = Namespace::workspace("alice", "gate-tokens", Some("payments"));
+    let served = serve(&ns, "tokens", json!({}));
+    let ingress = Ingress::open();
+    let bearers = "weebo_si_endpoint_auth_bearer_total";
+
+    // The same realm, the same user, a client whose audience mapper names `kubernetes`: what
+    // the IDE's own token would look like if Che forwarded one.
+    let before = gateway_metric_sum(bearers, &[("result", "wrong_audience")]);
+    let other_audience = password_grant(
+        &ingress,
+        "che",
+        "che-client",
+        Some("che-client-secret"),
+        "alice",
+    );
+    let (code, _, _) = status(
+        &ingress,
+        &served.host,
+        "/",
+        Some(text(&other_audience, "/access_token").as_str()),
+    );
+    assert_eq!(
+        code, 401,
+        "a token minted for another audience is not an identity here"
+    );
+    assert!(
+        gateway_metric_sum(bearers, &[("result", "wrong_audience")]) > before,
+        "the refusal should be counted as `wrong_audience`"
+    );
+
+    // The right client, the wrong one of its two tokens.
+    let before = gateway_metric_sum(bearers, &[("result", "id_token")]);
+    let own = password_grant(
+        &ingress,
+        "che",
+        "endpoint-gateway",
+        Some("endpoint-gateway-secret"),
+        "alice",
+    );
+    let id_token = text(&own, "/id_token");
+    assert!(
+        !id_token.is_empty(),
+        "the password grant should return an ID token: {own}"
+    );
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&id_token));
+    assert_eq!(code, 401, "an ID token is never an access token");
+    assert!(
+        gateway_metric_sum(bearers, &[("result", "id_token")]) > before,
+        "the refusal should be counted as `id_token`"
+    );
+
+    // Keycloak's own `master` realm: a validly signed token from an issuer this gateway does
+    // not trust.
+    let before = gateway_metric_sum(bearers, &[("result", "foreign")]);
+    let foreign = password_grant(&ingress, "master", "admin-cli", None, "admin");
+    let (code, _, _) = status(
+        &ingress,
+        &served.host,
+        "/",
+        Some(text(&foreign, "/access_token").as_str()),
+    );
+    assert_eq!(code, 401, "another issuer's token is nobody");
+    assert!(
+        gateway_metric_sum(bearers, &[("result", "foreign")]) > before,
+        "the refusal should be counted as `foreign`"
+    );
+
+    // ...and alice's real token still opens the same endpoint, so the three rows above are
+    // refusals rather than an endpoint that refuses everything.
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("alice")));
+    assert_eq!(code, 200);
+}
+
+#[test]
+fn a_host_cookie_minted_for_one_endpoint_is_refused_on_another() {
+    let _team = setup();
+    let ns = Namespace::workspace("alice", "gate-cookie", Some("payments"));
+    let first = serve(&ns, "first", json!({}));
+    let second = serve(&ns, "second", json!({}));
+    let ingress = Ingress::open();
+
+    // The browser's own path: the gate's redirect, Keycloak's form, the grant, the host cookie.
+    let (_, cookie) = sign_in(&ingress, &first.host, "alice");
+    let (code, _, body) = with_host_cookie(&ingress, &first.host, &cookie);
+    assert_eq!(
+        (code, body.as_str()),
+        (200, "hello from the workspace\n"),
+        "the host cookie opens the endpoint it was minted for"
+    );
+
+    // Same owner, same cluster, same session: the cookie is bound to the host it was minted
+    // for, and on another host it is not an identity — B2 in RFC 0009's changelog.
+    let (code, location, _) = with_host_cookie(&ingress, &second.host, &cookie);
+    assert_eq!(
+        code, 302,
+        "alice's cookie for {} replayed on {} must not open it",
+        first.host, second.host
+    );
+    assert!(
+        location.starts_with(&format!("https://auth.{DOMAIN}/host-session?rd=")),
+        "the replay is sent to sign in on its own host: {location}"
+    );
+    drop(second.workspace);
+    drop(first.workspace);
+}
+
+#[test]
+fn a_second_namespace_claiming_a_host_the_patterns_give_to_another_is_refused() {
+    let _team = setup();
+    let bob = Namespace::workspace("bob", "gate-claim", None);
+    let ingress_for = |name: &str, host: &str| {
+        json!({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "Ingress",
+            "metadata": { "name": name, "namespace": bob.name },
+            "spec": {
+                "ingressClassName": "traefik",
+                "rules": [{
+                    "host": host,
+                    "http": { "paths": [{
+                        "path": "/", "pathType": "Prefix",
+                        "backend": { "service": { "name": "app", "port": { "number": 8080 } } },
+                    }] },
+                }],
+            },
+        })
+        .to_string()
+    };
+
+    let stolen = try_apply(&ingress_for("steal", &format!("alice-ws-web.{DOMAIN}")));
+    let err = stolen.expect_err(
+        "a host the ownership patterns read as alice's must be refused in bob's namespace",
+    );
+    assert!(
+        err.contains("does not belong"),
+        "the refusal should name the reason: {err}"
+    );
+
+    // His own host is admitted, and comes back gated.
+    apply(&ingress_for("mine", &format!("bob-ws-web.{DOMAIN}")));
+    let own = get(&["ingress", "-n", &bob.name, "mine"]).expect("the admitted Ingress");
+    assert_eq!(
+        text(&own, MIDDLEWARES),
+        format!("{OPERATOR_NAMESPACE}-weebo-si-endpoint-auth@kubernetescrd"),
+        "a developer's own Ingress is gated on the way in"
     );
 }

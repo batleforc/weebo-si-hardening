@@ -1,10 +1,10 @@
 ---
 rfc: 0012
 title: operator kit migration
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-01
 decided: 2026-10-31
 brick: crates/weebo-si-operator
 supersedes: []
@@ -394,9 +394,9 @@ nightly e2e green with no expected value edited, and `task crd:check` clean with
 - [x] Docs site: `site/` on `@weebo/operator-docs`, the CRD reference generated from the
       chart's `crds/`, published to GitHub Pages in place of `docs/generator/`, which is removed
 - [x] Perf: a budget of our own, measured by `perf_envtest` on a release build — see *Changelog*
-- [ ] Docs updated: `operator-internals.md` (crate map, *Adding a feature*), `repo-layout.md`,
+- [x] Docs updated: `operator-internals.md` (crate map, *Adding a feature*), `repo-layout.md`,
       each brick page's *Reading the logs* and *Observability*, and `ci.md`
-- [ ] RFC flipped to `Implemented`
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -413,6 +413,7 @@ nightly e2e green with no expected value edited, and `task crd:check` clean with
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | `Implemented`. The `upgrade` e2e suite ran green in CI on 2026-10-31 (v0.2.1 → kit build), the docs step is done (`operator-internals.md` crate map and *Adding a feature*, `repo-layout.md`, `ci.md`, the brick pages) and nothing in the plan is open. Still deferred: the budget on `weebo-kit-perf` (*Future work*), and the `deny.toml` ignore of RUSTSEC-2026-0387 (crypto-bigint 0.5 via `jsonwebtoken`, verify-only) until `jsonwebtoken` moves to elliptic-curve 0.14 |
 | 2026-10-31 | `weebo-kit-testkit` dropped from the plan, `weebo-si-envtest-support` kept. The kit's harness runs RBAC only, so it cannot authenticate several identities with `AlwaysAllow`, which the guard suites need so that the webhook's verdict is what gets tested (`start_with_identities`). It has no webhook TLS helpers. It also needs Go and `libclang` at build time through `bindgen`, and CI has neither. Found while starting the *Tests* step |
 | 2026-10-31 | The kit's shared tasks and `templates/kit.yaml` dropped from the plan. Our `rust:*` tasks run with `--locked` and `--all-features` and split the e2e crate out, and the kit's do neither. `kit:cog` would re-render our `cog.toml` from the kit's template and lose its hooks (`task recu`, gitleaks, the whitespace scripts). The kit tag is bumped by hand in `Cargo.toml` |
 | 2026-10-31 | *Dedup* had nothing to do: the three `model/diff.rs` files already re-export `chassis::managed`'s algorithm since RFC 0006, and keep only their feature's `Managed` impl and `DesiredState`, which are feature-specific by design. The *Motivation* bullet came from a survey that read the file names, not their contents |

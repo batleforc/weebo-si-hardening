@@ -1,10 +1,10 @@
 ---
 rfc: 0009
 title: endpoint-auth
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-09-13
-updated: 2026-10-04
+updated: 2026-11-01
 decided: 2026-09-13
 brick: crates/weebo-si-endpoint-auth
 supersedes: []
@@ -2700,22 +2700,25 @@ the command that established it, so the next reader is not asked to take this RF
       by value, an unusable rule list refused with its reason, break-glass allowed for a listed
       identity and refused for a developer, `DELETE` allowed. Still absent there: reconcile
       convergence and the `podNetwork`/probe table, which need the controller and a network
-- [ ] End-to-end: owner allowed, non-owner denied, teammate allowed by `[Team]` and denied once an
+- [x] End-to-end: owner allowed, non-owner denied, teammate allowed by `[Team]` and denied once an
       override narrows them, delegated user allowed, verified bearer allowed,
       foreign bearer `401`, a same-realm token for another audience `401`, an ID token `401`,
       the IDE's own access token allowed once the audience mapper exists, cross-host cookie replay denied, `/healthz` open while `/actuator/` is
       not, path-confusion corpus, a prepended header-rewriting middleware refused at admission, a
       second namespace claiming the same host refused.
-      **Most of these rows now exist somewhere, and this line is still open**, because the thing
-      it asks for is all of them *at once, through the real stack, against a real identity
-      provider* — which is what catches the disagreements between layers that each layer's own
-      suite cannot. Where they are today: owner/non-owner, `/healthz` open while `/actuator/` is
-      not, and the path-confusion corpus through a real router are in the conformance suite; the
-      four token rows are in `bins/endpoint-gateway/src/adapters/oidc.rs` against a throwaway
-      ES256 realm; the delegation and override rows are in the domain's tables; cross-host cookie
-      replay is in `adapters/session.rs`; the prepended middleware and the contested host are in
-      `endpoint_auth_envtest.rs`. The one row with no home at all is the IDE's own access token,
-      which *Which tokens are ours* establishes does not exist
+      **All of them at once, through the real stack, against a real identity provider**:
+      `crates/weebo-si-e2e/tests/endpoint_auth.rs`, the nightly `endpoint-auth` suite against
+      the kind cluster running Eclipse Che, Traefik and Keycloak (`task e2e:run
+      SUITE=endpoint-auth`). The token rows are minted by the rig's Keycloak — `che-client` for
+      the other audience, the password grant's own `id_token`, the `master` realm for the foreign
+      issuer — and each refusal is asserted on `weebo_si_endpoint_auth_bearer_total` as well as
+      on the status, so a `401` for the wrong reason fails. The cookie row walks the browser's
+      whole sign-in (the gate's redirect, `/host-session`, `/oidc/start`, Keycloak's form,
+      `/oidc/callback`, the grant) and replays the host cookie on a second host. The corpus is
+      sent with `curl --path-as-is`, because `reqwest` normalises dot segments before they
+      leave the process — the suite's earlier `/healthz/../` row had been asserting nothing.
+      The one row with no home at all is the IDE's own access token, which *Which tokens are
+      ours* establishes does not exist; the `che-client` row is its nearest shape
 - [x] *Developer continuity* as an executable table —
       `crates/weebo-si-endpoint-auth/tests/developer_continuity.rs`, one test per row, with the
       four wire-level rows it cannot cover named in the suite rather than dropped
@@ -2727,7 +2730,7 @@ the command that established it, so the next reader is not asked to take this RF
       `OpenShiftRoute` line above**: admission and serving a request are different facts, and no
       router has served one yet
 - [x] Docs updated: `docs/weebosiconfig.md`, `docs/bricks/endpoint-gateway.md`
-- [ ] RFC flipped to `Implemented`
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -2757,6 +2760,7 @@ the command that established it, so the next reader is not asked to take this RF
 
 | Date | Change |
 | ---- | ------ |
+| 2026-11-01 | **`Implemented`.** The last open line — the end-to-end rows *at once, through the real stack, against a real identity provider* — is the nightly `endpoint-auth` suite, which had been running green since 2026-10-05 with nine of its rows and now carries them all: the override narrowing a teammate out, a user named on a `shared` endpoint, the three refused token shapes (another audience, an ID token, another issuer) counted on the bearer metric, the browser's whole sign-in ending in a host cookie that a second host refuses, the path-confusion corpus through Traefik with `--path-as-is`, the chain prepended as well as replaced, and a second namespace refused a host the patterns give to another. Found on the way: the suite's `/healthz/../` row was sent through `reqwest`, which collapses dot segments before the request leaves the process, so it had always passed on a normalised path — the conformance suite had written down the same trap in 2026-09 and the e2e row had not read it. OpenShift stays RFC 0010's; *Future work* is unchanged. |
 | 2026-10-05 | **Pod-address identity never worked behind Traefik, and the conformance suite passed anyway.** Found on the first enforced cluster: a workspace calling its own endpoint got `401`, while its service-account token passed. The `Middleware` sets `trustForwardHeader: false`, and Traefik's `forwardAuth` then deletes `X-Real-Ip` with the `X-Forwarded-*` headers from the `/auth` request and sets `X-Forwarded-For` to the connection's address alone. The gateway read `X-Real-Ip`, so `client_address` was always empty. The suite's forged-address row passed because the header never arrived, not because Traefik overwrote it, and nothing asserted the positive half; the probe passed because it reads the header on the ordinary proxy path, where Traefik does set `X-Real-Ip`. Fixed: `client_ip_header` defaults to `X-Forwarded-For` and its rightmost entry is read; the suite gains a pod with a loopback address (`127.0.0.2`) that reaches its own endpoint by address alone and is refused at another's, and the forged row covers both headers; a trusted gateway that receives no address counts `self_origin_total{result="missing_header"}` and warns once. haproxy-ingress forwards only `x-real-ip` and keeps it. Also found on that rollout: the controller requeued every `Ingress` for 300 s while not yet the leader (every other loop uses 15 s), and a `*.rbac.enabled` switch never reached a running controller, which reads its grants at start; the controller pod now carries a checksum of the RBAC. |
 | 2026-10-04 | **The `Nginx` dialect is removed.** ingress-nginx is archived upstream, and this project no longer runs or supports it. The variant, its annotations and the `auth-keepalive` pin are gone from the CRD; the kind E2E rig and the Che spike rig now run Traefik, and the ground-truth rows 6 to 6e went with the dialect. The decisions above that mention `Nginx` are kept as the record of what was decided at the time. What the removal found on its way out: `auth-keepalive` is silently ignored while ingress-nginx serves HTTP/2, its default, so the connection reuse that annotation was written to buy had never happened on a default install. |
 | 2026-09-29 | **Second hardening pass on the gateway.** (1) **`TokenReview` is bounded in front of the call, not by the negative cache**: the cache is keyed per token while "worth a review" was an unsigned payload containing `kubernetes.io`, so varying one byte flooded the apiserver. A review now needs the token's unverified `iss` to be the cluster's service-account issuer (read from the gateway's own mounted token) and a claimed `exp` in the future; concurrent requests with one token share one call; and a concurrency cap (16) plus token buckets — cluster-wide and per client key — sit in front of it. Over a limit the token fails closed, uncached. (2) **The self-origin probe could not reach its own replica**: its token was random per process and the probe returns through the public `Ingress` to whichever replica the `Service` picks, so two times in three it got a `404` and was inconclusive — while `Auto` had started *trusted* and a revocation held on one replica only. The token is now HMAC-SHA256 of the shared session key over `weebo selftest` (any key is accepted, for rotations); `Auto` starts **untrusted** and only a conclusive probe (the forged address stripped or overwritten) turns it on — which reverses *Checking that assumption*'s "the probe never turns it on" for `Auto` specifically, because starting on was trusting an unverified network; a forgery is recorded as an annotation on the revocation `ConfigMap`, turning it off on every replica until an admin removes it; an inconclusive probe retries with backoff and a trust not re-confirmed for three intervals lapses. (3) **Identity headers come from the decision**: `identity_of` re-resolved the caller cookie-first, accepting grants, ignoring revocation — so the name an application was told could differ from the one authorised. `Gateway::authorize_resolved` returns the credential `decide()` read and the headers are set from exactly it. (4) A failed first JWKS fetch is retried with backoff instead of after ten minutes of `503`. (5) Back-channel logout has its own, higher limit and answers `503` over it — the identity provider's single egress address made a realm-wide logout `429` against the sign-in bucket, and it does not retry. (6) The limiter keys on the client-address header only from a `trusted_proxy` peer, and evicts by sweeping at most 16 of the oldest buckets instead of a full scan under the lock. (7) An unknown `kid` requests a JWKS refresh (and is `unverifiable`) only when the unverified `iss` is ours — it fired for every service-account token. (8) `/sign_out` is same-origin only. (9) The callback clears the state cookie on the `error=access_denied` branch too. (10) `backchannel_logout.enabled: false` now answers `404` and the chart stops routing it; `rules.reject_unnormalised_path: false` is a refusal to start (the decision always enforces it); `rd` refuses fragments and non-443 ports; a grant redemption with a forwarded URI that is not a path is `400`; the revocation `ConfigMap` is merge-patched (server-side apply under one shared field manager removed the previous revocation on every write), pruned on every write and capped at 10 000 live entries, refusing loudly past it. |
