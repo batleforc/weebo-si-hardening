@@ -1,7 +1,7 @@
 ---
 rfc: 0014
 title: resource-quotas
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-10-31
 updated: 2026-11-01
@@ -519,7 +519,7 @@ but it is one more write than before.
       removed at `Off` with a foreign quota left alone, an invalid profile written nowhere, and a
       measurement of whether the refusal reaches the DevWorkspace status.
 - [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
-- [ ] RFC flipped to `Implemented`
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -536,5 +536,6 @@ but it is one more write than before.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | `Implemented`: every plan item shipped, the kind e2e suite green. |
 | 2026-11-01 | Measured on kind: a quota refusal reaches the DevWorkspace status with the quota's name and numbers, and the workspace goes `Failed`. |
 | 2026-11-01 | `Accepted`. Templates live in a dedicated, pod-less namespace, and a ref elsewhere is a validation failure. The "has a default" rule follows LimitRanger's fallbacks (`defaultRequest` → `default` → `max`). Two more rules: every quantity parses, every ref is in the template namespace. `reconcile_total` gains `result="invalid"`. |

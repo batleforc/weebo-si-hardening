@@ -248,9 +248,10 @@ can have a user namespace at all.
 | Handler (Talos extension) | For workspaces | Status |
 | --- | --- | --- |
 | runc (containerd default) | **yes**, today's default | measured locally (runc 1.5.2): same result as crun on every scenario |
-| crun (`siderolabs/crun`) | yes, if a `RuntimeClass` is added | measured locally (crun 1.28) |
-| youki (`siderolabs/youki`) | not until measured | cluster tier only; user-namespace support unverified |
-| gVisor, Kata | not installed | cluster tier only; by default neither applies the pod's seccomp profile — see the matrix |
+| crun (`siderolabs/crun`) | yes, if a `RuntimeClass` is added | measured locally (crun 1.28) and as Pods on kind (crun 1.30.1): runc's results |
+| youki (`siderolabs/youki`) | **not for a build workspace** | containerd 2.2 refuses it a `hostUsers: false` pod; without a user namespace it does apply the profile |
+| gVisor (`siderolabs/gvisor`) | **not for a build workspace** | not installed; containerd 2.2 refuses it a `hostUsers: false` pod — see the matrix |
+| Kata (`siderolabs/kata-containers`) | not measured | not installed; needs a test cluster with virtualization |
 | wasmedge (`siderolabs/wasmedge`) | no | runs WebAssembly modules, not a workspace image |
 
 Nothing here needs a new runtime: runc, the default, covers the build setup. The comparison of
