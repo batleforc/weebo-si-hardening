@@ -129,3 +129,6 @@ tasks:
       # RFC 0014's suite: it writes ResourceQuota and LimitRange objects, including a foreign one
       # it must leave alone.
       - cargo test --workspace --features envtest --test resource_quotas_envtest -- --test-threads=1
+      # RFC 0013's OpenShift half: it installs a SecurityContextConstraints CRD so that
+      # `backend: Auto` resolves to ObserveSynced, which no other suite's apiserver may serve.
+      - cargo test --workspace --features envtest --test openshift_pod_security_envtest -- --test-threads=1
