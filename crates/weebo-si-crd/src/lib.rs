@@ -23,6 +23,7 @@ pub mod pod_security;
 pub mod policy_guard;
 pub mod registry_config;
 pub mod resolved;
+pub mod resource_quotas;
 pub mod selector;
 pub mod spec;
 pub mod team;
@@ -86,6 +87,11 @@ pub use registry_config::{
     SourceKind, TeamRegistryConfig, copy_name,
 };
 pub use resolved::Resolved;
+pub use resource_quotas::{
+    QuotaCatalog, QuotaGrant, QuotaNamespaceSelection, QuotaProfile, QuotaProfileKey,
+    ResolvedResourceQuotasConfig, ResourceQuotasConfig, ResourceQuotasConfigViolation,
+    TeamResourceQuotas,
+};
 pub use selector::{Expression, Operator, Selector};
 pub use spec::{
     FeatureState, FeatureStatus, Features, ResolveConflict, ResolvedFeatures, SINGLETON_NAME,

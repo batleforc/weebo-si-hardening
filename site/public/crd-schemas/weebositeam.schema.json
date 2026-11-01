@@ -409,6 +409,76 @@
             }
           },
           "type": "object"
+        },
+        "resourceQuotas": {
+          "description": "This team's `resource-quotas` profiles and default, per RFC 0014.",
+          "nullable": true,
+          "properties": {
+            "catalog": {
+              "default": [],
+              "description": "This team's profiles, merged into the cluster catalogue at resolution.",
+              "items": {
+                "description": "One profile: at most one `ResourceQuota` template and at most one `LimitRange` template, at\nleast one of the two.",
+                "properties": {
+                  "key": {
+                    "description": "The key a grant or the namespace annotation names.",
+                    "type": "string"
+                  },
+                  "limitRangeRef": {
+                    "description": "The `LimitRange` whose `spec` is copied as `weebo-limits`.",
+                    "nullable": true,
+                    "properties": {
+                      "name": {
+                        "description": "The template object's name.",
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "description": "The namespace it lives in.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "namespace"
+                    ],
+                    "type": "object"
+                  },
+                  "quotaRef": {
+                    "description": "The `ResourceQuota` whose `spec` is copied as `weebo-quota`.",
+                    "nullable": true,
+                    "properties": {
+                      "name": {
+                        "description": "The template object's name.",
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "description": "The namespace it lives in.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "namespace"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "default": {
+              "description": "The profile a namespace of this team gets when it names none.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "default"
+          ],
+          "type": "object"
         }
       },
       "type": "object"

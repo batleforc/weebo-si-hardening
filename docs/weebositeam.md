@@ -190,6 +190,7 @@ delegation means. What this page adds is how a team's block combines with the cl
 | [`registryConfig`](#featuresregistryconfig) | `{key, ecosystem, sources[]}` | list of keys, `[]` | **its own keys only** |
 | [`endpointAuth`](#featuresendpointauth) | `{key, anonymous, delegation[]}` | **one** key, **required** | its own keys, plus the cluster `default` |
 | [`podSecurity`](#featurespodsecurity) | — no catalogue | `level`, `warnLevel` | its `level`, never looser than the cluster `ceiling` |
+| [`resourceQuotas`](#featuresresourcequotas) | `{key, quotaRef?, limitRangeRef?}` | **one** key, **required** | its own profiles, plus the cluster `default` |
 
 Four rules hold for every block:
 
@@ -308,6 +309,16 @@ features:
 **Not a catalogue**, unlike every other block: a team picks one of three upstream levels. A team
 that builds images needs `baseline` plus the build seccomp profile, set through the DWOC — see
 [`bricks/pod-security.md`](./bricks/pod-security.md#rollout).
+
+### `features.resourceQuotas`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `catalog` | list | no | `[]` | This team's profiles, same shape as the cluster's. Templates in the template namespace only. |
+| `default` | key | **yes** | — | The **one** profile a namespace of this team gets when its annotation names none. |
+
+One profile per namespace, never a set: the team reaches its own profiles plus the cluster
+`default`, and a namespace picks one of them with `hardening.weebo.io/resource-quota`.
 
 ## `spec.identity`
 

@@ -171,6 +171,16 @@ rules:
     resources: ["namespaces"]
     verbs: ["patch"]
   {{- end }}
+  {{- if .Values.resourceQuotas.rbac.enabled }}
+  # RFC 0014's resource-quotas. Write on `resourcequotas` and `limitranges` cluster-wide: RBAC
+  # cannot narrow a create to a name, so the narrowing is the adapter's — it writes exactly
+  # `weebo-quota` and `weebo-limits`, and deletes only objects carrying the management label,
+  # pinned to the uid it read. The read is cluster-wide too: the templates, the managed copies,
+  # and a metadata-only count of the foreign ones.
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
   {{- if .Values.endpointAuth.rbac.enabled }}
   # RFC 0009's write half. `patch` and nothing else on the routing objects: the sweep writes the
   # dialect's annotations and, on a `ReverseProxy` dialect, the backend — it never creates or

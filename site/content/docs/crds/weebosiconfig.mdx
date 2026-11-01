@@ -48,6 +48,7 @@ spec:
 | [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | `spec.features.podSecurity`, per RFC 0013. |
 | [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
+| [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | `spec.features.resourceQuotas`, per RFC 0014. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
 
@@ -553,6 +554,60 @@ spec:
 | `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
 
 ### `spec.features.registryConfig.namespaceSelector.matchExpressions[]` [#spec.features.registryConfig.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.resourceQuotas` [#spec.features.resourceQuotas]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.resourceQuotas.catalog) | `object[]` | yes |  | Every profile a namespace may be granted. |
+| `default` | `string` | yes |  | The profile of a namespace belonging to no team. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.resourceQuotas.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/resource-quota"}` | The namespace annotation naming a profile key. |
+| [`namespaceSelector`](#spec.features.resourceQuotas.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
+| `onNotGranted` | `string` | no | `"Default"` | What a namespace naming a key its team lacks gets: the team default, or no change.<br /><br />Values: `"Default"`, `"Deny"` |
+
+### `spec.features.resourceQuotas.catalog[]` [#spec.features.resourceQuotas.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The key a grant or the namespace annotation names. |
+| [`limitRangeRef`](#spec.features.resourceQuotas.catalog.limitRangeRef) | `object` | no |  | The `LimitRange` whose `spec` is copied as `weebo-limits`. |
+| [`quotaRef`](#spec.features.resourceQuotas.catalog.quotaRef) | `object` | no |  | The `ResourceQuota` whose `spec` is copied as `weebo-quota`. |
+
+### `spec.features.resourceQuotas.catalog[].limitRangeRef` [#spec.features.resourceQuotas.catalog.limitRangeRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.resourceQuotas.catalog[].quotaRef` [#spec.features.resourceQuotas.catalog.quotaRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.resourceQuotas.namespaceSelection` [#spec.features.resourceQuotas.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/resource-quota"` | Namespace annotation naming a profile key. The empty string disables this step. |
+
+### `spec.features.resourceQuotas.namespaceSelector` [#spec.features.resourceQuotas.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.resourceQuotas.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.resourceQuotas.namespaceSelector.matchExpressions[]` [#spec.features.resourceQuotas.namespaceSelector.matchExpressions]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

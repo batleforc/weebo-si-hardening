@@ -43,6 +43,9 @@ pub struct ControllerShared {
     pub kubearmor_enabled: bool,
     /// The image `network-profiles`' enforcement canary runs (`--canary-image`).
     pub canary_image: String,
+    /// Where `resource-quotas`' templates live (`--quota-template-namespace`): a namespace that
+    /// runs no pods, because a `ResourceQuota` or `LimitRange` is enforced where it lives.
+    pub quota_template_namespace: String,
 }
 
 /// Run the `WeeboSiConfig` status loop until the process is asked to stop. Every feature's own

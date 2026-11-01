@@ -13,6 +13,12 @@ use std::fmt;
 /// `secrets` are guarded by `weebo-si-registry-config`'s own two-row guard (RFC 0007), which
 /// differs in a way this enum cannot express — it has no unmanaged-`CREATE` row, because its
 /// webhook rule carries an ownership `objectSelector`.
+///
+/// `resourcequotas` and `limitranges` (RFC 0014) are in, but their webhook rule carries the same
+/// ownership `objectSelector`: a foreign quota — Che's `workspaces-config` replication, an
+/// admin's — is counted and left alone by `resource-quotas`, so it must stay creatable. Only
+/// managed objects reach the guard for them, which makes the unmanaged-`CREATE` row unreachable
+/// for these two without the verdict branching on the resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GuardedResource {
     /// `networking.k8s.io/v1` `NetworkPolicy` — RFC 0004's baseline.
@@ -21,6 +27,10 @@ pub enum GuardedResource {
     CiliumNetworkPolicy,
     /// `security.kubearmor.com/v1` `KubeArmorPolicy` — RFC 0006's runtime baseline.
     KubeArmorPolicy,
+    /// `v1` `ResourceQuota` — RFC 0014's `weebo-quota`.
+    ResourceQuota,
+    /// `v1` `LimitRange` — RFC 0014's `weebo-limits`.
+    LimitRange,
 }
 
 impl GuardedResource {
@@ -31,6 +41,8 @@ impl GuardedResource {
             Self::NetworkPolicy => "NetworkPolicy",
             Self::CiliumNetworkPolicy => "CiliumNetworkPolicy",
             Self::KubeArmorPolicy => "KubeArmorPolicy",
+            Self::ResourceQuota => "ResourceQuota",
+            Self::LimitRange => "LimitRange",
         }
     }
 
@@ -44,15 +56,19 @@ impl GuardedResource {
             Self::NetworkPolicy => "networkpolicies",
             Self::CiliumNetworkPolicy => "ciliumnetworkpolicies",
             Self::KubeArmorPolicy => "kubearmorpolicies",
+            Self::ResourceQuota => "resourcequotas",
+            Self::LimitRange => "limitranges",
         }
     }
 
     /// Every member — for a test that must cover the whole table, and for a metric that
     /// publishes one series per resource.
-    pub const ALL: [GuardedResource; 3] = [
+    pub const ALL: [GuardedResource; 5] = [
         GuardedResource::NetworkPolicy,
         GuardedResource::CiliumNetworkPolicy,
         GuardedResource::KubeArmorPolicy,
+        GuardedResource::ResourceQuota,
+        GuardedResource::LimitRange,
     ];
 
     /// The resource an `AdmissionRequest`'s plural names, or `None` for anything else.

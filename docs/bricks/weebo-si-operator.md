@@ -177,12 +177,15 @@ weebo-si-operator registry check
 weebo-si-operator pods audit                # the existing pods each namespace's Pod Security
                                [--level L] [--version V]               # level would refuse
                                [--namespace <ns> | --all-namespaces]   # (RFC 0013); writes nothing
+weebo-si-operator quotas audit              # usage today against each namespace's quota
+                               [--profile KEY]                         # profile (RFC 0014)
+                               [--namespace <ns> | --all-namespaces]
 weebo-si-operator teams export [--from <file>] [--check]
                                # RFC 0011's migration: one WeeboSiTeam per spec.teams entry;
                                # writes nothing to the cluster
 ```
 
-`canary`, `images`, `registry`, `pods` and `teams` read the cluster with **the invoking kubeconfig**,
+`canary`, `images`, `registry`, `pods`, `quotas` and `teams` read the cluster with **the invoking kubeconfig**,
 not the operator's `ServiceAccount` — `images audit`'s `list pods` is deliberately the admin's
 own permission, which is why RFC 0005 adds no RBAC at all.
 

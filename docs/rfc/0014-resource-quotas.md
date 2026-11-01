@@ -1,11 +1,11 @@
 ---
 rfc: 0014
 title: resource-quotas
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-10-31
-updated: 2026-10-31
-decided:
+updated: 2026-11-01
+decided: 2026-11-01
 brick: crates/weebo-si-resource-quotas
 supersedes: []
 superseded-by: []
@@ -268,9 +268,11 @@ objects: "the new configuration is broken" never means "remove the existing ceil
 | Rule | Why |
 | --- | --- |
 | A ref resolves to an existing object of the right kind. | Obvious, and the most common edit mistake. |
-| If the quota constrains `requests.cpu`/`requests.memory` (or bare `cpu`/`memory`), the profile's `LimitRange` has a `Container` `defaultRequest` for that resource. | Once a compute quota exists, the apiserver refuses every pod that does not state the resource. DevWorkspace Operator sets defaults on workspace containers, but not on every pod a user or a tool creates. Without a default, the quota is a pod-creation outage. |
-| Same for `limits.cpu`/`limits.memory` and a `Container` `default`. | Same reason. |
+| If the quota constrains `requests.cpu`/`requests.memory` (or bare `cpu`/`memory`), the profile's `LimitRange` gives a `Container` that sets no request a value for that resource: `defaultRequest`, or else `default`, or else `max`, which is the order upstream's LimitRanger falls back in. | Once a compute quota exists, the apiserver refuses every pod that does not state the resource. DevWorkspace Operator sets defaults on workspace containers, but not on every pod a user or a tool creates. Without a default, the quota is a pod-creation outage. |
+| Same for `limits.cpu`/`limits.memory`, where the fallbacks are `default`, then `max`. | Same reason. |
 | The `LimitRange` `defaultRequest` is not above `default`, and neither is above `max`. | The apiserver rejects such a `LimitRange` anyway. Checking first gives an error that names the profile. |
+| Every template ref is in the template namespace (see *Where templates live*). | A template is enforced where it lives; one anywhere else would constrain whatever runs there. |
+| Every quantity parses. | A typo (`50GB`) would be refused by the apiserver on every namespace at once. |
 | No `scopes` or `scopeSelector` on the quota. | A scoped quota (`Terminating`, `BestEffort`, priority classes) counts only part of the pods. That is legitimate, but it is not the ceiling this RFC promises. Kept out until someone needs it. |
 
 #### CLI
@@ -291,7 +293,7 @@ the CLI only advises.
 | --- | --- | --- |
 | `weebo_si_resource_quotas_namespaces` | gauge | `profile`, `state` ∈ `applied`/`pending`/`foreign_quota`/`foreign_limitrange` |
 | `weebo_si_resource_quotas_saturation` | gauge | `band` ∈ `under_80`/`80_to_99`/`at_limit` — namespaces by their most-used resource, from each managed quota's `status` |
-| `weebo_si_resource_quotas_reconcile_total` | counter | `result` ∈ `applied`/`unchanged`/`deleted`/`not_granted`/`error` |
+| `weebo_si_resource_quotas_reconcile_total` | counter | `result` ∈ `applied`/`unchanged`/`deleted`/`not_granted`/`invalid`/`error` |
 | `weebo_si_resource_quotas_profiles` | gauge | `state` ∈ `valid`/`invalid` |
 | `weebo_si_resource_quotas_selection_changed_total` | counter | none |
 
@@ -469,7 +471,8 @@ but it is one more write than before.
 
 ## Unresolved questions
 
-- **Where templates live.** (Not blocking; a recommendation is made.) A template is a real
+- ~~**Where templates live.**~~ Decided 2026-11-01: the recommendation below. The feature takes
+  the template namespace as a parameter and refuses a profile whose ref points anywhere else. A template is a real
   object, so it is also enforced in the namespace that holds it. A `ResourceQuota` template in
   the operator namespace caps the operator's own pods, and one sized for a workspace (four CPUs,
   twenty pods) would block an operator rollout as soon as old and new replicas overlap. A
@@ -479,9 +482,11 @@ but it is one more write than before.
   the chart creates a dedicated `weebo-si-hardening-templates` namespace that runs no pods, and
   every profile references it. Templates there constrain nothing, since nothing runs there.
   `templateNamespace` in the chart values, and the controller's template watch limited to it.
-- **Does Che's dashboard show the quota error?** (Not blocking.) If DevWorkspace Operator copies
-  the `FailedCreate` message into the DevWorkspace status, it does. To be checked on the kind e2e,
-  and recorded in the brick doc either way.
+- ~~**Does Che's dashboard show the quota error?**~~ Answered, 2026-11-01, by the
+  `resource-quotas` e2e suite: yes. DevWorkspace Operator fails the workspace and copies the
+  message into its status: `Detected unrecoverable deployment condition: FailedCreate pods ... is
+  forbidden: exceeded quota: weebo-quota, requested: pods=1, used: pods=0, limited: pods=0`. The
+  workspace goes `Failed` rather than retrying, so raising the profile means restarting it.
 
 ## Future work
 
@@ -495,17 +500,25 @@ but it is one more write than before.
 
 ## Implementation plan
 
-- [ ] `weebo-si-crd`: `QuotaProfile`, `ResourceQuotasConfig`, the team fields, `Resolved*`.
-- [ ] `weebo-si-resource-quotas`: subject, resolution, validation table with a test per row,
-      desired state.
-- [ ] `weebo-si-resource-quotas-adapters`: template store, managed store with foreign counts,
-      metrics, loop; envtest for "invalid profile keeps existing objects".
-- [ ] `weebo-si-policy-guard`: `GuardedResource::{ResourceQuota, LimitRange}`, two rows.
-- [ ] `weebo-si-operator`: wiring, `quotas audit` CLI.
-- [ ] Chart: controller RBAC for the two resources, the guard's webhook rules, the template
-      location.
-- [ ] e2e on kind: a pod over quota refused at `Enforce`, objects removed at `Off`.
-- [ ] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
+- [x] `weebo-si-crd`: `QuotaProfile`, `ResourceQuotasConfig`, the team fields, `Resolved*`, and
+      the `resource-quotas` entry in the `WeeboSiConfig` status.
+- [x] `weebo-si-resource-quotas`: subject, resolution, validation table with a test per row,
+      desired state, the saturation band, reconcile and teardown over two ports.
+- [x] `weebo-si-resource-quotas-adapters`: template store, managed store with foreign counts,
+      metrics, loop; envtest for "invalid profile keeps existing objects". The loop
+      re-reconciles every namespace when the configuration, a template or a managed object's spec
+      changes.
+- [x] `weebo-si-policy-guard`: `GuardedResource::{ResourceQuota, LimitRange}`, two rows. Their
+      webhook rule carries an ownership `objectSelector`, so a foreign quota stays creatable.
+- [x] `weebo-si-operator`: wiring, `--quota-template-namespace`.
+- [x] `weebo-si-operator`: `quotas audit` CLI.
+- [x] Chart: controller RBAC for the two resources behind `resourceQuotas.rbac.enabled`, the
+      template namespace (`resourceQuotas.templateNamespace`, created by default).
+- [x] Chart: the guard's webhook rule (`-resource-quotas`, path `/validate/v1/resourcequotas`).
+- [x] e2e on kind (the `resource-quotas` suite): a write over quota refused at `Enforce`, objects
+      removed at `Off` with a foreign quota left alone, an invalid profile written nowhere, and a
+      measurement of whether the refusal reaches the DevWorkspace status.
+- [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`
 
 ## References
@@ -523,3 +536,5 @@ but it is one more write than before.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | Measured on kind: a quota refusal reaches the DevWorkspace status with the quota's name and numbers, and the workspace goes `Failed`. |
+| 2026-11-01 | `Accepted`. Templates live in a dedicated, pod-less namespace, and a ref elsewhere is a validation failure. The "has a default" rule follows LimitRanger's fallbacks (`defaultRequest` → `default` → `max`). Two more rules: every quantity parses, every ref is in the template namespace. `reconcile_total` gains `result="invalid"`. |

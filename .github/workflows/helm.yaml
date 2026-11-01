@@ -45,6 +45,7 @@ jobs:
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=OpenShiftRoute > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null
+          helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set podSecurity.rbac.enabled=true --set resourceQuotas.rbac.enabled=true > /dev/null
           helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set networkPolicy.enabled=true --set 'networkPolicy.kubeApiserver.cidrs={10.0.0.0/24}' > /dev/null
       - name: preauth-proxy
         run: |

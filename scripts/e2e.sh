@@ -19,7 +19,7 @@
 # deletes it. Everything else a run writes (the realm, the Corefile, packaged charts, image
 # archives) goes into a fresh `mktemp -d` that is removed when the script exits.
 #
-# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security. `task e2e SUITE=<suite>` runs the
+# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas. `task e2e SUITE=<suite>` runs the
 # whole sequence plus the Rust suite of the same name (crates/weebo-si-e2e/tests/<suite>.rs).
 #
 # **Every upstream is pinned**, unlike the spike rig this grew out of (scripts/spike-0009-che.sh):
@@ -646,10 +646,10 @@ MANIFEST
 
 addons() {
   case "${1:-}" in
-    workspace | endpoint-auth | upgrade | pod-security) ;;
+    workspace | endpoint-auth | upgrade | pod-security | resource-quotas) ;;
     kubearmor) addon_kubearmor ;;
     identity) addon_authentik; addon_argocd ;;
-    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security)" ;;
+    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas)" ;;
   esac
 }
 
@@ -695,6 +695,7 @@ deploy_operator() {
     workspace) set -- "$@" --set registryConfig.rbac.enabled=true ;;
     kubearmor) set -- "$@" --set kubearmorPolicy.rbac.enabled=true ;;
     pod-security) set -- "$@" --set podSecurity.rbac.enabled=true ;;
+    resource-quotas) set -- "$@" --set resourceQuotas.rbac.enabled=true ;;
     endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Traefik ;;
     identity) set -- "$@" --set identity.rbac.enabled=true --set identity.argoNamespace=argocd ;;
   esac
@@ -746,7 +747,7 @@ deploy_gateway() {
 deploy() {
   suite=${1:-}
   case "$suite" in
-    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security) ;;
+    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas) ;;
     *) die "deploy: unknown suite '$suite'" ;;
   esac
   kubectl config use-context "kind-$CLUSTER" >/dev/null

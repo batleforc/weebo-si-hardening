@@ -46,6 +46,7 @@ spec:
 | [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | This team's `network-profiles` catalogue and defaults, per RFC 0004. |
 | [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | This team's `pod-security` levels, per RFC 0013. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | This team's `registry-config` catalogue and defaults, per RFC 0007. |
+| [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | This team's `resource-quotas` profiles and default, per RFC 0014. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
 
@@ -170,6 +171,35 @@ spec:
 | [`templateRef`](#spec.features.registryConfig.catalog.sources.templateRef) | `object` | yes |  | The object an admin authored, copied verbatim into each granted namespace. |
 
 ### `spec.features.registryConfig.catalog[].sources[].templateRef` [#spec.features.registryConfig.catalog.sources.templateRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.resourceQuotas` [#spec.features.resourceQuotas]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.resourceQuotas.catalog) | `object[]` | no | `[]` | This team's profiles, merged into the cluster catalogue at resolution. |
+| `default` | `string` | yes |  | The profile a namespace of this team gets when it names none. |
+
+### `spec.features.resourceQuotas.catalog[]` [#spec.features.resourceQuotas.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The key a grant or the namespace annotation names. |
+| [`limitRangeRef`](#spec.features.resourceQuotas.catalog.limitRangeRef) | `object` | no |  | The `LimitRange` whose `spec` is copied as `weebo-limits`. |
+| [`quotaRef`](#spec.features.resourceQuotas.catalog.quotaRef) | `object` | no |  | The `ResourceQuota` whose `spec` is copied as `weebo-quota`. |
+
+### `spec.features.resourceQuotas.catalog[].limitRangeRef` [#spec.features.resourceQuotas.catalog.limitRangeRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The template object's name. |
+| `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.resourceQuotas.catalog[].quotaRef` [#spec.features.resourceQuotas.catalog.quotaRef]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

@@ -63,6 +63,7 @@ spec:
             - controller
             - --health-addr=0.0.0.0:{{ .Values.metrics.service.port }}
             - --canary-image={{ .Values.networkProfiles.canary.image }}
+            - --quota-template-namespace={{ .Values.resourceQuotas.templateNamespace.name }}
             {{- if .Values.controller.leaderElection }}
             - --leader-election
             {{- end }}

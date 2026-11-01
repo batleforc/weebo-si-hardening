@@ -8,7 +8,7 @@ pub mod registry_guard;
 
 pub use policy_guard::{
     PolicyGuardState, VALIDATE_KUBEARMOR_POLICIES_PATH, VALIDATE_NETWORK_POLICIES_PATH,
-    policy_guard_router,
+    VALIDATE_RESOURCE_QUOTAS_PATH, policy_guard_router,
 };
 pub use registry_guard::{
     RegistryGuardState, VALIDATE_REGISTRY_CONFIGS_PATH, registry_guard_router,
