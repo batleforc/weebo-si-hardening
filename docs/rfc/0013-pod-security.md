@@ -770,7 +770,7 @@ for, and what the runbook must say.
 - [x] `weebo-si-pod-security-adapters`: `NamespaceLabelStore` by server-side apply, metrics, loop,
       envtest asserting the exact key set written.
 - [x] `weebo-si-operator`: wiring.
-- [ ] `weebo-si-operator`: `pods audit` CLI.
+- [x] `weebo-si-operator`: `pods audit` CLI, from a server-side dry run of the `enforce` label.
 - [x] Chart: `podSecurity.rbac.enabled` grants `patch` on `namespaces`, with a comment naming this
       RFC.
 - [ ] e2e on kind: a privileged pod refused at `Enforce`, restored labels at `Off`.

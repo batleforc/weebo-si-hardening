@@ -15,9 +15,10 @@ use kube::Client;
 use kube::api::{Patch, PatchParams};
 use kube::core::Request;
 use weebo_si_chassis::DomainError;
-use weebo_si_crd::NamespaceName;
+use weebo_si_crd::{NamespaceName, PodSecurityLevel, PodSecurityVersion};
 use weebo_si_pod_security::{
-    FIELD_MANAGER, LabelWrite, NamespaceLabelStore, PREVIOUS_ANNOTATION, PodSecurityLabels, Restore,
+    ENFORCE, ENFORCE_VERSION, FIELD_MANAGER, LabelWrite, NamespaceLabelStore, PREVIOUS_ANNOTATION,
+    PodSecurityLabels, Restore,
 };
 
 /// The field manager the restore write uses. Deliberately not [`FIELD_MANAGER`]: once restored,
@@ -33,6 +34,33 @@ impl KubeNamespaceLabelStore {
     /// A store writing through `client`.
     pub fn new(client: Client) -> Self {
         Self { client }
+    }
+
+    /// What the apiserver would warn about if `namespace` enforced `level` at `version`: a
+    /// server-side **dry run** of the two `enforce` labels, which writes nothing. The question
+    /// `pods audit` asks before anything is switched on. Needs the same RBAC as the write.
+    pub async fn dry_run_enforce(
+        &self,
+        namespace: &NamespaceName,
+        level: PodSecurityLevel,
+        version: &PodSecurityVersion,
+    ) -> Result<Vec<String>, DomainError> {
+        let params = PatchParams {
+            dry_run: true,
+            field_manager: Some(FIELD_MANAGER.to_string()),
+            ..PatchParams::default()
+        };
+        self.patch(
+            namespace,
+            &params,
+            &Patch::Merge(serde_json::json!({
+                "metadata": {"labels": {
+                    ENFORCE: level.as_str(),
+                    ENFORCE_VERSION: version.as_str(),
+                }},
+            })),
+        )
+        .await
     }
 
     /// Send one patch to `namespace` and return the `Warning` headers of the answer.
@@ -177,8 +205,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use http::HeaderValue;
-    use weebo_si_crd::{PodSecurityLevel, PodSecurityVersion};
-    use weebo_si_pod_security::{ENFORCE, KEYS};
+    use weebo_si_pod_security::KEYS;
 
     use super::*;
 

@@ -156,6 +156,68 @@ fn annotations(ns: &Namespace) -> BTreeMap<String, String> {
     ns.metadata.annotations.clone().unwrap_or_default()
 }
 
+/// A pod `baseline` refuses, in `namespace`: an added capability and a `hostPath`. This apiserver
+/// runs without `--allow-privileged`, so `privileged` and the host namespaces of RFC 0013's
+/// motivation are refused before Pod Security sees them.
+async fn create_violating_pod(client: &kube::Client, namespace: &str) {
+    // No controller-manager here, so no default ServiceAccount unless we make one.
+    Api::<ServiceAccount>::namespaced(client.clone(), namespace)
+        .create(
+            &PostParams::default(),
+            &ServiceAccount {
+                metadata: ObjectMeta {
+                    name: Some("default".to_string()),
+                    ..ObjectMeta::default()
+                },
+                ..ServiceAccount::default()
+            },
+        )
+        .await
+        .unwrap();
+    Api::<Pod>::namespaced(client.clone(), namespace)
+        .create(
+            &PostParams::default(),
+            &Pod {
+                metadata: ObjectMeta {
+                    name: Some("root".to_string()),
+                    ..ObjectMeta::default()
+                },
+                spec: Some(PodSpec {
+                    automount_service_account_token: Some(false),
+                    volumes: Some(vec![Volume {
+                        name: "host".to_string(),
+                        host_path: Some(HostPathVolumeSource {
+                            path: "/".to_string(),
+                            ..HostPathVolumeSource::default()
+                        }),
+                        ..Volume::default()
+                    }]),
+                    containers: vec![Container {
+                        name: "root".to_string(),
+                        image: Some("registry.internal/shared/base:2026.3".to_string()),
+                        security_context: Some(SecurityContext {
+                            capabilities: Some(Capabilities {
+                                add: Some(vec!["SYS_ADMIN".to_string()]),
+                                ..Capabilities::default()
+                            }),
+                            ..SecurityContext::default()
+                        }),
+                        volume_mounts: Some(vec![VolumeMount {
+                            name: "host".to_string(),
+                            mount_path: "/host".to_string(),
+                            ..VolumeMount::default()
+                        }]),
+                        ..Container::default()
+                    }],
+                    ..PodSpec::default()
+                }),
+                ..Pod::default()
+            },
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn enforce_writes_the_six_labels_and_restore_gives_the_namespace_back() {
     let env = envtest_or_skip!();
@@ -372,65 +434,7 @@ async fn raising_the_level_returns_the_apiservers_warnings_for_existing_pods() {
     let client = env.client().unwrap();
     create_namespace(&client, "user-frank", &[(TEAM_LABEL, "team-1")]).await;
 
-    // No controller-manager here, so no default ServiceAccount unless we make one.
-    Api::<ServiceAccount>::namespaced(client.clone(), "user-frank")
-        .create(
-            &PostParams::default(),
-            &ServiceAccount {
-                metadata: ObjectMeta {
-                    name: Some("default".to_string()),
-                    ..ObjectMeta::default()
-                },
-                ..ServiceAccount::default()
-            },
-        )
-        .await
-        .unwrap();
-    // The pod from RFC 0013's motivation, as far as this apiserver allows it: it runs without
-    // `--allow-privileged`, so `privileged` and the host namespaces are refused before Pod
-    // Security sees them. An added capability and a `hostPath` are each a `baseline` violation.
-    Api::<Pod>::namespaced(client.clone(), "user-frank")
-        .create(
-            &PostParams::default(),
-            &Pod {
-                metadata: ObjectMeta {
-                    name: Some("root".to_string()),
-                    ..ObjectMeta::default()
-                },
-                spec: Some(PodSpec {
-                    automount_service_account_token: Some(false),
-                    volumes: Some(vec![Volume {
-                        name: "host".to_string(),
-                        host_path: Some(HostPathVolumeSource {
-                            path: "/".to_string(),
-                            ..HostPathVolumeSource::default()
-                        }),
-                        ..Volume::default()
-                    }]),
-                    containers: vec![Container {
-                        name: "root".to_string(),
-                        image: Some("registry.internal/shared/base:2026.3".to_string()),
-                        security_context: Some(SecurityContext {
-                            capabilities: Some(Capabilities {
-                                add: Some(vec!["SYS_ADMIN".to_string()]),
-                                ..Capabilities::default()
-                            }),
-                            ..SecurityContext::default()
-                        }),
-                        volume_mounts: Some(vec![VolumeMount {
-                            name: "host".to_string(),
-                            mount_path: "/host".to_string(),
-                            ..VolumeMount::default()
-                        }]),
-                        ..Container::default()
-                    }],
-                    ..PodSpec::default()
-                }),
-                ..Pod::default()
-            },
-        )
-        .await
-        .unwrap();
+    create_violating_pod(&client, "user-frank").await;
 
     let outcome = pass(
         &client,
@@ -452,4 +456,33 @@ async fn raising_the_level_returns_the_apiservers_warnings_for_existing_pods() {
         outcome.warnings
     );
     assert!(violating_pods(&outcome.warnings) >= 1);
+}
+
+#[tokio::test]
+async fn the_audit_dry_run_returns_the_warnings_and_writes_nothing() {
+    let env = envtest_or_skip!();
+    let client = env.client().unwrap();
+    create_namespace(&client, "user-grace", &[(TEAM_LABEL, "team-1")]).await;
+    create_violating_pod(&client, "user-grace").await;
+    let before = get(&client, "user-grace").await;
+
+    let warnings = KubeNamespaceLabelStore::new(client.clone())
+        .dry_run_enforce(
+            &NamespaceName::new("user-grace"),
+            PodSecurityLevel::Baseline,
+            &PodSecurityVersion::new("latest"),
+        )
+        .await
+        .unwrap();
+    assert!(
+        warnings.iter().any(|warning| warning.contains("root")),
+        "{warnings:?}"
+    );
+
+    let after = get(&client, "user-grace").await;
+    assert_eq!(
+        after.metadata.resource_version,
+        before.metadata.resource_version
+    );
+    assert!(!labels(&after).contains_key(ENFORCE));
 }

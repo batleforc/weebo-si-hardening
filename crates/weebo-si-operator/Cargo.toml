@@ -22,6 +22,7 @@ weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
 weebo-si-network-profiles-adapters = { version = "0.1.0", path = "../weebo-si-network-profiles-adapters" }
 weebo-si-kubearmor-policy-adapters = { version = "0.1.0", path = "../weebo-si-kubearmor-policy-adapters" }
 weebo-si-registry-config-adapters = { version = "0.1.0", path = "../weebo-si-registry-config-adapters" }
+weebo-si-pod-security = { version = "0.1.0", path = "../weebo-si-pod-security" }
 weebo-si-pod-security-adapters = { version = "0.1.0", path = "../weebo-si-pod-security-adapters" }
 weebo-si-image-policy-adapters = { version = "0.1.0", path = "../weebo-si-image-policy-adapters" }
 weebo-si-policy-guard-adapters = { version = "0.1.0", path = "../weebo-si-policy-guard-adapters" }

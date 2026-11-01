@@ -4062,6 +4062,7 @@ dependencies = [
  "weebo-si-kubearmor-policy-adapters",
  "weebo-si-network-profiles",
  "weebo-si-network-profiles-adapters",
+ "weebo-si-pod-security",
  "weebo-si-pod-security-adapters",
  "weebo-si-policy-guard-adapters",
  "weebo-si-registry-config",

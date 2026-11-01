@@ -9,6 +9,7 @@ mod features;
 mod images_cmd;
 mod kubearmor_cmd;
 mod observability;
+mod pods_cmd;
 mod registry_cmd;
 mod teams_cmd;
 mod webhook_cmd;
@@ -30,7 +31,7 @@ mod exit {
 const USAGE: &str = "\
 weebo-si-operator — admission webhook and controller for weebo-si-hardening
 
-usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images|registry|teams>
+usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images|registry|pods|teams>
 
   webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/certs]
               [--metrics-addr :8080] [--health-addr :8081]
@@ -64,6 +65,12 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
                 validate every catalogue entry against its template: exists,
                 automountable, does not shadow a home path; non-zero on any
                 violation, so it works as a pipeline pre-flight
+  pods        audit [--level L] [--version V] [--namespace <ns> | --all-namespaces]
+                the existing pods each namespace's Pod Security level would
+                refuse, from a server-side dry run of the enforce label —
+                run this BEFORE switching pod-security to Enforce. --level
+                overrides the configured level; writes nothing, needs patch
+                on namespaces like the real write
   teams       export [--from <file>] [--check]
                 RFC 0011's migration: read the old singleton's spec.teams and
                 grants maps and print one WeeboSiTeam per team. --from reads a
@@ -111,6 +118,7 @@ fn main() -> ExitCode {
         Some("canary") => run_admin(canary_cmd::run(&args[2..])),
         Some("images") => run_admin(images_cmd::run(&args[2..])),
         Some("registry") => run_admin(registry_cmd::run(&args[2..])),
+        Some("pods") => run_admin(pods_cmd::run(&args[2..])),
         Some("teams") => run_admin(teams_cmd::run(&args[2..])),
         Some("-h") | Some("--help") => {
             print!("{USAGE}");
