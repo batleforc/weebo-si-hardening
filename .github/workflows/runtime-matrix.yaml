@@ -82,6 +82,10 @@ jobs:
         # kind's own /sys overmounts and product-files hook stop every `hostUsers: false` sandbox;
         # the script says why and lifts both on this throwaway node.
         run: e2e/runtime-matrix/kind-userns.sh
+      - name: Install crun, youki and gVisor
+        # The runtimes weebo-si ships besides runc (crun, youki), and gVisor, pinned by checksum.
+        # Kata needs virtualization this node lacks; it is measured on a test cluster.
+        run: e2e/runtime-matrix/kind-runtimes.sh
       - name: Matrix at baseline, then privileged
         run: |
           status=0
@@ -91,6 +95,18 @@ jobs:
             { echo "## Cluster tier, Pod Security \`$level\`"; echo; cat "$RUNNER_TEMP/$level.md"; echo; } \
               >> "$GITHUB_STEP_SUMMARY"
           done
+          # crun and youki run under the same runc-shaped shim and must give the same cells:
+          # checked. Admission does not depend on the runtime, so baseline is enough.
+          RUNTIME_CLASSES="crun youki" PSA_LEVEL=baseline NAMESPACE=weebo-runtime-matrix-runtimes \
+            OUT="$RUNNER_TEMP/runtimes.md" POD_TIMEOUT=180 ./scripts/runtime-matrix-k8s.sh check || status=1
+          { echo "## Cluster tier, crun and youki"; echo; cat "$RUNNER_TEMP/runtimes.md"; echo; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          # gVisor is reported, never checked: by default it does not load the pod's seccomp
+          # filter in its sandbox, and that difference is the measurement.
+          RUNTIME_CLASSES="gvisor" PSA_LEVEL=baseline NAMESPACE=weebo-runtime-matrix-gvisor \
+            OUT="$RUNNER_TEMP/gvisor.md" POD_TIMEOUT=180 ./scripts/runtime-matrix-k8s.sh || true
+          { echo "## Cluster tier, gVisor (reported)"; echo; cat "$RUNNER_TEMP/gvisor.md"; echo; } \
+            >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       - name: Node diagnostics
         if: always()
