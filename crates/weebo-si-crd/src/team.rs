@@ -29,6 +29,7 @@ use crate::kubearmor_policy::TeamKubeArmorPolicy;
 use crate::network_profiles::TeamNetworkProfiles;
 use crate::pod_security::TeamPodSecurity;
 use crate::registry_config::TeamRegistryConfig;
+use crate::resource_quotas::TeamResourceQuotas;
 use crate::selector::Selector;
 
 /// The priority a team gets when it does not say. High on purpose: a team that has an opinion
@@ -105,6 +106,9 @@ pub struct TeamFeatures {
     /// This team's `pod-security` levels, per RFC 0013.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_security: Option<TeamPodSecurity>,
+    /// This team's `resource-quotas` profiles and default, per RFC 0014.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_quotas: Option<TeamResourceQuotas>,
 }
 
 /// `spec.identity` — what this team's members are, outside Kubernetes.

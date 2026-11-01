@@ -15,6 +15,7 @@ use crate::network_profiles::{NetworkProfilesConfig, ResolvedNetworkProfilesConf
 use crate::pod_security::{PodSecurityConfig, ResolvedPodSecurityConfig};
 use crate::policy_guard::PolicyGuardConfig;
 use crate::registry_config::{RegistryConfig, ResolvedRegistryConfig};
+use crate::resource_quotas::{ResolvedResourceQuotasConfig, ResourceQuotasConfig};
 use crate::team::{TeamName, WeeboSiTeam};
 
 /// One optional field per registered feature, typed — a feature the binary does not know about
@@ -50,6 +51,9 @@ pub struct Features {
     /// `spec.features.podSecurity`, per RFC 0013.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_security: Option<PodSecurityConfig>,
+    /// `spec.features.resourceQuotas`, per RFC 0014.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_quotas: Option<ResourceQuotasConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -119,6 +123,8 @@ pub struct ResolvedFeatures {
     pub identity: Option<IdentityConfig>,
     /// `spec.features.podSecurity`, resolved.
     pub pod_security: Option<ResolvedPodSecurityConfig>,
+    /// `spec.features.resourceQuotas`, resolved.
+    pub resource_quotas: Option<ResolvedResourceQuotasConfig>,
 }
 
 impl WeeboSiConfigSpec {
@@ -241,6 +247,22 @@ impl WeeboSiConfigSpec {
             resolved
         });
 
+        let resource_quotas = self.features.resource_quotas.as_ref().map(|feature| {
+            let (resolved, violations) = feature.resolve(teams);
+            for violation in violations {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::resource_quotas::ResourceQuotasConfigViolation::CatalogKeyConflict {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+            resolved
+        });
+
         let resolved = ResolvedFeatures {
             dwoc_pin,
             network_profiles,
@@ -251,6 +273,7 @@ impl WeeboSiConfigSpec {
             endpoint_auth,
             identity: self.features.identity.clone(),
             pod_security,
+            resource_quotas,
         };
         (resolved, conflicts)
     }

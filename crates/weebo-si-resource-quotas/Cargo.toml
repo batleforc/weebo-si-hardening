@@ -1,0 +1,26 @@
+[package]
+name = "weebo-si-resource-quotas"
+version = "0.1.0"
+description = "The resource-quotas feature: one ResourceQuota and LimitRange profile per workspace namespace, per team"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+# A template's `spec` is copied as is, without this crate knowing `k8s-openapi`: it travels as
+# JSON, and only the fields the validation table reads are projected out of it.
+serde_json = { workspace = true }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)`.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

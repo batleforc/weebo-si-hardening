@@ -96,7 +96,7 @@ fails if it is stale.
 | [0011](./0011-teams-and-users.md) | teams and users as objects | `Implemented` | `crates/weebo-si-crd` |
 | [0012](./0012-operator-kit-migration.md) | operator kit migration | `Accepted` | `crates/weebo-si-operator` |
 | [0013](./0013-pod-security.md) | pod-security | `Accepted` | `crates/weebo-si-pod-security` |
-| [0014](./0014-resource-quotas.md) | resource-quotas | `Draft` | `crates/weebo-si-resource-quotas` |
+| [0014](./0014-resource-quotas.md) | resource-quotas | `Accepted` | `crates/weebo-si-resource-quotas` |
 
 <!-- rfc-index:end -->
 

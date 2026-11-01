@@ -4170,6 +4170,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-resource-quotas"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-runtime"
 version = "0.1.0"
 dependencies = [

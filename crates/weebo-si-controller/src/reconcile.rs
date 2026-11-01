@@ -352,6 +352,43 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0014's `resourceQuotas`. Only what the configuration itself says is checked here; a
+    // profile whose templates would make pod creation fail is the feature's own finding, counted
+    // as `profiles{state="invalid"}` and left out of every namespace.
+    if let Some(resource_quotas) = &resolved.resource_quotas {
+        let violations = resource_quotas.validate(&declared_teams);
+        let state = if violations.is_empty() {
+            match resource_quotas.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "{} profiles, default {}, {} grants",
+                resource_quotas.catalog.entries().len(),
+                resource_quotas.default,
+                resource_quotas.grants.len()
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "resource-quotas".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0011's `identity`. The only feature here that would create objects in systems other
     // than this cluster's own, so its whole validation — allow-lists, templates, duplicate
     // identities — runs before anything is provisioned, and reports on the object rather than

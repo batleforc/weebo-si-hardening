@@ -1367,6 +1367,121 @@ spec:
                     - catalog
                     - mode
                     type: object
+                  resourceQuotas:
+                    description: '`spec.features.resourceQuotas`, per RFC 0014.'
+                    nullable: true
+                    properties:
+                      catalog:
+                        description: Every profile a namespace may be granted.
+                        items:
+                          description: |-
+                            One profile: at most one `ResourceQuota` template and at most one `LimitRange` template, at
+                            least one of the two.
+                          properties:
+                            key:
+                              description: The key a grant or the namespace annotation names.
+                              type: string
+                            limitRangeRef:
+                              description: The `LimitRange` whose `spec` is copied as `weebo-limits`.
+                              nullable: true
+                              properties:
+                                name:
+                                  description: The template object's name.
+                                  type: string
+                                namespace:
+                                  description: The namespace it lives in.
+                                  type: string
+                              required:
+                              - name
+                              - namespace
+                              type: object
+                            quotaRef:
+                              description: The `ResourceQuota` whose `spec` is copied as `weebo-quota`.
+                              nullable: true
+                              properties:
+                                name:
+                                  description: The template object's name.
+                                  type: string
+                                namespace:
+                                  description: The namespace it lives in.
+                                  type: string
+                              required:
+                              - name
+                              - namespace
+                              type: object
+                          required:
+                          - key
+                          type: object
+                        type: array
+                      default:
+                        description: The profile of a namespace belonging to no team.
+                        type: string
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - 'Off'
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelection:
+                        default:
+                          annotation: hardening.weebo.io/resource-quota
+                        description: The namespace annotation naming a profile key.
+                        properties:
+                          annotation:
+                            default: hardening.weebo.io/resource-quota
+                            description: Namespace annotation naming a profile key. The empty string disables this step.
+                            type: string
+                        type: object
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the controller''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      onNotGranted:
+                        default: Default
+                        description: 'What a namespace naming a key its team lacks gets: the team default, or no change.'
+                        enum:
+                        - Default
+                        - Deny
+                        type: string
+                    required:
+                    - catalog
+                    - default
+                    - mode
+                    type: object
                 type: object
             type: object
           status:
