@@ -60,7 +60,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -342,7 +342,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -497,8 +497,8 @@ spec:
                             description: Trust the client address the controller reported.
                             enum:
                             - Auto
-                            - On
-                            - Off
+                            - 'On'
+                            - 'Off'
                             type: string
                           serviceAccountToken:
                             default: true
@@ -569,7 +569,7 @@ spec:
                           Required, per the chassis: `Off` | `DryRun` | `Enforce`. `DryRun` plans everything and
                           writes nothing, which is the same computation with the write withheld.
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -619,7 +619,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -836,7 +836,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -1006,7 +1006,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -1115,7 +1115,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -1187,7 +1187,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string
@@ -1303,7 +1303,7 @@ spec:
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
                         enum:
-                        - Off
+                        - 'Off'
                         - DryRun
                         - Enforce
                         type: string

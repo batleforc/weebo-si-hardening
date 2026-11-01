@@ -34,7 +34,8 @@ case "${1:-}" in
 esac
 
 if [ "$check_only" = 0 ]; then
-  if ! git diff --cached --name-only | grep -q "^${CRD_SRC}/"; then
+  # The schema lives in the CRD crate; how it is printed lives in the operator's `crd` command.
+  if ! git diff --cached --name-only | grep -qE "^(${CRD_SRC}/|crates/weebo-si-operator/src/main\.rs$)"; then
     exit 0
   fi
 fi

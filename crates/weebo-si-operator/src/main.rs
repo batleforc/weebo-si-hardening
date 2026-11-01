@@ -177,6 +177,46 @@ fn print_features() {
     }
 }
 
+/// The plain scalars YAML 1.1 reads as booleans and YAML 1.2 reads as strings.
+const YAML11_BOOLEANS: [&str; 16] = [
+    "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "on", "On", "ON", "off", "Off",
+    "OFF",
+];
+
+/// Quote every plain scalar that YAML 1.1 would read as a boolean.
+///
+/// `serde_yaml_bw` writes YAML 1.2, where `Off` is a string, so it leaves `- Off` unquoted. kubectl,
+/// Helm and the apiserver read YAML 1.1 (go-yaml v2), where `Off` and `On` are booleans: the CRD's
+/// `mode` enum then reads `false, DryRun, Enforce`, and every `mode: Off` is refused with
+/// `Unsupported value: "Off"`. Only list items and mapping values are rewritten, and only when the
+/// whole scalar is one of these words — a description mentioning `Off` is left alone.
+fn quote_yaml11_booleans(yaml: &str) -> String {
+    let quote = |value: &str| {
+        if YAML11_BOOLEANS.contains(&value) {
+            format!("'{value}'")
+        } else {
+            value.to_string()
+        }
+    };
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let body = line.trim_start();
+        let rewritten = if let Some(item) = body.strip_prefix("- ") {
+            format!("{indent}- {}", quote(item))
+        } else if let Some((key, value)) = body.split_once(": ")
+            && !key.starts_with(['\'', '"'])
+        {
+            format!("{indent}{key}: {}", quote(value))
+        } else {
+            line.to_string()
+        };
+        out.push_str(&rewritten);
+        out.push('\n');
+    }
+    out
+}
+
 /// Every CRD this operator owns, in the order they are installed: the singleton first, then the
 /// two RFC 0011 kinds it resolves against.
 ///
@@ -208,6 +248,7 @@ fn print_crd(kind: Option<&str>) -> Result<(), String> {
 
     for (index, (_, crd)) in selected.iter().enumerate() {
         let yaml = serde_yaml_bw::to_string(crd)
+            .map(|yaml| quote_yaml11_booleans(&yaml))
             .map_err(|err| format!("could not render the CRD: {err}"))?;
         if index > 0 {
             println!("---");
@@ -216,4 +257,46 @@ fn print_crd(kind: Option<&str>) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod crd_render_tests {
+    use super::*;
+
+    #[test]
+    fn yaml11_booleans_are_quoted_and_nothing_else_moves() {
+        let input =
+            "enum:\n- Off\n- DryRun\n- On\nmode: Off\ndescription: 'Off | DryRun'\nname: offset\n";
+        assert_eq!(
+            quote_yaml11_booleans(input),
+            "enum:\n- 'Off'\n- DryRun\n- 'On'\nmode: 'Off'\ndescription: 'Off | DryRun'\nname: offset\n"
+        );
+    }
+
+    #[test]
+    fn every_rendered_crd_has_no_unquoted_yaml11_boolean() {
+        for crd in [
+            weebo_si_crd::WeeboSiConfig::crd(),
+            weebo_si_crd::WeeboSiTeam::crd(),
+            weebo_si_crd::WeeboSiUser::crd(),
+        ] {
+            let yaml = quote_yaml11_booleans(&serde_yaml_bw::to_string(&crd).unwrap());
+            for line in yaml.lines() {
+                let body = line.trim_start();
+                let value = body
+                    .strip_prefix("- ")
+                    .or_else(|| body.split_once(": ").map(|(_, value)| value));
+                if let Some(value) = value {
+                    assert!(!YAML11_BOOLEANS.contains(&value), "unquoted: {line}");
+                }
+            }
+            let back: CustomResourceDefinition = serde_yaml_bw::from_str(&yaml).unwrap();
+            assert_eq!(back, crd, "quoting must not change the document");
+        }
+    }
 }
