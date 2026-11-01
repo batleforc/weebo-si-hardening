@@ -38,9 +38,10 @@ fetch "https://github.com/youki-dev/youki/releases/download/v$YOUKI_VERSION/youk
 fetch "https://storage.googleapis.com/gvisor/releases/release/$GVISOR_RELEASE/x86_64/gvisor.tar.bz2" \
   "$work/gvisor.tar.bz2" "$GVISOR_SHA256"
 tar xzf "$work/youki.tgz" -C "$work" youki
-tar xjf "$work/gvisor.tar.bz2" -C "$work" runsc containerd-shim-runsc-v1
+# The whole bundle: runsc starts its sandbox through the helpers in gvisor-bin/ (gvisor_sentry, ...).
+tar xjf "$work/gvisor.tar.bz2" -C "$work"
 chmod 0755 "$work/crun" "$work/youki" "$work/runsc" "$work/containerd-shim-runsc-v1"
-for binary in crun youki runsc containerd-shim-runsc-v1; do
+for binary in crun youki runsc containerd-shim-runsc-v1 gvisor-bin; do
   "$ENGINE" cp "$work/$binary" "$NODE:/usr/local/bin/$binary"
 done
 
