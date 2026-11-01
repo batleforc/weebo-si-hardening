@@ -13,6 +13,7 @@ description: Each feature, the field that switches it on, and where its runbook 
 | `registry-config` | `registryConfig` | Package-manager configuration copied into every workspace namespace of a team | [registry-config](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/registry-config.md) | [RFC 0007](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0007-registry-config.md) |
 | `endpoint-auth` | `endpointAuth` | Who may reach a workspace endpoint on its own FQDN | [endpoint-gateway](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/endpoint-gateway.md) | [RFC 0009](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0009-endpoint-auth.md) |
 | `identity` | `identity` | The Authentik account and Argo CD application a `WeeboSiUser` maps to | [teams and users](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/teams-and-users.md) | [RFC 0011](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0011-teams-and-users.md) |
+| `pod-security` | `podSecurity` | A Pod Security Admission level per workspace namespace, per team; `Off` restores the labels it found | [pod-security](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/pod-security.md) | [RFC 0013](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/rfc/0013-pod-security.md) |
 
 Every field of every feature, with its default and what a wrong value does:
 [`docs/weebosiconfig.md`](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/weebosiconfig.md).

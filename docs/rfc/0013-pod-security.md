@@ -787,7 +787,7 @@ for, and what the runbook must say.
       `profiles/weebo-container-build.json`, and fails under `RuntimeDefault`.
 - [ ] e2e on OpenShift: `ObserveSynced` reports a looser SCC grant; the MachineConfig and an SCC
       listing `localhost/profiles/weebo-container-build.json` let a workspace build.
-- [ ] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
+- [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`
 
 ## References

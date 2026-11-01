@@ -58,4 +58,9 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0009",
         resource: "Ingress, Route",
     },
+    FeatureDescriptor {
+        id: "pod-security",
+        rfc: "RFC 0013",
+        resource: "Namespace",
+    },
 ];

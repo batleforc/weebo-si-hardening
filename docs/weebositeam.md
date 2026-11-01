@@ -189,6 +189,7 @@ delegation means. What this page adds is how a team's block combines with the cl
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | `{key, templateRef}` | list of keys, `[]` | its own keys, plus the cluster `baseline` |
 | [`registryConfig`](#featuresregistryconfig) | `{key, ecosystem, sources[]}` | list of keys, `[]` | **its own keys only** |
 | [`endpointAuth`](#featuresendpointauth) | `{key, anonymous, delegation[]}` | **one** key, **required** | its own keys, plus the cluster `default` |
+| [`podSecurity`](#featurespodsecurity) | — no catalogue | `level`, `warnLevel` | its `level`, never looser than the cluster `ceiling` |
 
 Four rules hold for every block:
 
@@ -289,6 +290,24 @@ cluster-level `default`, so a team reaches exactly the entries it catalogues —
 
 The cluster `default` stays reachable whatever the team catalogues: a team never loses the profile
 everybody has. The cluster's `overrides[]` still apply on top, and can only narrow.
+
+### `features.podSecurity`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `level` | `privileged`/`baseline`/`restricted` | no | the cluster `default` | The level this team's namespaces enforce. Looser than the cluster `ceiling` is clamped to it, and reported here and on the singleton. |
+| `warnLevel` | same | no | `level` | Written to `warn` and `audit`: what every write is warned about. Stricter than or equal to `level`; a looser one is raised to it. |
+
+```yaml
+features:
+  podSecurity:
+    level: baseline        # this team builds images with podman / buildah
+    warnLevel: restricted  # and is told, on every write, what restricted would refuse
+```
+
+**Not a catalogue**, unlike every other block: a team picks one of three upstream levels. A team
+that builds images needs `baseline` plus the build seccomp profile, set through the DWOC — see
+[`bricks/pod-security.md`](./bricks/pod-security.md#rollout).
 
 ## `spec.identity`
 

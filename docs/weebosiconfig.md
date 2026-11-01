@@ -358,6 +358,7 @@ rather than ignored at runtime.
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
+| [`podSecurity`](#featurespodsecurity) | [0013](./rfc/0013-pod-security.md) | `Namespace` labels (reconcile) |
 
 ### `features.dwocPin`
 
@@ -881,6 +882,45 @@ What to watch while it rolls out:
 No metric here carries a username or a namespace, per the project-wide rule in RFC 0004: which
 person is `Conflict` is a `kubectl get weebosiusers` away.
 
+### `features.podSecurity`
+
+Gives every workspace namespace a Pod Security Admission level, per team, by writing the upstream
+`pod-security.kubernetes.io/*` labels. The apiserver's own `PodSecurity` admission plugin does the
+refusing. Operating it: [`bricks/pod-security.md`](./bricks/pod-security.md).
+
+```yaml
+podSecurity:
+  mode: DryRun
+  default: restricted         # a namespace of no team, or of a team that sets no level
+  ceiling: baseline           # nothing looser is ever written
+  version: v1.34              # every *-version label
+  backend: Auto
+  namespaceSelection: { annotation: hardening.weebo.io/pod-security }
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `Off` puts every namespace back as it was found. |
+| `namespaceSelector` | Selector | no | matches all | A namespace leaving it is put back too. |
+| `default` | `privileged`/`baseline`/`restricted` | yes | — | Lowercase, upstream's spelling. |
+| `ceiling` | same | no | `baseline` | The loosest level ever written. A looser team level or `default` is clamped to it and reported. |
+| `version` | `latest` or `v1.N` | yes | — | No default on purpose: pinning stops a cluster upgrade from tightening a level, `latest` follows it. |
+| `backend` | `Auto`/`Labels`/`ObserveSynced` | no | `Auto` | `Auto` observes on OpenShift (it serves `security.openshift.io`) and writes elsewhere. |
+| `namespaceSelection.annotation` | string | no | `hardening.weebo.io/pod-security` | A level a namespace asks for. **Tighten-only**: a looser one is ignored. `""` disables it. |
+| per-team `level`, `warnLevel` | on [`WeeboSiTeam`](./weebositeam.md#featurespodsecurity) | no | — | |
+
+**There is no catalogue.** The feature routes one of three upstream values, so a team contributes
+a level rather than catalogue entries, and two teams cannot conflict. What a team can get wrong is
+asking for more than the `ceiling`, which is reported on that team's status.
+
+**Leaving is symmetric.** The first write records the six labels as found in the
+`hardening.weebo.io/pod-security-previous` annotation. `mode: Off`, or leaving the
+`namespaceSelector`, restores them and removes the annotation. A namespace that already enforces a
+**stricter** level set by somebody else is never touched.
+
+Before `Enforce`, `weebo-si-operator pods audit --all-namespaces` lists the existing pods each
+namespace's level would refuse.
+
 ## `status`
 
 Written by the controller, derived entirely from `spec` — deleting it costs one reconcile.
@@ -946,6 +986,9 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `hardening.weebo.io/profile` | objects the operator writes | **operator** | Which catalogue key the object came from. |
 | `hardening.weebo.io/backend` | objects the operator writes | **operator** | Which dialect it is written in. |
 | `kubearmor-{file,network,capabilities}-posture` | Namespace | **operator** | KubeArmor's default posture. |
+| `hardening.weebo.io/pod-security` | Namespace | namespace user | Asks for a stricter Pod Security level. Tighten-only, so leaving it writable is safe. |
+| `pod-security.kubernetes.io/*` | Namespace | **operator** (`podSecurity`) | The level the apiserver enforces, warns and audits against. |
+| `hardening.weebo.io/pod-security-previous` | Namespace | **operator** | The Pod Security labels as found before the first write; what `mode: Off` restores. Never edit it. |
 | `kubearmor.io/enforcer` | Node | **KubeArmor** | Which LSM that node can enforce with. Read-only for us. |
 
 A selection key naming something the team was not granted is not an escalation: it is a
