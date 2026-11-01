@@ -773,7 +773,9 @@ for, and what the runbook must say.
 - [x] `weebo-si-operator`: `pods audit` CLI, from a server-side dry run of the `enforce` label.
 - [x] Chart: `podSecurity.rbac.enabled` grants `patch` on `namespaces`, with a comment naming this
       RFC.
-- [ ] e2e on kind: a privileged pod refused at `Enforce`, restored labels at `Off`.
+- [x] e2e on kind (the `pod-security` suite): a privileged pod refused at `Enforce`, restored
+      labels at `Off`, a Che workspace running at `baseline`, and a measurement of one under
+      `restricted`.
 - [x] `Localhost` seccomp profiles: `scripts/seccomp-profiles.sh`, `deploy/seccomp/`,
       `task seccomp:gen` / `seccomp:check` (in `task lint`), measured against nested builds.
 - [x] Runtime matrix: `scripts/runtime-matrix.sh` (podman, `check` mode) and

@@ -25,7 +25,7 @@ on:
         description: Which suite to run
         type: choice
         default: all
-        options: [all, workspace, kubearmor, endpoint-auth, identity, upgrade]
+        options: [all, workspace, kubearmor, endpoint-auth, identity, upgrade, pod-security]
 permissions:
   contents: read
 concurrency:
@@ -138,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'all') && '["workspace","kubearmor","endpoint-auth","identity","upgrade"]' || format('["{0}"]', inputs.suite)) }}
+        suite: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'all') && '["workspace","kubearmor","endpoint-auth","identity","upgrade","pod-security"]' || format('["{0}"]', inputs.suite)) }}
     env:
       E2E_RUNTIME: docker
       E2E_REPO_ROOT: ${{ github.workspace }}
