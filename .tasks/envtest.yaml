@@ -123,3 +123,6 @@ tasks:
       # plan and stays open. Run here rather than in `task test:openshift`: that tier is the
       # deferred, unvalidated one, and these assertions are neither.
       - cargo test --workspace --features envtest --test openshift_envtest -- --test-threads=1
+      # RFC 0013's suite: it writes Pod Security labels onto namespaces and creates a pod the new
+      # level warns about, which no other suite's apiserver is meant to carry.
+      - cargo test --workspace --features envtest --test pod_security_envtest -- --test-threads=1

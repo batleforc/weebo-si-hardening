@@ -135,6 +135,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let kubearmor_policy = weebo_si_kubearmor_policy_adapters::controller_deps(&shared).await?;
     let registry_config = weebo_si_registry_config_adapters::controller_deps(&shared).await?;
     let endpoint_auth = weebo_si_endpoint_auth_adapters::controller_deps(&shared).await?;
+    let pod_security = weebo_si_pod_security_adapters::controller_deps(&shared).await?;
     let identity = weebo_si_identity_adapters::controller_deps(&shared)?;
 
     // `--metrics-addr` is parsed for the CLI contract's sake: metrics and probes share
@@ -182,6 +183,10 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     }
     if let Some(deps) = endpoint_auth {
         weebo_si_endpoint_auth_adapters::controller::spawn(client.clone(), deps, recorder.clone())
+            .await;
+    }
+    if let Some(deps) = pod_security {
+        weebo_si_pod_security_adapters::controller::spawn(client.clone(), deps, recorder.clone())
             .await;
     }
     weebo_si_identity_adapters::controller::spawn(client.clone(), identity, recorder.clone()).await;

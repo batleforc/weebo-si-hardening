@@ -18,8 +18,9 @@ use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
     Backend, FeatureMode, IdentityConfig, NamespaceName, PolicyGuardConfig, ResolvedDwocPinConfig,
     ResolvedEndpointAuthConfig, ResolvedFeatures, ResolvedImagePolicyConfig,
-    ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig, ResolvedRegistryConfig,
-    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiTeam, team_views,
+    ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig, ResolvedPodSecurityConfig,
+    ResolvedRegistryConfig, RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiTeam,
+    team_views,
 };
 
 use weebo_si_chassis::FeatureId;
@@ -74,6 +75,7 @@ pub struct KubeConfigStore {
     kubearmor_policy: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     registry_config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     endpoint_auth: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+    pod_security: Arc<RwLock<Option<ResolvedPodSecurityConfig>>>,
     identity: Arc<RwLock<Option<IdentityConfig>>>,
     /// Ticks once each time a sync leaves `identity` different from before, sent after the
     /// handle is written: a loop woken by it reads the new value, never the old one.
@@ -125,6 +127,7 @@ impl KubeConfigStore {
         let kubearmor_policy = Arc::new(RwLock::new(None));
         let registry_config = Arc::new(RwLock::new(None));
         let endpoint_auth = Arc::new(RwLock::new(None));
+        let pod_security = Arc::new(RwLock::new(None));
         let identity = Arc::new(RwLock::new(None));
         let (identity_changes, _) = tokio::sync::watch::channel(());
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
@@ -161,6 +164,7 @@ impl KubeConfigStore {
         let kubearmor_policy_for_task = Arc::clone(&kubearmor_policy);
         let registry_config_for_task = Arc::clone(&registry_config);
         let endpoint_auth_for_task = Arc::clone(&endpoint_auth);
+        let pod_security_for_task = Arc::clone(&pod_security);
         let identity_for_task = Arc::clone(&identity);
         let identity_changes_for_task = identity_changes.clone();
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
@@ -187,6 +191,7 @@ impl KubeConfigStore {
                             &kubearmor_policy_for_task,
                             &registry_config_for_task,
                             &endpoint_auth_for_task,
+                            &pod_security_for_task,
                             &identity_for_task,
                             &resolved_backend_for_task,
                             &resolved_runtime_backend_for_task,
@@ -231,6 +236,7 @@ impl KubeConfigStore {
             &kubearmor_policy,
             &registry_config,
             &endpoint_auth,
+            &pod_security,
             &identity,
             &resolved_backend,
             &resolved_runtime_backend,
@@ -248,6 +254,7 @@ impl KubeConfigStore {
             kubearmor_policy,
             registry_config,
             endpoint_auth,
+            pod_security,
             identity,
             identity_changes,
             resolved_backend,
@@ -322,6 +329,12 @@ impl KubeConfigStore {
     /// attached one way and pinned another.
     pub fn endpoint_auth_config(&self) -> Arc<RwLock<Option<ResolvedEndpointAuthConfig>>> {
         Arc::clone(&self.endpoint_auth)
+    }
+
+    /// The `Arc` `weebo-si-pod-security`'s `PodSecurityFeature::new` should be constructed with,
+    /// per RFC 0013. `None` until (and unless) `spec.features.podSecurity` is present.
+    pub fn pod_security_config(&self) -> Arc<RwLock<Option<ResolvedPodSecurityConfig>>> {
+        Arc::clone(&self.pod_security)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -426,6 +439,7 @@ fn sync_from_store_initial(
     kubearmor_policy: &Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+    pod_security: &Arc<RwLock<Option<ResolvedPodSecurityConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
@@ -445,6 +459,7 @@ fn sync_from_store_initial(
         kubearmor_policy,
         registry_config,
         endpoint_auth,
+        pod_security,
         identity,
         resolved_backend,
         resolved_runtime_backend,
@@ -469,6 +484,7 @@ fn sync_from_store(
     kubearmor_policy: &Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+    pod_security: &Arc<RwLock<Option<ResolvedPodSecurityConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
@@ -490,6 +506,7 @@ fn sync_from_store(
         kubearmor_policy,
         registry_config,
         endpoint_auth,
+        pod_security,
         identity,
         resolved_backend,
         resolved_runtime_backend,
@@ -599,6 +616,17 @@ fn sync_from_store(
                 .unwrap_or(0),
         );
 
+    metrics
+        .feature_mode
+        .with_label_values(&["pod-security"])
+        .set(
+            features
+                .pod_security
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
     // Set from a full recount rather than incremented, same as the gauge below: an entry whose
     // pattern was fixed must drop out of `invalid`, not keep reporting a fault that is gone.
     let (mut valid, mut invalid) = (0i64, 0i64);
@@ -693,6 +721,7 @@ fn apply_config(
     kubearmor_policy: &Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
     registry_config: &Arc<RwLock<Option<ResolvedRegistryConfig>>>,
     endpoint_auth: &Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+    pod_security: &Arc<RwLock<Option<ResolvedPodSecurityConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
@@ -723,6 +752,9 @@ fn apply_config(
     }
     if let Ok(mut guard) = endpoint_auth.write() {
         *guard = features.endpoint_auth.clone();
+    }
+    if let Ok(mut guard) = pod_security.write() {
+        *guard = features.pod_security.clone();
     }
     if let Ok(mut guard) = identity.write() {
         *guard = features.identity.clone();
@@ -854,6 +886,16 @@ impl KubeConfigStore {
                     None => return FeatureMode::Off,
                 }
             }
+            "pod-security" => {
+                let guard = self
+                    .pod_security
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
             _ => return FeatureMode::Off,
         };
 
@@ -944,6 +986,7 @@ mod tests {
         kubearmor_policy: Arc<RwLock<Option<ResolvedKubeArmorPolicyConfig>>>,
         registry_config: Arc<RwLock<Option<ResolvedRegistryConfig>>>,
         endpoint_auth: Arc<RwLock<Option<ResolvedEndpointAuthConfig>>>,
+        pod_security: Arc<RwLock<Option<ResolvedPodSecurityConfig>>>,
         identity: Arc<RwLock<Option<IdentityConfig>>>,
         resolved_backend: Arc<RwLock<Backend>>,
         resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
@@ -961,6 +1004,7 @@ mod tests {
                 kubearmor_policy: Arc::default(),
                 registry_config: Arc::default(),
                 endpoint_auth: Arc::default(),
+                pod_security: Arc::default(),
                 identity: Arc::default(),
                 resolved_backend: Arc::new(RwLock::new(Backend::NetworkPolicy)),
                 resolved_runtime_backend: Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
@@ -981,6 +1025,7 @@ mod tests {
                 &self.kubearmor_policy,
                 &self.registry_config,
                 &self.endpoint_auth,
+                &self.pod_security,
                 &self.identity,
                 &self.resolved_backend,
                 &self.resolved_runtime_backend,

@@ -277,6 +277,21 @@
         }
       }
     },
+    "podSecurity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rbac": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "registryConfig": {
       "type": "object",
       "additionalProperties": false,

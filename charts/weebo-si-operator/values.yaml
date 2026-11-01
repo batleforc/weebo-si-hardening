@@ -187,6 +187,15 @@ kubearmorPolicy:
   rbac:
     enabled: false
 
+# RFC 0013's `pod-security`. Off by default, and this flag governs *RBAC*, not the feature:
+# whether the feature runs at all is `spec.features.podSecurity.mode` on the WeeboSiConfig. It
+# grants `patch` on namespaces, which the controller needs to write the Pod Security labels.
+# Without it the feature is inert and says so at startup. On OpenShift, where the feature only
+# observes the labels the cluster syncs, it can stay off.
+podSecurity:
+  rbac:
+    enabled: false
+
 # RFC 0007's `registry-config`. Off by default, and this flag governs *RBAC and the guard rule*,
 # not the feature: whether the feature runs at all is `spec.features.registryConfig.mode` on the
 # WeeboSiConfig.

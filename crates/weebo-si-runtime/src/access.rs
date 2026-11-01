@@ -96,9 +96,31 @@ pub async fn can_watch(
     resource: &str,
     namespace: Option<&str>,
 ) -> Result<bool, kube::Error> {
+    can(client, group, resource, namespace, &WATCH_VERBS).await
+}
+
+/// Whether this process may `patch` `resource` in `group` — for a feature whose only write is a
+/// patch of objects it already watches, like `pod-security`'s namespace labels. Same contract as
+/// [`can_watch`].
+pub async fn can_patch(
+    client: &Client,
+    group: &str,
+    resource: &str,
+    namespace: Option<&str>,
+) -> Result<bool, kube::Error> {
+    can(client, group, resource, namespace, &["patch"]).await
+}
+
+async fn can(
+    client: &Client,
+    group: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    verbs: &[&'static str],
+) -> Result<bool, kube::Error> {
     let api: Api<SelfSubjectAccessReview> = Api::all(client.clone());
     let what = format!("{resource}.{group}");
-    decide(DEFAULT_RETRY, &what, |verb| {
+    decide(DEFAULT_RETRY, verbs, &what, |verb| {
         let api = api.clone();
         let review = review_for(group, resource, namespace, verb);
         async move {
@@ -136,11 +158,16 @@ fn review_for(
     }
 }
 
-/// The decision, with the one review call as a seam: every verb in [`WATCH_VERBS`] must be
+/// The decision, with the one review call as a seam: every verb in `verbs` must be
 /// answered `true`; the first `false` answer decides "not allowed"; a failed call is retried with
 /// `policy`'s backoff until its budget — shared by every verb of this one question — is spent,
 /// and then its error is returned.
-async fn decide<F, Fut, E>(policy: RetryPolicy, what: &str, mut review: F) -> Result<bool, E>
+async fn decide<F, Fut, E>(
+    policy: RetryPolicy,
+    verbs: &[&'static str],
+    what: &str,
+    mut review: F,
+) -> Result<bool, E>
 where
     F: FnMut(&'static str) -> Fut,
     Fut: Future<Output = Result<bool, E>>,
@@ -149,7 +176,7 @@ where
     let started = Instant::now();
     let mut delay = policy.initial;
     let mut attempts: u32 = 0;
-    for verb in WATCH_VERBS {
+    for &verb in verbs {
         loop {
             attempts = attempts.saturating_add(1);
             match review(verb).await {
@@ -223,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn both_verbs_allowed_is_allowed() {
         let script = Script::new(vec![Ok(true), Ok(true)]);
-        let result = decide(FAST, "x.y", |verb| script.call(verb)).await;
+        let result = decide(FAST, &WATCH_VERBS, "x.y", |verb| script.call(verb)).await;
         assert_eq!(result, Ok(true));
         assert_eq!(*script.asked.borrow(), vec!["list", "watch"]);
     }
@@ -231,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn an_explicit_denial_is_not_allowed_and_stops_asking() {
         let script = Script::new(vec![Ok(false)]);
-        let result = decide(FAST, "x.y", |verb| script.call(verb)).await;
+        let result = decide(FAST, &WATCH_VERBS, "x.y", |verb| script.call(verb)).await;
         assert_eq!(result, Ok(false));
         assert_eq!(*script.asked.borrow(), vec!["list"]);
     }
@@ -246,7 +273,7 @@ mod tests {
             Err("503".to_string()),
             Ok(true),
         ]);
-        let result = decide(FAST, "x.y", |verb| script.call(verb)).await;
+        let result = decide(FAST, &WATCH_VERBS, "x.y", |verb| script.call(verb)).await;
         assert_eq!(result, Ok(true));
         assert_eq!(
             *script.asked.borrow(),
@@ -257,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn a_denial_after_a_retry_is_still_a_denial() {
         let script = Script::new(vec![Err("timeout".to_string()), Ok(true), Ok(false)]);
-        let result = decide(FAST, "x.y", |verb| script.call(verb)).await;
+        let result = decide(FAST, &WATCH_VERBS, "x.y", |verb| script.call(verb)).await;
         assert_eq!(result, Ok(false));
     }
 
@@ -266,7 +293,7 @@ mod tests {
         // Not `Ok(false)`: the caller must fail startup rather than run with the feature off.
         let script = Script::new(Vec::new());
         let started = std::time::Instant::now();
-        let result = decide(FAST, "x.y", |verb| script.call(verb)).await;
+        let result = decide(FAST, &WATCH_VERBS, "x.y", |verb| script.call(verb)).await;
         assert_eq!(result, Err("apiserver unreachable".to_string()));
         assert!(script.asked.borrow().len() > 1, "it must have retried");
         assert!(

@@ -261,10 +261,12 @@ of the six keys in the namespace's managed fields. That decides three things:
   another field manager: somebody changed a label after this feature wrote it.
   `weebo_si_pod_security_drift_total` counts it, and the next apply takes the key back.
 
-The restore write is a merge patch under a different field manager,
-`weebo-si-pod-security-restore`. Once restored, the keys belong to the namespace again; were they
-still owned by `weebo-si-pod-security`, a later pass would read them as its own and report the
-annotation lost.
+The restore is two writes. First an empty server-side apply under `weebo-si-pod-security`, which
+gives up every field that manager owns; then a merge patch under a different field manager,
+`weebo-si-pod-security-restore`, that sets the previous values back and removes the rest. Once
+restored, the keys belong to the namespace again; were they still owned by
+`weebo-si-pod-security`, a later pass would read them as its own and report the annotation lost.
+The envtest checks that no key is left in that manager's name.
 
 #### Pinning the version
 
@@ -556,10 +558,13 @@ instead of restoring an older value. This is logged as `result=previous_lost` on
 
 ## Security considerations
 
-**Privileges. No new verb.** The controller role already holds `patch` on `namespaces`, for
-[RFC 0006](./0006-kubearmor-policy.md)'s posture annotations. Kubernetes RBAC cannot narrow it to
-named label keys, so the narrowing lives in the adapter, as it does for RFC 0006: a server-side
-apply whose object contains exactly the seven keys above and nothing else.
+**Privileges. `patch` on `namespaces`, behind `podSecurity.rbac.enabled`.** This RFC first said
+the controller role already held it, for [RFC 0006](./0006-kubearmor-policy.md)'s posture
+annotations. It does only when `kubearmorPolicy.rbac.enabled` is on, so the chart grants the same
+verb under its own switch, off by default. Without it the feature is inert and says so at startup,
+except on OpenShift, where `backend: Auto` only observes and needs no write. Kubernetes RBAC
+cannot narrow the verb to named label keys, so the narrowing lives in the adapter, as it does for
+RFC 0006: a server-side apply whose object contains exactly the seven keys above and nothing else.
 That is reviewed as code, and an envtest asserts the applied object's key set. The webhook role is
 unchanged.
 
@@ -714,9 +719,11 @@ for, and what the runbook must say.
 
 ## Unresolved questions
 
-- **Does kube-client surface the `Warning` headers of a server-side apply?** (Not blocking.) The
-  `violations` gauge and the `audit` CLI both depend on it. If it does not, the CLI can fall back
-  to a raw request, and the gauge waits.
+- ~~**Does kube-client surface the `Warning` headers of a server-side apply?**~~ Answered,
+  2026-11-01: `Api::patch` does not, it returns the object only. The adapter builds the same
+  request and sends it with `Client::send`, which returns the headers. The envtest raises a
+  namespace to `baseline` over an existing pod with an added capability and a `hostPath`, and the
+  pod's name comes back in the warnings.
 - **Do the build profiles hold on the fleet's runtime?** (Not blocking.) Measured
   with podman 5.8, buildah 1.43 and crun 1.28 on kernel 7.2, under runc 1.5.2 and crun 1.28. A
   newer crun may use more of the new mount API (`fsopen`, `fsmount`, ...) and need it. The runtime
@@ -760,10 +767,12 @@ for, and what the runbook must say.
       the `pod-security` entry in the `WeeboSiConfig` status.
 - [x] `weebo-si-pod-security`: subject, resolution, label diff, previous/restore rules, unit tests
       for every row of *Resolution* and *What is written*.
-- [ ] `weebo-si-pod-security-adapters`: `NamespaceLabelStore` by server-side apply, metrics, loop,
+- [x] `weebo-si-pod-security-adapters`: `NamespaceLabelStore` by server-side apply, metrics, loop,
       envtest asserting the exact key set written.
-- [ ] `weebo-si-operator`: wiring, `pods audit` CLI.
-- [ ] Chart: no RBAC change; a comment on the existing `patch namespaces` rule naming this RFC.
+- [x] `weebo-si-operator`: wiring.
+- [ ] `weebo-si-operator`: `pods audit` CLI.
+- [x] Chart: `podSecurity.rbac.enabled` grants `patch` on `namespaces`, with a comment naming this
+      RFC.
 - [ ] e2e on kind: a privileged pod refused at `Enforce`, restored labels at `Off`.
 - [x] `Localhost` seccomp profiles: `scripts/seccomp-profiles.sh`, `deploy/seccomp/`,
       `task seccomp:gen` / `seccomp:check` (in `task lint`), measured against nested builds.
@@ -798,5 +807,6 @@ for, and what the runbook must say.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | The adapters land. The Warning-headers question is answered (a raw request returns them). `patch` on `namespaces` is a chart switch of its own, `podSecurity.rbac.enabled`, not a verb the role already had. |
 | 2026-11-01 | `Accepted`. *What is written* says how ownership is read (the `-previous` annotation or the managed fields), what drift is, and that the restore write uses its own field manager. A team's level looser than the ceiling is reported on that team's own status as well as on the `WeeboSiConfig`. |
 | 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |

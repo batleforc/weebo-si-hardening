@@ -49,6 +49,8 @@ mod reason {
             EndpointAuthFailed,
             /// An `identity` pass failed on a team or a user.
             IdentityFailed,
+            /// A `pod-security` pass failed on a namespace.
+            PodSecurityFailed,
         }
     }
 }

@@ -160,6 +160,17 @@ rules:
     resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if .Values.podSecurity.rbac.enabled }}
+  # RFC 0013's pod-security: `patch` on namespaces, for the six `pod-security.kubernetes.io/*`
+  # labels and the `hardening.weebo.io/pod-security-previous` annotation, and nothing else. The
+  # same trade as KubeArmor's posture annotations above: RBAC cannot name label keys, so the
+  # narrowing is the adapter's (a server-side apply under its own field manager, which owns exactly
+  # those keys) and reviewed as code. Repeated rather than shared with the rule above so either
+  # feature can be granted alone; a duplicate rule grants nothing more.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["patch"]
+  {{- end }}
   {{- if .Values.endpointAuth.rbac.enabled }}
   # RFC 0009's write half. `patch` and nothing else on the routing objects: the sweep writes the
   # dialect's annotations and, on a `ReverseProxy` dialect, the backend — it never creates or

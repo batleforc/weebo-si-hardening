@@ -1,0 +1,41 @@
+[package]
+name = "weebo-si-pod-security-adapters"
+version = "0.1.0"
+description = "pod-security's adapters: its namespace label store, metrics and reconcile loop"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+weebo-si-pod-security = { version = "0.1.0", path = "../weebo-si-pod-security" }
+# The structural namespace exclusions (`is_excluded_namespace`) every reconcile feature shares.
+weebo-si-network-profiles = { version = "0.1.0", path = "../weebo-si-network-profiles" }
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
+kube = { workspace = true, features = ["client", "runtime"] }
+k8s-openapi = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true }
+prometheus = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# Opt-in tier that needs a real kube-apiserver (see `task envtest:setup`).
+envtest = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+weebo-si-pod-security = { version = "0.1.0", path = "../weebo-si-pod-security", features = ["testing"] }
+weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
+kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true
