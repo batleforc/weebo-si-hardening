@@ -5,7 +5,7 @@
 //! identity and entitlement live together on an object with the team's own lifetime, and the
 //! `grants` maps leave the wire. What is *not* amended is the reason grants were per feature in
 //! the first place — a team still declares a different shape for each feature, in that feature's
-//! own vocabulary, which is why [`TeamFeatures`] is six optional blocks and not one.
+//! own vocabulary, which is why [`TeamFeatures`] is one optional block per feature and not one.
 //!
 //! The ordering rule changes with the split and is the one thing to read twice. RFC 0002 made
 //! `spec.teams` ordered and first-match-wins, justified by "this list is written by one admin in
@@ -27,6 +27,7 @@ use crate::endpoint_auth::TeamEndpointAuth;
 use crate::image_policy::TeamImagePolicy;
 use crate::kubearmor_policy::TeamKubeArmorPolicy;
 use crate::network_profiles::TeamNetworkProfiles;
+use crate::pod_security::TeamPodSecurity;
 use crate::registry_config::TeamRegistryConfig;
 use crate::selector::Selector;
 
@@ -101,6 +102,9 @@ pub struct TeamFeatures {
     /// This team's `endpoint-auth` catalogue and default, per RFC 0009.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_auth: Option<TeamEndpointAuth>,
+    /// This team's `pod-security` levels, per RFC 0013.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_security: Option<TeamPodSecurity>,
 }
 
 /// `spec.identity` — what this team's members are, outside Kubernetes.

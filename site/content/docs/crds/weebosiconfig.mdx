@@ -45,6 +45,7 @@ spec:
 | [`imagePolicy`](#spec.features.imagePolicy) | `object` | no |  | `spec.features.imagePolicy`, per RFC 0005. |
 | [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | `spec.features.kubearmorPolicy`, per RFC 0006. |
 | [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | `spec.features.networkProfiles`, per RFC 0004. |
+| [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | `spec.features.podSecurity`, per RFC 0013. |
 | [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
 
@@ -449,6 +450,39 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `attribute` | `string` | no | `"hardening.weebo.io/network-profiles"` | DevWorkspace attribute naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+
+### `spec.features.podSecurity` [#spec.features.podSecurity]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | no | `"Auto"` | Write the labels, or observe OpenShift's.<br /><br />Values: `"Auto"`, `"Labels"`, `"ObserveSynced"` |
+| `ceiling` | `string` | no | `"baseline"` | The loosest level this feature will ever write. A team or default looser than this is clamped to it, and the clamp is reported.<br /><br />Values: `"privileged"`, `"baseline"`, `"restricted"` |
+| `default` | `string` | yes |  | The level of a namespace belonging to no team, or to a team that sets none. Required.<br /><br />Values: `"privileged"`, `"baseline"`, `"restricted"` |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelection`](#spec.features.podSecurity.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/pod-security"}` | The tighten-only namespace annotation. |
+| [`namespaceSelector`](#spec.features.podSecurity.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
+| `version` | `string` | yes |  | Written to every `*-version` label. Required. |
+
+### `spec.features.podSecurity.namespaceSelection` [#spec.features.podSecurity.namespaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/pod-security"` | Namespace annotation naming a level. The empty string disables this step. |
+
+### `spec.features.podSecurity.namespaceSelector` [#spec.features.podSecurity.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.podSecurity.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.podSecurity.namespaceSelector.matchExpressions[]` [#spec.features.podSecurity.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
 
 ### `spec.features.policyGuard` [#spec.features.policyGuard]
 

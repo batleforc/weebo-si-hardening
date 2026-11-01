@@ -44,6 +44,7 @@ spec:
 | [`imagePolicy`](#spec.features.imagePolicy) | `object` | no |  | This team's `image-policy` catalogue and defaults, per RFC 0005. |
 | [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | This team's `kubearmor-policy` catalogue and defaults, per RFC 0006. |
 | [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | This team's `network-profiles` catalogue and defaults, per RFC 0004. |
+| [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | This team's `pod-security` levels, per RFC 0013. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | This team's `registry-config` catalogue and defaults, per RFC 0007. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
@@ -138,6 +139,13 @@ spec:
 | --- | --- | --- | --- | --- |
 | `name` | `string` | yes |  | The template object's name. |
 | `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.podSecurity` [#spec.features.podSecurity]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `level` | `string` | no |  | A Pod Security Standards level.<br /><br />**Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's values: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an admin who writes `restricted` in a namespace label should not have to write `Restricted` here.<br /><br />The variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord` answers "which is stricter" and [`Ord::max`] is "the stricter of the two".<br /><br />Values: `"privileged"`, `"baseline"`, `"restricted"` |
+| `warnLevel` | `string` | no |  | A Pod Security Standards level.<br /><br />**Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's values: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an admin who writes `restricted` in a namespace label should not have to write `Restricted` here.<br /><br />The variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord` answers "which is stricter" and [`Ord::max`] is "the stricter of the two".<br /><br />Values: `"privileged"`, `"baseline"`, `"restricted"` |
 
 ### `spec.features.registryConfig` [#spec.features.registryConfig]
 

@@ -1,11 +1,11 @@
 ---
 rfc: 0013
 title: pod-security
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-10-31
-updated: 2026-10-31
-decided:
+updated: 2026-11-01
+decided: 2026-11-01
 brick: crates/weebo-si-pod-security
 supersedes: []
 superseded-by: []
@@ -247,6 +247,24 @@ the namespace, not the state from before the last write.
 the annotation and then removes it. Unlike [RFC 0004](./0004-network-profiles.md), which leaves
 scope exits to `mode: Off` or the break-glass, cleanup here is free: the state lives on the
 namespace object, which the controller already watches.
+
+**Whose labels are these.** "A namespace this feature wrote to" means one that carries the
+`-previous` annotation, or one where the field manager `weebo-si-pod-security` owns at least one
+of the six keys in the namespace's managed fields. That decides three things:
+
+- The stricter-existing rule applies only to a namespace this feature has not written to. On its
+  own namespace, a resolution that loosens (a team moved from `restricted` to `baseline`) is
+  written.
+- The `-previous` annotation is sent on every apply with the value it already has: under
+  server-side apply, an apply that omits a field the manager owns removes it.
+- **Drift** is a namespace carrying the annotation where one of the six keys is now owned by
+  another field manager: somebody changed a label after this feature wrote it.
+  `weebo_si_pod_security_drift_total` counts it, and the next apply takes the key back.
+
+The restore write is a merge patch under a different field manager,
+`weebo-si-pod-security-restore`. Once restored, the keys belong to the namespace again; were they
+still owned by `weebo-si-pod-security`, a later pass would read them as its own and report the
+annotation lost.
 
 #### Pinning the version
 
@@ -737,9 +755,10 @@ for, and what the runbook must say.
 
 ## Implementation plan
 
-- [ ] `weebo-si-crd`: `PodSecurityLevel`, `PodSecurityConfig` (`mode`, `namespaceSelector`,
-      `default`, `ceiling`, `version`, `namespaceSelection`), the team fields, `Resolved*`.
-- [ ] `weebo-si-pod-security`: subject, resolution, label diff, previous/restore rules, unit tests
+- [x] `weebo-si-crd`: `PodSecurityLevel`, `PodSecurityConfig` (`mode`, `namespaceSelector`,
+      `default`, `ceiling`, `version`, `namespaceSelection`), the team fields, `Resolved*`, and
+      the `pod-security` entry in the `WeeboSiConfig` status.
+- [x] `weebo-si-pod-security`: subject, resolution, label diff, previous/restore rules, unit tests
       for every row of *Resolution* and *What is written*.
 - [ ] `weebo-si-pod-security-adapters`: `NamespaceLabelStore` by server-side apply, metrics, loop,
       envtest asserting the exact key set written.
@@ -779,4 +798,5 @@ for, and what the runbook must say.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | `Accepted`. *What is written* says how ownership is read (the `-previous` annotation or the managed fields), what drift is, and that the restore write uses its own field manager. A team's level looser than the ceiling is reported on that team's own status as well as on the `WeeboSiConfig`. |
 | 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |

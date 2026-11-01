@@ -1,0 +1,27 @@
+[package]
+name = "weebo-si-pod-security"
+version = "0.1.0"
+description = "The pod-security feature: a Pod Security Admission level per workspace namespace, per team"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+# The `-previous` annotation is JSON by contract (RFC 0013's *What is written*), and reading it
+# back is the restore rule this crate exists to get right.
+serde_json = { workspace = true }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)` — same
+# pattern as the sibling domain crates' `testing` features.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

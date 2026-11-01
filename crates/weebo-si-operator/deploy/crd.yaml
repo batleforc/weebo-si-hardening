@@ -1083,6 +1083,97 @@ spec:
                     - catalog
                     - mode
                     type: object
+                  podSecurity:
+                    description: '`spec.features.podSecurity`, per RFC 0013.'
+                    nullable: true
+                    properties:
+                      backend:
+                        default: Auto
+                        description: Write the labels, or observe OpenShift's.
+                        enum:
+                        - Auto
+                        - Labels
+                        - ObserveSynced
+                        type: string
+                      ceiling:
+                        default: baseline
+                        description: |-
+                          The loosest level this feature will ever write. A team or default looser than this is
+                          clamped to it, and the clamp is reported.
+                        enum:
+                        - privileged
+                        - baseline
+                        - restricted
+                        type: string
+                      default:
+                        description: The level of a namespace belonging to no team, or to a team that sets none. Required.
+                        enum:
+                        - privileged
+                        - baseline
+                        - restricted
+                        type: string
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - Off
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelection:
+                        default:
+                          annotation: hardening.weebo.io/pod-security
+                        description: The tighten-only namespace annotation.
+                        properties:
+                          annotation:
+                            default: hardening.weebo.io/pod-security
+                            description: Namespace annotation naming a level. The empty string disables this step.
+                            type: string
+                        type: object
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows within the controller''s own scope.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      version:
+                        description: Written to every `*-version` label. Required.
+                        type: string
+                    required:
+                    - default
+                    - mode
+                    - version
+                    type: object
                   policyGuard:
                     description: '`spec.features.policyGuard`, per RFC 0004.'
                     nullable: true
@@ -1649,6 +1740,43 @@ spec:
                           pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                           type: string
                         type: array
+                    type: object
+                  podSecurity:
+                    description: This team's `pod-security` levels, per RFC 0013.
+                    nullable: true
+                    properties:
+                      level:
+                        description: |-
+                          A Pod Security Standards level.
+
+                          **Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's
+                          values: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an
+                          admin who writes `restricted` in a namespace label should not have to write `Restricted` here.
+
+                          The variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord`
+                          answers "which is stricter" and [`Ord::max`] is "the stricter of the two".
+                        enum:
+                        - privileged
+                        - baseline
+                        - restricted
+                        nullable: true
+                        type: string
+                      warnLevel:
+                        description: |-
+                          A Pod Security Standards level.
+
+                          **Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's
+                          values: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an
+                          admin who writes `restricted` in a namespace label should not have to write `Restricted` here.
+
+                          The variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord`
+                          answers "which is stricter" and [`Ord::max`] is "the stricter of the two".
+                        enum:
+                        - privileged
+                        - baseline
+                        - restricted
+                        nullable: true
+                        type: string
                     type: object
                   registryConfig:
                     description: This team's `registry-config` catalogue and defaults, per RFC 0007.

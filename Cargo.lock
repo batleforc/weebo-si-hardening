@@ -4070,6 +4070,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-pod-security"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-policy-guard"
 version = "0.1.0"
 dependencies = [

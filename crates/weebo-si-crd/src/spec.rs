@@ -12,6 +12,7 @@ use crate::identity::IdentityConfig;
 use crate::image_policy::{ImagePolicyConfig, ResolvedImagePolicyConfig};
 use crate::kubearmor_policy::{KubeArmorPolicyConfig, ResolvedKubeArmorPolicyConfig};
 use crate::network_profiles::{NetworkProfilesConfig, ResolvedNetworkProfilesConfig};
+use crate::pod_security::{PodSecurityConfig, ResolvedPodSecurityConfig};
 use crate::policy_guard::PolicyGuardConfig;
 use crate::registry_config::{RegistryConfig, ResolvedRegistryConfig};
 use crate::team::{TeamName, WeeboSiTeam};
@@ -46,6 +47,9 @@ pub struct Features {
     /// other than this cluster's own, and the only one with allow-lists of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<IdentityConfig>,
+    /// `spec.features.podSecurity`, per RFC 0013.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_security: Option<PodSecurityConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -78,9 +82,9 @@ pub struct WeeboSiConfigSpec {
 ///
 /// The `team` is what lets a `WeeboSiTeam`'s own `status` carry its own mistakes and nobody
 /// else's — the singleton reports every conflict, each team reports the ones it caused. It is an
-/// `Option` because the type has to outlive today's single source of conflicts: every one of them
-/// is a team redefining a catalogue key, and a future conflict between two cluster-level entries
-/// would belong to nobody.
+/// `Option` because not every conflict has an author: today each one is a team redefining a
+/// catalogue key or asking `podSecurity` for more than its ceiling, and a future conflict between
+/// two cluster-level entries would belong to nobody.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveConflict {
     /// The team responsible, if one is.
@@ -113,6 +117,8 @@ pub struct ResolvedFeatures {
     pub endpoint_auth: Option<ResolvedEndpointAuthConfig>,
     /// `spec.features.identity`, unchanged.
     pub identity: Option<IdentityConfig>,
+    /// `spec.features.podSecurity`, resolved.
+    pub pod_security: Option<ResolvedPodSecurityConfig>,
 }
 
 impl WeeboSiConfigSpec {
@@ -213,6 +219,28 @@ impl WeeboSiConfigSpec {
             resolved
         });
 
+        // A team contributes a level rather than catalogue keys, so nothing conflicts; what a team
+        // can get wrong is asking for more than the ceiling allows, and that is its own fault.
+        let pod_security = self.features.pod_security.as_ref().map(|feature| {
+            let (resolved, violations) = feature.resolve(teams);
+            for violation in violations {
+                let message = violation.to_string();
+                let team = match violation {
+                    crate::pod_security::PodSecurityConfigViolation::TeamLevelLooserThanCeiling {
+                        team,
+                        ..
+                    }
+                    | crate::pod_security::PodSecurityConfigViolation::TeamWarnLooserThanLevel {
+                        team,
+                        ..
+                    } => Some(team),
+                    _ => None,
+                };
+                conflicts.push(ResolveConflict { team, message });
+            }
+            resolved
+        });
+
         let resolved = ResolvedFeatures {
             dwoc_pin,
             network_profiles,
@@ -222,6 +250,7 @@ impl WeeboSiConfigSpec {
             registry_config,
             endpoint_auth,
             identity: self.features.identity.clone(),
+            pod_security,
         };
         (resolved, conflicts)
     }

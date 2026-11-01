@@ -19,6 +19,7 @@ pub mod labels;
 mod merge;
 pub mod namespace;
 pub mod network_profiles;
+pub mod pod_security;
 pub mod policy_guard;
 pub mod registry_config;
 pub mod resolved;
@@ -73,6 +74,10 @@ pub use network_profiles::{
     NetworkProfilesConfigViolation, OnNotGranted, Profile, ProfileCatalog, ProfileGrant,
     ProfileKey, ProfileNamespaceSelection, ResolvedNetworkProfilesConfig, TeamNetworkProfiles,
     TemplateRef, Variant, WorkspaceSelection,
+};
+pub use pod_security::{
+    PodSecurityBackend, PodSecurityConfig, PodSecurityConfigViolation, PodSecurityLevel,
+    PodSecurityNamespaceSelection, PodSecurityVersion, ResolvedPodSecurityConfig, TeamPodSecurity,
 };
 pub use policy_guard::PolicyGuardConfig;
 pub use registry_config::{

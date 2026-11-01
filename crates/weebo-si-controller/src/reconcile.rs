@@ -314,6 +314,44 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0013's `podSecurity`. Like `endpointAuth`, a violation does not stop the feature: a
+    // level looser than the ceiling is clamped, never written, so the namespace still gets a
+    // floor. The condition is how an admin learns that a level they wrote is not the one applied.
+    if let Some(pod_security) = &resolved.pod_security {
+        let violations = pod_security.validate(&declared_teams);
+        let state = if violations.is_empty() {
+            match pod_security.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            }
+        } else {
+            FeatureState::Degraded
+        };
+        let message = if violations.is_empty() {
+            format!(
+                "default {}, ceiling {}, version {}, {} team levels",
+                pod_security.default,
+                pod_security.ceiling,
+                pod_security.version,
+                pod_security.grants.len(),
+            )
+        } else {
+            violations
+                .iter()
+                .map(|violation| violation.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        violation_messages.extend(violations.iter().map(|violation| violation.to_string()));
+        features.push(FeatureStatus {
+            name: "pod-security".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0011's `identity`. The only feature here that would create objects in systems other
     // than this cluster's own, so its whole validation — allow-lists, templates, duplicate
     // identities — runs before anything is provisioned, and reports on the object rather than

@@ -1274,6 +1274,124 @@
           ],
           "type": "object"
         },
+        "podSecurity": {
+          "description": "`spec.features.podSecurity`, per RFC 0013.",
+          "nullable": true,
+          "properties": {
+            "backend": {
+              "default": "Auto",
+              "description": "Write the labels, or observe OpenShift's.",
+              "enum": [
+                "Auto",
+                "Labels",
+                "ObserveSynced"
+              ],
+              "type": "string"
+            },
+            "ceiling": {
+              "default": "baseline",
+              "description": "The loosest level this feature will ever write. A team or default looser than this is\nclamped to it, and the clamp is reported.",
+              "enum": [
+                "privileged",
+                "baseline",
+                "restricted"
+              ],
+              "type": "string"
+            },
+            "default": {
+              "description": "The level of a namespace belonging to no team, or to a team that sets none. Required.",
+              "enum": [
+                "privileged",
+                "baseline",
+                "restricted"
+              ],
+              "type": "string"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelection": {
+              "default": {
+                "annotation": "hardening.weebo.io/pod-security"
+              },
+              "description": "The tighten-only namespace annotation.",
+              "properties": {
+                "annotation": {
+                  "default": "hardening.weebo.io/pod-security",
+                  "description": "Namespace annotation naming a level. The empty string disables this step.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the controller's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "version": {
+              "description": "Written to every `*-version` label. Required.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "default",
+            "mode",
+            "version"
+          ],
+          "type": "object"
+        },
         "policyGuard": {
           "description": "`spec.features.policyGuard`, per RFC 0004.",
           "nullable": true,

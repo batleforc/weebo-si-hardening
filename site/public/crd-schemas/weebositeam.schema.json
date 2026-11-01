@@ -290,6 +290,33 @@
           },
           "type": "object"
         },
+        "podSecurity": {
+          "description": "This team's `pod-security` levels, per RFC 0013.",
+          "nullable": true,
+          "properties": {
+            "level": {
+              "description": "A Pod Security Standards level.\n\n**Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's\nvalues: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an\nadmin who writes `restricted` in a namespace label should not have to write `Restricted` here.\n\nThe variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord`\nanswers \"which is stricter\" and [`Ord::max`] is \"the stricter of the two\".",
+              "enum": [
+                "privileged",
+                "baseline",
+                "restricted"
+              ],
+              "nullable": true,
+              "type": "string"
+            },
+            "warnLevel": {
+              "description": "A Pod Security Standards level.\n\n**Lowercase on the wire, unlike every other enum in this CRD**, because these are upstream's\nvalues: the same spelling goes into the `pod-security.kubernetes.io/enforce` label, and an\nadmin who writes `restricted` in a namespace label should not have to write `Restricted` here.\n\nThe variant order is the strictness order, `Privileged < Baseline < Restricted`, so `Ord`\nanswers \"which is stricter\" and [`Ord::max`] is \"the stricter of the two\".",
+              "enum": [
+                "privileged",
+                "baseline",
+                "restricted"
+              ],
+              "nullable": true,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "registryConfig": {
           "description": "This team's `registry-config` catalogue and defaults, per RFC 0007.",
           "nullable": true,
