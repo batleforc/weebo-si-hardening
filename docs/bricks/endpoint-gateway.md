@@ -504,9 +504,6 @@ Honest list, kept here rather than in the RFC's prose:
   in this repo installs it or can detect its absence. What exists is the assertion —
   `gateway.haproxyPrerequisite`, `Degraded` while it is unset — which is a promise recorded, not a
   property verified.
-- **The Che half of the ground-truth spike** — the user-namespace label, the OIDC client's
-  discovery document and the shape of a token that realm mints. `scripts/spike-0009.sh` runs those
-  rows against the Che cluster unchanged; nobody has run it there yet.
 - **Trusted-proxy `Auto`**: the peer check against the ingress controller's own `EndpointSlice`.
   `trustedProxy: {cidrs: [...]}` covers the same ground with a value an admin writes.
 - **`--check` does not run the self-origin probe once**; the running gateway probes on its own

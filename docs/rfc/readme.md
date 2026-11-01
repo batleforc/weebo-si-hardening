@@ -91,10 +91,10 @@ fails if it is stale.
 | [0006](./0006-kubearmor-policy.md) | kubearmor-policy | `Implemented` | `crates/weebo-si-kubearmor-policy` |
 | [0007](./0007-registry-config.md) | registry-config | `Implemented` | `crates/weebo-si-registry-config` |
 | [0008](./0008-policy-guard-coverage.md) | policy-guard-coverage | `Implemented` | `crates/weebo-si-policy-guard` |
-| [0009](./0009-endpoint-auth.md) | endpoint-auth | `Accepted` | `crates/weebo-si-endpoint-auth` |
+| [0009](./0009-endpoint-auth.md) | endpoint-auth | `Implemented` | `crates/weebo-si-endpoint-auth` |
 | [0010](./0010-endpoint-auth-openshift.md) | endpoint-auth on OpenShift | `Draft` | `bins/endpoint-gateway` |
 | [0011](./0011-teams-and-users.md) | teams and users as objects | `Implemented` | `crates/weebo-si-crd` |
-| [0012](./0012-operator-kit-migration.md) | operator kit migration | `Accepted` | `crates/weebo-si-operator` |
+| [0012](./0012-operator-kit-migration.md) | operator kit migration | `Implemented` | `crates/weebo-si-operator` |
 | [0013](./0013-pod-security.md) | pod-security | `Implemented` | `crates/weebo-si-pod-security` |
 | [0014](./0014-resource-quotas.md) | resource-quotas | `Implemented` | `crates/weebo-si-resource-quotas` |
 
