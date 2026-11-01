@@ -514,7 +514,7 @@ but it is one more write than before.
       template namespace (`resourceQuotas.templateNamespace`, created by default).
 - [x] Chart: the guard's webhook rule (`-resource-quotas`, path `/validate/v1/resourcequotas`).
 - [ ] e2e on kind: a pod over quota refused at `Enforce`, objects removed at `Off`.
-- [ ] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
+- [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`
 
 ## References

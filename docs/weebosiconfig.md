@@ -359,6 +359,7 @@ rather than ignored at runtime.
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
 | [`podSecurity`](#featurespodsecurity) | [0013](./rfc/0013-pod-security.md) | `Namespace` labels (reconcile) |
+| [`resourceQuotas`](#featuresresourcequotas) | [0014](./rfc/0014-resource-quotas.md) | `ResourceQuota`, `LimitRange` (reconcile) |
 
 ### `features.dwocPin`
 
@@ -921,6 +922,41 @@ asking for more than the `ceiling`, which is reported on that team's status.
 Before `Enforce`, `weebo-si-operator pods audit --all-namespaces` lists the existing pods each
 namespace's level would refuse.
 
+### `features.resourceQuotas`
+
+One quota profile per workspace namespace, per team: a `ResourceQuota` and a `LimitRange` copied
+from templates in the pod-less template namespace. Operating it:
+[`bricks/resource-quotas.md`](./bricks/resource-quotas.md).
+
+```yaml
+resourceQuotas:
+  mode: DryRun
+  catalog:
+    - key: standard
+      quotaRef: {name: quota-standard, namespace: weebo-si-hardening-templates}
+      limitRangeRef: {name: limits-standard, namespace: weebo-si-hardening-templates}
+  default: standard
+  namespaceSelection: { annotation: hardening.weebo.io/resource-quota }
+  onNotGranted: Default
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `Off` deletes every `weebo-quota` and `weebo-limits`. |
+| `namespaceSelector` | Selector | no | matches all | |
+| `catalog[].key` | string | yes | — | A label value: 1–63 alphanumerics, `-`, `_`, `.`. Written as `hardening.weebo.io/profile`. |
+| `catalog[].quotaRef` | `{name, namespace}` | one of the two | — | A `ResourceQuota` in the template namespace, copied as `weebo-quota`. |
+| `catalog[].limitRangeRef` | `{name, namespace}` | one of the two | — | A `LimitRange` in the template namespace, copied as `weebo-limits`. |
+| `default` | key | yes | — | The profile of a namespace of no team. |
+| per-team catalogue and default | on [`WeeboSiTeam`](./weebositeam.md#featuresresourcequotas) | no | — | |
+| `namespaceSelection.annotation` | string | no | `hardening.weebo.io/resource-quota` | Picks among the team's granted profiles. **Not** tighten-only; `""` disables it. |
+| `onNotGranted` | `Default`/`Deny` | no | `Default` | An ungranted key: the default, or no change. |
+
+**A profile is validated against its templates** before it is written: a compute quota with no
+container default, defaults out of order, an unparseable quantity, a scoped quota, or a template
+outside the template namespace makes it invalid. An invalid profile is applied nowhere, and
+namespaces keep what they have. The rules are in the brick page.
+
 ## `status`
 
 Written by the controller, derived entirely from `spec` — deleting it costs one reconcile.
@@ -988,6 +1024,7 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `kubearmor-{file,network,capabilities}-posture` | Namespace | **operator** | KubeArmor's default posture. |
 | `hardening.weebo.io/pod-security` | Namespace | namespace user | Asks for a stricter Pod Security level. Tighten-only, so leaving it writable is safe. |
 | `pod-security.kubernetes.io/*` | Namespace | **operator** (`podSecurity`) | The level the apiserver enforces, warns and audits against. |
+| `hardening.weebo.io/resource-quota` | Namespace | admin / namespace user | Picks a quota profile among the team's granted ones. |
 | `hardening.weebo.io/pod-security-previous` | Namespace | **operator** | The Pod Security labels as found before the first write; what `mode: Off` restores. Never edit it. |
 | `kubearmor.io/enforcer` | Node | **KubeArmor** | Which LSM that node can enforce with. Read-only for us. |
 
