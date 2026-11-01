@@ -183,7 +183,9 @@ jobs:
         run: |
           suite="$RUNNER_TEMP/suites/$(echo "${{ matrix.suite }}" | tr - _)"
           chmod +x "$suite"
-          "$suite" --test-threads=1
+          # --show-output: a passing test's stdout is captured by default, and some tests print
+          # what they measured rather than assert it (pod-security's Che-under-restricted).
+          "$suite" --test-threads=1 --show-output
       - name: Diagnostics
         if: failure()
         run: scripts/e2e.sh diag "$RUNNER_TEMP/diag"

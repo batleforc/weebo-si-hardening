@@ -43,7 +43,7 @@ tasks:
     cmds:
       # Serialised: every test in a suite shares the cluster's one WeeboSiConfig singleton.
       # E2E_CA_FILE defaults to the CA scripts/e2e.sh wrote; an explicit one (CI sets it) wins.
-      - E2E_CA_FILE="${E2E_CA_FILE:-{{.E2E_STATE}}/ca.crt}" cargo test -p weebo-si-e2e --features e2e --test {{.TARGET}} -- --test-threads=1 {{.CLI_ARGS}}
+      - E2E_CA_FILE="${E2E_CA_FILE:-{{.E2E_STATE}}/ca.crt}" cargo test -p weebo-si-e2e --features e2e --test {{.TARGET}} -- --test-threads=1 --show-output {{.CLI_ARGS}}
 
   run:
     desc: 'Bring the cluster up if needed, deploy one suite and run it (usage: task e2e:run SUITE=endpoint-auth)'
