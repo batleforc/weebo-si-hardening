@@ -4,4 +4,5 @@
 pub mod object;
 pub mod quantity;
 pub mod template;
+pub mod usage;
 pub mod validate;

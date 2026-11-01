@@ -4067,6 +4067,7 @@ dependencies = [
  "weebo-si-policy-guard-adapters",
  "weebo-si-registry-config",
  "weebo-si-registry-config-adapters",
+ "weebo-si-resource-quotas",
  "weebo-si-resource-quotas-adapters",
  "weebo-si-runtime",
  "weebo-si-webhook",

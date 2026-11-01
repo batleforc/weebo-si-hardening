@@ -36,6 +36,11 @@ pub const VALIDATE_NETWORK_POLICIES_PATH: &str = "/validate/v1/networkpolicies";
 /// rule on the first*. Served by the same handler as [`VALIDATE_NETWORK_POLICIES_PATH`].
 pub const VALIDATE_KUBEARMOR_POLICIES_PATH: &str = "/validate/v1/kubearmorpolicies";
 
+/// Path the `resourcequotas` and `limitranges` rule points at — RFC 0014's two rows. Served by
+/// the same handler; its rule carries an ownership `objectSelector`, so only managed objects
+/// arrive here.
+pub const VALIDATE_RESOURCE_QUOTAS_PATH: &str = "/validate/v1/resourcequotas";
+
 /// Everything the handler needs, injected once at boot — the composition root is the only place
 /// naming concrete adapters, per `docs/architecture/hexagonal.md`.
 pub struct PolicyGuardState {
@@ -85,6 +90,15 @@ pub fn policy_guard_router(state: Arc<PolicyGuardState>) -> Router {
                 |state: State<Arc<PolicyGuardState>>,
                  review: Json<AdmissionReview<DynamicObject>>| async move {
                     validate_policies(state, review, VALIDATE_KUBEARMOR_POLICIES_PATH).await
+                },
+            ),
+        )
+        .route(
+            VALIDATE_RESOURCE_QUOTAS_PATH,
+            post(
+                |state: State<Arc<PolicyGuardState>>,
+                 review: Json<AdmissionReview<DynamicObject>>| async move {
+                    validate_policies(state, review, VALIDATE_RESOURCE_QUOTAS_PATH).await
                 },
             ),
         )

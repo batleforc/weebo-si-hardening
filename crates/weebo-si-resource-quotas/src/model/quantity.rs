@@ -26,6 +26,33 @@ impl fmt::Display for QuantityError {
 const NANO_PER_UNIT: i128 = 1_000_000_000;
 
 impl Quantity {
+    /// Nothing.
+    pub const ZERO: Quantity = Quantity(0);
+
+    /// A quantity of `nanos` nano-units.
+    pub fn from_nanos(nanos: i128) -> Self {
+        Self(nanos)
+    }
+
+    /// Render for a person: millicores for `cpu`, binary units for bytes (`memory`, `storage`),
+    /// a plain number otherwise. Rounded down; for display only, never parsed back.
+    pub fn display_for(self, resource: &str) -> String {
+        let units = self.0 / NANO_PER_UNIT;
+        if resource.contains("cpu") {
+            return format!("{}m", self.0 / 1_000_000);
+        }
+        if resource.contains("memory") || resource.contains("storage") {
+            for (suffix, shift) in [("Gi", 30), ("Mi", 20), ("Ki", 10)] {
+                let unit = 1i128 << shift;
+                if units >= unit {
+                    let tenths = units * 10 / unit;
+                    return format!("{}.{}{suffix}", tenths / 10, tenths % 10);
+                }
+            }
+        }
+        units.to_string()
+    }
+
     /// Parse upstream's grammar: an optionally signed decimal number, then one of the binary
     /// suffixes (`Ki`…`Ei`), the decimal ones (`n`, `u`, `m`, none, `k`, `M`…`E`), or a decimal
     /// exponent (`e3`, `E-2`).
@@ -173,6 +200,14 @@ mod tests {
         for raw in ["", "Gi", "1.2.3", "1Gb", "abc", "1 Gi", "1e", "1ee3", "."] {
             assert!(Quantity::parse(raw).is_err(), "{raw:?}");
         }
+    }
+
+    #[test]
+    fn display() {
+        assert_eq!(q("2500m").display_for("requests.cpu"), "2500m");
+        assert_eq!(q("9.5Gi").display_for("requests.memory"), "9.5Gi");
+        assert_eq!(q("512Mi").display_for("limits.memory"), "512.0Mi");
+        assert_eq!(q("23").display_for("pods"), "23");
     }
 
     #[test]

@@ -506,12 +506,13 @@ but it is one more write than before.
       metrics, loop; envtest for "invalid profile keeps existing objects". The loop
       re-reconciles every namespace when the configuration, a template or a managed object's spec
       changes.
-- [ ] `weebo-si-policy-guard`: `GuardedResource::{ResourceQuota, LimitRange}`, two rows.
+- [x] `weebo-si-policy-guard`: `GuardedResource::{ResourceQuota, LimitRange}`, two rows. Their
+      webhook rule carries an ownership `objectSelector`, so a foreign quota stays creatable.
 - [x] `weebo-si-operator`: wiring, `--quota-template-namespace`.
-- [ ] `weebo-si-operator`: `quotas audit` CLI.
+- [x] `weebo-si-operator`: `quotas audit` CLI.
 - [x] Chart: controller RBAC for the two resources behind `resourceQuotas.rbac.enabled`, the
       template namespace (`resourceQuotas.templateNamespace`, created by default).
-- [ ] Chart: the guard's webhook rules.
+- [x] Chart: the guard's webhook rule (`-resource-quotas`, path `/validate/v1/resourcequotas`).
 - [ ] e2e on kind: a pod over quota refused at `Enforce`, objects removed at `Off`.
 - [ ] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`

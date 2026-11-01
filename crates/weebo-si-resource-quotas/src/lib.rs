@@ -27,6 +27,7 @@ pub use model::object::{
 };
 pub use model::quantity::{Quantity, QuantityError};
 pub use model::template::{LimitItem, LimitRangeTemplate, QuotaTemplate};
+pub use model::usage::{Over, PodResources, over};
 pub use model::validate::{ProfileViolation, TemplateKind, ValidProfile, validate};
 pub use port::{
     ForeignObjects, ManagedQuotaStore, QuotaTemplateStore, QuotaUsage, ReconcileObserver,
