@@ -482,9 +482,11 @@ but it is one more write than before.
   the chart creates a dedicated `weebo-si-hardening-templates` namespace that runs no pods, and
   every profile references it. Templates there constrain nothing, since nothing runs there.
   `templateNamespace` in the chart values, and the controller's template watch limited to it.
-- **Does Che's dashboard show the quota error?** (Not blocking.) If DevWorkspace Operator copies
-  the `FailedCreate` message into the DevWorkspace status, it does. To be checked on the kind e2e,
-  and recorded in the brick doc either way.
+- ~~**Does Che's dashboard show the quota error?**~~ Answered, 2026-11-01, by the
+  `resource-quotas` e2e suite: yes. DevWorkspace Operator fails the workspace and copies the
+  message into its status: `Detected unrecoverable deployment condition: FailedCreate pods ... is
+  forbidden: exceeded quota: weebo-quota, requested: pods=1, used: pods=0, limited: pods=0`. The
+  workspace goes `Failed` rather than retrying, so raising the profile means restarting it.
 
 ## Future work
 
@@ -534,4 +536,5 @@ but it is one more write than before.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | Measured on kind: a quota refusal reaches the DevWorkspace status with the quota's name and numbers, and the workspace goes `Failed`. |
 | 2026-11-01 | `Accepted`. Templates live in a dedicated, pod-less namespace, and a ref elsewhere is a validation failure. The "has a default" rule follows LimitRanger's fallbacks (`defaultRequest` → `default` → `max`). Two more rules: every quantity parses, every ref is in the template namespace. `reconcile_total` gains `result="invalid"`. |

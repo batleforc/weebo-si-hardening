@@ -167,8 +167,10 @@ where its cardinality is acceptable.
 
 - **A quota per person is not a team budget.** A team of fifty can still use the cluster; a
   pooled budget is RFC 0014's future work.
-- **The error lands on a ReplicaSet.** The developer sees a workspace that does not start;
-  DevWorkspace Operator's status message is what explains it.
+- **A refused workspace goes `Failed`, it does not wait.** Measured on kind: DevWorkspace Operator
+  copies the refusal into the DevWorkspace status — `FailedCreate ... exceeded quota: weebo-quota,
+  requested: pods=1, used: pods=0, limited: pods=0` — so the dashboard shows the quota and the
+  numbers. After a bigger profile, the workspace has to be started again.
 - **Nested containers count**: they are processes in the workspace container, inside its limits.
 - **The envtest proves what is written**, not that a pod is refused: without a quota controller,
   the apiserver enforces nothing. The kind e2e checks the refusal.
