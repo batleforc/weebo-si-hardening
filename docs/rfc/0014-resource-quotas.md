@@ -513,7 +513,9 @@ but it is one more write than before.
 - [x] Chart: controller RBAC for the two resources behind `resourceQuotas.rbac.enabled`, the
       template namespace (`resourceQuotas.templateNamespace`, created by default).
 - [x] Chart: the guard's webhook rule (`-resource-quotas`, path `/validate/v1/resourcequotas`).
-- [ ] e2e on kind: a pod over quota refused at `Enforce`, objects removed at `Off`.
+- [x] e2e on kind (the `resource-quotas` suite): a write over quota refused at `Enforce`, objects
+      removed at `Off` with a foreign quota left alone, an invalid profile written nowhere, and a
+      measurement of whether the refusal reaches the DevWorkspace status.
 - [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`
 
