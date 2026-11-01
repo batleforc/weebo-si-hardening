@@ -26,6 +26,10 @@
 #   POD_TIMEOUT      seconds to wait for one Pod. Default: 300.
 #   OUT              also write the table to this file.
 #   RENDER_ONLY      set to 1 to print the Pods' YAML and touch no cluster.
+#   USER_NAMESPACE   `false` runs the Pods without `hostUsers: false` (and so without
+#                    `procMount: Unmasked`, which requires it), for a runtime that does not
+#                    support user namespaces: what is left to measure is whether it applies the
+#                    profile at all. Default: true.
 #
 # Admission and start are told apart. Every Pod first goes through a server-side dry run, so the
 # namespace's Pod Security level answers for it even when nothing can start. Then, per runtime
@@ -40,6 +44,7 @@ PSA_LEVEL=${PSA_LEVEL:-baseline}
 PSA_VERSION=${PSA_VERSION:-latest}
 NAMESPACE=${NAMESPACE:-weebo-runtime-matrix}
 POD_TIMEOUT=${POD_TIMEOUT:-300}
+USER_NAMESPACE=${USER_NAMESPACE:-true}
 
 # Same images, same digests as the local tier.
 BUILDAH=quay.io/buildah/stable@sha256:77a555756c942f4f0e2916a2a95bace8f109622201b3b70b008a597cf5b7aa69
@@ -98,7 +103,8 @@ expected() { # profile proc
 pod_yaml() { # name image proc runtime_class profile command
   printf 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\n  namespace: %s\n' "$1" "$NAMESPACE"
   printf '  labels: {app.kubernetes.io/part-of: weebo-runtime-matrix}\n'
-  printf 'spec:\n  restartPolicy: Never\n  hostUsers: false\n'
+  printf 'spec:\n  restartPolicy: Never\n'
+  [ "$USER_NAMESPACE" = true ] && printf '  hostUsers: false\n'
   [ "$4" != default ] && printf '  runtimeClassName: %s\n' "$4"
   printf '  securityContext:\n    runAsUser: 1000\n    runAsGroup: 1000\n'
   if [ "$5" = RuntimeDefault ]; then
@@ -111,7 +117,7 @@ pod_yaml() { # name image proc runtime_class profile command
   # The command as a YAML double-quoted scalar: escape backslashes, then quotes.
   printf '      args: ["%s"]\n' "$(printf '%s' "$6" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
   printf '      securityContext:\n        allowPrivilegeEscalation: true\n'
-  [ "$3" = unmasked ] && printf '        procMount: Unmasked\n'
+  [ "$3" = unmasked ] && [ "$USER_NAMESPACE" = true ] && printf '        procMount: Unmasked\n'
   return 0
 }
 

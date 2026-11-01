@@ -15,8 +15,8 @@ or a profile on weebo-si's nodes is done in weebo-si, never from here.
 | --- | --- | --- |
 | runc | containerd's default; the weebo-si default | local and cluster |
 | crun | `siderolabs/crun` extension, installed on weebo-si | local and cluster |
-| youki | `siderolabs/youki` extension, installed on weebo-si | cluster only — refuses rootless podman (`unprivileged user can't set supplementary groups`) |
-| gVisor (`runsc`) | `siderolabs/gvisor` extension, not installed | cluster only — refuses rootless podman (`cannot set up cgroup`) |
+| youki | `siderolabs/youki` extension, installed on weebo-si | cluster only — refuses rootless podman (`unprivileged user can't set supplementary groups`); containerd refuses it a `hostUsers: false` pod |
+| gVisor (`runsc`) | `siderolabs/gvisor` extension, not installed | cluster only — refuses rootless podman (`cannot set up cgroup`); containerd refuses it a `hostUsers: false` pod |
 | Kata Containers | `siderolabs/kata-containers` extension, not installed | cluster only — needs virtualization on the node |
 | wasmedge | `siderolabs/wasmedge` extension, installed | not compared: it runs WebAssembly modules, not workspace images |
 
@@ -49,8 +49,8 @@ The last row matters most for sandboxed runtimes. By default, gVisor does not lo
 filter inside its sandbox (`runsc --oci-seccomp` is off), and Kata does not apply it in its guest
 (`disable_guest_seccomp = true`). Both have their own isolation instead. If either passes a
 scenario under `weebo-workspace`, the profile is being ignored, and the comparison has to weigh
-their sandbox against a filter that is not there. These defaults come from upstream
-configuration and have not been measured here yet.
+their sandbox against a filter that is not there. Measured for gVisor on
+2026-11-01: it ignores the profile (*Results*). Kata's is not measured.
 
 ## The two tiers
 
@@ -189,5 +189,22 @@ included, passed admission at `baseline` and ran exactly as at `privileged`. Tha
 0013's blocking question for 1.35 at `latest`.
 
 The cells are the local tier's, so as Pods with a user namespace, runc still applies the profile
-and the scenarios need nothing more. crun, youki, gVisor and Kata need a test cluster with their
-handlers.
+and the scenarios need nothing more.
+
+### Cluster tier, other runtimes, 2026-11-01
+
+Same kind node, with crun 1.30.1, youki 0.7.0 and gVisor 20261026 installed by
+[`e2e/runtime-matrix/kind-runtimes.sh`](../e2e/runtime-matrix/kind-runtimes.sh); namespace at
+`baseline`.
+
+| Runtime class | With `hostUsers: false` | Without a user namespace |
+| --- | --- | --- |
+| `crun` (1.30.1) | **runc's cells, every one** — checked in CI | not run |
+| `youki` (0.7.0) | **refused by containerd**: `RuntimeClass handler "youki" does not support user namespaces` | the profile applies: `weebo-workspace` refuses `unshare(CLONE_NEWUSER)` as under runc; `weebo-container-build` passes everything but OCI isolation, which needs the unmasked `/proc` only a user namespace allows |
+| `gvisor` (runsc) | **refused by containerd**, the same message | **the profile is ignored**: builds pass even under `weebo-workspace`, which refuses them under runc, crun and youki — the canary row firing, as gVisor's default (`--oci-seccomp` off) predicted. Nested `podman run` fails on its own (`statfs /dev/mqueue: no such file or directory`) |
+
+**What this means for weebo-si.** A build workspace isolated as RFC 0013 describes, a user
+namespace and then a filter, runs on **runc or crun**. containerd 2.2 refuses to start a
+`hostUsers: false` pod on youki or gVisor at all, so on weebo-si a build team's DWOC must not name
+either. Kata is not measured: its bundle is a gigabyte and it needs virtualization the runner's
+kind node lacks, so it waits for a test cluster (`RUNTIME_CLASSES=kata task runtimes:k8s`).

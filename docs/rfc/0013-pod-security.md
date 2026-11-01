@@ -1,7 +1,7 @@
 ---
 rfc: 0013
 title: pod-security
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-10-31
 updated: 2026-11-01
@@ -724,11 +724,15 @@ for, and what the runbook must say.
   request and sends it with `Client::send`, which returns the headers. The envtest raises a
   namespace to `baseline` over an existing pod with an added capability and a `hostPath`, and the
   pod's name comes back in the warnings.
-- **Do the build profiles hold on the fleet's runtime?** (Not blocking.) Measured
-  with podman 5.8, buildah 1.43 and crun 1.28 on kernel 7.2, under runc 1.5.2 and crun 1.28. A
-  newer crun may use more of the new mount API (`fsopen`, `fsmount`, ...) and need it. The runtime
-  matrix's local tier fails on that in CI, and `weebo-container-build-log.json` finds what is
-  missing on a test node.
+- ~~**Do the build profiles hold on the fleet's runtime?**~~ Answered, 2026-11-01, for the
+  runtimes weebo-si ships. Under runc and crun 1.30.1 the profiles give the expected cells, as
+  Pods with `hostUsers: false` on kind, and a real Che build workspace builds an image under
+  `weebo-container-build` and cannot under `RuntimeDefault` (the `pod-security` e2e suite).
+  **containerd 2.2 refuses a `hostUsers: false` pod on youki and on gVisor** ("RuntimeClass handler
+  does not support user namespaces"), so a build team's DWOC must name runc or crun. Without a user
+  namespace, youki applies the profile and gVisor ignores it: builds pass under
+  `weebo-workspace` there, the canary row the matrix keeps for exactly this. A newer crun
+  may still need more of the new mount API; the runtime matrix fails on that in CI, weekly.
 - ~~**Does `baseline` admit `procMount: Unmasked` with `hostUsers: false` at the pinned
   version?**~~ Answered, 2026-10-31: yes on Kubernetes 1.35 at `enforce-version: latest`. The
   runtime matrix's cluster tier ran every build scenario at `baseline` on kind: each Pod passed a
@@ -747,6 +751,14 @@ for, and what the runbook must say.
   container-run modes themselves remain to measure on the real fleet.
 
 ## Future work
+
+- **The same checks on a real OpenShift cluster**: the MachineConfig landing the profiles on the
+  workers, an SCC listing `localhost/profiles/weebo-container-build.json`, a workspace building
+  under it, and the real `cluster-policy-controller` syncing a looser level. No OpenShift cluster
+  runs in this repository's CI; the `ObserveSynced` decision itself is proven against an apiserver
+  serving `security.openshift.io` (`openshift_pod_security_envtest`).
+- **Kata Containers in the runtime matrix**, on a test cluster with virtualization: its bundle is a
+  gigabyte, and the CI kind node cannot run it.
 
 - **Checks the standards do not make**, in `image-policy`'s pod webhook path: no automounted
   service account token unless the team allows it, a read-only root filesystem, an allow-list of
@@ -789,14 +801,17 @@ for, and what the runbook must say.
       `task runtimes:*`, the `runtime-matrix` workflow, `docs/runtime-matrix.md`.
 - [x] Runtime matrix, cluster tier: the `default` (runc) row on kind, in CI and checked, at
       `baseline` and `privileged`.
-- [ ] Runtime matrix, cluster tier: crun, youki, gVisor and Kata on a test cluster.
-- [ ] kind e2e: mount `deploy/seccomp/profiles` on the nodes, a build team's workspace
+- [x] Runtime matrix, cluster tier: crun (checked), youki and gVisor (reported) on the CI kind
+      node. Kata moved to *Future work*: it needs a test cluster with virtualization.
+- [x] kind e2e: mount `deploy/seccomp/profiles` on the nodes, a build team's workspace
       (`hostUsers: false`, `procMount: Unmasked`) builds an image with OCI isolation under
       `profiles/weebo-container-build.json`, and fails under `RuntimeDefault`.
-- [ ] e2e on OpenShift: `ObserveSynced` reports a looser SCC grant; the MachineConfig and an SCC
-      listing `localhost/profiles/weebo-container-build.json` let a workspace build.
+- [x] OpenShift: `ObserveSynced` against an apiserver serving `security.openshift.io`, reporting a
+      looser synced level and writing nothing (`openshift_pod_security_envtest`). The same on a
+      real OpenShift cluster, with the MachineConfig and an SCC, moved to *Future work*: no
+      OpenShift cluster runs in CI.
 - [x] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
-- [ ] RFC flipped to `Implemented`
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -815,6 +830,7 @@ for, and what the runbook must say.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | `Implemented`. A real Che build workspace builds an image under `weebo-container-build` and not under `RuntimeDefault`. crun gives runc's cells; containerd refuses `hostUsers: false` on youki and gVisor. `ObserveSynced` is proven against an apiserver serving SCCs. Kata and a real OpenShift cluster move to *Future work*. |
 | 2026-11-01 | Measured on kind: a stock Che workspace runs at `baseline` and is refused at `restricted` (`tools` and `che-gateway` lack `allowPrivilegeEscalation: false`, `drop: [ALL]` and a seccomp profile); the refusal reaches the DevWorkspace status. The controller re-reconciles every namespace when the configuration changes. |
 | 2026-11-01 | The adapters land. The Warning-headers question is answered (a raw request returns them). `patch` on `namespaces` is a chart switch of its own, `podSecurity.rbac.enabled`, not a verb the role already had. |
 | 2026-11-01 | `Accepted`. *What is written* says how ownership is read (the `-previous` annotation or the managed fields), what drift is, and that the restore write uses its own field manager. A team's level looser than the ceiling is reported on that team's own status as well as on the `WeeboSiConfig`. |

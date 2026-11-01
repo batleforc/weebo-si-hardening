@@ -82,6 +82,10 @@ jobs:
         # kind's own /sys overmounts and product-files hook stop every `hostUsers: false` sandbox;
         # the script says why and lifts both on this throwaway node.
         run: e2e/runtime-matrix/kind-userns.sh
+      - name: Install crun, youki and gVisor
+        # The runtimes weebo-si ships besides runc (crun, youki), and gVisor, pinned by checksum.
+        # Kata needs virtualization this node lacks; it is measured on a test cluster.
+        run: e2e/runtime-matrix/kind-runtimes.sh
       - name: Matrix at baseline, then privileged
         run: |
           status=0
@@ -90,6 +94,22 @@ jobs:
               ./scripts/runtime-matrix-k8s.sh check || status=1
             { echo "## Cluster tier, Pod Security \`$level\`"; echo; cat "$RUNNER_TEMP/$level.md"; echo; } \
               >> "$GITHUB_STEP_SUMMARY"
+          done
+          # crun runs under the same runc-shaped shim and must give the same cells: checked.
+          # Admission does not depend on the runtime, so baseline is enough.
+          RUNTIME_CLASSES="crun" PSA_LEVEL=baseline NAMESPACE=weebo-runtime-matrix-crun \
+            OUT="$RUNNER_TEMP/crun.md" POD_TIMEOUT=180 ./scripts/runtime-matrix-k8s.sh check || status=1
+          { echo "## Cluster tier, crun"; echo; cat "$RUNNER_TEMP/crun.md"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          # youki and gVisor are reported, never checked. containerd refuses both a pod with
+          # `hostUsers: false` ("does not support user namespaces"), which the first table records;
+          # the second runs without a user namespace, to see whether they apply the profile at all
+          # (gVisor does not load the pod's filter by default).
+          for userns in true false; do
+            USER_NAMESPACE=$userns RUNTIME_CLASSES="youki gvisor" PSA_LEVEL=baseline \
+              NAMESPACE="weebo-runtime-matrix-others-$userns" OUT="$RUNNER_TEMP/others-$userns.md" \
+              POD_TIMEOUT=180 ./scripts/runtime-matrix-k8s.sh || true
+            { echo "## Cluster tier, youki and gVisor, user namespace: $userns (reported)"; echo
+              cat "$RUNNER_TEMP/others-$userns.md"; echo; } >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$status"
       - name: Node diagnostics
