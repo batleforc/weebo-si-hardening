@@ -482,6 +482,10 @@ pub struct WorkspaceSpec<'a> {
     pub attributes: Value,
     /// Endpoints on the `tools` component.
     pub endpoints: &'a [Endpoint<'a>],
+    /// The `tools` container's command, when its image's own entrypoint would exit.
+    pub command: &'a [&'a str],
+    /// The `tools` container's memory limit.
+    pub memory_limit: &'a str,
 }
 
 /// One devfile endpoint. `annotation` (singular — the devfile's spelling, see the endpoint
@@ -503,6 +507,8 @@ impl Default for WorkspaceSpec<'_> {
             image: WORKSPACE_IMAGE,
             attributes: json!({}),
             endpoints: &[],
+            command: &[],
+            memory_limit: "128Mi",
         }
     }
 }
@@ -538,6 +544,15 @@ impl Workspace {
                 })
             })
             .collect();
+        let mut container = json!({
+            "image": spec.image,
+            "memoryLimit": spec.memory_limit,
+            "mountSources": false,
+            "endpoints": endpoints,
+        });
+        if !spec.command.is_empty() {
+            container["command"] = json!(spec.command);
+        }
         json!({
             "apiVersion": "workspace.devfile.io/v1alpha2",
             "kind": "DevWorkspace",
@@ -549,12 +564,7 @@ impl Workspace {
                     "attributes": attributes,
                     "components": [{
                         "name": "tools",
-                        "container": {
-                            "image": spec.image,
-                            "memoryLimit": "128Mi",
-                            "mountSources": false,
-                            "endpoints": endpoints,
-                        },
+                        "container": container,
                     }],
                 },
             },

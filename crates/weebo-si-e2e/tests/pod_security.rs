@@ -18,8 +18,9 @@
 use std::time::{Duration, Instant};
 
 use weebo_si_e2e::{
-    Namespace, RECONCILE, Value, Workspace, WorkspaceSpec, feature_status, get, json, kubectl_with,
-    metric_sum, set_features, team, text, try_apply, wait_until,
+    Cleanup, Namespace, OPERATOR_NAMESPACE, RECONCILE, Value, Workspace, WorkspaceSpec, apply,
+    feature_status, get, json, kubectl_with, metric_sum, set_features, team, text, try_apply,
+    wait_until,
 };
 
 const ENFORCE: &str = "pod-security.kubernetes.io~1enforce";
@@ -203,4 +204,115 @@ fn measure_whether_a_che_workspace_starts_under_restricted() {
     };
     println!("MEASURED che workspace under restricted: {verdict}");
     drop(workspace);
+}
+
+/// Pinned by digest, the image the runtime matrix measured (scripts/runtime-matrix-k8s.sh).
+const BUILDAH: &str = "quay.io/buildah/stable@sha256:77a555756c942f4f0e2916a2a95bace8f109622201b3b70b008a597cf5b7aa69";
+const BUSYBOX: &str = "quay.io/libpod/busybox@sha256:a9286defaba7b3a519d585ba0e37d0b2cbee74ebfe590960b0b1d6a5e97d1e1d";
+
+/// RFC 0013's build DWOC: a user namespace for the pod, an unmasked `/proc` for the nested
+/// container, and `seccomp` as given — the build profile, or `RuntimeDefault` to show what the
+/// profile is for. UID 1000 is the image's own `build` user, which owns its subuid range.
+fn build_dwoc(name: &str, seccomp: Value) -> Cleanup {
+    apply(
+        &json!({
+            "apiVersion": "controller.devfile.io/v1alpha1",
+            "kind": "DevWorkspaceOperatorConfig",
+            "metadata": { "name": name, "namespace": OPERATOR_NAMESPACE },
+            "config": { "workspace": {
+                "imagePullPolicy": "IfNotPresent",
+                "hostUsers": false,
+                "podSecurityContext": {
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "fsGroup": 1000,
+                    "seccompProfile": seccomp,
+                },
+                "containerSecurityContext": {
+                    "allowPrivilegeEscalation": true,
+                    "procMount": "Unmasked",
+                },
+            } },
+        })
+        .to_string(),
+    );
+    Cleanup::new(&["devworkspaceoperatorconfig", "-n", OPERATOR_NAMESPACE, name])
+}
+
+fn build_workspace(namespace: &str, name: &str, dwoc: &str) -> Workspace {
+    Workspace::create(
+        namespace,
+        name,
+        &WorkspaceSpec {
+            image: BUILDAH,
+            attributes: json!({
+                "controller.devfile.io/devworkspace-config": {
+                    "name": dwoc,
+                    "namespace": OPERATOR_NAMESPACE,
+                },
+            }),
+            command: &["sleep", "infinity"],
+            memory_limit: "1Gi",
+            ..WorkspaceSpec::default()
+        },
+    )
+}
+
+/// A build with a `RUN` step and OCI isolation: a real nested container, as the matrix runs it.
+fn build(workspace: &Workspace) -> Result<String, String> {
+    let script = format!(
+        "export HOME=/home/build; mkdir -p /tmp/ctx && \\
+         printf 'FROM {BUSYBOX}\\nRUN echo built > /built\\n' > /tmp/ctx/Containerfile && \\
+         buildah build --isolation oci --network host --storage-driver=overlay -t t /tmp/ctx"
+    );
+    workspace.exec(&["sh", "-c", &script])
+}
+
+#[test]
+fn a_build_workspace_builds_an_image_under_its_profile_and_not_under_runtime_default() {
+    let _team = team(
+        "e2e-builders",
+        json!({
+            "priority": 10,
+            "namespaceSelector": { "matchLabels": { "weebo.io/team": "builders" } },
+            "features": { "podSecurity": { "level": "baseline" } },
+        }),
+    );
+    set_features(json!({ "podSecurity": pod_security("Enforce") }));
+    let ns = Namespace::workspace("erin", "psa-build", Some("builders"));
+    wait_for_level(&ns.name, "baseline");
+
+    let _profile = build_dwoc(
+        "e2e-build-profile",
+        json!({ "type": "Localhost", "localhostProfile": "profiles/weebo-container-build.json" }),
+    );
+    let builder = build_workspace(&ns.name, "builder", "e2e-build-profile");
+    builder.wait_running();
+    let pod = get(&[
+        "pods",
+        "-n",
+        &ns.name,
+        "-l",
+        "controller.devfile.io/devworkspace_name=builder",
+    ])
+    .unwrap();
+    assert_eq!(
+        pod.pointer("/items/0/spec/hostUsers"),
+        Some(&json!(false)),
+        "DevWorkspace Operator must carry hostUsers from the DWOC onto the pod"
+    );
+    let built = build(&builder);
+    assert!(
+        built.is_ok(),
+        "the build profile must let a nested build run: {built:?}"
+    );
+
+    let _default = build_dwoc("e2e-build-default", json!({ "type": "RuntimeDefault" }));
+    let refused = build_workspace(&ns.name, "refused", "e2e-build-default");
+    refused.wait_running();
+    let err = build(&refused).expect_err("RuntimeDefault must stop a nested build");
+    println!(
+        "MEASURED nested build under RuntimeDefault: {}",
+        err.lines().last().unwrap_or(&err)
+    );
 }

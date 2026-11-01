@@ -66,8 +66,9 @@ cat > "$work/runtimes.toml" <<EOF
 [$prefix.runsc]
   runtime_type = 'io.containerd.runsc.v1'
 EOF
-"$ENGINE" cp "$work/runtimes.toml" "$NODE:/tmp/runtimes.toml"
-"$ENGINE" exec "$NODE" sh -c 'cat /tmp/runtimes.toml >> /etc/containerd/config.toml && systemctl restart containerd'
+# Through stdin, not `cp`: the node's /tmp is a tmpfs `docker cp` does not write into.
+"$ENGINE" exec -i "$NODE" sh -c 'cat >> /etc/containerd/config.toml' < "$work/runtimes.toml"
+"$ENGINE" exec "$NODE" systemctl restart containerd
 kubectl wait --for=condition=Ready node --all --timeout=120s >/dev/null
 
 # Kata's class is left out: no handler, and a class with no handler is a CreateContainerError on

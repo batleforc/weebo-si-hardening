@@ -49,3 +49,9 @@ nodes:
       - hostPath: /tmp/weebo-si-e2e/ca.crt
         containerPath: /etc/kubernetes/pki/sso-ca.crt
         readOnly: true
+      # RFC 0013's Localhost seccomp profiles, where Talos writes them, so a pod's
+      # `localhostProfile: profiles/weebo-<name>.json` resolves as on weebo-si. Also a placeholder:
+      # kind_config substitutes the repository's deploy/seccomp/profiles.
+      - hostPath: /tmp/weebo-si-e2e/seccomp-profiles
+        containerPath: /var/lib/kubelet/seccomp/profiles
+        readOnly: true

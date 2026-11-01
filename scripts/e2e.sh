@@ -395,7 +395,9 @@ kind_config() {
   placeholder=/tmp/weebo-si-e2e/ca.crt
   grep -qF "$placeholder" "$REPO_ROOT/scripts/kind-e2e.yaml" ||
     die "scripts/kind-e2e.yaml no longer mounts $placeholder; update kind_config"
-  sed "s|$placeholder|$STATE/ca.crt|" "$REPO_ROOT/scripts/kind-e2e.yaml"
+  sed -e "s|$placeholder|$STATE/ca.crt|" \
+    -e "s|/tmp/weebo-si-e2e/seccomp-profiles|$REPO_ROOT/deploy/seccomp/profiles|" \
+    "$REPO_ROOT/scripts/kind-e2e.yaml"
 }
 
 up() {
@@ -646,7 +648,10 @@ MANIFEST
 
 addons() {
   case "${1:-}" in
-    workspace | endpoint-auth | upgrade | pod-security | resource-quotas) ;;
+    workspace | endpoint-auth | upgrade | resource-quotas) ;;
+    # A build workspace runs with `hostUsers: false`, which a kind node refuses until its /sys
+    # overmounts and product-files hook are lifted (e2e/runtime-matrix/kind-userns.sh says why).
+    pod-security) ENGINE="$E2E_RUNTIME" "$REPO_ROOT/e2e/runtime-matrix/kind-userns.sh" "$CLUSTER-control-plane" ;;
     kubearmor) addon_kubearmor ;;
     identity) addon_authentik; addon_argocd ;;
     *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas)" ;;
