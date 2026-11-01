@@ -1,0 +1,13 @@
+{{- if and .Values.resourceQuotas.rbac.enabled .Values.resourceQuotas.templateNamespace.create }}
+# RFC 0014's template namespace. A `ResourceQuota` or `LimitRange` is enforced in the namespace
+# that holds it, so the quota profiles live here, where nothing runs: in the operator's own
+# namespace they would cap and default the operator's pods. Excluded from every feature's scope,
+# and nothing should ever be deployed into it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.resourceQuotas.templateNamespace.name }}
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+    {{ .Values.namespaceExclusionLabel }}: "true"
+{{- end }}

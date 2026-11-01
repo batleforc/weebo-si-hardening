@@ -67,6 +67,10 @@ pub trait ReconcileObserver: Send + Sync {
     fn forget(&self, namespace: &NamespaceName);
     /// The catalogue was checked: how many profiles are valid and invalid.
     fn profiles(&self, valid: usize, invalid: usize);
+    /// The value of `namespace`'s selection annotation this pass. A change from the last value
+    /// seen counts in `weebo_si_resource_quotas_selection_changed_total`: the annotation is not
+    /// narrowing-only, so who changes it is worth seeing.
+    fn selection(&self, namespace: &NamespaceName, annotation: Option<&str>);
 }
 
 #[cfg(any(test, feature = "testing"))]

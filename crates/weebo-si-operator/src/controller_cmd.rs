@@ -116,6 +116,9 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let canary_image = flag(args, "--canary-image")
         .unwrap_or(DEFAULT_CANARY_IMAGE)
         .to_string();
+    let quota_template_namespace = flag(args, "--quota-template-namespace")
+        .unwrap_or(weebo_si_resource_quotas_adapters::DEFAULT_TEMPLATE_NAMESPACE)
+        .to_string();
     let shared = ControllerShared {
         client: client.clone(),
         config_store,
@@ -127,6 +130,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
         cilium_enabled,
         kubearmor_enabled,
         canary_image,
+        quota_template_namespace,
     };
 
     // Every feature's watches start here, before the lease, so a standby replica's caches are
@@ -136,6 +140,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let registry_config = weebo_si_registry_config_adapters::controller_deps(&shared).await?;
     let endpoint_auth = weebo_si_endpoint_auth_adapters::controller_deps(&shared).await?;
     let pod_security = weebo_si_pod_security_adapters::controller_deps(&shared).await?;
+    let resource_quotas = weebo_si_resource_quotas_adapters::controller_deps(&shared).await?;
     let identity = weebo_si_identity_adapters::controller_deps(&shared)?;
 
     // `--metrics-addr` is parsed for the CLI contract's sake: metrics and probes share
@@ -184,6 +189,14 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     if let Some(deps) = endpoint_auth {
         weebo_si_endpoint_auth_adapters::controller::spawn(client.clone(), deps, recorder.clone())
             .await;
+    }
+    if let Some(deps) = resource_quotas {
+        weebo_si_resource_quotas_adapters::controller::spawn(
+            client.clone(),
+            deps,
+            recorder.clone(),
+        )
+        .await;
     }
     if let Some(deps) = pod_security {
         weebo_si_pod_security_adapters::controller::spawn(client.clone(), deps, recorder.clone())

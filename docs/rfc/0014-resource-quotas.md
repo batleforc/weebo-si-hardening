@@ -502,12 +502,16 @@ but it is one more write than before.
       the `resource-quotas` entry in the `WeeboSiConfig` status.
 - [x] `weebo-si-resource-quotas`: subject, resolution, validation table with a test per row,
       desired state, the saturation band, reconcile and teardown over two ports.
-- [ ] `weebo-si-resource-quotas-adapters`: template store, managed store with foreign counts,
-      metrics, loop; envtest for "invalid profile keeps existing objects".
+- [x] `weebo-si-resource-quotas-adapters`: template store, managed store with foreign counts,
+      metrics, loop; envtest for "invalid profile keeps existing objects". The loop
+      re-reconciles every namespace when the configuration, a template or a managed object's spec
+      changes.
 - [ ] `weebo-si-policy-guard`: `GuardedResource::{ResourceQuota, LimitRange}`, two rows.
-- [ ] `weebo-si-operator`: wiring, `quotas audit` CLI.
-- [ ] Chart: controller RBAC for the two resources, the guard's webhook rules, the template
-      location.
+- [x] `weebo-si-operator`: wiring, `--quota-template-namespace`.
+- [ ] `weebo-si-operator`: `quotas audit` CLI.
+- [x] Chart: controller RBAC for the two resources behind `resourceQuotas.rbac.enabled`, the
+      template namespace (`resourceQuotas.templateNamespace`, created by default).
+- [ ] Chart: the guard's webhook rules.
 - [ ] e2e on kind: a pod over quota refused at `Enforce`, objects removed at `Off`.
 - [ ] Docs: brick page, `weebosiconfig.md`, `weebositeam.md`.
 - [ ] RFC flipped to `Implemented`

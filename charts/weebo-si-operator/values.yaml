@@ -196,6 +196,22 @@ podSecurity:
   rbac:
     enabled: false
 
+# RFC 0014's `resource-quotas`. Off by default; this flag governs *RBAC and the template
+# namespace*, not the feature, whose switch is `spec.features.resourceQuotas.mode`. It grants
+# create/update/patch/delete on `resourcequotas` and `limitranges` cluster-wide.
+#
+# The quota profiles' templates live in `templateNamespace`, a namespace that runs no pods: a
+# template is a live object, enforced where it lives, and in the operator's own namespace it
+# would cap the operator. Every profile must reference this namespace; the controller refuses one
+# that does not.
+resourceQuotas:
+  rbac:
+    enabled: false
+  templateNamespace:
+    name: weebo-si-hardening-templates
+    # Render the Namespace. Off when it is created some other way (GitOps, a pre-existing one).
+    create: true
+
 # RFC 0007's `registry-config`. Off by default, and this flag governs *RBAC and the guard rule*,
 # not the feature: whether the feature runs at all is `spec.features.registryConfig.mode` on the
 # WeeboSiConfig.

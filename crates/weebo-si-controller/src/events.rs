@@ -51,6 +51,8 @@ mod reason {
             IdentityFailed,
             /// A `pod-security` pass failed on a namespace.
             PodSecurityFailed,
+            /// A `resource-quotas` pass failed on a namespace.
+            ResourceQuotasFailed,
         }
     }
 }

@@ -4067,6 +4067,7 @@ dependencies = [
  "weebo-si-policy-guard-adapters",
  "weebo-si-registry-config",
  "weebo-si-registry-config-adapters",
+ "weebo-si-resource-quotas-adapters",
  "weebo-si-runtime",
  "weebo-si-webhook",
 ]
@@ -4177,6 +4178,28 @@ dependencies = [
  "tokio",
  "weebo-si-chassis",
  "weebo-si-crd",
+]
+
+[[package]]
+name = "weebo-si-resource-quotas-adapters"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-controller",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-network-profiles",
+ "weebo-si-resource-quotas",
+ "weebo-si-runtime",
 ]
 
 [[package]]

@@ -292,6 +292,34 @@
         }
       }
     },
+    "resourceQuotas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rbac": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "templateNamespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "create": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "registryConfig": {
       "type": "object",
       "additionalProperties": false,
