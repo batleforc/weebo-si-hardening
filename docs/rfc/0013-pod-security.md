@@ -736,9 +736,15 @@ for, and what the runbook must say.
   `version` the fleet pins: it must be a release with KEP-4265's relaxation, or build teams would
   need `privileged` under the `ceiling`, which this RFC will not ship. `pods audit --level
   baseline` on a build workspace checks it before `Enforce`.
-- **Che's container-build and container-run modes, level by level.** (Not blocking, to be
-  measured.) The build setup above is designed to fit `baseline`. Step 0 of the rollout measures
-  it on the real fleet, and the brick doc records the result.
+- **Che's container-build and container-run modes, level by level.** (Not blocking.) Partly
+  measured, 2026-11-01, by the `pod-security` e2e suite on kind with stock Eclipse Che and
+  DevWorkspace Operator: a workspace **runs at `baseline`** and **does not start at
+  `restricted`**. The pod is refused because the `tools` container and Che's `che-gateway` set
+  neither `allowPrivilegeEscalation: false`, nor `capabilities.drop: [ALL]`, nor a seccomp
+  profile. The refusal reaches the DevWorkspace's own status (`FailedCreate ... violates
+  PodSecurity "restricted:latest"`), so the dashboard shows it. `restricted` therefore needs
+  those three settings in the DWOC first, for the gateway sidecar too. The container-build and
+  container-run modes themselves remain to measure on the real fleet.
 
 ## Future work
 
@@ -809,6 +815,7 @@ for, and what the runbook must say.
 
 | Date | Change |
 | --- | --- |
+| 2026-11-01 | Measured on kind: a stock Che workspace runs at `baseline` and is refused at `restricted` (`tools` and `che-gateway` lack `allowPrivilegeEscalation: false`, `drop: [ALL]` and a seccomp profile); the refusal reaches the DevWorkspace status. The controller re-reconciles every namespace when the configuration changes. |
 | 2026-11-01 | The adapters land. The Warning-headers question is answered (a raw request returns them). `patch` on `namespaces` is a chart switch of its own, `podSecurity.rbac.enabled`, not a verb the role already had. |
 | 2026-11-01 | `Accepted`. *What is written* says how ownership is read (the `-previous` annotation or the managed fields), what drift is, and that the restore write uses its own field manager. A team's level looser than the ceiling is reported on that team's own status as well as on the `WeeboSiConfig`. |
 | 2026-10-31 | The runtime matrix's cluster tier ran on kind: `baseline` admits build workspaces with `hostUsers: false` and `procMount: Unmasked` on 1.35 (`latest`), and runc gives the expected cells. |

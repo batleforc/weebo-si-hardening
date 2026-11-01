@@ -113,6 +113,14 @@ next restart.
 
 4. **Widen the selector**, one team at a time.
 
+**A stock Che workspace does not start at `restricted`.** Measured on kind with stock Che and
+DevWorkspace Operator: the `tools` container and Che's `che-gateway` sidecar set neither
+`allowPrivilegeEscalation: false`, nor `capabilities.drop: [ALL]`, nor a seccomp profile, and the
+pod is refused. The DevWorkspace's status carries the message, so the user sees why. Before a
+`restricted` default, set those three in the DWOC (`containerSecurityContext` and
+`podSecurityContext`) and check the gateway sidecar gets them too. At `baseline` a stock workspace
+runs.
+
 A team that builds images gets `baseline` and the build profile, set up through the DWOC. See RFC
 0013's *A build workspace* for the exact `hostUsers` / `procMount` / seccomp settings, and why
 `restricted` cannot work for it.

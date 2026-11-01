@@ -243,10 +243,14 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
 /// Start the loop. Runs until the watch stream ends, which in practice means forever —
 /// `kube-runtime`'s watcher retries on its own.
 pub async fn spawn(client: Client, deps: PodSecurityDeps, recorder: Recorder) {
+    let changes = weebo_si_controller::workspace::config_changes(Arc::clone(&deps.config));
     let ctx = Arc::new(Ctx { deps, recorder });
     let api: Api<Namespace> = Api::all(client);
     tokio::spawn(
         Controller::new(api, WatcherConfig::default())
+            // A configuration change — `mode: Off`, a new ceiling, a team's level — reaches every
+            // namespace now rather than at its next resync.
+            .reconcile_all_on(changes)
             .run(
                 |object, ctx| {
                     events::tracked(Arc::clone(&object), reconcile_namespace(object, ctx))

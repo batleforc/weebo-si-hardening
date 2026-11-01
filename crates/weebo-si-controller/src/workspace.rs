@@ -2,7 +2,10 @@
 //! reference, the `held` warning every template-driven feature logs, and how soon a namespace the
 //! gate answered `Off` for is looked at again.
 
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+use futures_util::Stream;
 
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
 use weebo_si_chassis::managed::{ObjectKey, Owner};
@@ -36,6 +39,40 @@ pub fn off_recheck(indexed: bool) -> Duration {
     } else {
         UNINDEXED_RECHECK
     }
+}
+
+/// How often [`config_changes`] looks at a feature's configuration handle.
+pub const CONFIG_POLL: Duration = Duration::from_secs(2);
+
+/// A stream that yields once each time `handle` holds a different value than at its last look —
+/// for `Controller::reconcile_all_on`, so a feature that only watches `Namespace` objects
+/// re-reconciles every namespace when its configuration changes.
+///
+/// Without it, a `mode: Off`, a new ceiling or a team's new level reaches a namespace only at its
+/// next periodic requeue, minutes later. Polled rather than pushed: the handle is the one the
+/// config store already rewrites on every sync, and comparing two clones every two seconds is the
+/// whole cost.
+pub fn config_changes<T>(handle: Arc<RwLock<Option<T>>>) -> impl Stream<Item = ()> + Send
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
+    let read = move || {
+        handle
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    };
+    let first = read();
+    futures_util::stream::unfold((first, read), |(mut last, read)| async move {
+        loop {
+            tokio::time::sleep(CONFIG_POLL).await;
+            let now = read();
+            if now != last {
+                last = now;
+                return Some(((), (last, read)));
+            }
+        }
+    })
 }
 
 /// Whether the namespace index holds `namespace` — the sample [`off_recheck`] takes.
@@ -142,5 +179,31 @@ mod tests {
         let name = NamespaceName::new("out-of-scope");
         let view = FakeNamespaceView::new([(name.clone(), NamespaceFacts::default())]);
         assert_eq!(off_recheck(indexed(&view, &name)), OFF_RECHECK);
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod config_changes_tests {
+    use futures_util::StreamExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_change_yields_and_a_rewrite_of_the_same_value_does_not() {
+        let handle = Arc::new(RwLock::new(Some(1)));
+        let mut changes = Box::pin(config_changes(Arc::clone(&handle)));
+
+        *handle.write().unwrap() = Some(1);
+        let quiet = tokio::time::timeout(CONFIG_POLL * 2, changes.next()).await;
+        assert!(quiet.is_err(), "the same value is not a change");
+
+        *handle.write().unwrap() = Some(2);
+        let changed = tokio::time::timeout(CONFIG_POLL * 3, changes.next()).await;
+        assert_eq!(changed.unwrap(), Some(()));
     }
 }
