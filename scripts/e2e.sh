@@ -131,7 +131,11 @@ make_ca() {
 # groups` at sign-in and Keycloak refuses the whole request (`invalid_scope`) when a client is
 # not allowed a scope of that name — found by the e2e cookie row, the first thing on this rig
 # to sign in through a browser's path. The password grants the suite uses never asked for it,
-# which is why the group-membership mapper also sits on each client directly.
+# which is why the group-membership mapper also sits on each client directly. The scope is added
+# after the import, through the admin CLI (`sso_groups_scope`), and not in this file: a realm
+# file that lists any `clientScopes` is taken as the whole list, Keycloak then creates none of
+# its built-in ones (`profile`, `email`, `basic`, ...), every token loses `sub` and
+# `preferred_username`, and the gateway refuses them all as unverifiable.
 
 realm_user() {
   # $1 username, $2 group
@@ -163,15 +167,6 @@ realm_json() {
   "enabled": true,
   "sslRequired": "none",
   "groups": [{ "name": "team-payments" }, { "name": "team-data" }],
-  "clientScopes": [
-    {
-      "name": "groups", "protocol": "openid-connect",
-      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" },
-      "protocolMappers": [
-$(groups_mapper)
-      ]
-    }
-  ],
   "users": [
 $(realm_user alice team-payments),
 $(realm_user bob team-data),
@@ -198,7 +193,6 @@ $(groups_mapper)
       "directAccessGrantsEnabled": true, "serviceAccountsEnabled": true,
       "redirectUris": ["*"], "webOrigins": ["*"],
       "attributes": { "backchannel.logout.session.required": "true" },
-      "optionalClientScopes": ["groups"],
       "protocolMappers": [
         {
           "name": "gateway-audience", "protocol": "openid-connect",
@@ -278,6 +272,37 @@ spec:
             backend: { service: { name: keycloak, port: { number: 8080 } } }
 MANIFEST
   kubectl -n sso rollout status deploy/keycloak --timeout=900s >/dev/null
+  sso_groups_scope
+}
+
+# Keycloak's admin CLI, run inside the pod against its own HTTP port. `--config` keeps the
+# session file out of a home directory the image's user may not own.
+kcadm() {
+  kubectl -n sso exec -i deploy/keycloak -- /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm.config
+}
+
+# The `groups` client scope, created once the realm is in — see the comment above the realm for
+# why it is not part of the realm file — and made optional on the gateway's client, which is the
+# one that signs users in.
+sso_groups_scope() {
+  kcadm config credentials --server http://localhost:8080 --realm master \
+    --user admin --password admin
+  # Idempotent, so `up` on a cluster that already has the realm is not refused a second scope.
+  scope=$(kcadm get client-scopes -r che --fields id,name \
+    | jq -r '.[] | select(.name == "groups") | .id')
+  [ -n "$scope" ] || scope=$(kcadm create client-scopes -r che -i -f - <<SCOPE
+{
+  "name": "groups", "protocol": "openid-connect",
+  "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" },
+  "protocolMappers": [
+$(groups_mapper)
+  ]
+}
+SCOPE
+  )
+  client=$(kcadm get clients -r che -q clientId=endpoint-gateway --fields id --format csv --noquotes)
+  [ -n "$scope" ] && [ -n "$client" ] || die "the groups client scope could not be created"
+  kcadm update "clients/$client/optional-client-scopes/$scope" -r che
 }
 
 # See scripts/spike-0009-che.sh for why each of these two exists: pods resolve every

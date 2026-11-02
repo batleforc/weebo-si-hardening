@@ -1072,7 +1072,9 @@ fn a_token_for_another_audience_an_id_token_and_another_issuers_token_are_all_re
     let id_token = text(&own, "/id_token");
     assert!(
         !id_token.is_empty(),
-        "the password grant should return an ID token: {own}"
+        "the password grant should return an ID token; it returned {:?}",
+        own.as_object()
+            .map(|fields| fields.keys().collect::<Vec<_>>())
     );
     let (code, _, _) = status(&ingress, &served.host, "/", Some(&id_token));
     assert_eq!(code, 401, "an ID token is never an access token");

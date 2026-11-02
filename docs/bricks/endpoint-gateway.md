@@ -269,7 +269,11 @@ claim name is (`claims.groups`). Keycloak refuses the whole authorization reques
 `invalid_scope` when the gateway's client is not allowed a scope of that name, so define a `groups`
 client scope (with the group-membership mapper) and assign it to the client as default or optional.
 A mapper placed directly on the client is enough for the *claim* but not for the *scope*. Found by
-the e2e suite's sign-in row, where password grants had hidden it: they never ask for `groups`.
+the e2e suite's sign-in row, where password grants had hidden it: they never ask for `groups`. On
+Keycloak, add the scope through the admin console or CLI rather than in an imported realm file: a
+realm file that lists any `clientScopes` is taken as the complete list, the built-in ones
+(`profile`, `email`, `basic` and the rest) are then not created at all, and every token loses
+`preferred_username` and `sub`.
 
 **An identity provider behind a private CA** needs its root in `extra_ca_file`, or discovery
 fails at startup with a certificate error. The bundle is **added** to the built-in public roots,
