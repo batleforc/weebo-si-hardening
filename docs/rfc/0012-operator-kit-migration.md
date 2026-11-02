@@ -4,7 +4,7 @@ title: operator kit migration
 status: Implemented
 authors: [batleforc]
 created: 2026-10-31
-updated: 2026-11-01
+updated: 2026-11-02
 decided: 2026-10-31
 brick: crates/weebo-si-operator
 supersedes: []
@@ -413,6 +413,7 @@ nightly e2e green with no expected value edited, and `task crd:check` clean with
 
 | Date | Change |
 | --- | --- |
+| 2026-11-02 | **The nightly of 2026-11-01 was red on the `upgrade` row, and the roll was not at fault.** The one refused admission it recorded was at 01:33:56, six seconds before the roll killed its first webhook pod: `scripts/e2e.sh deploy upgrade` had installed v0.2.1 seconds earlier, `helm --wait` returns on pod readiness, and kube-proxy had not yet programmed the Service's endpoints when the row's first dry run hit the ClusterIP (`connection refused` is kube-proxy's reject for a Service it holds no endpoint for). The row now waits for one dry run to pass before its probe starts counting, so every failure it records is the roll's. The next nightly, on 2026-11-02, was green without the change. |
 | 2026-11-01 | `Implemented`. The `upgrade` e2e suite ran green in CI on 2026-10-31 (v0.2.1 → kit build), the docs step is done (`operator-internals.md` crate map and *Adding a feature*, `repo-layout.md`, `ci.md`, the brick pages) and nothing in the plan is open. Still deferred: the budget on `weebo-kit-perf` (*Future work*), and the `deny.toml` ignore of RUSTSEC-2026-0387 (crypto-bigint 0.5 via `jsonwebtoken`, verify-only) until `jsonwebtoken` moves to elliptic-curve 0.14 |
 | 2026-10-31 | `weebo-kit-testkit` dropped from the plan, `weebo-si-envtest-support` kept. The kit's harness runs RBAC only, so it cannot authenticate several identities with `AlwaysAllow`, which the guard suites need so that the webhook's verdict is what gets tested (`start_with_identities`). It has no webhook TLS helpers. It also needs Go and `libclang` at build time through `bindgen`, and CI has neither. Found while starting the *Tests* step |
 | 2026-10-31 | The kit's shared tasks and `templates/kit.yaml` dropped from the plan. Our `rust:*` tasks run with `--locked` and `--all-features` and split the e2e crate out, and the kit's do neither. `kit:cog` would re-render our `cog.toml` from the kit's template and lose its hooks (`task recu`, gitleaks, the whitespace scripts). The kit tag is bumped by hand in `Cargo.toml` |
