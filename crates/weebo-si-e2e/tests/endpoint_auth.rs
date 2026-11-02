@@ -1008,6 +1008,9 @@ fn a_teammate_is_shut_out_once_an_override_narrows_the_owner() {
 fn a_user_the_owner_named_opens_a_shared_endpoint_without_being_a_teammate() {
     let _team = setup();
     let ns = Namespace::workspace("alice", "gate-shared", Some("payments"));
+    // Team membership is derived from namespace ownership: without a namespace of her own in
+    // the team, carol is a stranger.
+    let _carol = Namespace::workspace("carol", "gate-shared", Some("payments"));
     let served = serve(
         &ns,
         "shared",

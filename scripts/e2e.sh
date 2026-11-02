@@ -126,6 +126,12 @@ make_ca() {
 # Three people in two teams, so every "may this person open that endpoint" row has a subject who
 # may and one who may not: alice and carol share team-payments, bob is alone in team-data.
 # Passwords equal usernames; nothing here outlives the cluster.
+#
+# The `groups` client scope exists because the gateway asks for `scope=openid profile email
+# groups` at sign-in and Keycloak refuses the whole request (`invalid_scope`) when a client is
+# not allowed a scope of that name — found by the e2e cookie row, the first thing on this rig
+# to sign in through a browser's path. The password grants the suite uses never asked for it,
+# which is why the group-membership mapper also sits on each client directly.
 
 realm_user() {
   # $1 username, $2 group
@@ -157,6 +163,15 @@ realm_json() {
   "enabled": true,
   "sslRequired": "none",
   "groups": [{ "name": "team-payments" }, { "name": "team-data" }],
+  "clientScopes": [
+    {
+      "name": "groups", "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" },
+      "protocolMappers": [
+$(groups_mapper)
+      ]
+    }
+  ],
   "users": [
 $(realm_user alice team-payments),
 $(realm_user bob team-data),
@@ -183,6 +198,7 @@ $(groups_mapper)
       "directAccessGrantsEnabled": true, "serviceAccountsEnabled": true,
       "redirectUris": ["*"], "webOrigins": ["*"],
       "attributes": { "backchannel.logout.session.required": "true" },
+      "optionalClientScopes": ["groups"],
       "protocolMappers": [
         {
           "name": "gateway-audience", "protocol": "openid-connect",

@@ -217,7 +217,7 @@ client_secret_env: ENDPOINT_GATEWAY_CLIENT_SECRET
 redirect_url: "https://auth.weebo.si/oidc/callback"
 claims:
   username: preferred_username # must be the claim Che derives its username from
-  groups: groups
+  groups: groups # the claim; the sign-in also *requests* a scope named `groups` — see below
 hosts:
   suffix: ".weebo.si"
   exclude: ["che.weebo.si", "auth.weebo.si"]
@@ -262,6 +262,14 @@ rate_limit: { login_per_address_per_minute: 300, backchannel_logout_per_minute: 
 # enabled: false → /oidc/backchannel-logout answers 404 and the chart does not route it.
 backchannel_logout: { enabled: true, configmap: endpoint-auth-revocations, namespace: weebo-si-hardening }
 ```
+
+**The realm must allow a client scope named `groups`.** A browser sign-in asks the identity
+provider for `scope=openid profile email groups`, and the scope name is not configurable; the
+claim name is (`claims.groups`). Keycloak refuses the whole authorization request with
+`invalid_scope` when the gateway's client is not allowed a scope of that name, so define a `groups`
+client scope (with the group-membership mapper) and assign it to the client as default or optional.
+A mapper placed directly on the client is enough for the *claim* but not for the *scope*. Found by
+the e2e suite's sign-in row, where password grants had hidden it: they never ask for `groups`.
 
 **An identity provider behind a private CA** needs its root in `extra_ca_file`, or discovery
 fails at startup with a certificate error. The bundle is **added** to the built-in public roots,
