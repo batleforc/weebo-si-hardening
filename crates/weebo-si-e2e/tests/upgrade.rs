@@ -27,7 +27,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use weebo_si_e2e::{OPERATOR_NAMESPACE, Value, get, kubectl_with, operator_pods, repo_root, text};
+use weebo_si_e2e::{
+    OPERATOR_NAMESPACE, Value, get, kubectl_with, operator_pods, repo_root, text, wait_until,
+};
 
 const LEASE: &str = "weebo-si-controller-leader";
 
@@ -65,6 +67,17 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
         "the previous release's leader {holder:?} is not one of its controller pods {before:?}"
     );
     let old_images: Vec<String> = before.iter().map(|pod| controller_image(pod)).collect();
+
+    // The release the suite upgrades from was installed seconds ago: `helm --wait` returns on
+    // pod readiness, and kube-proxy programs the Service's endpoints a moment later, during
+    // which the apiserver's call to the ClusterIP is refused. A failure before the roll has
+    // begun measures that start-up, not the roll (nightly of 2026-11-01), so the first dry run
+    // must pass before the probe starts counting.
+    wait_until(
+        "the previous release admits a dry run",
+        Duration::from_secs(60),
+        || kubectl_with(&["apply", "--dry-run=server", "-f", "-"], Some(PROBE)).map(drop),
+    );
 
     let stop = Arc::new(AtomicBool::new(false));
     let failures = Arc::new(Mutex::new(Vec::<String>::new()));
