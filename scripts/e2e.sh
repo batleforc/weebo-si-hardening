@@ -301,7 +301,9 @@ $(groups_mapper)
 SCOPE
   )
   client=$(kcadm get clients -r che -q clientId=endpoint-gateway --fields id --format csv --noquotes)
-  [ -n "$scope" ] && [ -n "$client" ] || die "the groups client scope could not be created"
+  if [ -z "$scope" ] || [ -z "$client" ]; then
+    die "the groups client scope could not be created"
+  fi
   kcadm update "clients/$client/optional-client-scopes/$scope" -r che
 }
 
