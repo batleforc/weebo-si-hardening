@@ -217,7 +217,7 @@ client_secret_env: ENDPOINT_GATEWAY_CLIENT_SECRET
 redirect_url: "https://auth.weebo.si/oidc/callback"
 claims:
   username: preferred_username # must be the claim Che derives its username from
-  groups: groups
+  groups: groups # the claim; the sign-in also *requests* a scope named `groups` — see below
 hosts:
   suffix: ".weebo.si"
   exclude: ["che.weebo.si", "auth.weebo.si"]
@@ -262,6 +262,18 @@ rate_limit: { login_per_address_per_minute: 300, backchannel_logout_per_minute: 
 # enabled: false → /oidc/backchannel-logout answers 404 and the chart does not route it.
 backchannel_logout: { enabled: true, configmap: endpoint-auth-revocations, namespace: weebo-si-hardening }
 ```
+
+**The realm must allow a client scope named `groups`.** A browser sign-in asks the identity
+provider for `scope=openid profile email groups`, and the scope name is not configurable; the
+claim name is (`claims.groups`). Keycloak refuses the whole authorization request with
+`invalid_scope` when the gateway's client is not allowed a scope of that name, so define a `groups`
+client scope (with the group-membership mapper) and assign it to the client as default or optional.
+A mapper placed directly on the client is enough for the *claim* but not for the *scope*. Found by
+the e2e suite's sign-in row, where password grants had hidden it: they never ask for `groups`. On
+Keycloak, add the scope through the admin console or CLI rather than in an imported realm file: a
+realm file that lists any `clientScopes` is taken as the complete list, the built-in ones
+(`profile`, `email`, `basic` and the rest) are then not created at all, and every token loses
+`preferred_username` and `sub`.
 
 **An identity provider behind a private CA** needs its root in `extra_ca_file`, or discovery
 fails at startup with a certificate error. The bundle is **added** to the built-in public roots,
@@ -504,9 +516,6 @@ Honest list, kept here rather than in the RFC's prose:
   in this repo installs it or can detect its absence. What exists is the assertion —
   `gateway.haproxyPrerequisite`, `Degraded` while it is unset — which is a promise recorded, not a
   property verified.
-- **The Che half of the ground-truth spike** — the user-namespace label, the OIDC client's
-  discovery document and the shape of a token that realm mints. `scripts/spike-0009.sh` runs those
-  rows against the Che cluster unchanged; nobody has run it there yet.
 - **Trusted-proxy `Auto`**: the peer check against the ingress controller's own `EndpointSlice`.
   `trustedProxy: {cidrs: [...]}` covers the same ground with a value an admin writes.
 - **`--check` does not run the self-origin probe once**; the running gateway probes on its own
