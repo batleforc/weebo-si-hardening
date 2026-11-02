@@ -2,6 +2,51 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.0](https://github.com/batleforc/weebo-si-hardening/compare/8bdb63405e1fa4551a6cf6afe8d61e6d8ae2a6ac..v0.3.0) - 2026-11-02
+#### Features
+- (**perf**) the operator's resource budget, measured nightly on a release build - ([220f406](https://github.com/batleforc/weebo-si-hardening/commit/220f406f8dd67fc2bb8b7a3dbd4daa8ff0a1dc5e)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0009**) the end-to-end rows at once, and both RFCs flipped to Implemented (#8) - ([89d46fe](https://github.com/batleforc/weebo-si-hardening/commit/89d46fe10d5d67a6f663eda19da8615ac6f73e6e)) - Maxime, Claude Fable 5.1, Claude Fable 5.1, Claude Fable 5.1, Claude Fable 5.1, Claude Fable 5.1
+- (**rfc-0012**) run the operator on weebo-operator-kit, one adapters crate per feature - ([8bdb634](https://github.com/batleforc/weebo-si-hardening/commit/8bdb63405e1fa4551a6cf6afe8d61e6d8ae2a6ac)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) pods audit, from a server-side dry run of the label - ([803b5d0](https://github.com/batleforc/weebo-si-hardening/commit/803b5d0738148f7cbcb4c659cd975063cae4e21d)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) pod-security adapters, wired into the controller - ([ce37585](https://github.com/batleforc/weebo-si-hardening/commit/ce37585f0912b7ab0f9fcd80de3f92bb1b5d0607)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) the pod-security CRD fields and domain crate - ([57a0d2a](https://github.com/batleforc/weebo-si-hardening/commit/57a0d2aef6e4f7c9deb8480638e6ad0b8874b5b8)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) the runtime matrix's cluster tier runs, and checks, on kind - ([562b2fd](https://github.com/batleforc/weebo-si-hardening/commit/562b2fde86389e312a922185674d4d83c21a0b46)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) a runtime matrix to compare container runtimes - ([135680f](https://github.com/batleforc/weebo-si-hardening/commit/135680fc097f21b470452b2f8d9cabe3feeae915)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) install the seccomp profiles the Talos way - ([da2ded0](https://github.com/batleforc/weebo-si-hardening/commit/da2ded015e07c29ba264068874c9764d698bb7d1)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) seccomp for builds isolated in a user namespace - ([dfb8254](https://github.com/batleforc/weebo-si-hardening/commit/dfb82543c16ea13cb89679d71cea7412cb092e96)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) Localhost seccomp profiles for workspace nodes - ([ed5e7bc](https://github.com/batleforc/weebo-si-hardening/commit/ed5e7bc222bd69c189472b3963b75f8e8287aa73)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013,rfc-0014**) finish both RFCs (#7) - ([f5c9c5d](https://github.com/batleforc/weebo-si-hardening/commit/f5c9c5d22598d7c43ab5c28471f8d6215e1a32ef)) - Maxime, Claude Opus 5.5 (1M context)
+- (**rfc-0014**) resource-quotas, from the CRD to the e2e (#6) - ([4e3fa71](https://github.com/batleforc/weebo-si-hardening/commit/4e3fa714a7955866ffdce0d6bfe1d8600c0e1894)) - Maxime, Claude Opus 5.5 (1M context)
+#### Bug Fixes
+- (**controller**) sample the namespace index before the gate - ([c950dab](https://github.com/batleforc/weebo-si-hardening/commit/c950dab7ae25710e02f18f9c95b637917a4df871)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**controller**) retry an unindexed namespace in seconds, not a minute - ([76017f2](https://github.com/batleforc/weebo-si-hardening/commit/76017f2dfa59646200fac9d6be4174885d4e9648)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**crd**) quote Off and On so kubectl and Helm read them as strings - ([89087e8](https://github.com/batleforc/weebo-si-hardening/commit/89087e826b560621296c1fda15192b741f0da214)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**deps**) bump hyper to 1.12 and hyper-util to 0.1.21 - ([e151315](https://github.com/batleforc/weebo-si-hardening/commit/e151315fd6dd62a30d1ed1d19826ebc0b956a485)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**e2e**) let the upgrade row warm up before it counts refused admissions (#9) - ([32c924c](https://github.com/batleforc/weebo-si-hardening/commit/32c924c768a3772d0a806030df753c0b7369df44)) - Maxime, Claude Fable 5.1
+- (**pod-security**) re-reconcile every namespace when the config changes - ([862a608](https://github.com/batleforc/weebo-si-hardening/commit/862a60863a858f7ab7f0ddf6f5856db996c3557d)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) preflight the cluster tier and tell admission from start - ([8f4a2d1](https://github.com/batleforc/weebo-si-hardening/commit/8f4a2d1010b6a5f13a32a8bda57e8c76730efc7b)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) parse scenarios with printf, not echo - ([8bdeab9](https://github.com/batleforc/weebo-si-hardening/commit/8bdeab9742523043a0fc2883ce48cf3c69555eae)) - Max Batleforc, Claude Opus 5.5 (1M context)
+#### Documentation
+- (**cspell**) accept unasserted - ([10307df](https://github.com/batleforc/weebo-si-hardening/commit/10307dfdc16e4ef9f1c3821cde82fefd8e6cb183)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc**) draft 0013 pod-security and 0014 resource-quotas - ([505c3ab](https://github.com/batleforc/weebo-si-hardening/commit/505c3abc939508c06991baa6997360cd06e3ff1e)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) the pod-security brick page and field references - ([95d4460](https://github.com/batleforc/weebo-si-hardening/commit/95d44601b028f140020b493591b458973ec3fbb3)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) keep the changelog row in the changelog - ([1fd07d9](https://github.com/batleforc/weebo-si-hardening/commit/1fd07d909e088770dbfb2cf79cc93d5d6e6df8dd)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) cover Che's container-run mode - ([af589b0](https://github.com/batleforc/weebo-si-hardening/commit/af589b0077a48ea12c9b20bfd8d86f25eb98cd8e)) - Max Batleforc, Claude Opus 5.5 (1M context)
+#### Tests
+- (**perf**) poll while the fleet is created, keep the controller log - ([f6a010f](https://github.com/batleforc/weebo-si-hardening/commit/f6a010f68bfa3a72099d54dbcf89c4587f94062a)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**perf**) log both of the controller's streams, fail fast when it exits - ([319b850](https://github.com/batleforc/weebo-si-hardening/commit/319b850a73af331473e71c4ef362455c308cbf35)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**rfc-0013**) a pod-security e2e suite against real Che - ([d7e776b](https://github.com/batleforc/weebo-si-hardening/commit/d7e776b11e835fa2e3bbb5bf36a1787f2566113e)) - Max Batleforc, Claude Opus 5.5 (1M context)
+#### Build system
+- (**deps**) pin weebo-operator-kit v0.26.0 and drop the temporary path patch - ([f7ecc04](https://github.com/batleforc/weebo-si-hardening/commit/f7ecc048e5a2fa3deca3f121bbabf75bdb49d1ec)) - Max Batleforc, Claude Opus 5.5 (1M context)
+#### Continuous Integration
+- (**e2e**) show the output of passing tests - ([75542b0](https://github.com/batleforc/weebo-si-hardening/commit/75542b027c46eb09f8791623422c33b9e8fc994e)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) drop kind's product-files hook from the base spec - ([d32a47f](https://github.com/batleforc/weebo-si-hardening/commit/d32a47f44419c2c22801df29c98268fc081615e5)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) also lift kind's product_uuid overmounts - ([6769e25](https://github.com/batleforc/weebo-si-hardening/commit/6769e256685b740083e1c30d6ad801f4ff64b41b)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) lift Docker's /sys masks on the kind node - ([c5823c4](https://github.com/batleforc/weebo-si-hardening/commit/c5823c40e753ce69fef7025265d37b29b105a7d3)) - Max Batleforc, Claude Opus 5.5 (1M context)
+- (**runtime-matrix**) run the kind tier on pull requests too - ([4baf7a0](https://github.com/batleforc/weebo-si-hardening/commit/4baf7a0277d6d27677ebbdc3e383668bae9bbb51)) - Max Batleforc, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.2.1](https://github.com/batleforc/weebo-si-hardening/compare/193c600ac679f6c6f62254cce9c6d062ab7c936c..v0.2.1) - 2026-10-05
 #### Bug Fixes
 - (**controller**) attach endpoint-auth without waiting five minutes - ([f91960b](https://github.com/batleforc/weebo-si-hardening/commit/f91960b51e63c0b2a3d9420d09734d4b07e662f9)) - Max Batleforc, Claude Opus 5.5 (1M context)
