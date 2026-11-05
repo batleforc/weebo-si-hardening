@@ -3826,6 +3826,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_yaml_bw",
  "tokio",
  "weebo-si-envtest-support",
 ]

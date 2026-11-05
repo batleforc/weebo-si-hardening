@@ -1,0 +1,247 @@
+# The WeeboSiConfig singleton for weebo-si — stage 0 of docs/guides/weebo-si-standard.md.
+#
+# Every feature is written out in full and switched `Off`. The catalogues, the grants and the
+# templates are the target; only the modes move, one stage at a time, with the merge patches in
+# ../stages/. Applying this file alone changes nothing on the cluster: an `Off` feature does not
+# run, and `Off` set on purpose tears down what a feature wrote.
+#
+# On weebo-si, this object is rendered by 2.argo/helm/che/hardening from its values.yaml, which
+# Argo CD self-heals: a `kubectl patch` there is reverted. Mirror each stage into that file
+# instead — the stage files are the diff to write.
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiConfig
+metadata:
+  name: cluster
+spec:
+  features:
+    # ── RFC 0002 ── which DevWorkspaceOperatorConfig a workspace runs with ──────────────────
+    dwocPin:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      catalog:
+        - { key: workspace, name: weebo-workspace, namespace: eclipse-che }
+      default: workspace
+      namespaceSelection:
+        annotation: hardening.weebo.io/dwoc
+        # A namespace annotation naming a DWOC its team does not reach: fall back to the
+        # team's, say so in the logs. Refusing would stop every workspace of the namespace for
+        # an annotation typo.
+        onUnknownKey: Default
+      # Skip, not Deny: a DWOC missing from eclipse-che is an admin mistake, and refusing every
+      # workspace in the cluster for it is worse than one unpinned start (counted, logged).
+      onMissingTarget: Skip
+
+    # ── RFC 0004 ── what a workspace may reach ─────────────────────────────────────────────────
+    networkProfiles:
+      mode: "Off"
+      # Workspace namespaces only. Unscoped, the baseline would be written into argocd, vault,
+      # s3… — every namespace in the cluster.
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      catalog:
+        - key: base
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-base, namespace: weebo-si-hardening }
+        - key: dev-registries
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-dev-registries, namespace: weebo-si-hardening }
+        - key: anthropic
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-anthropic, namespace: weebo-si-hardening }
+        - key: kube-api
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-kube-api, namespace: weebo-si-hardening }
+        - key: internet
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-internet, namespace: weebo-si-hardening }
+      baseline: base
+      namespaceSelection: { annotation: hardening.weebo.io/network-profiles }
+      workspaceSelection: { attribute: hardening.weebo.io/network-profiles }
+      # Deny: a devfile asking for `internet` without the grant is refused at start, with the
+      # key named. Default would start it on the team default and leave the developer to find
+      # out from a timeout why `curl` hangs.
+      onNotGranted: Deny
+      enforcement:
+        # Explicit, not Auto: the templates exist only as CiliumNetworkPolicy, and a plain
+        # NetworkPolicy cannot select the apiserver on Talos (it runs on the node).
+        backend: Cilium
+        canary: { enabled: true, intervalSeconds: 300 }
+
+    # ── RFC 0004 / 0008 ── nobody but the operator edits the policies it owns ──────────────────
+    policyGuard:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      # Nobody may author an unmanaged policy in a workspace namespace. A platform team that
+      # needs one adds its ServiceAccount here, by name.
+      allowedIdentities: []
+
+    # ── RFC 0005 ── which images a workspace may run ───────────────────────────────────────────
+    imagePolicy:
+      mode: "Off"
+      # Every image comes through angos (registry.pkg.weebo.poc). An image named straight from
+      # ghcr.io, quay.io or Docker Hub is refused even when its content is identical: the point
+      # is one pull path, cached, scanned and reachable with the egress the baseline allows.
+      #
+      # The keys go from narrow to wide. A namespace of no team gets the narrowest; a team
+      # re-declares (identically) the ones it is granted.
+      catalog:
+        # The WeeboDevImage family: che-min-mise and its children.
+        - key: weebo-devimages
+          patterns: ["registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/**"]
+        # What weebo builds and pushes itself (angos' local repository).
+        - key: weebo-local
+          patterns: ["registry.pkg.weebo.poc/weebo/**"]
+        # Docker Hub's official images (postgres, redis…) for devfile sidecars, through the cache.
+        - key: hub-official
+          patterns: ["registry.pkg.weebo.poc/hub/library/**"]
+        # Anything angos caches — all of Docker Hub, ghcr.io and quay.io. A grant, never a
+        # default: who pulls arbitrary images is visible in their devfile attribute.
+        - key: angos
+          patterns: ["registry.pkg.weebo.poc/**"]
+      default: [weebo-devimages]
+      variables: {}
+      namespaceSelection: { annotation: hardening.weebo.io/image-policy }
+      workspaceSelection: { attribute: hardening.weebo.io/image-policy }
+      # Deny, for the same reason as networkProfiles: the error names the image and the key.
+      onNotGranted: Deny
+      platform:
+        # Off: the compiled-in set allows the Che images straight from quay.io. weebo-si serves
+        # them from angos' quay cache, listed below.
+        builtin: false
+        extra:
+          - "registry.pkg.weebo.poc/quay/che-incubator/**"
+          - "registry.pkg.weebo.poc/quay/devfile/**"
+          - "registry.pkg.weebo.poc/quay/eclipse/**"
+          # che-code and the editor images weebo builds (WeeboDevImage's che-vscode).
+          - "registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-vscode:*"
+
+    # ── RFC 0006 ── what a process inside the workspace may do ─────────────────────────────────
+    kubearmorPolicy:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      catalog:
+        - key: base
+          templateRef: { name: weebo-armor-base, namespace: weebo-si-hardening }
+        - key: build
+          templateRef: { name: weebo-armor-build, namespace: weebo-si-hardening }
+      baseline: base
+      namespaceSelection: { annotation: hardening.weebo.io/kubearmor-policy }
+      workspaceSelection: { attribute: hardening.weebo.io/kubearmor-policy }
+      onNotGranted: Default
+      enforcement:
+        backend: Auto
+        # What KubeArmor does with an operation no rule matched. Audit everywhere: Block turns
+        # the templates into an allow-list, and che-min-mise's start-up writes to /etc, $HOME,
+        # /tmp and the PVC in ways no allow-list written today anticipates.
+        defaultPosture: { file: Audit, network: Audit, capabilities: Audit }
+
+    # ── RFC 0007 ── package managers pointed at Batlehub ───────────────────────────────────────
+    registryConfig:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      catalog:
+        - key: batlehub-env
+          ecosystem: Other
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-pkg-env, namespace: weebo-si-hardening }
+        - key: batlehub-cargo
+          ecosystem: Cargo
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-cargo-config, namespace: weebo-si-hardening }
+      namespaceSelection: { annotation: hardening.weebo.io/registry-config }
+      onNotGranted: Default
+
+    # ── RFC 0009 ── who may reach a workspace endpoint ─────────────────────────────────────────
+    endpointAuth:
+      mode: "Off"
+      gateway:
+        externalUrl: https://endpoint-auth.cde.dev.weebo.poc
+        service: { name: endpoint-gateway, namespace: weebo-si-hardening, port: 4180 }
+        clusterDomain: cluster.local
+        dialect: Traefik
+        # Observe first (stage 6), Enforce after (stage 7). Keep in step with the gateway
+        # chart's config.enforcement.
+        enforcement: Observe
+        # Nothing may run between Traefik and the gate: a middleware before forwardAuth sees
+        # the request unauthenticated.
+        allowedMiddlewares: []
+        haproxyPrerequisite: false
+      breakGlassIdentities: []
+      owner:
+        # Che writes the owner here; its value must equal the gateway's claims.username
+        # (preferred_username from Authentik), which is what Che substitutes into dev-ws-<user>.
+        namespaceAnnotation: che.eclipse.org/username
+        # Under Che, che-operator writes the routing objects, not DevWorkspace Operator. Wrong
+        # here, every workspace endpoint stops being created.
+        devworkspaceOperatorIdentity: system:serviceaccount:eclipse-che:che-operator
+      hosts:
+        suffix: .cde.dev.weebo.poc
+        # Read off a running workspace: batleforc-weebo-si-igdr-base.cde.dev.weebo.poc.
+        ownership:
+          - template: "{user}-{workspace}-{endpoint}"
+        exclude: [cde.dev.weebo.poc, endpoint-auth.cde.dev.weebo.poc]
+      # `anonymous: false` spelled out: the apiserver fills it in, and Argo CD compares list
+      # items whole — left implicit, the Application stays OutOfSync forever.
+      # No `open` (anonymous) entry at cluster level: a public endpoint is a team grant, named.
+      catalog:
+        - { key: private, anonymous: false, delegation: [] }
+        - { key: team, anonymous: false, delegation: [Team] }
+        - { key: shared, anonymous: false, delegation: [Team, UsersAndGroups] }
+      default: private
+      overrides: []
+      endpointSelection: { annotation: hardening.weebo.io/access, onUnknownKey: Default }
+      selfOrigin: { podNetwork: Auto, serviceAccountToken: true }
+
+    # ── RFC 0011 ── the Authentik account and the Argo CD Application of each person ───────────
+    identity:
+      mode: "Off"
+      authentik:
+        allowedGroupRefs: ["weebo-*"]
+      che:
+        applicationNamespace: argocd
+        allowedProjects: [che-users]
+        allowedRepoUrls: ["https://github.com/batleforc/weebo-si*"]
+
+    # ── RFC 0013 ── a Pod Security level per workspace namespace ───────────────────────────────
+    podSecurity:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      # A namespace of no team, and the weebo team: everything che-min-mise needs fits in
+      # restricted once the `workspace` DWOC sets the security context.
+      default: restricted
+      # The loosest level ever written. Build teams get baseline; nobody gets privileged.
+      ceiling: baseline
+      # = the cluster's minor (Talos, Kubernetes v1.36). Pinned so a cluster upgrade cannot
+      # tighten a level overnight; bump it with the cluster, after `pods audit`.
+      version: v1.36
+      backend: Auto
+      # Tighten-only: a namespace may ask for stricter, never looser.
+      namespaceSelection: { annotation: hardening.weebo.io/pod-security }
+
+    # ── RFC 0014 ── one quota profile per workspace namespace ──────────────────────────────────
+    resourceQuotas:
+      mode: "Off"
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      catalog:
+        - key: standard
+          quotaRef: { name: quota-standard, namespace: weebo-si-hardening-templates }
+          limitRangeRef: { name: limits-standard, namespace: weebo-si-hardening-templates }
+        - key: build
+          quotaRef: { name: quota-build, namespace: weebo-si-hardening-templates }
+          limitRangeRef: { name: limits-build, namespace: weebo-si-hardening-templates }
+      default: standard
+      namespaceSelection: { annotation: hardening.weebo.io/resource-quota }
+      onNotGranted: Default

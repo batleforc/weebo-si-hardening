@@ -1,0 +1,30 @@
+# kubearmor-policy profile `build`: what a build workspace (che-mise-pdm: podman, buildah) does on
+# top of the baseline, made visible.
+#
+# Granted to the weebo-build team only, as its default. It allows nothing — KubeArmor has nothing
+# to allow while the posture is Audit — it labels the operations a build is expected to make, so
+# the audit stream of a build workspace separates "podman doing its job" from "something else
+# using the same syscalls". Measured needs: RFC 0013, *A build workspace*.
+apiVersion: security.kubearmor.com/v1
+kind: KubeArmorPolicy
+metadata:
+  name: weebo-armor-build
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: kubearmor-policy
+spec:
+  selector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  action: Audit
+  process:
+    matchPaths:
+      # The setuid id-mappers rootless podman needs to create its user namespace. The reason a
+      # build team cannot run at `restricted` (allowPrivilegeEscalation must stay true).
+      - path: /usr/bin/newuidmap
+        action: Audit
+      - path: /usr/bin/newgidmap
+        action: Audit
+      - path: /usr/bin/crun
+        action: Audit
+      - path: /usr/bin/fuse-overlayfs
+        action: Audit

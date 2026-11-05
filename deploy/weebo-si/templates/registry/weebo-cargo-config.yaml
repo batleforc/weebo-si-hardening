@@ -1,0 +1,29 @@
+# registry-config entry `batlehub-cargo` (RFC 0007): Cargo's source replacement.
+#
+# A file, because Cargo reads `[source]` tables from config files only, never from the
+# environment. Mounted with `subpath` as ~/.cargo/config.toml: `subpath` mounts the one key as one
+# file. `file` would mount a directory at ~/.cargo and hide the registry cache and every
+# installed binary — the operator refuses that template and never copies it
+# (weebo_si_registry_template_invalid_total{reason="mount_shadows_path"}).
+#
+# The mounted file is read-only. A user's own Cargo settings go in the project's
+# .cargo/config.toml, which Cargo reads first anyway.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weebo-cargo-config
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: registry-config
+    controller.devfile.io/mount-to-devworkspace: "true"
+    controller.devfile.io/watch-configmap: "true"
+  annotations:
+    controller.devfile.io/mount-as: subpath
+    controller.devfile.io/mount-path: /home/user/.cargo
+data:
+  config.toml: |
+    [source.crates-io]
+    replace-with = "batlehub"
+
+    [source.batlehub]
+    registry = "sparse+https://pkg.weebo.poc/proxy/cargo/registry/"

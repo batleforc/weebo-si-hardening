@@ -1,0 +1,6 @@
+# Stage 7 — the gate refuses. Set the gateway chart's config.enforcement to Enforce in the same
+# change. docs/guides/weebo-si-standard.md, step 7.
+spec:
+  features:
+    endpointAuth:
+      gateway: { enforcement: Enforce }

@@ -14,6 +14,7 @@ includes:
   docs: ./.tasks/docs.yaml
   seccomp: ./.tasks/seccomp.yaml
   runtimes: ./.tasks/runtimes.yaml
+  deploy: ./.tasks/deploy.yaml
 
 tasks:
   init:

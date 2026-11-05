@@ -1,0 +1,28 @@
+# Profile `dev-registries`: the external git forges, for clone/push over HTTPS and SSH.
+#
+# The name is historical (it once listed package registries too) and kept so existing grants and
+# devfile attributes resolve. Packages and images never go out directly: they go through
+# Batlehub and angos, on *.weebo.poc, which the baseline already reaches. A missing mirror is
+# added to Batlehub/angos, never as a host here.
+#
+# github.com is also what che-min-mise's entrypoint reaches at start when CHEZMOI_URL points at a
+# dotfiles repository on GitHub; without this profile that step times out (120 s) and the
+# workspace starts without dotfiles.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: weebo-net-dev-registries
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: network-profiles
+spec:
+  endpointSelector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  egress:
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: git.batleforc.fr
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+            - { port: "22", protocol: TCP }

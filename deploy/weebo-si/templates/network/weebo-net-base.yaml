@@ -1,0 +1,90 @@
+# network-profiles baseline (RFC 0004): copied into every workspace namespace in scope as
+# `weebo-base`, with an endpointSelector of `{}`. No team grant can withhold it.
+#
+# What it allows, and why each line is here, is docs/guides/weebo-si-standard.md, step 3.
+# What it does NOT allow is the point: no Internet, no other workspace namespace, no platform
+# namespace except the four a workspace cannot start without.
+#
+# Lives in weebo-si-hardening as a live CiliumNetworkPolicy, so its own selector must match no
+# pod — otherwise this egress applies to the operator's webhook, which then cannot reach the
+# apiserver, and every DevWorkspace admission fails.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: weebo-net-base
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: network-profiles
+spec:
+  endpointSelector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  ingress:
+    # The workspace's own pods (che-code ⇄ its sidecars, and a multi-component devfile).
+    - fromEndpoints:
+        - {}
+    # Workspace endpoints on their own FQDN, through Traefik — and through endpoint-gateway's
+    # forwardAuth before that (step 6).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+            app.kubernetes.io/name: traefik
+    # che-gateway reaches the workspace's main endpoint (the che--traefik sidecar, :3030).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: eclipse-che
+    # DevWorkspace Operator's health checks.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: devworkspace-controller
+  egress:
+    - toEndpoints:
+        - {}
+    # DNS, through Cilium's DNS proxy — what makes the toFQDNs rules of the profiles work.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: ANY }
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Every *.weebo.poc name: CoreDNS rewrites them to Traefik. This is the one door to angos
+    # (registry.pkg.weebo.poc), Batlehub (pkg.weebo.poc), Forgejo (git.weebo.poc) and the
+    # other workspaces' endpoints — each of which is gated on its own side.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+            app.kubernetes.io/name: traefik
+      toPorts:
+        - ports:
+            - { port: "8000", protocol: TCP }
+            - { port: "8443", protocol: TCP }
+    # che-host, che-dashboard and che-gateway's internal URLs.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: eclipse-che
+          matchExpressions:
+            - key: app.kubernetes.io/component
+              operator: In
+              values: [che, che-dashboard, che-gateway]
+      toPorts:
+        - ports:
+            - { port: "8080", protocol: TCP }
+    # che-gateway's kube-rbac-proxy: the che--traefik sidecar forwardAuths every IDE request
+    # there. Without it the IDE never opens.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: eclipse-che
+            app.kubernetes.io/component: che-gateway
+      toPorts:
+        - ports:
+            - { port: "8089", protocol: TCP }
+    # The apiserver. che-code and its extensions read the DevWorkspace, the gitconfig and the
+    # user's secrets, open terminals and report activity through it; measured on weebo-si, a
+    # workspace without it never finishes starting. RBAC, not this rule, bounds what it may do.
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - { port: "6443", protocol: TCP }

@@ -1,0 +1,6 @@
+# Stage 5 — a Pod Security level and a quota per workspace namespace. Run `weebo-si-operator pods
+# audit` and `quotas audit` first. docs/guides/weebo-si-standard.md, step 5.
+spec:
+  features:
+    podSecurity: { mode: Enforce }
+    resourceQuotas: { mode: Enforce }

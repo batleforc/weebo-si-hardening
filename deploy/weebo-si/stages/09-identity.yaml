@@ -1,0 +1,5 @@
+# Stage 9 — the operator provisions each WeeboSiUser's Argo CD Application (and Authentik
+# account, where asked). docs/guides/weebo-si-standard.md, step 9.
+spec:
+  features:
+    identity: { mode: Enforce }

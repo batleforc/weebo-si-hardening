@@ -1,0 +1,20 @@
+# Profile `internet`: everything outside the cluster (Cilium's `world` entity).
+#
+# The escape hatch. Granted to a team, never in a team's `default`: a workspace opts in with the
+# devfile attribute `hardening.weebo.io/network-profiles: "internet"`, so who has it is visible in
+# the devfile and in `kubectl get cnp -A -l hardening.weebo.io/profile=internet`.
+#
+# With it, the Batlehub/angos funnel no longer holds for that workspace: `npm install` from a
+# project-local .npmrc reaches npmjs.org, `podman pull docker.io/...` reaches Docker Hub.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: weebo-net-internet
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: network-profiles
+spec:
+  endpointSelector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  egress:
+    - toEntities: [world]

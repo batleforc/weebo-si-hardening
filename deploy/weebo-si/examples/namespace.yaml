@@ -1,0 +1,27 @@
+# What a workspace namespace looks like on weebo-si — rendered by 2.helm/user-app, never by hand.
+# Shown here because every feature's scope hangs off these lines.
+apiVersion: v1
+kind: Namespace
+metadata:
+  # Che's defaultNamespace.template, with autoProvision off: the name must be exactly this.
+  name: dev-ws-alice
+  labels:
+    # Che's own labels. endpoint-auth's webhook rules select on part-of (chart value
+    # endpointAuth.namespaceLabel).
+    app.kubernetes.io/part-of: che.eclipse.org
+    app.kubernetes.io/component: workspaces-namespace
+    # Every feature's namespaceSelector in deploy/weebo-si/config selects on this label. A
+    # namespace without it is invisible to the operator — and so is anything that removes it.
+    hardening.weebo.io/workspace-namespace: "true"
+    # Team routing: the WeeboSiTeam whose namespaceSelector matches first.
+    weebo.io/team: weebo
+    # Written by the operator, not here: pod-security.kubernetes.io/{enforce,warn,audit}[-version]
+    # (pod-security, stage 5).
+  annotations:
+    # The owner, for endpoint-auth. Its value is Authentik's preferred_username.
+    che.eclipse.org/username: alice
+    # Selection annotations a platform admin may set (users cannot edit the Namespace object):
+    #   hardening.weebo.io/network-profiles, hardening.weebo.io/image-policy,
+    #   hardening.weebo.io/dwoc, hardening.weebo.io/resource-quota, hardening.weebo.io/pod-security
+    # Written by the operator, not here: kubearmor-{file,network,capabilities}-posture (stage 8),
+    # hardening.weebo.io/pod-security-previous (stage 5).

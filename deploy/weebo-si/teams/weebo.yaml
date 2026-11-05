@@ -1,0 +1,104 @@
+# The weebo team: everyday development in che-min-mise. docs/guides/weebo-si-standard.md, step 1.
+#
+# A WeeboSiTeam is a security object: whoever writes it decides which DWOC, images, egress and
+# runtime profiles its members reach. Admin-only — no team lead gets `edit` on it.
+#
+# Every catalogue entry below repeats a cluster entry byte for byte. A key means one thing
+# cluster-wide; a team redefining one differently is a violation, and the cluster's wins.
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: weebo
+spec:
+  displayName: Weebo
+  priority: 100
+  # The label 2.helm/user-app puts on dev-ws-<username> (cheUser.teamLabel).
+  namespaceSelector:
+    matchLabels: { weebo.io/team: weebo }
+  features:
+    dwocPin:
+      catalog: []
+      default: workspace
+    networkProfiles:
+      catalog:
+        - key: dev-registries
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-dev-registries, namespace: weebo-si-hardening }
+        - key: anthropic
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-anthropic, namespace: weebo-si-hardening }
+        - key: kube-api
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-kube-api, namespace: weebo-si-hardening }
+        # Granted, never a default. Opt in per workspace with the devfile attribute.
+        - key: internet
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-internet, namespace: weebo-si-hardening }
+      # dev-registries: git clone/push and che-min-mise's chezmoi step. anthropic: Claude Code.
+      default: [dev-registries, anthropic]
+    imagePolicy:
+      catalog:
+        - key: weebo-devimages
+          patterns: ["registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/**"]
+        - key: weebo-local
+          patterns: ["registry.pkg.weebo.poc/weebo/**"]
+        - key: hub-official
+          patterns: ["registry.pkg.weebo.poc/hub/library/**"]
+        - key: angos
+          patterns: ["registry.pkg.weebo.poc/**"]
+      default: [weebo-devimages, weebo-local, hub-official]
+    kubearmorPolicy:
+      catalog: []
+      default: []
+    registryConfig:
+      catalog:
+        - key: batlehub-env
+          ecosystem: Other
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-pkg-env, namespace: weebo-si-hardening }
+        - key: batlehub-cargo
+          ecosystem: Cargo
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-cargo-config, namespace: weebo-si-hardening }
+      default: [batlehub-env, batlehub-cargo]
+    endpointAuth:
+      catalog: []
+      default: private
+    podSecurity:
+      level: restricted
+    resourceQuotas:
+      catalog: []
+      default: standard
+  # One Argo CD Application per member asking for a workspace: dev-ws-<username>, rendered from
+  # weebo-si's 2.helm/user-app, which labels the namespace (team, workspace-namespace) and binds
+  # the member's roles. {VAR} placeholders are the operator's, rendered per person.
+  workspace:
+    che:
+      mode: Ensure
+      name: "che-user-{OBJECT_NAME}"
+      project: che-users
+      source:
+        repoUrl: https://github.com/batleforc/weebo-si.git
+        path: 2.helm/user-app
+        targetRevision: main
+        values:
+          project: che-users
+          batlehub: { server: "https://pkg.weebo.poc", setupApply: false }
+          cheUser:
+            username: "{USERNAME}"
+            email: "{EMAIL}"
+            teamLabel: weebo
+            access: { teamLevel: baseline, addons: [] }
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "dev-ws-{USERNAME}"
+      syncPolicy:
+        # No prune: a chart change must never take the namespace, and its workspaces, along.
+        automated: { prune: false, selfHeal: true }
+        options: [ServerSideApply=true]

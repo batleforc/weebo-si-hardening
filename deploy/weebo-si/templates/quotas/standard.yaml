@@ -1,0 +1,45 @@
+# resource-quotas profile `standard` (RFC 0014): copied into a workspace namespace as
+# `weebo-quota` and `weebo-limits`.
+#
+# Lives in weebo-si-hardening-templates, a namespace that runs no pods: a ResourceQuota is
+# enforced where it lives, and in the operator's namespace it would cap the operator.
+#
+# Sized from weebo-si's own numbers: Che allows 5 running workspaces per user
+# (maxNumberOfRunningWorkspacesPerUser), che-min-mise's devfile asks 1Gi and caps at 8Gi, the
+# che-code editor and che--traefik sidecars add about 1.5Gi per workspace, and pvcStrategy is
+# per-workspace at 10Gi. Two heavy workspaces running at once fit; five light ones fit; five
+# heavy ones do not, on a single-node cluster where that is the point.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota-standard
+  namespace: weebo-si-hardening-templates
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 12Gi
+    limits.cpu: "16"
+    limits.memory: 24Gi
+    pods: "20"
+    persistentvolumeclaims: "12"
+    requests.storage: 120Gi
+    # Zero, and the reason is endpoint-auth, not capacity: a NodePort or a LoadBalancer reaches
+    # the workspace without Traefik, so without endpoint-gateway's forwardAuth. With these at 0
+    # the only way in is the gated one.
+    services.nodeports: "0"
+    services.loadbalancers: "0"
+---
+# Every container needs a request and a limit for the compute quota to admit it; the defaults
+# below are what a devfile component that sets none gets. Order matters and is checked by the
+# operator: defaultRequest ≤ default ≤ max.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: limits-standard
+  namespace: weebo-si-hardening-templates
+spec:
+  limits:
+    - type: Container
+      defaultRequest: { cpu: 100m, memory: 256Mi }
+      default: { cpu: "2", memory: 2Gi }
+      max: { cpu: "8", memory: 12Gi }

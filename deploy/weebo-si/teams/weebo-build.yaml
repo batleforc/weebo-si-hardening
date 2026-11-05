@@ -1,0 +1,76 @@
+# The weebo-build team: workspaces that build and run containers, in che-mise-pdm (rootless
+# podman, buildah). docs/guides/weebo-si-standard.md, step 5.
+#
+# Everything it gets beyond the weebo team is the price of nested containers: the `build` DWOC
+# (user namespace + Localhost seccomp profile), the `baseline` Pod Security level, the `build`
+# quota profile and the `build` KubeArmor profile. Membership is the decision; keep it small.
+#
+# priority 50 < weebo's 100: lower is evaluated first, so a namespace labelled for both teams
+# lands here only if it carries weebo.io/team: weebo-build — the selectors are disjoint anyway.
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiTeam
+metadata:
+  name: weebo-build
+spec:
+  displayName: Weebo (container builds)
+  priority: 50
+  namespaceSelector:
+    matchLabels: { weebo.io/team: weebo-build }
+  features:
+    dwocPin:
+      catalog:
+        - { key: build, name: weebo-build, namespace: eclipse-che }
+      default: build
+    networkProfiles:
+      catalog:
+        - key: dev-registries
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-dev-registries, namespace: weebo-si-hardening }
+        - key: anthropic
+          variants:
+            - backend: Cilium
+              templateRef: { name: weebo-net-anthropic, namespace: weebo-si-hardening }
+      # No `internet`: a build pulls its FROM images through angos (che-mise-pdm's
+      # registries.conf mirrors docker.io, ghcr.io, quay.io there). That is also the only
+      # control on nested images — image-policy never sees a `podman pull`.
+      default: [dev-registries, anthropic]
+    imagePolicy:
+      catalog:
+        - key: weebo-devimages
+          patterns: ["registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/**"]
+        - key: weebo-local
+          patterns: ["registry.pkg.weebo.poc/weebo/**"]
+      default: [weebo-devimages, weebo-local]
+    kubearmorPolicy:
+      catalog:
+        - key: build
+          templateRef: { name: weebo-armor-build, namespace: weebo-si-hardening }
+      default: [build]
+    registryConfig:
+      catalog:
+        - key: batlehub-env
+          ecosystem: Other
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-pkg-env, namespace: weebo-si-hardening }
+        - key: batlehub-cargo
+          ecosystem: Cargo
+          sources:
+            - kind: ConfigMap
+              templateRef: { name: weebo-cargo-config, namespace: weebo-si-hardening }
+      default: [batlehub-env, batlehub-cargo]
+    endpointAuth:
+      catalog: []
+      default: private
+    podSecurity:
+      # newuidmap/newgidmap need allowPrivilegeEscalation, which restricted refuses.
+      level: baseline
+      # …and every write is warned about what restricted would have refused.
+      warnLevel: restricted
+    resourceQuotas:
+      catalog:
+        - key: build
+          quotaRef: { name: quota-build, namespace: weebo-si-hardening-templates }
+          limitRangeRef: { name: limits-build, namespace: weebo-si-hardening-templates }
+      default: build
