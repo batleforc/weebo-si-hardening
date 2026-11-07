@@ -1,0 +1,96 @@
+# kubearmor-policy baseline (RFC 0006): copied onto every workspace pod in scope. No team grant
+# can withhold it.
+#
+# Written for che-min-mise (WeeboDevImage), whose start-up does things a generic baseline would
+# break — see docs/guides/weebo-si-standard.md, step 8, for each rule and its trade-off:
+#
+#   - entrypoint.sh appends the arbitrary UID to /etc/passwd and /etc/group (both g=u at build);
+#   - with HOST_USERS=false it rewrites /etc/subuid and /etc/subgid;
+#   - mise, chezmoi, starship live in /home/tooling (group-writable) and are stowed into the
+#     home PVC on first start;
+#   - every shell sources /globals/bashrc and /globals/shellrc (group-writable).
+#
+# Every rule starts at Audit. A rule moves to Block in this file, narrowest first, only after
+# kubearmor-relay showed it never fires on a normal workday. `defaultPosture` (what happens to an
+# operation no rule matched) stays Audit on the WeeboSiConfig: moving it to Block turns this file
+# into an allow-list, which che-min-mise's start-up does not survive.
+#
+# Lives in weebo-si-hardening as a live policy: its own selector must match no pod, or a Block
+# rule lands on the operator.
+apiVersion: security.kubearmor.com/v1
+kind: KubeArmorPolicy
+metadata:
+  name: weebo-armor-base
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: kubearmor-policy
+spec:
+  selector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  action: Audit
+  process:
+    matchPaths:
+      # setuid helpers. Under `restricted` (allowPrivilegeEscalation: false → no_new_privs) they
+      # cannot elevate, so these are hygiene there. Under `baseline` — the build teams — they can,
+      # and /etc/passwd is writable: append a uid-0 line with a known hash, `su` to it. That is
+      # the chain the build team's user namespace (hostUsers: false) contains and this rule
+      # closes. First Block candidate.
+      - path: /usr/bin/su
+        action: Audit
+      - path: /usr/bin/passwd
+        action: Audit
+      - path: /usr/bin/chsh
+        action: Audit
+      - path: /usr/bin/chfn
+        action: Audit
+      - path: /usr/bin/gpasswd
+        action: Audit
+      - path: /usr/bin/newgrp
+        action: Audit
+      - path: /usr/bin/mount
+        action: Audit
+      - path: /usr/bin/umount
+        action: Audit
+  file:
+    matchPaths:
+      # The identity files. Written once at start by /entrypoint.sh (bash); any later write is
+      # somebody editing who they are. Never Block while che-min-mise appends at start — a
+      # blocked append is a workspace whose `whoami` fails and whose git refuses to commit.
+      # Becomes Block-able once the image switches to passwd-append (step 8).
+      - path: /etc/passwd
+        readOnly: true
+        action: Audit
+      - path: /etc/group
+        readOnly: true
+        action: Audit
+      - path: /etc/subuid
+        readOnly: true
+        action: Audit
+      - path: /etc/subgid
+        readOnly: true
+        action: Audit
+    matchDirectories:
+      # Binaries on PATH and the rc files every shell sources: group-writable in the image, so
+      # anything running as the workspace user can replace `mise` or prepend to PATH for every
+      # later shell. Reads are fine; writes are tampering. Second Block candidate — check first
+      # that nobody runs `mise self-update` (it writes /home/tooling/.local/bin/mise).
+      - dir: /home/tooling/
+        recursive: true
+        readOnly: true
+        action: Audit
+      - dir: /globals/
+        recursive: true
+        readOnly: true
+        action: Audit
+      - dir: /usr/local/bin/
+        recursive: true
+        readOnly: true
+        action: Audit
+      # The pod's ServiceAccount token. Audit only, never Block: che-code and its extensions
+      # authenticate to the apiserver with it, and endpoint-auth's
+      # `selfOrigin.serviceAccountToken` lets one workspace call another's endpoint by
+      # presenting it. The audit stream answers "which process reads the token", which is the
+      # question a compromised dependency raises.
+      - dir: /var/run/secrets/kubernetes.io/serviceaccount/
+        recursive: true
+        action: Audit

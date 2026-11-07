@@ -26,6 +26,8 @@ envtest = []
 weebo-si-envtest-support = { version = "0.1.0", path = "../weebo-si-envtest-support" }
 kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `tests/deploy_weebo_si.rs` reads deploy/weebo-si/ as the operator does.
+serde_yaml_bw = { workspace = true }
 
 [lints]
 workspace = true

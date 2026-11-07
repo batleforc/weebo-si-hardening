@@ -1,0 +1,5 @@
+# Stage 2 — every workspace runs with an admin-authored DWOC. Comes first because pod-security
+# (stage 5) relies on the security context the DWOC sets. docs/guides/weebo-si-standard.md, step 2.
+spec:
+  features:
+    dwocPin: { mode: Enforce }

@@ -1,0 +1,23 @@
+# A member of the weebo team. docs/guides/weebo-si-standard.md, step 9.
+#
+# `username` is Che's username — Authentik's preferred_username — which Che substitutes into
+# dev-ws-<username> and writes as the namespace owner, and which endpoint-gateway compares
+# against the same claim. Three systems agree on it, so it is the one field never to rename.
+apiVersion: hardening.weebo.io/v1alpha1
+kind: WeeboSiUser
+metadata:
+  name: alice
+spec:
+  username: alice
+  displayName: Alice
+  # The apiserver identity is "labsso:" + this email (Talos AuthenticationConfiguration, through
+  # dex): 2.helm/user-app binds the member's roles to it.
+  email: alice@weebo.internal
+  team: weebo
+  active: true
+  # Not managed here: the auth chart already owns AuthentikUser objects on weebo-si.
+  che:
+    mode: Ensure
+    values:
+      cheUser:
+        access: { level: "", extraAddons: [] }

@@ -1,0 +1,91 @@
+# weebo-si-operator chart values for weebo-si. docs/guides/weebo-si-standard.md, step 0.
+#
+#   helm upgrade --install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
+#     --version 0.3.0 -n weebo-si-hardening -f deploy/weebo-si/values/weebo-si-operator.yaml
+#
+# On weebo-si these are che.hardening.operator in 2.argo/helm/che/main/values.yaml.
+#
+# Every switch below grants RBAC; none of them turns a feature on. A feature runs when the
+# WeeboSiConfig names a mode for it, and a feature whose RBAC is off says so at start-up and does
+# nothing.
+
+# Images through angos, like every workspace image.
+image:
+  repository: registry.pkg.weebo.poc/ghcr/batleforc/weebo-si-operator
+
+# Two of each, even on weebo-si's single node. Every webhook below is failurePolicy: Fail, so one
+# webhook replica is one rollout away from "no workspace starts"; the anti-affinity is
+# `preferred` and still schedules both on one node.
+webhook:
+  replicaCount: 2
+controller:
+  replicaCount: 2
+  leaderElection: true
+
+certificates:
+  provider: cert-manager
+
+networkProfiles:
+  # weebo-si runs Cilium (kube-proxy replacement); the templates are CiliumNetworkPolicy.
+  cilium:
+    enabled: true
+  # The canary probe keeps the chart's pinned registry.k8s.io agnhost: angos has no cache for
+  # registry.k8s.io yet, and the probe runs in this namespace, outside image-policy's scope.
+
+# Fail: a Che user is admin of dev-ws-<user>. If RBAC let them write networkpolicies, the guard
+# would be the only control, and a control bypassed by making the webhook unavailable is not one.
+policyGuard:
+  failurePolicy: Fail
+
+# Fail: the Pod floor is what catches images DevWorkspace Operator injects and plugin sidecars.
+# The cost — while the operator is down no workspace pod is (re)created — is why it runs two
+# replicas above.
+imagePolicy:
+  podWebhook:
+    failurePolicy: Fail
+
+# Off until KubeArmor is installed (BPF-LSM on Talos; see weebo-si's runbook bascule-weebo-si).
+kubearmorPolicy:
+  rbac:
+    enabled: false
+
+# Grants create/update/delete on secrets cluster-wide — the strongest permission this project
+# asks for. The catalogue here holds ConfigMaps only; turn this on knowing what it would allow.
+registryConfig:
+  rbac:
+    enabled: true
+  # Ignore: the guard rule covers ConfigMap writes; Fail would make an operator outage block
+  # configuration writes in every workspace namespace.
+  failurePolicy: Ignore
+
+# patch on namespaces, to write the pod-security.kubernetes.io/* labels.
+podSecurity:
+  rbac:
+    enabled: true
+
+resourceQuotas:
+  rbac:
+    enabled: true
+  templateNamespace:
+    name: weebo-si-hardening-templates
+    create: true
+
+identity:
+  rbac:
+    enabled: true
+  # Must equal spec.features.identity.che.applicationNamespace.
+  argoNamespace: argocd
+
+endpointAuth:
+  rbac:
+    enabled: true
+  # Defensible only because the rules are scoped to Che workspace namespaces (namespaceLabel).
+  failurePolicy: Fail
+  dialect: Traefik
+  namespaceLabel:
+    key: app.kubernetes.io/part-of
+    value: che.eclipse.org
+  gateway:
+    name: endpoint-gateway
+    namespace: weebo-si-hardening
+    port: 4180

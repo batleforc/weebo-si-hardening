@@ -1,0 +1,6 @@
+# Stage 8 — KubeArmor policies written on workspace pods. Every rule is still Audit: this stage
+# writes the policies, the templates move rules to Block one at a time afterwards.
+# Needs KubeArmor installed (not the case on weebo-si yet). docs/guides/weebo-si-standard.md, step 8.
+spec:
+  features:
+    kubearmorPolicy: { mode: Enforce }

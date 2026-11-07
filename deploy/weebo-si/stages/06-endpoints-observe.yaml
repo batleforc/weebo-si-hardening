@@ -1,0 +1,7 @@
+# Stage 6 — the gate is attached to every workspace endpoint, and answers 200 to everyone while
+# counting what it would have refused. docs/guides/weebo-si-standard.md, step 6.
+spec:
+  features:
+    endpointAuth:
+      mode: Enforce
+      gateway: { enforcement: Observe }

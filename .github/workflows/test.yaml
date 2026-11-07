@@ -9,6 +9,8 @@ on:
     paths:
       - "bins/**"
       - "crates/**"
+      # tests/deploy_weebo_si.rs reads the reference configuration
+      - "deploy/weebo-si/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yaml"
@@ -17,6 +19,8 @@ on:
     paths:
       - "bins/**"
       - "crates/**"
+      # tests/deploy_weebo_si.rs reads the reference configuration
+      - "deploy/weebo-si/**"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test.yaml"

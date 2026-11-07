@@ -132,3 +132,6 @@ tasks:
       # RFC 0013's OpenShift half: it installs a SecurityContextConstraints CRD so that
       # `backend: Auto` resolves to ObserveSynced, which no other suite's apiserver may serve.
       - cargo test --workspace --features envtest --test openshift_pod_security_envtest -- --test-threads=1
+      # deploy/weebo-si/: every stage of the reference configuration applied with strict field
+      # validation, so a field the CRD schema does not know is a refusal rather than a prune.
+      - cargo test --workspace --features envtest --test deploy_weebo_si -- --test-threads=1

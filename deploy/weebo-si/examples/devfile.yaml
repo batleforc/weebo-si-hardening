@@ -1,0 +1,49 @@
+# A che-min-mise workspace under the standard — what a developer writes, and usually less.
+# docs/guides/weebo-si-standard.md, "What a developer sees".
+#
+# Every hardening.weebo.io/* attribute is optional: absent, the team's default applies. Present,
+# it is the complete list (not an addition), and a key the team does not grant is refused at
+# start (onNotGranted: Deny) with the key named.
+schemaVersion: 2.2.0
+metadata:
+  name: my-service
+attributes:
+  # Egress beyond the baseline: git forges (and chezmoi's dotfiles), Claude Code's API.
+  # Adding `internet` is how this workspace opts into the escape hatch, if the team grants it.
+  hardening.weebo.io/network-profiles: "dev-registries,anthropic"
+  # The image keys this workspace's components may use. hub-official covers the postgres below.
+  hardening.weebo.io/image-policy: "weebo-devimages,hub-official"
+components:
+  - name: tools
+    container:
+      # Through angos, not ghcr.io: image-policy refuses the direct name even for the same image.
+      # Pin by digest once WeeboDevImage publishes versioned tags; :main moves every night.
+      image: registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-min-mise:main
+      memoryRequest: 1Gi
+      memoryLimit: 8Gi
+      cpuRequest: 500m
+      cpuLimit: "4"
+      mountSources: true
+      env:
+        - { name: PORT, value: "5437" }
+      endpoints:
+        # public + secure: served on its own FQDN behind endpoint-gateway. Only the owner gets
+        # in (`private`); the annotation below opens it to the team.
+        - name: base
+          targetPort: 5437
+          exposure: public
+          protocol: https
+          secure: true
+          annotation:
+            hardening.weebo.io/access: team
+  - name: db
+    container:
+      image: registry.pkg.weebo.poc/hub/library/postgres:18
+      memoryRequest: 256Mi
+      memoryLimit: 1Gi
+      cpuRequest: 100m
+      cpuLimit: "1"
+      env:
+        - { name: POSTGRES_PASSWORD, value: dev }
+      # No endpoint: reachable from `tools` inside the namespace (the baseline's toEndpoints {}),
+      # from nowhere else.

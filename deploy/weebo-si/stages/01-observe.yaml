@@ -1,0 +1,15 @@
+# Stage 1 — every feature in DryRun: computed, counted, logged; nothing written, nothing refused.
+# docs/guides/weebo-si-standard.md, step 1. Stay here until the dashboards are quiet.
+#   kubectl patch weebosiconfig cluster --type merge --patch-file deploy/weebo-si/stages/01-observe.yaml
+spec:
+  features:
+    dwocPin: { mode: DryRun }
+    networkProfiles: { mode: DryRun }
+    policyGuard: { mode: DryRun }
+    imagePolicy: { mode: DryRun }
+    kubearmorPolicy: { mode: DryRun }
+    registryConfig: { mode: DryRun }
+    endpointAuth: { mode: DryRun }
+    identity: { mode: DryRun }
+    podSecurity: { mode: DryRun }
+    resourceQuotas: { mode: DryRun }

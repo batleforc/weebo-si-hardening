@@ -1,0 +1,18 @@
+# Profile `anthropic`: Claude Code's API, the one external service a workspace talks to that is
+# neither a forge nor a mirror.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: weebo-net-anthropic
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: network-profiles
+spec:
+  endpointSelector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  egress:
+    - toFQDNs:
+        - matchName: api.anthropic.com
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

@@ -1,0 +1,38 @@
+# registry-config entry `batlehub-env` (RFC 0007): the package managers' mirror settings, as
+# environment variables, in every container of every workspace of a granted namespace.
+#
+# Environment rather than files because che-min-mise's home is a PVC the entrypoint populates
+# (stow, then copy-if-absent): a file mounted into it shadows whatever the user put there, an
+# environment variable does not. DevWorkspace Operator's automount reads `mount-as: env`; the
+# operator copies this object as is and never reads `data`.
+#
+# Not here, on purpose: MISE_URL_REPLACEMENTS and the other mise settings. They are
+# platform-wide, set on the CheCluster (weebo-si: che.workspaceTrust.extraEnv), and the same
+# variable from two sources has no defined winner.
+#
+# This only sets defaults. A project-local .npmrc, `pip install -i`, a GOPROXY in a Makefile all
+# beat it — what makes the mirror the only answer is network-profiles' baseline, which has no
+# route to npmjs.org, pypi.org or proxy.golang.org.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weebo-pkg-env
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: registry-config
+    controller.devfile.io/mount-to-devworkspace: "true"
+    controller.devfile.io/watch-configmap: "true"
+  annotations:
+    controller.devfile.io/mount-as: env
+data:
+  # npm, pnpm and yarn (classic) all read it.
+  NPM_CONFIG_REGISTRY: https://pkg.weebo.poc/proxy/npm/
+  # pip, and uv's default index.
+  PIP_INDEX_URL: https://pkg.weebo.poc/proxy/pypi/simple/
+  UV_DEFAULT_INDEX: https://pkg.weebo.poc/proxy/pypi/simple/
+  # No `,direct`: a module the mirror cannot serve fails here instead of trying the Internet,
+  # which the baseline refuses anyway after a DNS lookup and a timeout.
+  GOPROXY: https://pkg.weebo.poc/proxy/go
+  # rustup's toolchains and its own updates.
+  RUSTUP_DIST_SERVER: https://pkg.weebo.poc/proxy/rustup
+  RUSTUP_UPDATE_ROOT: https://pkg.weebo.poc/proxy/rustup/rustup
