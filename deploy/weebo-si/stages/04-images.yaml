@@ -1,0 +1,6 @@
+# Stage 4 — only images pulled through angos. Run `weebo-si-operator images audit
+# --all-namespaces` first: every DENIED row is a workspace that stops starting.
+# docs/guides/weebo-si-standard.md, step 4.
+spec:
+  features:
+    imagePolicy: { mode: Enforce }

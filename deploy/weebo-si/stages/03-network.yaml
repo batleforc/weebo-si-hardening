@@ -1,0 +1,9 @@
+# Stage 3 — egress baseline, the mirrors it leaves reachable, and the guard that keeps both.
+# The three go together: network without registry-config breaks `npm install`; registry-config
+# without network is a suggestion; either without the guard is undone by `kubectl delete cnp`.
+# docs/guides/weebo-si-standard.md, step 3.
+spec:
+  features:
+    networkProfiles: { mode: Enforce }
+    registryConfig: { mode: Enforce }
+    policyGuard: { mode: Enforce }

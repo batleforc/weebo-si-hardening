@@ -1,0 +1,32 @@
+# dwoc-pin entry `workspace` (RFC 0002): the DevWorkspaceOperatorConfig every workspace of the
+# weebo team, and of a namespace with no team, is pinned to.
+#
+# It is what makes `restricted` (pod-security, step 5) admissible: the Pod Security Standards look
+# at the pod spec, not at what the node would do, so every field `restricted` checks is set here
+# explicitly rather than left to DevWorkspace Operator's defaults.
+#
+# A DWOC named by a workspace replaces the matching fields of the global one, so the routing line
+# of weebo-si's own `devworkspace-operator-config` is repeated here.
+apiVersion: controller.devfile.io/v1alpha1
+kind: DevWorkspaceOperatorConfig
+metadata:
+  name: weebo-workspace
+  namespace: eclipse-che
+config:
+  routing:
+    clusterHostSuffix: cluster.local
+  workspace:
+    podSecurityContext:
+      # che-min-mise is USER 1234 with group 0 as its supplementary group; its entrypoint and
+      # every g=u file in it assume GID 0.
+      runAsUser: 1234
+      runAsGroup: 0
+      fsGroup: 1234
+      runAsNonRoot: true
+      # `restricted` refuses a pod with no profile, whatever the kubelet's seccompDefault.
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]

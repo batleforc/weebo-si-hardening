@@ -1,0 +1,21 @@
+version: "3"
+
+# deploy/weebo-si/ — the reference configuration docs/guides/weebo-si-standard.md walks through.
+# Checked by crates/weebo-si-crd/tests/deploy_weebo_si.rs, so the same test runs in `task test`
+# (resolution and validation) and in `task envtest:run` (the apiserver's strict field validation).
+
+tasks:
+  check:
+    desc: "Validate deploy/weebo-si/: every stage resolved and validated as the controller does, every templateRef present, every policy template selecting no pod"
+    cmds:
+      - cargo test -p weebo-si-crd --test deploy_weebo_si
+
+  check:envtest:
+    desc: "Apply every stage of deploy/weebo-si/ to a real apiserver with strict field validation (dry run)"
+    deps:
+      - :envtest:setup
+    env:
+      KUBEBUILDER_ASSETS: '{{ .ENVTEST_DIR | default (printf "%s/.local/share/kubebuilder-envtest" .HOME) }}'
+      REQUIRE_ENVTEST: "1"
+    cmds:
+      - cargo test -p weebo-si-crd --features envtest --test deploy_weebo_si

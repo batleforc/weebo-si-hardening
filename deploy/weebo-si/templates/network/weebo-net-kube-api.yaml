@@ -1,0 +1,21 @@
+# Profile `kube-api`: the apiserver, for kubectl from a workspace terminal.
+#
+# The baseline already carries the same rule (che-code needs it), so on weebo-si this profile
+# adds nothing today. It stays in the catalogue so the day the baseline can drop the apiserver
+# (a che-code that goes through che-gateway instead), kubectl remains a grant rather than a
+# default.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: weebo-net-kube-api
+  namespace: weebo-si-hardening
+  labels:
+    hardening.weebo.io/template: network-profiles
+spec:
+  endpointSelector:
+    matchLabels: { hardening.weebo.io/template: never-matches }
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - { port: "6443", protocol: TCP }

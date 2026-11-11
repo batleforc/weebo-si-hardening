@@ -1,0 +1,37 @@
+# dwoc-pin entry `build` (RFC 0002, RFC 0013): the DevWorkspaceOperatorConfig of the weebo-build
+# team, for che-mise-pdm (rootless podman and buildah).
+#
+# Isolation in two layers, in this order:
+#   1. hostUsers: false — the pod gets its own user namespace; root inside maps to an
+#      unprivileged UID on the node, so an escape lands as nobody in particular.
+#   2. a Localhost seccomp profile — opens exactly the syscalls a build was measured to need
+#      (unshare, mount, pivot_root…), keeps the rest of what upstream reserves for CAP_SYS_ADMIN
+#      closed. The file reaches the Talos node through deploy/seccomp/talos-patch.yaml.
+#
+# The level stays `baseline`: newuidmap/newgidmap are setuid, so allowPrivilegeEscalation must
+# stay true, which `restricted` refuses.
+apiVersion: controller.devfile.io/v1alpha1
+kind: DevWorkspaceOperatorConfig
+metadata:
+  name: weebo-build
+  namespace: eclipse-che
+config:
+  routing:
+    clusterHostSuffix: cluster.local
+  workspace:
+    hostUsers: false
+    podSecurityContext:
+      runAsUser: 1234
+      runAsGroup: 0
+      fsGroup: 1234
+      runAsNonRoot: true
+      seccompProfile:
+        type: Localhost
+        localhostProfile: profiles/weebo-container-build.json
+    containerSecurityContext:
+      # Needed by crun to mount a /proc for the nested container; admitted at `baseline` only
+      # because the pod is user-namespaced (KEP-4265, measured on 1.35+).
+      procMount: Unmasked
+      # Nothing else on purpose: this is the exact shape the runtime matrix measured
+      # (docs/runtime-matrix.md). allowPrivilegeEscalation is left at its default (true) for
+      # newuidmap/newgidmap; a capability set narrowed by hand here is an unmeasured one.
