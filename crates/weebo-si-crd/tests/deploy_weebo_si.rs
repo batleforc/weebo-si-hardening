@@ -154,6 +154,31 @@ fn every_stage_resolves_with_no_violation() {
 }
 
 #[test]
+fn every_team_reaches_the_access_keys_the_guide_offers() {
+    // A team reaches what it catalogues plus the cluster default: a key the guide tells a
+    // developer to write and the team does not reach is refused at admission, so the workspace
+    // does not start.
+    let teams = teams();
+    let (_, last) = stages().pop().unwrap();
+    let config: WeeboSiConfig = serde_json::from_value(last).unwrap();
+    let (resolved, _) = config.spec.resolve_teams(&teams);
+    let endpoint_auth = resolved
+        .endpoint_auth
+        .expect("the last stage configures endpointAuth");
+    for team in &teams {
+        let name = team.team_name();
+        let grant = endpoint_auth.grant_for(Some(&name));
+        for key in ["private", "team", "shared"] {
+            assert!(
+                grant.allowed.iter().any(|allowed| allowed.as_str() == key),
+                "team {name} does not reach `{key}`: {:?}",
+                grant.allowed
+            );
+        }
+    }
+}
+
+#[test]
 fn every_feature_is_present_from_stage_zero_and_enforced_by_the_last() {
     let all = stages();
     let features = |value: &Value| -> Vec<(String, String)> {
