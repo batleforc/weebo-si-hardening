@@ -2,6 +2,20 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.0](https://github.com/batleforc/weebo-si-hardening/compare/24f8986c0c8bc1ca108b58b6af671d08b2e7ca70..v0.5.0) - 2026-11-12
+#### Features
+- (**endpoint-auth**) an error page in front of the gate (#17) - ([c11de68](https://github.com/batleforc/weebo-si-hardening/commit/c11de68b9a07f3f62cbb8a9ca95744e77d5e7be4)) - Maxime, Claude Opus 5.5
+- (**image-rewrite**) the log line names the namespace (#18) - ([ea18e7a](https://github.com/batleforc/weebo-si-hardening/commit/ea18e7a2eb444f82b6cfc239c55c0926d5c7f7d9)) - Maxime, Claude Opus 5.5
+- (**rfc-0017**) the T6 probe, as a script a real cluster can run (#14) - ([aebc622](https://github.com/batleforc/weebo-si-hardening/commit/aebc6227d54c10656031208800b2925ff17888d0)) - Maxime, Claude Opus 5.5
+#### Bug Fixes
+- (**e2e**) bring the nightly back to green after v0.4.0 (#12) - ([24f8986](https://github.com/batleforc/weebo-si-hardening/commit/24f8986c0c8bc1ca108b58b6af671d08b2e7ca70)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+- (**runtime-matrix**) pin buildah and podman to digests quay keeps (#13) - ([6d0562b](https://github.com/batleforc/weebo-si-hardening/commit/6d0562bb83e8049891efd74d2ec3a8ed415e5ed6)) - Maxime, Claude Opus 5.5
+#### Documentation
+- (**rfc-0017**) Implemented, T6 probed on the weebo-si lab (#15) - ([60f1e21](https://github.com/batleforc/weebo-si-hardening/commit/60f1e2134eb14edb1d863d5d68e952b225d4bf2d)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+- the Traefik middleware, the upgrade path and the chart values (#16) - ([8d43fb5](https://github.com/batleforc/weebo-si-hardening/commit/8d43fb5475e04590c9524631cfebac095c09a7fd)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.4.0](https://github.com/batleforc/weebo-si-hardening/compare/5c598eff8699684c330d560c3276a8464300ca06..v0.4.0) - 2026-11-12
 #### Features
 - (**deploy**) the weebo-si standard, as a staged reference configuration (#10) - ([5c598ef](https://github.com/batleforc/weebo-si-hardening/commit/5c598eff8699684c330d560c3276a8464300ca06)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
