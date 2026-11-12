@@ -1384,8 +1384,23 @@ fn chart_namespace_selector() -> k8s_openapi::apimachinery::pkg::apis::meta::v1:
         String::from_utf8_lossy(&output.stderr)
     );
     let rendered = String::from_utf8(output.stdout).expect("helm output should be utf8");
-    let config: MutatingWebhookConfiguration =
-        serde_yaml_bw::from_str(&rendered).expect("the rendered manifest should parse");
+    // The template renders two objects since RFC 0017 (`-devworkspaces`, then `-pods`); this
+    // test is about the first, `dwoc-pin`'s.
+    let config: MutatingWebhookConfiguration = rendered
+        .split("\n---")
+        .filter(|document| document.contains("kind: MutatingWebhookConfiguration"))
+        .map(|document| {
+            serde_yaml_bw::from_str::<MutatingWebhookConfiguration>(document)
+                .expect("the rendered manifest should parse")
+        })
+        .find(|config| {
+            config
+                .metadata
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("-devworkspaces"))
+        })
+        .expect("the template should render the -devworkspaces configuration");
     config
         .webhooks
         .expect("the rendered manifest should have one webhook")
