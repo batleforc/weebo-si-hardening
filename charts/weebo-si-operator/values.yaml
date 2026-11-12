@@ -363,10 +363,10 @@ imagePolicy:
 # MutatingWebhookConfiguration. Inert until `spec.features.imageRewrite` exists: every workspace
 # pod round-trips through them and is allowed unchanged. The rules live on the `WeeboSiConfig`.
 #
-# On since the release after the one that shipped the routes. **Upgrading from a release without
-# them** (0.3.x or older) in one step would register these webhooks while the old pods still
-# answer 404 under `failurePolicy: Fail`, refusing workspace pods for the length of the roll:
-# upgrade with `--set imageRewrite.webhooks.enabled=false` first, then again with it on.
+# **Upgrading from a release without the routes** (0.3.x or older) takes two steps. In one, these
+# webhooks would be registered while the old pods still answer 404 under `failurePolicy: Fail`,
+# refusing workspace pods for the length of the roll: upgrade with
+# `--set imageRewrite.webhooks.enabled=false` first, then again with the default.
 imageRewrite:
   webhooks:
     enabled: true

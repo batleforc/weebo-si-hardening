@@ -3,17 +3,20 @@
 //! webhooks switching on.
 //!
 //! `scripts/e2e.sh deploy upgrade` installs the *published* chart at `E2E_PREVIOUS_VERSION`
-//! (default `0.4.0`, the release that shipped RFC 0017's routes) with its own images from GHCR; this suite then runs the `helm upgrade` to the
-//! local chart and the `:e2e` image itself, while it watches two things:
+//! (default `0.3.0`) with its own images from GHCR; this suite then upgrades to the local chart
+//! and the `:e2e` image itself, **in the two steps the chart documents for a release without RFC
+//! 0017's routes**: first with `imageRewrite.webhooks.enabled=false`, which rolls the pods onto
+//! the build that serves the routes, then with the default, which only registers the webhooks.
+//! Throughout, it watches:
 //!
 //! - **Admission never fails.** A server-side dry run of a `DevWorkspace` goes through the
 //!   mutating webhook (`failurePolicy: Fail`) every half second during the roll; a single
 //!   `failed calling webhook` is a refused write in production.
 //! - **A workspace pod is never refused** (RFC 0017). The same probe, as a pod in a workspace
-//!   namespace, goes through the `/mutate/v1/pods` webhook the new chart registers with
-//!   `failurePolicy: Fail`. The release upgraded from already serves that route with its
-//!   webhooks off, which is the whole point of shipping the route one release early: a previous
-//!   release without it answers 404 here, and this probe counts every one.
+//!   namespace, goes through the `/mutate/v1/pods` webhook once the second step registers it with
+//!   `failurePolicy: Fail`. Registering it while a 0.3.0 pod still answered would be a 404 here;
+//!   so would a webhook created before cainjector filled its `caBundle`, which the chart avoids by
+//!   copying the bundle `dwoc-pin`'s webhook already carries.
 //! - **`imageRewrite` survives the CRD step.** `helm upgrade` never touches `crds/`, so the suite
 //!   applies them first, as the upgrade notes say, then writes an `imageRewrite` block and reads
 //!   it back: a stale CRD prunes it silently and leaves the feature `Off`.
@@ -159,15 +162,17 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
         })
     };
 
-    let status = Command::new("helm")
-        .args([
+    let helm_upgrade = |extra: &[&str]| {
+        let chart = format!("{root}/charts/weebo-si-operator");
+        let values = format!("{root}/e2e/values/weebo-si-operator.yaml");
+        let mut args = vec![
             "upgrade",
             "weebo-si-operator",
-            &format!("{root}/charts/weebo-si-operator"),
+            chart.as_str(),
             "-n",
             OPERATOR_NAMESPACE,
             "-f",
-            &format!("{root}/e2e/values/weebo-si-operator.yaml"),
+            values.as_str(),
             "--set",
             "image.repository=localhost/weebo-si-operator",
             "--set",
@@ -179,13 +184,21 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
             "--wait",
             "--timeout",
             "10m",
-        ])
-        .status()
-        .expect("helm runs");
-    assert!(
-        status.success(),
-        "helm upgrade to the build under test failed"
-    );
+        ];
+        args.extend_from_slice(extra);
+        let status = Command::new("helm")
+            .args(&args)
+            .status()
+            .expect("helm runs");
+        assert!(
+            status.success(),
+            "helm upgrade {extra:?} to the build under test failed"
+        );
+    };
+    // Step 1: the pods roll onto the build that serves the routes, webhooks still unregistered.
+    helm_upgrade(&["--set", "imageRewrite.webhooks.enabled=false"]);
+    // Step 2: the webhooks, served by pods that all have the routes now.
+    helm_upgrade(&[]);
     // The new leader takes the lease once the old one released it or its TTL ran out: give the
     // probes a lease TTL past the end of the roll.
     std::thread::sleep(Duration::from_secs(20));

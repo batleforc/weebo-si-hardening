@@ -772,13 +772,11 @@ PROBE
 }
 
 # The upgrade suite starts from the previous release — its chart from the OCI registry, its images
-# from GHCR — and the Rust suite runs the `helm upgrade` to this build. 0.4.0 is the release that
-# shipped RFC 0017's mutating routes with their webhooks off; this build turns them on, which is
-# only safe from a release already serving them (RFC 0012's kit move, the suite's first purpose,
-# is behind every release since 0.3.0).
-# Needs the GHCR packages public (todo.md F3) or a pull secret on the cluster.
+# from GHCR — and the Rust suite runs the `helm upgrade` to this build, in the two steps the chart
+# documents for a release without RFC 0017's routes. Needs the GHCR packages public (todo.md F3) or
+# a pull secret on the cluster.
 deploy_previous_operator() {
-  version=${E2E_PREVIOUS_VERSION:-0.4.0}
+  version=${E2E_PREVIOUS_VERSION:-0.3.0}
   kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl label namespace "$NAMESPACE" hardening.weebo.io/exclude=true --overwrite >/dev/null
   helm upgrade --install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
@@ -809,7 +807,7 @@ deploy() {
   say "loading the :e2e images"
   load_images
   if [ "$suite" = upgrade ]; then
-    say "weebo-si-operator ${E2E_PREVIOUS_VERSION:-0.4.0}, the release the suite upgrades from"
+    say "weebo-si-operator ${E2E_PREVIOUS_VERSION:-0.3.0}, the release the suite upgrades from"
     deploy_previous_operator
     return
   fi
