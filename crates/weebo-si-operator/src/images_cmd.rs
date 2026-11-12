@@ -253,15 +253,22 @@ fn judge_in_namespace(
     (provenance.team, provenance.resolved, verdict, variables)
 }
 
+/// The reference among `images check`'s arguments: the first one that is neither a flag nor the
+/// value of `--team` / `--namespace`, so `--namespace NS REF` judges `REF`, not `NS`.
+fn check_reference(args: &[String]) -> Option<&String> {
+    args.iter().enumerate().find_map(|(i, arg)| {
+        let is_value = i > 0 && matches!(args[i - 1].as_str(), "--team" | "--namespace");
+        (!arg.starts_with("--") && !is_value).then_some(arg)
+    })
+}
+
 /// `images check REF [--team NAME] [--namespace NS]` — parse, normalize and judge one reference.
 ///
 /// Exposes the parser so an admin can *see* the normalization rather than infer it, which is the
 /// whole reason it exists: a reference that pulls differently from how it reads is the failure
 /// this feature is shaped around.
 async fn check(args: &[String]) -> Result<(), String> {
-    let reference = args
-        .iter()
-        .find(|arg| !arg.starts_with("--"))
+    let reference = check_reference(args)
         .ok_or_else(|| "images check needs a reference".to_string())?
         .clone();
     let team = flag(args, "--team").map(str::to_string);
@@ -629,6 +636,25 @@ async fn audit(args: &[String]) -> Result<(), String> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_check_reference_is_never_a_flags_value() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for argv in [
+            args(&["postgres:18", "--namespace", "dev-ws-alice"]),
+            args(&["--namespace", "dev-ws-alice", "postgres:18"]),
+            args(&["--team", "weebo", "--namespace=dev-ws-alice", "postgres:18"]),
+        ] {
+            assert_eq!(
+                check_reference(&argv).map(String::as_str),
+                Some("postgres:18")
+            );
+        }
+        assert_eq!(
+            check_reference(&args(&["--namespace", "dev-ws-alice"])),
+            None
+        );
+    }
 
     #[test]
     fn the_platform_listing_is_what_the_domain_compiled_in() {

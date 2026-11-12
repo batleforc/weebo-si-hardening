@@ -1,7 +1,7 @@
 ---
 rfc: 0017
 title: image-rewrite
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-12
 updated: 2026-11-12
@@ -894,6 +894,8 @@ None.
 - Rewriting images of non-workspace namespaces (Che's own, the operator's) —
   that is node mirror territory and not this operator's scope.
 - Signature verification of mirrored images (cosign) — a different control.
+- The rewrite's log line names the object but not its namespace (*Revision
+  against the tree*, T8): carry the namespace through `ImagePolicyObserver`.
 
 ## Implementation plan
 
@@ -917,12 +919,12 @@ with the surface it guards.
 - [x] Phase 3 — DevWorkspace half on `/mutate/v1alpha1/devworkspaces/images`
   (route only, same chart flag), the annotation on both objects, the `perf_envtest.rs` case, the
   `stale-mirror` audit row.
-- [ ] Phase 4 (shipped in v0.4.0 with phases 1–3; e2e observations 1–6 and `upgrade.rs` pass in CI since #12; the T6 probe, `scripts/t6-probe.sh`, not yet run) — `imageRewrite.webhooks.enabled` defaults to
+- [x] Phase 4 (shipped in v0.4.0 with phases 1–3; e2e observations 1–6 and `upgrade.rs` pass in CI since #12; T6 probed on the weebo-si lab) — `imageRewrite.webhooks.enabled` defaults to
   `true`; `upgrade.rs` (CRD round trip, pod created during the roll); e2e
   observations 1–6; `deploy/weebo-si` enables the feature in `DryRun` and
   follows the platform-set rollout.
-- [ ] Docs updated (*Other concerns*), including the T6 probe result (done but for the T6 result)
-- [ ] RFC flipped to `Implemented`
+- [x] Docs updated (*Other concerns*), including the T6 probe result
+- [x] RFC flipped to `Implemented`
 
 ## References
 
@@ -945,6 +947,95 @@ workspace with projects, and its default image reference (e2e observation 2
 reads it); Che 7.122.0's images being digest-pinned by default; how weebo-si's
 CheCluster overrides images.
 
+## Revision against the tree (2026-11-12)
+
+Shipped in v0.4.0 (#11, released 2026-11-12), with the e2e corrections of #12,
+the T6 probe of #14 and this change. Measured on the nightly kind cluster
+(DevWorkspace Operator v0.43.0, Che 7.122.0) and on the weebo-si lab (Talos
+v1.13.12, kubelet v1.36.2, containerd 2.2.10, angos as the mirror), upgraded
+from 0.3.0 in the documented two steps through Argo CD.
+
+**What differs from the text above**, each with its reason:
+
+1. **One release, not two** (*Changelog*, decision changed): the routes and
+   their webhooks shipped together; the upgrade from 0.3.x is two `helm
+   upgrade`s instead of two releases. The lab took exactly that path:
+   operator and webhook on 0.4.0 with no rewrite webhook registered, then
+   both rewrite webhooks registered with their `caBundle` and the feature
+   `Active`, "configuration valid".
+2. **Observation 2** clones from an unresolvable `https://example.invalid`
+   remote, not a `file://` repository, and needs `mountSources: true`:
+   without it DWO has no `projects` volume for `project-clone` and its
+   Deployment is invalid. The mirrored `project-clone` is not loaded on the
+   node, so DWO fails the workspace and deletes the pod within seconds; the
+   row reads the image from the pod while it exists, else from the kubelet's
+   `Pulling image` event. Observed: `localhost/quay/devfile/project-clone:…`.
+3. **Observation 6** uses `localhost → example.invalid/x` with both granted,
+   so a rewrite of the running workspace would be admitted and visible.
+4. `upgrade.rs` upgrades from `E2E_PREVIOUS_VERSION`, **0.3.0** by default
+   (an earlier changelog row says 0.4.0; it was never changed), and waits,
+   bounded, for the lease to move to a 0.4.0 pod instead of a fixed 20s.
+5. **The log line** (*Guide-level explanation*) reads
+   `image-rewrite match resource=Pod subject="<name>" from="…" to="…"` in
+   both modes: no `container=`, no namespace, and `match` rather than
+   `rewrite`/`dry-run`. The mode is the `WeeboSiConfig`'s, and the
+   `result` label of `weebo_si_image_rewrites_total` separates the outcomes.
+   `image-policy`'s line for the same admission follows within milliseconds
+   and carries `namespace=`. Left as *Future work*.
+6. **The CEL refusal**, on apiserver v1.36, reads
+   ``Invalid value: a rule's `to` host must not be another rule's `from` (chain or loop)``
+   after the field path: the mock's `"array":` prefix is not printed.
+7. **`images check`** took its reference as the first argument not starting
+   with `--`, so the mock's `images check --namespace NS postgres:18` judged
+   `NS`. Fixed here (`check_reference`, tested); on the lab it now prints
+   `rewritten docker.io/library/postgres:18 →
+   registry.pkg.weebo.poc/hub/library/postgres:18 (rule docker.io)` and
+   `permitted by entry angos`. `images platform --cluster` prints the mock's
+   `PATTERN SOURCE` table, and exits 1 with "cannot reach the cluster … run
+   without --cluster" with no kubeconfig; the lab has `builtin: false`, so
+   the derived rows were observed only in
+   `the_cluster_platform_listing_names_each_derived_pattern_and_its_rule`.
+8. **Negative tests** shipped under other names than *Security
+   considerations* lists:
+
+| Row | Test that now proves it |
+| --- | --- |
+| T1 | `a_lookalike_host_or_another_port_is_left_alone`, `the_host_is_matched_after_normalisation` (`rewrite.rs`) |
+| T2 | `an_upstream_image_is_rewritten_onto_the_mirror_before_image_policy_judges_it` (`admission_envtest.rs`) |
+| T3 | `the_digest_survives_and_the_tag_beside_it_is_dropped` (`rewrite.rs`), `with_prefix_keeps_the_digest_and_writes_dockers_implicit_library` (`reference.rs`) |
+| T4 | `an_update_offers_only_what_changed_so_nothing_running_restarts`, `the_ephemeral_subresource_offers_only_new_debug_containers_and_records_nothing`, `an_update_that_changes_no_image_sends_no_patch` (adapters); e2e observation 6 |
+| T5 | `team_features_has_no_image_rewrite_field` (`weebo-si-crd`) |
+| T6 | the probe below |
+| T7 | `an_over_long_reference_is_capped_before_any_structural_scan`, `with_prefix_refuses_a_result_past_the_length_cap` (`reference.rs`); `image_rewrite_cel_rules_accept_the_standard_and_refuse_each_mistake` (CRD envtest); the `perf_envtest.rs` image case |
+| T8 | e2e observation 1 asserts the annotation, not the log line; the log line was read on the lab (point 5); `a_hostile_name_cannot_break_out_of_the_annotation_json` |
+| T9 | `a_rule_derives_the_mirrored_form_of_the_four_platform_images_only`, `nothing_is_derived_without_builtin_or_without_a_matching_rule`, `every_compiled_in_host_is_a_plain_host_so_the_text_split_is_the_parsed_one`, `a_rule_target_is_a_host_and_a_path_with_no_glob_or_variable`, `a_reload_derives_the_platform_set_once_and_an_invalid_set_derives_nothing` |
+| T10 | `selector_wider_than_pod_webhook_warns` (`validate.rs`) |
+
+**T6, probed.** `scripts/t6-probe.sh` on the lab, namespace
+`dev-ws-batleforc-test`, `quay.io/libpod/busybox@sha256:a9286def…` rewritten
+to `registry.pkg.weebo.poc/quay/libpod/busybox@sha256:a9286def…`, three pulls
+with `imagePullPolicy: Always`. All three pulled, so the probe's own verdict
+was "inconclusive": the lab's kubelet authenticates to angos with the pod's
+service-account token through a credential provider, and falls back to it
+when a pod secret fails. angos' log settles it, one line per decision:
+
+| Case | Pull secret (bogus, user `t6-probe-cd70e9cf`) | What angos received |
+| --- | --- | --- |
+| C | none | anonymous `HEAD` 401, `GET /token` 200 (the provider's token), pulled |
+| B | keyed on `registry.pkg.weebo.poc` | anonymous 401, `GET /token` with the bogus Basic: `Basic auth validation failed`, 401; then `/token` 200, pulled |
+| A | keyed on `quay.io` | anonymous 401, `GET /token` 200 directly: no Basic attempt |
+
+The only `Basic auth validation failed` in the window is B's. **The
+assumption holds**: the kubelet matches pull secrets on the rewritten image,
+and a secret keyed on the upstream host never reaches the mirror. A private
+upstream image still needs the mirror to hold the upstream credential
+(*Drawbacks*). On a mirror authenticated per node or per service account,
+the probe reads inconclusive by construction; its exit code 2 points at the
+mirror's log, which is where the answer was.
+
+**Supply chain**, as shipped: no new dependency; the release's `cargo-deny`
+gate passed on v0.4.0.
+
 ## Changelog
 
 | Date | Change |
@@ -960,3 +1051,4 @@ CheCluster overrides images.
 | 2026-11-12 | Phase 4 code review. Fixed: the upgrade that turns the webhooks on creates the `-pods` configuration and a new entry in `-devworkspaces` with no `caBundle` until cainjector or service-ca patches it, and under `failurePolicy: Fail` that window refuses every DevWorkspace and workspace pod — the template now copies the bundle already injected into `dwoc-pin`'s webhook (same Service) through `lookup`, so only a first install or a `helm template` render waits for the injector, as every webhook of this chart already does. `docs/weebosiconfig.md` said a rewrite keeps tag and digest; it keeps the digest alone when there is one. The upgrade row's default `E2E_PREVIOUS_VERSION: 0.4.0` fails until 0.4.0 is published, which is why this phase is a separate commit applied after that release. |
 | 2026-11-12 | **Decision changed: one release, not two.** The maintainer chose to ship the routes and their webhooks (on by default) together. The upgrade invariant is kept by the operator's own procedure instead of the release cadence: from 0.3.x or older, `helm upgrade` with `imageRewrite.webhooks.enabled=false` first, then with the default (values comment, `docs/bricks/image-rewrite.md`). `upgrade.rs` now runs exactly those two steps from `E2E_PREVIOUS_VERSION`, back to 0.3.0, so the nightly upgrade row proves the documented path; a one-step upgrade from 0.3.x remains refused-pods territory for the length of the roll, and nothing in the chart prevents it. |
 | 2026-11-12 | Released in v0.4.0 (release notes carry the two-step upgrade). The first E2E run after it failed on every suite; #12 fixed it: the CI image job lacked the `localhost/e2e/e2e-workspace:e2e` tag, observation 2's workspace had `mountSources: false` (so DWO had no `projects` volume for `project-clone` and its Deployment was invalid; the row now also reads the image from the kubelet pull event, since DWO removes the pod once the mirrored `project-clone` fails to pull), and `upgrade.rs` waited a fixed 20s for a lease handover an old pod in its grace period had not made yet. Observations 1–6 and `upgrade.rs` from 0.3.0 now pass. The T6 probe is written as `scripts/t6-probe.sh` (`task deploy:t6-probe`): three pulls with `imagePullPolicy: Always`, no secret, a bogus secret keyed on the mirror, the same keyed on the upstream host, read from outcomes so it needs no mirror log; it waits for a cluster with the real mirror. |
+| 2026-11-12 | `Implemented`. T6 probed on the weebo-si lab and holds (*Revision against the tree*); the lab runs 0.4.0 with `imageRewrite` in `Enforce`. `images check` reads its reference past a flag's value. |

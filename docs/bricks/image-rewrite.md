@@ -145,7 +145,8 @@ metadata:
 A rewritten pod pulls from the mirror, so the kubelet offers the pull secret whose registry
 matches the **mirror's** host, not the upstream's. A private upstream image therefore needs the
 mirror to hold the upstream credential (angos' upstream configuration), or no rule for that
-host. See *T6* in the RFC; the probe that checked this is recorded in its §17.
+host. See *T6* in the RFC. Probed on the weebo-si lab (RFC 0017, *Revision against
+the tree*): a secret keyed on the upstream host never reached the mirror.
 
 The probe is `task deploy:t6-probe T6_NAMESPACE=<workspace namespace>` against a cluster where
 `imageRewrite` is in `Enforce` and a rule covers `quay.io` (or set `T6_IMAGE` to a public image
