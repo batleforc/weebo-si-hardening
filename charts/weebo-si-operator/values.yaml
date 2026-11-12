@@ -360,13 +360,16 @@ imagePolicy:
     failurePolicy: Fail
 
 # RFC 0017's `image-rewrite` webhooks: `/mutate/v1/pods`, and a second webhook on the DevWorkspace
-# MutatingWebhookConfiguration. Off by default for the release that ships the routes, so an
-# upgrade never registers a webhook before the pods serving it are rolled out (a 404 under
-# `failurePolicy: Fail` refuses every workspace pod); turn it on once the new operator is running.
-# The rules themselves live on the `WeeboSiConfig` (`spec.features.imageRewrite`).
+# MutatingWebhookConfiguration. Inert until `spec.features.imageRewrite` exists: every workspace
+# pod round-trips through them and is allowed unchanged. The rules live on the `WeeboSiConfig`.
+#
+# On since the release after the one that shipped the routes. **Upgrading from a release without
+# them** (0.3.x or older) in one step would register these webhooks while the old pods still
+# answer 404 under `failurePolicy: Fail`, refusing workspace pods for the length of the roll:
+# upgrade with `--set imageRewrite.webhooks.enabled=false` first, then again with it on.
 imageRewrite:
   webhooks:
-    enabled: false
+    enabled: true
 
 serviceAccount:
   webhook:

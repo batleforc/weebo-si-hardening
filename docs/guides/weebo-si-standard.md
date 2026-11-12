@@ -327,14 +327,25 @@ kubectl patch weebosiconfig cluster --type merge --patch-file deploy/weebo-si/st
 | `weebo-local` | `registry.pkg.weebo.poc/weebo/**` | both teams' default |
 | `hub-official` | `registry.pkg.weebo.poc/hub/library/**` | `weebo` default: postgres, redis… as devfile sidecars |
 | `angos` | `registry.pkg.weebo.poc/**` (all of Docker Hub, ghcr.io and quay.io, cached) | `weebo`, granted but not default |
-| platform set | Che's images from angos' quay cache, and `che-vscode` | every namespace, no grant can withhold it |
+| platform set | Che's four compiled-in images, upstream and — derived through `imageRewrite`'s `quay.io` rule — from angos' quay cache, by digest; the hand-written `extra` entries; `che-vscode` | every namespace, no grant can withhold it |
+
+The same patch puts `imageRewrite` in `Enforce`: `docker.io`, `quay.io` and `ghcr.io` names are
+rewritten onto `registry.pkg.weebo.poc/{hub,quay,ghcr}` in every DevWorkspace and workspace pod
+before `imagePolicy` judges them (RFC 0017, [`bricks/image-rewrite.md`](../bricks/image-rewrite.md)).
+A devfile's `postgres:18` therefore starts, as `registry.pkg.weebo.poc/hub/library/postgres:18`.
+
+**The platform set, in order.** Step 4 keeps the hand-written `registry.pkg.weebo.poc/quay/…/**`
+entries in `extra`, so nothing is refused that was allowed. Once `weebo-si-operator images audit
+--all-namespaces` shows no running Che image permitted *only* by them, they may go: the derived
+patterns cover the four compiled-in images, **by digest**. A CheCluster or DWOC overriding a Che
+image with a mirror name by tag is refused after that, which is what the audit finds first.
 
 **Refused from now on:**
 
 | Action | Result | Why |
 | --- | --- | --- |
-| `image: ghcr.io/batleforc/weebodevimage/che-min-mise:main` | refused: *not permitted* | the same bytes, but not through angos: no cache, no scan, and the node's egress, not the workspace's, decides whether it can be pulled at all. weebo-si's current team grant allows this and should drop it |
-| `image: docker.io/library/postgres` or `postgres:18` | refused | normalised to `docker.io/library/postgres`, not angos |
+| `image: ghcr.io/batleforc/weebodevimage/che-min-mise:main` with `imageRewrite` `Off` | refused: *not permitted* | the same bytes, but not through angos: no cache, no scan, and the node's egress, not the workspace's, decides whether it can be pulled at all. With the rewrite on it is pulled as `registry.pkg.weebo.poc/ghcr/…`. weebo-si's current team grant allows the upstream name and should drop it |
+| `image: docker.io/library/postgres` or `postgres:18` with `imageRewrite` `Off` | refused | normalised to `docker.io/library/postgres`, not angos; with the rewrite on it is pulled from `hub/library` instead |
 | `image: registry.pkg.weebo.poc/hub/bitnami/redis` in `weebo` | refused unless the devfile asks for `angos` | `hub-official` covers `library/` only |
 | a devfile attribute naming `angos` in `weebo-build` | **the workspace is refused**, naming the key (`onNotGranted: Deny`) | `weebo-build` is not granted it |
 | a plugin sidecar pulled by URI, an image DWO injects | judged by the Pod floor, same rules | the reason the Pod webhook exists |
@@ -530,8 +541,8 @@ until rules move to `Block`):
 | They try | In `weebo` | In `weebo-build` | Control |
 | --- | --- | --- | --- |
 | start che-min-mise from angos | ✅ | ✅ | image-policy |
-| start it from `ghcr.io` | ❌ refused at start | ❌ | image-policy |
-| add a postgres sidecar from `hub/library` | ✅ | ❌ unless granted | image-policy |
+| start it from `ghcr.io` | ✅ pulled through angos | ✅ | image-rewrite + image-policy |
+| add `postgres:18` as a sidecar | ✅ pulled from `hub/library` | ❌ unless granted | image-rewrite + image-policy |
 | `npm install`, `pip install`, `cargo build`, `go get` | ✅ via Batlehub | ✅ | registry-config + network |
 | the same, pointed at the public registry | ❌ timeout | ❌ | network |
 | `mise use node@24` | ✅ (versions via Batlehub, download via GitHub until the mapping lands) | ✅ | network + CheCluster env |

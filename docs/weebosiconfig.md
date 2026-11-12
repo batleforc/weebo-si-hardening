@@ -355,6 +355,7 @@ rather than ignored at runtime.
 | [`networkProfiles`](#featuresnetworkprofiles) | [0004](./rfc/0004-network-profiles.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy`, `KubeArmorPolicy`, catalogued `ConfigMap`/`Secret` copies (validating admission) |
 | [`imagePolicy`](#featuresimagepolicy) | [0005](./rfc/0005-image-policy.md) | `DevWorkspace`, `Pod` (validating admission) |
+| [`imageRewrite`](#featuresimagerewrite) | [0017](./rfc/0017-image-rewrite.md) | `DevWorkspace`, `Pod` (mutating admission) |
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
@@ -539,7 +540,7 @@ imagePolicy:
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/image-policy` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/image-policy` | |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
-| `platform.builtin` | bool | no | `true` | The compiled-in platform patterns (Che, DevWorkspace Operator). Explicitly **not** contract — they track upstream. |
+| `platform.builtin` | bool | no | `true` | The compiled-in platform patterns (Che, DevWorkspace Operator). Explicitly **not** contract — they track upstream. With valid [`imageRewrite`](#featuresimagerewrite) rules, each one whose host is a rule's `from` is also allowed under that rule's `to`; `weebo-si-operator images platform --cluster` lists both. |
 | `platform.extra` | list of strings | no | `[]` | Additional always-allowed patterns, for a mirrored platform. |
 
 **Variable names are `[A-Z][A-Z0-9_]*`.** `TEAM_NAME` and `NAMESPACE` are reserved and resolved
@@ -549,6 +550,35 @@ considerations* before declaring one.
 
 The platform set is allowed in every namespace regardless of team, and is the one set no grant
 can withhold. Inspect what a reference resolves to with `weebo-si-operator images check <ref>`.
+
+### `features.imageRewrite`
+
+Rewrites a registry host onto a mirror prefix in every `DevWorkspace` and workspace `Pod`, before
+`imagePolicy` judges the result. Operating it: [`bricks/image-rewrite.md`](./bricks/image-rewrite.md).
+
+```yaml
+imageRewrite:
+  mode: Enforce
+  namespaceSelector:
+    matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+  rules:
+    - { from: docker.io, to: registry.pkg.weebo.poc/hub }
+    - { from: quay.io, to: registry.pkg.weebo.poc/quay }
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `DryRun` counts and logs each rewrite and changes nothing. |
+| `namespaceSelector` | Selector | no | matches all | Without one requiring `hardening.weebo.io/workspace-namespace`, the status warns: the pod webhook does not reach such a namespace, so DevWorkspace Operator's injected images there stay upstream. |
+| `rules[].from` | string | yes | — | A registry host, port included: `docker.io`, `quay.io`, `registry.example:5000`. Matched after normalisation — `postgres` is `docker.io/library/postgres`. |
+| `rules[].to` | string | yes | — | A host and at least one path component: `registry.pkg.weebo.poc/quay`. The image's whole path follows it; the tag is kept, or only the digest when there is one. |
+
+At most 64 rules. **The apiserver refuses**, at `kubectl apply`: two rules with the same `from`,
+a `to` whose host is a rule's `from` (a chain), a `to` with no path, and a `from` or `to` host
+with no `.` or `:` other than `localhost` (an image reads it as a Docker Hub namespace). What it
+cannot judge — a host or path the reference parser refuses — makes the feature `Degraded`, and
+then no rule applies at all. Shared by every team: there is no `imageRewrite` on
+`WeeboSiTeam`.
 
 ### `features.kubearmorPolicy`
 
@@ -1017,6 +1047,7 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `hardening.weebo.io/dwoc` | Namespace | admin | Selects a `dwoc-pin` catalogue key. |
 | `hardening.weebo.io/network-profiles` | Namespace, DevWorkspace attribute | admin / workspace author | Selects network profile keys. |
 | `hardening.weebo.io/image-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects image entry keys. |
+| `hardening.weebo.io/image-rewrite` | DevWorkspace, Pod | **operator** (`imageRewrite`) | The original name of each rewritten image, as JSON. A record, never read as an input; `images audit` reads it for its `stale-mirror` table. |
 | `hardening.weebo.io/kubearmor-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects runtime profile keys. |
 | `hardening.weebo.io/managed-by` | objects the operator writes | **operator** | The ownership boundary. Never set it by hand. |
 | `hardening.weebo.io/profile` | objects the operator writes | **operator** | Which catalogue key the object came from. |

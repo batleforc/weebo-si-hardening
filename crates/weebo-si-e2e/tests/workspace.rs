@@ -20,9 +20,9 @@
 use std::time::Duration;
 
 use weebo_si_e2e::{
-    Cleanup, Namespace, OPERATOR_NAMESPACE, RECONCILE, Workspace, WorkspaceSpec, apply, delete,
-    feature_status, get, json, kubectl, metric_sum, must, set_features, stays, team, text,
-    try_apply, wait_until,
+    Cleanup, Namespace, OPERATOR_NAMESPACE, RECONCILE, WORKSPACE_START, Workspace, WorkspaceSpec,
+    apply, delete, feature_status, get, json, kubectl, metric_sum, must, set_features, stays, team,
+    text, try_apply, wait_until,
 };
 
 fn in_scope() -> serde_json::Value {
@@ -295,6 +295,286 @@ fn dry_run_counts_an_ungranted_image_and_admits_it() {
             Err(format!("still {after}"))
         }
     });
+}
+
+// --- image-rewrite (RFC 0017, §6.P) ------------------------------------------------------------------
+
+/// The suite's image under a name only the rewrite can resolve: `example.invalid` has no DNS, so a
+/// pull that was not rewritten fails, and one that was finds `localhost/e2e/e2e-workspace:e2e`,
+/// loaded on the node by `scripts/e2e.sh`.
+const UPSTREAM_IMAGE: &str = "example.invalid/e2e-workspace:e2e";
+const MIRRORED_IMAGE: &str = "localhost/e2e/e2e-workspace:e2e";
+
+/// `image-policy` granting only what is on the node (`localhost/**`), plus `extra` patterns.
+fn local_images_only(extra: &[&str]) -> serde_json::Value {
+    let mut patterns = vec!["localhost/**"];
+    patterns.extend_from_slice(extra);
+    json!({
+        "mode": "Enforce",
+        "catalog": [{ "key": "local", "patterns": patterns }],
+        "default": ["local"],
+    })
+}
+
+fn image_rewrite(mode: &str, rules: serde_json::Value) -> serde_json::Value {
+    json!({ "mode": mode, "namespaceSelector": in_scope(), "rules": rules })
+}
+
+fn mirror_rule() -> serde_json::Value {
+    json!([{ "from": "example.invalid", "to": "localhost/e2e" }])
+}
+
+fn rewritten_workspaces() -> f64 {
+    metric_sum(
+        "webhook",
+        "weebo_si_image_rewrites_total",
+        &[("result", "rewritten"), ("resource", "devworkspace")],
+    )
+}
+
+fn component_image(workspace: &Workspace) -> String {
+    text(
+        &workspace.object(),
+        "/spec/template/components/0/container/image",
+    )
+}
+
+/// Observation 1: the DevWorkspace half. The stored object names the mirror and the workspace
+/// runs, which it could not from `example.invalid`.
+#[test]
+fn an_upstream_workspace_image_is_rewritten_onto_the_mirror_and_runs() {
+    set_features(json!({
+        "imagePolicy": local_images_only(&[]),
+        "imageRewrite": image_rewrite("Enforce", mirror_rule()),
+    }));
+    let ns = Namespace::workspace("carol", "rewrite", None);
+    let workspace = Workspace::create(
+        &ns.name,
+        "mirrored",
+        &WorkspaceSpec {
+            image: UPSTREAM_IMAGE,
+            ..WorkspaceSpec::default()
+        },
+    );
+    assert_eq!(component_image(&workspace), MIRRORED_IMAGE);
+    assert!(
+        text(
+            &workspace.object(),
+            "/metadata/annotations/hardening.weebo.io~1image-rewrite"
+        )
+        .contains(UPSTREAM_IMAGE)
+    );
+    workspace.wait_running();
+}
+
+/// Observation 2: the Pod half, on an image nobody wrote. A workspace with a project gets
+/// DevWorkspace Operator's `project-clone` init container from `quay.io`; the pod carries it
+/// under the mirror. Asserted on the pod spec, which is what the rewrite changes: whether the
+/// node can then pull that name is the mirror's business, not this row's.
+#[test]
+fn an_init_container_devworkspace_operator_injects_is_rewritten_at_the_pod() {
+    set_features(json!({
+        "imagePolicy": local_images_only(&[]),
+        "imageRewrite": image_rewrite(
+            "Enforce",
+            json!([
+                { "from": "example.invalid", "to": "localhost/e2e" },
+                { "from": "quay.io", "to": "localhost/quay" },
+            ]),
+        ),
+    }));
+    let ns = Namespace::workspace("carol", "rewrite-clone", None);
+    let mut manifest = Workspace::manifest(
+        &ns.name,
+        "with-project",
+        &WorkspaceSpec {
+            image: UPSTREAM_IMAGE,
+            ..WorkspaceSpec::default()
+        },
+    );
+    manifest["spec"]["template"]["projects"] = json!([{
+        "name": "sample",
+        "git": { "remotes": { "origin": "https://example.invalid/sample.git" } },
+    }]);
+    apply(&manifest.to_string());
+    let _cleanup = Cleanup::new(&["devworkspace", "-n", &ns.name, "with-project"]);
+
+    let init_images = wait_until("the workspace pod to exist", WORKSPACE_START, || {
+        let pods = get(&[
+            "pods",
+            "-n",
+            &ns.name,
+            "-l",
+            "controller.devfile.io/devworkspace_name=with-project",
+        ])
+        .ok_or("no pod list")?;
+        let images: Vec<(String, String)> = pods
+            .pointer("/items/0/spec/initContainers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("no pod yet")?
+            .iter()
+            .map(|c| (text(c, "/name"), text(c, "/image")))
+            .collect();
+        Ok(images)
+    });
+    let clone = init_images
+        .iter()
+        .find(|(name, _)| name == "project-clone")
+        .unwrap_or_else(|| panic!("no project-clone init container: {init_images:?}"));
+    assert!(
+        clone.1.starts_with("localhost/quay/"),
+        "project-clone was not rewritten: {init_images:?}"
+    );
+}
+
+/// Observation 3: the refusal. With the rewrite `Off`, the upstream name reaches `image-policy`
+/// and is refused before any pod exists, so it is never pulled.
+#[test]
+fn with_the_rewrite_off_the_upstream_image_is_refused_and_never_pulled() {
+    set_features(json!({
+        "imagePolicy": local_images_only(&[]),
+        "imageRewrite": image_rewrite("Off", mirror_rule()),
+    }));
+    let ns = Namespace::workspace("carol", "rewrite-off", None);
+    let err = Workspace::try_create(
+        &ns.name,
+        "upstream",
+        &WorkspaceSpec {
+            image: UPSTREAM_IMAGE,
+            ..WorkspaceSpec::default()
+        },
+    )
+    .expect_err("an upstream image must be refused while the rewrite is off");
+    assert!(
+        err.contains(&format!(r#"image "{UPSTREAM_IMAGE}" is not permitted"#)),
+        "{err}"
+    );
+    let events = must(&["get", "events", "-n", &ns.name, "-o", "json"]);
+    assert!(
+        !events.contains("example.invalid"),
+        "something tried to pull the refused name: {events}"
+    );
+}
+
+/// Observation 4: `DryRun` is refused exactly as `Off`, and counts what `Enforce` would rewrite.
+#[test]
+fn a_dry_run_rewrite_counts_the_rewrite_and_changes_nothing() {
+    set_features(json!({
+        "imagePolicy": local_images_only(&[]),
+        "imageRewrite": image_rewrite("DryRun", mirror_rule()),
+    }));
+    let ns = Namespace::workspace("carol", "rewrite-dry", None);
+    let before = rewritten_workspaces();
+    let err = Workspace::try_create(
+        &ns.name,
+        "upstream",
+        &WorkspaceSpec {
+            image: UPSTREAM_IMAGE,
+            ..WorkspaceSpec::default()
+        },
+    )
+    .expect_err("a dry-run rewrite must leave the upstream name to be refused");
+    assert!(err.contains("is not permitted"), "{err}");
+    wait_until("the dry-run rewrite to be counted", RECONCILE, || {
+        let after = rewritten_workspaces();
+        if after > before {
+            Ok(())
+        } else {
+            Err(format!("still {after}"))
+        }
+    });
+}
+
+/// Observation 5: a chain is refused by the apiserver itself, and the stored rules stay.
+#[test]
+fn a_chained_rule_set_is_refused_at_write_and_the_previous_rules_stay() {
+    set_features(json!({ "imageRewrite": image_rewrite("Enforce", mirror_rule()) }));
+    let err = try_apply(
+        &json!({
+            "apiVersion": "hardening.weebo.io/v1alpha1",
+            "kind": "WeeboSiConfig",
+            "metadata": { "name": "cluster" },
+            "spec": { "features": { "imageRewrite": image_rewrite("Enforce", json!([
+                { "from": "example.invalid", "to": "localhost/e2e" },
+                { "from": "localhost", "to": "example.invalid/x" },
+            ])) } },
+        })
+        .to_string(),
+    )
+    .expect_err("the apiserver must refuse a chain");
+    assert!(err.contains("chain or loop"), "{err}");
+    assert_eq!(
+        get(&["weebosiconfig", "cluster"])
+            .and_then(|c| c.pointer("/spec/features/imageRewrite/rules").cloned()),
+        Some(mirror_rule())
+    );
+}
+
+/// Observation 6: switching the rewrite on restarts nothing. A rule that would visibly change a
+/// running workspace's image (`localhost` → `example.invalid/x`, both granted so a rewrite would
+/// be admitted rather than refused) is enabled under it; label patches on its DevWorkspace and
+/// its pod change no image and restart no container.
+#[test]
+fn enabling_the_rewrite_does_not_restart_a_running_workspace() {
+    let rules = json!([{ "from": "localhost", "to": "example.invalid/x" }]);
+    let policy = local_images_only(&["example.invalid/**"]);
+    set_features(json!({
+        "imagePolicy": policy,
+        "imageRewrite": image_rewrite("Off", rules.clone()),
+    }));
+    let ns = Namespace::workspace("carol", "rewrite-late", None);
+    let workspace = Workspace::create(&ns.name, "running", &WorkspaceSpec::default());
+    workspace.wait_running();
+    let pod = workspace.pod();
+    let restarts = |pod: &str| {
+        text(
+            &get(&["pod", "-n", &ns.name, pod]).unwrap_or_default(),
+            "/status/containerStatuses/0/restartCount",
+        )
+    };
+    let before = restarts(&pod);
+
+    set_features(json!({
+        "imagePolicy": local_images_only(&["example.invalid/**"]),
+        "imageRewrite": image_rewrite("Enforce", rules),
+    }));
+    must(&[
+        "label",
+        "--overwrite",
+        "devworkspace",
+        "-n",
+        &ns.name,
+        "running",
+        "e2e.weebo.io/touched=yes",
+    ]);
+    must(&[
+        "label",
+        "--overwrite",
+        "pod",
+        "-n",
+        &ns.name,
+        &pod,
+        "e2e.weebo.io/touched=yes",
+    ]);
+
+    assert_eq!(component_image(&workspace), weebo_si_e2e::WORKSPACE_IMAGE);
+    let after = get(&["pod", "-n", &ns.name, &pod]).unwrap_or_default();
+    assert_eq!(
+        text(&after, "/spec/containers/0/image"),
+        weebo_si_e2e::WORKSPACE_IMAGE
+    );
+    stays(
+        "the workspace container keeps its restart count",
+        Duration::from_secs(20),
+        || {
+            let now = restarts(&pod);
+            if now == before {
+                Ok(())
+            } else {
+                Err(format!("restartCount {before} → {now}"))
+            }
+        },
+    );
 }
 
 // --- network-profiles and policy-guard --------------------------------------------------------------

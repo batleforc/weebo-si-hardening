@@ -1,4 +1,19 @@
 {{- if ne .Values.certificates.provider "none" }}
+{{- /*
+  RFC 0017's two webhooks are new objects (or a new entry) on the upgrade that turns them on, and
+  carry no `caBundle` until cainjector or service-ca patches it in: under `failurePolicy: Fail`
+  that window refuses every DevWorkspace and workspace pod. They are served by the same Service as
+  `dwoc-pin`'s webhook, so its bundle — already injected on a running install — is copied here.
+  Empty on a first install and under `helm template`, where the injector alone fills it.
+*/}}
+{{- $caBundle := "" }}
+{{- with lookup "admissionregistration.k8s.io/v1" "MutatingWebhookConfiguration" "" (printf "%s-devworkspaces" (include "weebo-si-operator.fullname" .)) }}
+{{- range .webhooks }}
+{{- if and (eq .name "devworkspaces.hardening.weebo.io") .clientConfig.caBundle }}
+{{- $caBundle = .clientConfig.caBundle }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -67,6 +82,9 @@ webhooks:
         namespace: {{ .Release.Namespace }}
         path: /mutate/v1alpha1/devworkspaces/images
         port: {{ .Values.webhook.service.port }}
+      {{- with $caBundle }}
+      caBundle: {{ . }}
+      {{- end }}
   {{- end }}
 {{- if .Values.imageRewrite.webhooks.enabled }}
 ---
@@ -113,5 +131,8 @@ webhooks:
         namespace: {{ .Release.Namespace }}
         path: /mutate/v1/pods
         port: {{ .Values.webhook.service.port }}
+      {{- with $caBundle }}
+      caBundle: {{ . }}
+      {{- end }}
 {{- end }}
 {{- end }}

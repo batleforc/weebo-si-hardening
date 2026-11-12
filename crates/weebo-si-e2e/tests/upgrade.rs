@@ -1,13 +1,22 @@
-//! The upgrade suite: RFC 0012's rolling upgrade, from the last release published before the
-//! operator moved onto `weebo-operator-kit` to the build under test.
+//! The upgrade suite: a rolling upgrade from the previous published release to the build under
+//! test — first written for RFC 0012's move onto `weebo-operator-kit`, now also RFC 0017's
+//! webhooks switching on.
 //!
 //! `scripts/e2e.sh deploy upgrade` installs the *published* chart at `E2E_PREVIOUS_VERSION`
-//! (default `0.2.1`) with its own images from GHCR; this suite then runs the `helm upgrade` to the
+//! (default `0.4.0`, the release that shipped RFC 0017's routes) with its own images from GHCR; this suite then runs the `helm upgrade` to the
 //! local chart and the `:e2e` image itself, while it watches two things:
 //!
 //! - **Admission never fails.** A server-side dry run of a `DevWorkspace` goes through the
 //!   mutating webhook (`failurePolicy: Fail`) every half second during the roll; a single
 //!   `failed calling webhook` is a refused write in production.
+//! - **A workspace pod is never refused** (RFC 0017). The same probe, as a pod in a workspace
+//!   namespace, goes through the `/mutate/v1/pods` webhook the new chart registers with
+//!   `failurePolicy: Fail`. The release upgraded from already serves that route with its
+//!   webhooks off, which is the whole point of shipping the route one release early: a previous
+//!   release without it answers 404 here, and this probe counts every one.
+//! - **`imageRewrite` survives the CRD step.** `helm upgrade` never touches `crds/`, so the suite
+//!   applies them first, as the upgrade notes say, then writes an `imageRewrite` block and reads
+//!   it back: a stale CRD prunes it silently and leaves the feature `Off`.
 //! - **One leader at a time.** The old controller elects through `kube-leader-election`, the new
 //!   one through the kit's lease, on the same `Lease`. Every holder the `Lease` names during the
 //!   roll must be a running controller pod, the holder must change at most once per controller
@@ -28,7 +37,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use weebo_si_e2e::{
-    OPERATOR_NAMESPACE, Value, get, kubectl_with, operator_pods, repo_root, text, wait_until,
+    Namespace, OPERATOR_NAMESPACE, Value, apply, get, json, kubectl, kubectl_with, must,
+    operator_pods, repo_root, text, wait_until,
 };
 
 const LEASE: &str = "weebo-si-controller-leader";
@@ -79,19 +89,59 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
         || kubectl_with(&["apply", "--dry-run=server", "-f", "-"], Some(PROBE)).map(drop),
     );
 
+    // The CRD step of the upgrade notes, then an `imageRewrite` block read back whole.
+    let root = repo_root();
+    must(&[
+        "apply",
+        "--server-side",
+        "--force-conflicts",
+        "-f",
+        &format!("{root}/charts/weebo-si-operator/crds/"),
+    ]);
+    let rules = json!([{ "from": "example.invalid", "to": "localhost/e2e" }]);
+    apply(
+        &json!({
+            "apiVersion": "hardening.weebo.io/v1alpha1",
+            "kind": "WeeboSiConfig",
+            "metadata": { "name": "cluster" },
+            "spec": { "features": { "imageRewrite": { "mode": "Enforce", "rules": rules } } },
+        })
+        .to_string(),
+    );
+    let stored = get(&["weebosiconfig", "cluster"]).unwrap_or(Value::Null);
+    assert_eq!(
+        stored.pointer("/spec/features/imageRewrite/rules"),
+        Some(&rules),
+        "the CRD step did not take: imageRewrite was pruned from the stored config"
+    );
+    let ns = Namespace::workspace("upgrade", "pods", None);
+
     let stop = Arc::new(AtomicBool::new(false));
     let failures = Arc::new(Mutex::new(Vec::<String>::new()));
     let holders = Arc::new(Mutex::new(Vec::<(String, Vec<String>)>::new()));
 
     let admission = {
         let (stop, failures) = (Arc::clone(&stop), Arc::clone(&failures));
+        let namespace = ns.name.clone();
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                if let Err(err) =
-                    kubectl_with(&["apply", "--dry-run=server", "-f", "-"], Some(PROBE))
-                    && err.contains("failed calling webhook")
-                {
-                    failures.lock().unwrap().push(err);
+                let workspace =
+                    kubectl_with(&["apply", "--dry-run=server", "-f", "-"], Some(PROBE));
+                let pod = kubectl(&[
+                    "run",
+                    "e2e-upgrade-pod",
+                    "-n",
+                    &namespace,
+                    "--image=example.invalid/e2e-workspace:e2e",
+                    "--restart=Never",
+                    "--dry-run=server",
+                ]);
+                for result in [workspace, pod] {
+                    if let Err(err) = result
+                        && err.contains("failed calling webhook")
+                    {
+                        failures.lock().unwrap().push(err);
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -109,7 +159,6 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
         })
     };
 
-    let root = repo_root();
     let status = Command::new("helm")
         .args([
             "upgrade",
@@ -187,4 +236,19 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
         transitions_after > transitions_before,
         "leaseTransitions did not move ({transitions_before} → {transitions_after})"
     );
+
+    // After the roll the rewrite runs: the probe pod comes back under the mirror name.
+    let rewritten = kubectl(&[
+        "run",
+        "e2e-upgrade-pod",
+        "-n",
+        &ns.name,
+        "--image=example.invalid/e2e-workspace:e2e",
+        "--restart=Never",
+        "--dry-run=server",
+        "-o",
+        "jsonpath={.spec.containers[0].image}",
+    ])
+    .expect("the probe pod is admitted after the roll");
+    assert_eq!(rewritten, "localhost/e2e/e2e-workspace:e2e");
 }
