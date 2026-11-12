@@ -87,7 +87,10 @@ async fn install_scc(client: &kube::Client) {
     .await
     .unwrap();
     for _ in 0..60 {
-        if serves_scc(client).await.unwrap() {
+        // Just after the CRD is created, `/apis` can already list the group while its version
+        // endpoint still answers 404: discovery then errors, which means "not served yet" here,
+        // not a failure. The loop's own deadline below is what fails the test.
+        if serves_scc(client).await.unwrap_or(false) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
