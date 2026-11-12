@@ -70,6 +70,7 @@ impl Feature<RewriteImages> for ImageRewriteFeature {
                     let to = reference.to_string();
                     self.observer.image_rewritten(
                         subject.resource,
+                        &subject.namespace,
                         &subject.name,
                         "rewritten",
                         Some((&slot.image, &to)),
@@ -84,8 +85,13 @@ impl Feature<RewriteImages> for ImageRewriteFeature {
                 Rewrite::Unmatched => "unmatched",
                 Rewrite::Unparseable => "unparseable",
             };
-            self.observer
-                .image_rewritten(subject.resource, &subject.name, result, None);
+            self.observer.image_rewritten(
+                subject.resource,
+                &subject.namespace,
+                &subject.name,
+                result,
+                None,
+            );
         }
 
         if mutations.is_empty() {
@@ -320,6 +326,7 @@ mod tests {
             vec![
                 (
                     Resource::Pod,
+                    "dev-ws-alice".to_string(),
                     "workspace8c1".to_string(),
                     "rewritten",
                     Some((
@@ -327,9 +334,16 @@ mod tests {
                         "registry.pkg.weebo.poc/hub/library/postgres:18".to_string()
                     )),
                 ),
-                (Resource::Pod, "workspace8c1".to_string(), "unmatched", None),
                 (
                     Resource::Pod,
+                    "dev-ws-alice".to_string(),
+                    "workspace8c1".to_string(),
+                    "unmatched",
+                    None
+                ),
+                (
+                    Resource::Pod,
+                    "dev-ws-alice".to_string(),
                     "workspace8c1".to_string(),
                     "unparseable",
                     None

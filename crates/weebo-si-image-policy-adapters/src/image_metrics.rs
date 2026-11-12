@@ -140,6 +140,7 @@ impl ImagePolicyObserver for ImageMetrics {
     fn image_rewritten(
         &self,
         resource: Resource,
+        namespace: &NamespaceName,
         subject: &str,
         result: &'static str,
         rewrite: Option<(&str, &str)>,
@@ -149,7 +150,7 @@ impl ImagePolicyObserver for ImageMetrics {
             .inc();
         if let Some((from, to)) = rewrite {
             tracing::info!(
-                "image-rewrite match resource={} subject={} from={} to={}",
+                "image-rewrite match resource={} namespace={namespace} subject={} from={} to={}",
                 resource.kind(),
                 weebo_si_image_policy::escape_reference(subject),
                 weebo_si_image_policy::escape_reference(from),

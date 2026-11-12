@@ -894,8 +894,6 @@ None.
 - Rewriting images of non-workspace namespaces (Che's own, the operator's) —
   that is node mirror territory and not this operator's scope.
 - Signature verification of mirrored images (cosign) — a different control.
-- The rewrite's log line names the object but not its namespace (*Revision
-  against the tree*, T8): carry the namespace through `ImagePolicyObserver`.
 
 ## Implementation plan
 
@@ -1052,3 +1050,4 @@ gate passed on v0.4.0.
 | 2026-11-12 | **Decision changed: one release, not two.** The maintainer chose to ship the routes and their webhooks (on by default) together. The upgrade invariant is kept by the operator's own procedure instead of the release cadence: from 0.3.x or older, `helm upgrade` with `imageRewrite.webhooks.enabled=false` first, then with the default (values comment, `docs/bricks/image-rewrite.md`). `upgrade.rs` now runs exactly those two steps from `E2E_PREVIOUS_VERSION`, back to 0.3.0, so the nightly upgrade row proves the documented path; a one-step upgrade from 0.3.x remains refused-pods territory for the length of the roll, and nothing in the chart prevents it. |
 | 2026-11-12 | Released in v0.4.0 (release notes carry the two-step upgrade). The first E2E run after it failed on every suite; #12 fixed it: the CI image job lacked the `localhost/e2e/e2e-workspace:e2e` tag, observation 2's workspace had `mountSources: false` (so DWO had no `projects` volume for `project-clone` and its Deployment was invalid; the row now also reads the image from the kubelet pull event, since DWO removes the pod once the mirrored `project-clone` fails to pull), and `upgrade.rs` waited a fixed 20s for a lease handover an old pod in its grace period had not made yet. Observations 1–6 and `upgrade.rs` from 0.3.0 now pass. The T6 probe is written as `scripts/t6-probe.sh` (`task deploy:t6-probe`): three pulls with `imagePullPolicy: Always`, no secret, a bogus secret keyed on the mirror, the same keyed on the upstream host, read from outcomes so it needs no mirror log; it waits for a cluster with the real mirror. |
 | 2026-11-12 | `Implemented`. T6 probed on the weebo-si lab and holds (*Revision against the tree*); the lab runs 0.4.0 with `imageRewrite` in `Enforce`. `images check` reads its reference past a flag's value. |
+| 2026-11-12 | The rewrite's log line carries `namespace=` (*Revision against the tree*, point 5, and T8): `ImagePolicyObserver::image_rewritten` takes the namespace, and the recording observer asserts it. The line now reads `image-rewrite match resource=Pod namespace=<ns> subject="<name>" from="…" to="…"`; removed from *Future work*. |

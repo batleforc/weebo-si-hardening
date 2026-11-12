@@ -579,7 +579,7 @@ fn mutate(
     let error = |reason: &str| {
         state
             .image_observer
-            .image_rewritten(resource, &subject.name, "error", None);
+            .image_rewritten(resource, &namespace, &subject.name, "error", None);
         tracing::warn!(
             "image-rewrite error resource={} namespace={namespace} subject={} reason={reason}",
             resource.kind(),
@@ -1122,7 +1122,7 @@ mod tests {
         ));
         assert!(allowed);
         assert!(ops.is_empty(), "{ops:?}");
-        let results: Vec<&str> = observer.rewrites().iter().map(|r| r.2).collect();
+        let results: Vec<&str> = observer.rewrites().iter().map(|r| r.3).collect();
         assert_eq!(results, vec!["rewritten", "unmatched"]);
     }
 
@@ -1208,7 +1208,7 @@ mod tests {
         ));
         assert!(allowed);
         assert!(ops.is_empty());
-        assert_eq!(observer.rewrites().last().map(|r| r.2), Some("error"));
+        assert_eq!(observer.rewrites().last().map(|r| r.3), Some("error"));
     }
 
     /// RFC 0002's rule, inherited by these routes and re-asserted here because a `Pod` spec
