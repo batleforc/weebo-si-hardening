@@ -61,7 +61,13 @@ spec:
               templateRef: { name: weebo-cargo-config, namespace: weebo-si-hardening }
       default: [batlehub-env, batlehub-cargo]
     endpointAuth:
-      catalog: []
+      # A team reaches the keys it catalogues plus the cluster default, so the two the guide
+      # offers a developer (step 7) are declared here too — identical to the cluster's entries,
+      # which a merge accepts silently. Without them `hardening.weebo.io/access: team` is refused
+      # at admission as not granted.
+      catalog:
+        - { key: team, anonymous: false, delegation: [Team] }
+        - { key: shared, anonymous: false, delegation: [Team, UsersAndGroups] }
       default: private
     podSecurity:
       # newuidmap/newgidmap need allowPrivilegeEscalation, which restricted refuses.
