@@ -199,9 +199,24 @@ fn a_rolling_upgrade_onto_the_kit_keeps_admission_up_and_one_leader() {
     helm_upgrade(&["--set", "imageRewrite.webhooks.enabled=false"]);
     // Step 2: the webhooks, served by pods that all have the routes now.
     helm_upgrade(&[]);
-    // The new leader takes the lease once the old one released it or its TTL ran out: give the
-    // probes a lease TTL past the end of the roll.
-    std::thread::sleep(Duration::from_secs(20));
+    // The new leader takes the lease once the old one released it or its TTL ran out. An old pod
+    // in its 30s grace period still reads `Running`, so wait for the handover rather than a fixed
+    // delay; the probes keep sampling throughout.
+    wait_until(
+        "the lease to move to a controller pod on the build under test",
+        Duration::from_secs(120),
+        || {
+            let (holder, _) = lease();
+            let image = controller_image(&holder);
+            if operator_pods("controller").contains(&holder)
+                && image == "localhost/weebo-si-operator:e2e"
+            {
+                Ok(())
+            } else {
+                Err(format!("held by {holder:?} ({image})"))
+            }
+        },
+    );
     stop.store(true, Ordering::Relaxed);
     admission.join().unwrap();
     leadership.join().unwrap();
