@@ -112,15 +112,34 @@ spec:
       # Deny, for the same reason as networkProfiles: the error names the image and the key.
       onNotGranted: Deny
       platform:
-        # Off: the compiled-in set allows the Che images straight from quay.io. weebo-si serves
-        # them from angos' quay cache, listed below.
-        builtin: false
+        # On, with imageRewrite below: the four compiled-in Che images are also allowed under
+        # angos' quay cache (registry.pkg.weebo.poc/quay/…), by digest, derived through the
+        # quay.io rule — RFC 0017's platform derivation. The upstream quay.io names stay allowed
+        # too, for the namespaces imageRewrite does not reach. The hand-written entries below
+        # stay until `weebo-si-operator images audit --all-namespaces` shows no running Che
+        # image permitted only by them (docs/guides/weebo-si-standard.md, step 4).
+        builtin: true
         extra:
           - "registry.pkg.weebo.poc/quay/che-incubator/**"
           - "registry.pkg.weebo.poc/quay/devfile/**"
           - "registry.pkg.weebo.poc/quay/eclipse/**"
           # che-code and the editor images weebo builds (WeeboDevImage's che-vscode).
           - "registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-vscode:*"
+
+    # ── RFC 0017 ── upstream names pulled through angos ─────────────────────────────────────────
+    imageRewrite:
+      mode: "Off"
+      # The pod webhook's own scope: a namespace without the label gets no pod rewrite, so
+      # rewriting its DevWorkspaces alone would leave DevWorkspace Operator's injected images
+      # upstream (RFC 0017, T10).
+      namespaceSelector:
+        matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+      # angos' layout: one prefix per upstream host. `postgres:18` in a devfile is pulled as
+      # registry.pkg.weebo.poc/hub/library/postgres:18, which imagePolicy's hub-official grants.
+      rules:
+        - { from: docker.io, to: registry.pkg.weebo.poc/hub }
+        - { from: quay.io, to: registry.pkg.weebo.poc/quay }
+        - { from: ghcr.io, to: registry.pkg.weebo.poc/ghcr }
 
     # ── RFC 0006 ── what a process inside the workspace may do ─────────────────────────────────
     kubearmorPolicy:

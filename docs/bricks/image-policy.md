@@ -250,7 +250,9 @@ truth and belongs on the same dashboard — ours cannot report a request that ne
 
 No verb, no resource, no `Role`, no `ClusterRole` rule, in either role. Both subjects arrive in
 the admission body and the only lookup either route makes is the `namespaces` watch that already
-existed. `images audit`'s `list pods` is *your* permission, exercised from your kubeconfig. **The
+existed. `images audit`'s `list pods` — and, for RFC 0017's `stale-mirror` table, `list
+devworkspaces`, skipped silently without it — is *your* permission, exercised from your
+kubeconfig. **The
 role an untrusted `AdmissionReview` body reaches is unchanged by RFC 0005.**
 
 ## What this does and does not close

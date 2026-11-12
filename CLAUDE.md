@@ -90,6 +90,10 @@ As much as possible, use a multi-staged build in order to reduce the final image
 
 <!-- /WeeboDevEnv Dedicated instruction --->
 
+## CRD validation: CEL or `validate()`
+
+A check on a `WeeboSiConfig` field belongs in a CEL rule (`#[schemars(extend("x-kubernetes-validations" = …))]`, RFC 0017's `imageRewrite.rules` is the first) when it is structural and must be refused at `kubectl apply` — a duplicate key, a missing `/`, a bound on a list (give every list and string a `maxItems` / `maxLength`, or the apiserver refuses the rule's cost). A check that needs this repo's own parsers or normalisation (a registry host, an image pattern) stays in the feature's `validate()` and is reported as a `Degraded` condition. A CEL rule is proven against a real apiserver in `crates/weebo-si-crd/tests/envtest.rs`.
+
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 

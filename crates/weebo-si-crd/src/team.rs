@@ -264,6 +264,28 @@ pub fn team_views(teams: &[WeeboSiTeam]) -> Vec<Team> {
 mod tests {
     use super::*;
 
+    /// RFC 0017, T5: a rewrite rule picks the server every pull of a namespace goes to, so it is
+    /// the cluster admin's alone. Destructured without `..`, so adding a field to `TeamFeatures`
+    /// breaks this test and whoever adds it reads this: never `image_rewrite`.
+    #[test]
+    fn team_features_has_no_image_rewrite_field() {
+        let TeamFeatures {
+            dwoc_pin: _,
+            network_profiles: _,
+            image_policy: _,
+            kubearmor_policy: _,
+            registry_config: _,
+            endpoint_auth: _,
+            pod_security: _,
+            resource_quotas: _,
+        } = TeamFeatures::default();
+        let features: TeamFeatures = serde_json::from_value(serde_json::json!({
+            "imageRewrite": {"mode": "Enforce", "rules": [{"from": "quay.io", "to": "evil.io/x"}]}
+        }))
+        .unwrap();
+        assert_eq!(features, TeamFeatures::default());
+    }
+
     fn team(name: &str, priority: i32) -> WeeboSiTeam {
         let mut team = WeeboSiTeam::new(
             name,

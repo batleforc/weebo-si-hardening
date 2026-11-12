@@ -12,17 +12,18 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::{Namespace, Pod};
+use kube::api::DynamicObject;
 use kube::{Api, Client};
 use weebo_si_crd::{
-    NamespaceName, ResolvedImagePolicyConfig, SINGLETON_NAME, Team, TeamName, WeeboSiConfig,
-    WeeboSiTeam, team_views,
+    IMAGE_REWRITE_ANNOTATION, NamespaceName, PlatformConfig, ResolvedImagePolicyConfig,
+    SINGLETON_NAME, Team, TeamName, WeeboSiConfig, WeeboSiTeam, team_views,
 };
 use weebo_si_image_policy::port::{ImagePolicyObserver, Resource};
 use weebo_si_image_policy::variable::resolve_declared;
 use weebo_si_image_policy::{
-    BUILTIN_PLATFORM_PATTERNS, ImageReference, ImageVerdict, PermittedBy, VariableName,
-    VariableResult, VariableValues, Verdict, allowed_set, effective_patterns, judge,
-    platform_patterns,
+    BUILTIN_PLATFORM_PATTERNS, ImageReference, ImageVerdict, PermittedBy, Rewrite, Rules,
+    VariableName, VariableResult, VariableValues, Verdict, allowed_set, derived_platform_patterns,
+    effective_patterns, judge, platform_patterns,
 };
 
 use crate::cli::flag;
@@ -30,6 +31,9 @@ use crate::cli::flag;
 /// Route the `images` subcommand.
 pub async fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
+        Some("platform") if args[1..].iter().any(|arg| arg == "--cluster") => {
+            print_cluster_platform().await
+        }
         Some("platform") => {
             print_platform();
             Ok(())
@@ -51,6 +55,55 @@ fn print_platform() {
     for pattern in BUILTIN_PLATFORM_PATTERNS {
         println!("{pattern}");
     }
+}
+
+/// The effective platform set, one `(pattern, source)` row each: the compiled-in list, its form
+/// derived through the `imageRewrite` rules (RFC 0017), then `platform.extra`. A derived pattern
+/// is never hidden: it is listed next to the pattern it comes from and the rule that made it.
+fn platform_rows(platform: &PlatformConfig, rewrite: Option<&Rules>) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if platform.builtin {
+        let derived = rewrite.map(derived_platform_patterns).unwrap_or_default();
+        for builtin in BUILTIN_PLATFORM_PATTERNS {
+            rows.push(((*builtin).to_string(), "builtin".to_string()));
+            for pattern in derived.iter().filter(|d| d.builtin == *builtin) {
+                rows.push((
+                    pattern.text.clone(),
+                    format!("builtin, rewritten by rule {}", pattern.rule),
+                ));
+            }
+        }
+    }
+    rows.extend(
+        platform
+            .extra
+            .iter()
+            .map(|raw| (raw.clone(), "extra".to_string())),
+    );
+    rows
+}
+
+/// `images platform --cluster` — the platform set the live `WeeboSiConfig` actually yields.
+async fn print_cluster_platform() -> Result<(), String> {
+    let client = kube::Client::try_default().await.map_err(|err| {
+        format!("cannot reach the cluster: {err}; run without --cluster for the compiled-in list")
+    })?;
+    let (config, _teams, rewrite) = load_config(&client).await?;
+    let rows = platform_rows(&config.platform, rewrite.as_ref());
+    let width = rows
+        .iter()
+        .map(|(pattern, _)| pattern.len())
+        .max()
+        .unwrap_or(0)
+        .max("PATTERN".len());
+    println!("{:width$}   SOURCE", "PATTERN");
+    if rows.is_empty() {
+        println!("(empty: no platform pattern — every image needs a grant)");
+    }
+    for (pattern, source) in rows {
+        println!("{pattern:width$}   {source}");
+    }
+    Ok(())
 }
 
 /// Discard every observation — the CLI reports its own answers in full, and a counter with no
@@ -112,7 +165,12 @@ impl weebo_si_chassis::port::namespace_view::NamespaceView for ListedNamespaces 
 ///
 /// The resolution is not optional: RFC 0011 keeps each team's catalogue on its own object, so a
 /// CLI reading only the singleton would report what the cluster would do if no team existed.
-async fn load_config(client: &Client) -> Result<(ResolvedImagePolicyConfig, Vec<Team>), String> {
+///
+/// The third value is `imageRewrite`'s rules when the block is present and valid — what both
+/// admission routes act on (RFC 0017); `None` otherwise, which derives and rewrites nothing.
+async fn load_config(
+    client: &Client,
+) -> Result<(ResolvedImagePolicyConfig, Vec<Team>, Option<Rules>), String> {
     let api: Api<WeeboSiConfig> = Api::all(client.clone());
     let config = api
         .get(SINGLETON_NAME)
@@ -125,7 +183,13 @@ async fn load_config(client: &Client) -> Result<(ResolvedImagePolicyConfig, Vec<
     })?;
     let teams = load_teams(client).await?;
     let (image_policy, _conflicts) = image_policy.resolve(&teams);
-    Ok((image_policy, team_views(&teams)))
+    let rewrite = config
+        .spec
+        .features
+        .image_rewrite
+        .as_ref()
+        .and_then(|rewrite| Rules::new(rewrite).ok());
+    Ok((image_policy, team_views(&teams), rewrite))
 }
 
 /// Every `WeeboSiTeam` in the cluster, or a message naming why not.
@@ -160,6 +224,7 @@ async fn load_namespaces(client: &Client) -> Result<ListedNamespaces, String> {
 /// make `audit` say a running pod is denied when it is not.
 fn judge_in_namespace(
     config: &ResolvedImagePolicyConfig,
+    rewrite: Option<&Rules>,
     teams: &[Team],
     namespace: &NamespaceName,
     namespaces: &ListedNamespaces,
@@ -182,7 +247,7 @@ fn judge_in_namespace(
     variables.bind_team(provenance.team.as_ref());
     variables.bind_namespace(namespace);
 
-    let platform = platform_patterns(&config.platform).unwrap_or_default();
+    let platform = platform_patterns(&config.platform, rewrite).unwrap_or_default();
     let union = effective_patterns(config, &provenance.resolved, &platform);
     let verdict = judge(reference, &union, &variables);
     (provenance.team, provenance.resolved, verdict, variables)
@@ -228,9 +293,22 @@ async fn check(args: &[String]) -> Result<(), String> {
     let client = kube::Client::try_default()
         .await
         .map_err(|err| format!("could not build a Kubernetes client: {err}"))?;
-    let (config, teams) = load_config(&client).await?;
+    let (config, teams, rewrite) = load_config(&client).await?;
     let namespaces = load_namespaces(&client).await?;
     let namespace = NamespaceName::new(namespace);
+
+    // Admission rewrites before it judges (RFC 0017), so `check` does too and says so. Whether
+    // `imageRewrite` runs in that namespace (mode, selector) is not checked here.
+    let reference = match rewrite.as_ref().map(|rules| rules.rewrite(&reference)) {
+        Some(Rewrite::Rewritten {
+            reference: to,
+            rule,
+        }) => {
+            println!("rewritten  {parsed} → {to} (rule {rule})");
+            to.to_string()
+        }
+        _ => reference,
+    };
 
     // `--team` overrides the namespace's own routing, so an admin can ask "what would team-2 see"
     // without needing a namespace that belongs to team-2.
@@ -241,12 +319,20 @@ async fn check(args: &[String]) -> Result<(), String> {
             let mut variables = resolve_declared(&config, &namespace, &namespaces, &SilentObserver);
             variables.bind_team(Some(&synthetic));
             variables.bind_namespace(&namespace);
-            let platform = platform_patterns(&config.platform).unwrap_or_default();
+            let platform =
+                platform_patterns(&config.platform, rewrite.as_ref()).unwrap_or_default();
             let union = effective_patterns(&config, &grant.allowed, &platform);
             let verdict = judge(&reference, &union, &variables);
             (Some(synthetic), grant.allowed, verdict, variables)
         }
-        None => judge_in_namespace(&config, &teams, &namespace, &namespaces, &reference),
+        None => judge_in_namespace(
+            &config,
+            rewrite.as_ref(),
+            &teams,
+            &namespace,
+            &namespaces,
+            &reference,
+        ),
     };
 
     // The interpolated line is not decoration: a pattern that interpolates is one an admin
@@ -298,6 +384,48 @@ async fn check(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// RFC 0017's `stale-mirror`: the components of one `DevWorkspace` whose image is an earlier
+/// rewrite of the original its `hardening.weebo.io/image-rewrite` annotation records, and is not
+/// what today's rules would make of that original — a rule's `to` that changed or a rule that was
+/// removed. The rewrite never revisits a stored name (it matches no `from`), so this is reported
+/// for the admin or the user to edit, never fixed.
+///
+/// "An earlier rewrite" is checked, not assumed: another host, the original's whole path at the
+/// end of its own, the same tag and digest. A component a user re-pointed elsewhere after its
+/// rewrite keeps a stale record but fails that check, and is not reported.
+///
+/// Returns `(component, image, what today's rules give, if anything)`.
+fn stale_mirror(
+    rules: Option<&Rules>,
+    recorded: &BTreeMap<String, String>,
+    components: &[(String, String)],
+) -> Vec<(String, String, Option<String>)> {
+    let mut stale = Vec::new();
+    for (name, image) in components {
+        let Some(original) = recorded.get(name) else {
+            continue;
+        };
+        let (Ok(was), Ok(now)) = (
+            ImageReference::parse(original),
+            ImageReference::parse(image),
+        ) else {
+            continue;
+        };
+        let an_earlier_rewrite = now.host() != was.host()
+            && now.path().ends_with(&format!("/{}", was.path()))
+            && now.tag() == was.tag()
+            && now.digest() == was.digest();
+        let expected = match rules.map(|rules| rules.rewrite(original)) {
+            Some(Rewrite::Rewritten { reference, .. }) => Some(reference.to_string()),
+            _ => None,
+        };
+        if an_earlier_rewrite && expected.as_deref() != Some(now.to_string().as_str()) {
+            stale.push((name.clone(), image.clone(), expected));
+        }
+    }
+    stale
+}
+
 /// One row of `images audit`.
 struct AuditRow {
     pods: usize,
@@ -314,7 +442,8 @@ struct AuditRow {
 ///
 /// Writes nothing and changes nothing. Because a pattern may interpolate, **a verdict is a
 /// property of the namespace rather than of the image alone**: this aggregates the images whose
-/// verdict is the same everywhere and names the namespace for the rest.
+/// verdict is the same everywhere and names the namespace for the rest. Then, RFC 0017's
+/// `stale-mirror` table: `DevWorkspace` components still naming a mirror no rule points at now.
 async fn audit(args: &[String]) -> Result<(), String> {
     let all = args.iter().any(|arg| arg == "--all-namespaces");
     let one = flag(args, "--namespace").map(str::to_string);
@@ -325,7 +454,7 @@ async fn audit(args: &[String]) -> Result<(), String> {
     let client = kube::Client::try_default()
         .await
         .map_err(|err| format!("could not build a Kubernetes client: {err}"))?;
-    let (config, teams) = load_config(&client).await?;
+    let (config, teams, rewrite) = load_config(&client).await?;
     let namespaces = load_namespaces(&client).await?;
 
     let pods: Api<Pod> = match &one {
@@ -351,8 +480,14 @@ async fn audit(args: &[String]) -> Result<(), String> {
             .filter_map(|container| container.image.clone());
 
         for reference in references {
-            let (team, entries, verdict, _) =
-                judge_in_namespace(&config, &teams, &namespace, &namespaces, &reference);
+            let (team, entries, verdict, _) = judge_in_namespace(
+                &config,
+                rewrite.as_ref(),
+                &teams,
+                &namespace,
+                &namespaces,
+                &reference,
+            );
             rows.entry(reference)
                 .and_modify(|row| {
                     row.pods += 1;
@@ -412,6 +547,77 @@ async fn audit(args: &[String]) -> Result<(), String> {
              entry, or accept the denial deliberately."
         );
     }
+
+    let workspaces: Api<DynamicObject> = match &one {
+        Some(ns) => Api::namespaced_with(
+            client,
+            ns,
+            &weebo_si_controller::workspace::devworkspace_resource(),
+        ),
+        None => Api::all_with(
+            client,
+            &weebo_si_controller::workspace::devworkspace_resource(),
+        ),
+    };
+    // A cluster without the DevWorkspace CRD has nothing to report here, not an error.
+    let workspaces = workspaces
+        .list(&Default::default())
+        .await
+        .map(|list| list.items)
+        .unwrap_or_default();
+    let mut stale_rows = Vec::new();
+    for workspace in &workspaces {
+        let Some(recorded) = workspace
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(IMAGE_REWRITE_ANNOTATION))
+            .and_then(|value| serde_json::from_str::<BTreeMap<String, String>>(value).ok())
+        else {
+            continue;
+        };
+        let components: Vec<(String, String)> = workspace
+            .data
+            .pointer("/spec/template/components")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|component| {
+                Some((
+                    component.get("name")?.as_str()?.to_string(),
+                    component.pointer("/container/image")?.as_str()?.to_string(),
+                ))
+            })
+            .collect();
+        let at = format!(
+            "{}/{}",
+            workspace.metadata.namespace.as_deref().unwrap_or_default(),
+            workspace.metadata.name.as_deref().unwrap_or_default()
+        );
+        for (component, image, expected) in stale_mirror(rewrite.as_ref(), &recorded, &components) {
+            stale_rows.push((at.clone(), component, image, expected));
+        }
+    }
+    if !stale_rows.is_empty() {
+        println!();
+        println!(
+            "{:<40} {:<16} {:<56} STALE-MIRROR",
+            "DEVWORKSPACE", "COMPONENT", "IMAGE"
+        );
+        for (at, component, image, expected) in &stale_rows {
+            let now = expected.as_deref().map_or_else(
+                || "no rule rewrites it now".to_string(),
+                |e| format!("now {e}"),
+            );
+            println!("{at:<40} {component:<16} {image:<56} {now}");
+        }
+        println!();
+        println!(
+            "{} component(s) still pull from a mirror an imageRewrite rule no longer points at. \
+             The rewrite never revisits a stored name: edit each DevWorkspace's image.",
+            stale_rows.len()
+        );
+    }
     Ok(())
 }
 
@@ -434,6 +640,93 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("project-clone"))
         );
+    }
+
+    #[test]
+    fn a_component_rewritten_under_a_changed_or_removed_rule_is_a_stale_mirror() {
+        let rules = |to: &str| {
+            Rules::new(&weebo_si_crd::ImageRewriteConfig {
+                mode: weebo_si_crd::FeatureMode::Enforce,
+                namespace_selector: None,
+                rules: vec![weebo_si_crd::RewriteRule {
+                    from: "quay.io".to_string(),
+                    to: to.to_string(),
+                }],
+            })
+            .unwrap()
+        };
+        let recorded = BTreeMap::from([
+            (
+                "clone".to_string(),
+                "quay.io/devfile/project-clone:v1".to_string(),
+            ),
+            ("tools".to_string(), "quay.io/a/tools:1".to_string()),
+        ]);
+        let components = |clone: &str, tools: &str| {
+            vec![
+                ("clone".to_string(), clone.to_string()),
+                ("tools".to_string(), tools.to_string()),
+                ("db".to_string(), "postgres:18".to_string()),
+            ]
+        };
+        let current = rules("registry.pkg.weebo.poc/quay");
+
+        // Rewritten under today's rule: nothing to report.
+        let fresh = components(
+            "registry.pkg.weebo.poc/quay/devfile/project-clone:v1",
+            "registry.pkg.weebo.poc/quay/a/tools:1",
+        );
+        assert!(stale_mirror(Some(&current), &recorded, &fresh).is_empty());
+
+        // Rewritten under an old `to`; `tools` was re-pointed by its user since.
+        let moved = components(
+            "old-mirror.example.io/quay/devfile/project-clone:v1",
+            "ghcr.io/me/tools:2",
+        );
+        assert_eq!(
+            stale_mirror(Some(&current), &recorded, &moved),
+            vec![(
+                "clone".to_string(),
+                "old-mirror.example.io/quay/devfile/project-clone:v1".to_string(),
+                Some("registry.pkg.weebo.poc/quay/devfile/project-clone:v1".to_string()),
+            )]
+        );
+
+        // The rule removed altogether.
+        assert_eq!(stale_mirror(None, &recorded, &fresh).len(), 2);
+    }
+
+    #[test]
+    fn the_cluster_platform_listing_names_each_derived_pattern_and_its_rule() {
+        let rules = Rules::new(&weebo_si_crd::ImageRewriteConfig {
+            mode: weebo_si_crd::FeatureMode::DryRun,
+            namespace_selector: None,
+            rules: vec![weebo_si_crd::RewriteRule {
+                from: "quay.io".to_string(),
+                to: "registry.pkg.weebo.poc/quay".to_string(),
+            }],
+        })
+        .unwrap();
+        let platform = PlatformConfig {
+            builtin: true,
+            extra: vec!["registry.pkg.weebo.poc/ghcr/x/y:*".to_string()],
+        };
+        let rows = platform_rows(&platform, Some(&rules));
+        assert_eq!(rows.len(), 2 * BUILTIN_PLATFORM_PATTERNS.len() + 1);
+        assert_eq!(
+            rows[1],
+            (
+                "registry.pkg.weebo.poc/quay/devfile/project-clone:*@*".to_string(),
+                "builtin, rewritten by rule quay.io".to_string()
+            )
+        );
+        assert_eq!(rows.last().unwrap().1, "extra");
+
+        let off = PlatformConfig {
+            builtin: false,
+            extra: Vec::new(),
+        };
+        assert!(platform_rows(&off, Some(&rules)).is_empty());
     }
 
     #[test]

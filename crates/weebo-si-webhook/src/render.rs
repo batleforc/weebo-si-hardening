@@ -121,6 +121,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn set_string_on_an_array_element_is_one_add_and_creates_no_parent() {
+        // RFC 0017 relies on this: an existing array element is replaced in place.
+        let object = serde_json::json!({"spec": {"initContainers": [{"image": "quay.io/a/b:1"}]}});
+        let mutations = vec![Mutation::SetString {
+            path: ["spec", "initContainers", "0", "image"]
+                .map(str::to_string)
+                .to_vec(),
+            value: "mirror.io/quay/a/b:1".to_string(),
+        }];
+        let patch = render_patch(&object, &mutations);
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &patch).unwrap();
+        assert_eq!(patch.0.len(), 1);
+        assert_eq!(
+            patched,
+            serde_json::json!({"spec": {"initContainers": [{"image": "mirror.io/quay/a/b:1"}]}})
+        );
+    }
+
+    #[test]
     fn set_config_ref_adds_the_whole_attributes_map_when_absent() {
         let object = serde_json::json!({"spec": {"template": {}}});
         let mutations = vec![Mutation::SetConfigRef(DwocRef {

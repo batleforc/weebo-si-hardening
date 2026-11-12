@@ -189,6 +189,58 @@ impl Pattern {
             && self.matches_tag(reference.tag(), variables)
     }
 
+    /// Whether some image under `host/prefix/…` could match, whatever the variables resolve to:
+    /// a variable is read as matching anything, so this over-approximates and never says "no"
+    /// to a pattern that could say yes. RFC 0017's "no `imagePolicy` pattern permits anything
+    /// under this rule's `to`" warning, which must not fire on a configuration that works.
+    pub fn may_match_under(&self, host: &str, prefix: &str) -> bool {
+        let wild = |pieces: &[GlobPiece]| -> Vec<GlobPiece> {
+            pieces
+                .iter()
+                .map(|piece| match piece {
+                    GlobPiece::Var(_) => GlobPiece::Star,
+                    other => other.clone(),
+                })
+                .collect()
+        };
+        let no_variables = VariableValues::new();
+        let host_matches = match &self.host {
+            HostPattern::Suffix(suffix) => host.ends_with(&format!(".{suffix}")),
+            HostPattern::Labels { labels, port } => {
+                let (name, actual_port) = match host.rfind(':') {
+                    Some(colon) => (&host[..colon], Some(&host[colon + 1..])),
+                    None => (host, None),
+                };
+                let actual: Vec<&str> = name.split('.').collect();
+                port.as_deref() == actual_port
+                    && actual.len() == labels.len()
+                    && labels.iter().zip(actual).all(|(piece, label)| match piece {
+                        GlobPiece::Literal(literal) => literal == label,
+                        GlobPiece::Star => false,
+                        GlobPiece::Var(_) => true,
+                    })
+            }
+        };
+        if !host_matches {
+            return false;
+        }
+        let prefix: Vec<&str> = prefix.split('/').collect();
+        for (index, segment) in prefix.iter().enumerate() {
+            match self.path.get(index) {
+                // `**` takes this segment and any number after it.
+                Some(PathSegment::DoubleStar) => return true,
+                Some(PathSegment::Glob(pieces)) => {
+                    if !matches_glob(&wild(pieces), segment, &no_variables) {
+                        return false;
+                    }
+                }
+                // The pattern ends inside the prefix: an image under it has more segments.
+                None => return false,
+            }
+        }
+        self.path.len() > prefix.len()
+    }
+
     /// This pattern with every variable substituted, as text — what `images check` prints so an
     /// admin can see what an interpolating pattern became rather than infer it. Returns `None`
     /// when a variable is undefined, which is the same answer [`Self::matches`] gives.
@@ -774,6 +826,28 @@ mod tests {
 
     fn matches(raw_pattern: &str, raw_reference: &str, variables: &VariableValues) -> bool {
         pattern(raw_pattern).matches(&reference(raw_reference), variables)
+    }
+
+    #[test]
+    fn may_match_under_says_no_only_when_no_image_under_the_prefix_can_match() {
+        let under = |raw: &str| pattern(raw).may_match_under("mirror.io", "quay");
+        for yes in [
+            "mirror.io/quay/devfile/project-clone:*@*",
+            "mirror.io/**",
+            "mirror.io/q*/**",
+            "mirror.io/{TEAM_NAME}/x",
+            "*.io/quay/x",
+        ] {
+            assert!(under(yes), "{yes}");
+        }
+        for no in [
+            "mirror.io/quay",
+            "mirror.io/hub/**",
+            "other.io/quay/**",
+            "mirror.io:5000/quay/**",
+        ] {
+            assert!(!under(no), "{no}");
+        }
     }
 
     #[test]

@@ -23,23 +23,28 @@ pub mod platform;
 pub mod port;
 pub mod reference;
 pub mod resolve;
+pub mod rewrite;
 pub mod subject;
 pub mod validate;
 pub mod variable;
 pub mod verdict;
 
 pub use feature::core::FEATURE_ID;
+pub use feature::image_rewrite::{ImageRewriteFeature, REWRITE_FEATURE_ID};
 pub use feature::pod_images::PodImagesFeature;
 pub use feature::workspace_images::WorkspaceImagesFeature;
 pub use pattern::{HostPattern, PathSegment, Pattern};
-pub use platform::{BUILTIN_PLATFORM_PATTERNS, platform_patterns};
+pub use platform::{
+    BUILTIN_PLATFORM_PATTERNS, DerivedPattern, derived_platform_patterns, platform_patterns,
+};
 pub use port::{ImagePolicyObserver, Resource};
-pub use reference::{ImageReference, MAX_REFERENCE_LEN, ParseError};
+pub use reference::{ImageReference, MAX_REFERENCE_LEN, ParseError, parse_host, parse_prefix};
 pub use resolve::{
     NotGranted, Provenance, ResolutionStep, allowed_set, effective_patterns, judge, resolve,
 };
-pub use subject::{ContainerImage, PodImages, WorkspaceImages};
-pub use validate::{is_usable_variable, validate};
+pub use rewrite::{LoadedRewrite, Rewrite, RuleError, Rules};
+pub use subject::{ContainerImage, ImageSlot, PodImages, RewriteImages, WorkspaceImages};
+pub use validate::{POD_WEBHOOK_LABEL, is_usable_variable, rewrite_warnings, validate};
 pub use variable::{
     NAMESPACE, PathComponent, TEAM_NAME, VariableName, VariableResult, VariableValues,
 };

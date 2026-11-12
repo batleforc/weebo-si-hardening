@@ -592,7 +592,7 @@ mod tests {
         cfg: &ResolvedImagePolicyConfig,
         resolved: &[&str],
     ) -> Vec<(PermittedBy, Pattern)> {
-        let platform = platform_patterns(&cfg.platform).unwrap();
+        let platform = platform_patterns(&cfg.platform, None).unwrap();
         let keys: Vec<EntryKey> = resolved.iter().map(|k| EntryKey::new(*k)).collect();
         effective_patterns(cfg, &keys, &platform)
     }

@@ -474,6 +474,21 @@
         }
       }
     },
+    "imageRewrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "webhooks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,

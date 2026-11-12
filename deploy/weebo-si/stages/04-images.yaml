@@ -1,6 +1,9 @@
 # Stage 4 — only images pulled through angos. Run `weebo-si-operator images audit
 # --all-namespaces` first: every DENIED row is a workspace that stops starting.
 # docs/guides/weebo-si-standard.md, step 4.
+# imageRewrite goes first in the same patch: it is what turns a devfile's `postgres:18` into the
+# angos name imagePolicy grants, instead of a refusal.
 spec:
   features:
+    imageRewrite: { mode: Enforce }
     imagePolicy: { mode: Enforce }

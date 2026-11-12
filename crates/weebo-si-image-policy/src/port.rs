@@ -94,6 +94,20 @@ pub trait ImagePolicyObserver: Send + Sync {
         variable: &VariableName,
         value: &str,
     );
+
+    /// One image `image-rewrite` (RFC 0017) looked at: `result` is `rewritten`, `unmatched` or
+    /// `unparseable`; `from` and `to` are set only for `rewritten`. Called identically under
+    /// `DryRun` and `Enforce`, so a dry run counts exactly what would be rewritten.
+    ///
+    /// A default no-op so the CLI and the test observers, which have no counter, need no change.
+    fn image_rewritten(
+        &self,
+        _resource: Resource,
+        _subject: &str,
+        _result: &'static str,
+        _rewrite: Option<(&str, &str)>,
+    ) {
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -110,6 +124,8 @@ pub mod testing {
     pub type ImageRecord = (Resource, Option<TeamName>, ImageVerdict, bool);
     /// One recorded not-granted observation: resource, team, how many keys were dropped.
     pub type NotGrantedRecord = (Resource, Option<TeamName>, usize);
+    /// One recorded rewrite observation: resource, subject, result, `(from, to)` when rewritten.
+    pub type RewriteRecord = (Resource, String, &'static str, Option<(String, String)>);
 
     /// Records every observation, for a test to assert over.
     #[derive(Default)]
@@ -118,9 +134,17 @@ pub mod testing {
         not_granted: Mutex<Vec<NotGrantedRecord>>,
         variables: Mutex<Vec<(VariableName, VariableResult)>>,
         values: Mutex<Vec<(String, VariableName, String)>>,
+        rewrites: Mutex<Vec<RewriteRecord>>,
     }
 
     impl RecordingObserver {
+        pub fn rewrites(&self) -> Vec<RewriteRecord> {
+            self.rewrites
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
         pub fn images(&self) -> Vec<ImageRecord> {
             self.images
                 .lock()
@@ -196,6 +220,24 @@ pub mod testing {
                     namespace.as_str().to_string(),
                     variable.clone(),
                     value.to_string(),
+                ));
+        }
+
+        fn image_rewritten(
+            &self,
+            resource: Resource,
+            subject: &str,
+            result: &'static str,
+            rewrite: Option<(&str, &str)>,
+        ) {
+            self.rewrites
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((
+                    resource,
+                    subject.to_string(),
+                    result,
+                    rewrite.map(|(from, to)| (from.to_string(), to.to_string())),
                 ));
         }
     }

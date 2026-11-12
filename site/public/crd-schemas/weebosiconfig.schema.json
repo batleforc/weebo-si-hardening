@@ -836,6 +836,121 @@
           ],
           "type": "object"
         },
+        "imageRewrite": {
+          "description": "`spec.features.imageRewrite`, per RFC 0017.",
+          "nullable": true,
+          "properties": {
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the webhook's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "rules": {
+              "default": [],
+              "description": "The rules, at most 64. Empty is legal and rewrites nothing.",
+              "items": {
+                "description": "One rule: every image whose normalised host is `from` is pulled from `to` instead.",
+                "properties": {
+                  "from": {
+                    "description": "A registry host — `docker.io`, `quay.io`, `registry.example:5000`.",
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "to": {
+                    "description": "A host followed by at least one `/`-separated path component —\n`registry.pkg.weebo.poc/quay`.",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array",
+              "x-kubernetes-validations": [
+                {
+                  "message": "two rules share the same `from`: which one wins would be declaration order",
+                  "rule": "self.all(r, self.exists_one(s, s.from.lowerAscii() == r.from.lowerAscii()))"
+                },
+                {
+                  "message": "a rule's `to` host must not be another rule's `from` (chain or loop)",
+                  "rule": "self.all(r, !self.exists(s, r.to.lowerAscii().startsWith(s.from.lowerAscii() + '/')))"
+                },
+                {
+                  "message": "a rule's `to` must be a host followed by at least one path component",
+                  "rule": "self.all(r, r.to.contains('/'))"
+                },
+                {
+                  "message": "a rule's `from` and the host of its `to` must contain a `.` or a `:`, or be `localhost`: an image reads any other first component as a Docker Hub namespace",
+                  "rule": "self.all(r, (r.from.matches('[.:]') || r.from.lowerAscii() == 'localhost') && (r.to.matches('^[^/]*[.:][^/]*/') || r.to.lowerAscii().startsWith('localhost/')))"
+                }
+              ]
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
         "kubearmorPolicy": {
           "description": "`spec.features.kubearmorPolicy`, per RFC 0006.",
           "nullable": true,

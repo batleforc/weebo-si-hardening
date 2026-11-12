@@ -8,15 +8,17 @@ pub mod image_policy;
 
 pub use image_metrics::ImageMetrics;
 pub use image_policy::{
-    ImagePolicyState, VALIDATE_DEVWORKSPACES_PATH, VALIDATE_PODS_PATH, image_policy_router,
-    registries,
+    ImagePolicyState, MUTATE_DEVWORKSPACE_IMAGES_PATH, MUTATE_PODS_PATH,
+    VALIDATE_DEVWORKSPACES_PATH, VALIDATE_PODS_PATH, image_policy_router, pod_images_from_object,
+    registries, rewrite_images_from_object,
 };
 
 use std::sync::Arc;
 
 use weebo_si_webhook::AdmissionShared;
 
-/// RFC 0005's two routes, `/validate/v1alpha1/devworkspaces` and `/validate/v1/pods`.
+/// RFC 0005's two routes, `/validate/v1alpha1/devworkspaces` and `/validate/v1/pods`, and RFC
+/// 0017's two mutating ones, `/mutate/v1/pods` and `/mutate/v1alpha1/devworkspaces/images`.
 ///
 /// **One `ImageMetrics`, one config handle, two registries.** The two enforcement points must
 /// never disagree about the catalogue, and sharing the handle rather than reading the config
@@ -24,14 +26,16 @@ use weebo_si_webhook::AdmissionShared;
 pub fn admission_routes(shared: &AdmissionShared) -> Result<axum::Router, String> {
     let metrics = ImageMetrics::register(&shared.prometheus).map_err(|err| err.to_string())?;
     let image_observer: Arc<dyn weebo_si_image_policy::ImagePolicyObserver> = Arc::new(metrics);
-    let (workspace_registry, pod_registry) = registries(
+    let (workspace_registry, pod_registry, rewrite_registry) = registries(
         shared.config_store.image_policy_config(),
+        shared.config_store.image_rewrite_config(),
         Arc::clone(&image_observer),
     );
     Ok(image_policy_router(Arc::new(ImagePolicyState {
         config: shared.config_store.image_policy_config(),
         workspace_registry,
         pod_registry,
+        rewrite_registry,
         gate: shared.config_store.clone(),
         namespace_view: Arc::clone(&shared.ns_store) as _,
         dwoc_catalog: Arc::clone(&shared.dwoc_store) as _,

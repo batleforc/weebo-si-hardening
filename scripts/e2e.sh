@@ -703,7 +703,7 @@ addons() {
 
 # --- images -------------------------------------------------------------------------------------------
 
-IMAGES="weebo-si-operator endpoint-gateway preauth-proxy passwd-append e2e-workspace"
+IMAGES="weebo-si-operator endpoint-gateway preauth-proxy passwd-append e2e-workspace e2e/e2e-workspace"
 
 build() {
   need "$E2E_RUNTIME"
@@ -718,6 +718,9 @@ build() {
   # wrong line in that page fails this build rather than a user's.
   "$E2E_RUNTIME" build -f e2e/images/workspace/Containerfile -t localhost/e2e-workspace:e2e \
     --build-arg PASSWD_APPEND_IMAGE=localhost/passwd-append:e2e e2e/images/workspace
+  # RFC 0017's rewrite rows: the same image under a second name, the target of
+  # `{from: example.invalid, to: localhost/e2e}`. A pull that was not rewritten cannot succeed.
+  "$E2E_RUNTIME" tag localhost/e2e-workspace:e2e localhost/e2e/e2e-workspace:e2e
 }
 
 load_images() {
@@ -726,9 +729,10 @@ load_images() {
       kind load docker-image "localhost/$image:e2e" --name "$CLUSTER" >/dev/null
     else
       # kind cannot read podman's store directly; an archive is the portable hand-over.
-      "$E2E_RUNTIME" save -o "$WORK/$image.tar" "localhost/$image:e2e" >/dev/null
-      kind load image-archive "$WORK/$image.tar" --name "$CLUSTER" >/dev/null
-      rm -f "$WORK/$image.tar"
+      archive="$WORK/$(printf '%s' "$image" | tr / -).tar"
+      "$E2E_RUNTIME" save -o "$archive" "localhost/$image:e2e" >/dev/null
+      kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
+      rm -f "$archive"
     fi
   done
 }
@@ -767,11 +771,12 @@ PROBE
   wait_for 180 "! kubectl apply --dry-run=server -f '$WORK/probe-devworkspace.yaml' 2>&1 | grep -q 'failed calling webhook'"
 }
 
-# The upgrade suite starts from the last release published before RFC 0012 — its chart from the
-# OCI registry, its images from GHCR — and the Rust suite runs the `helm upgrade` to this build.
-# Needs the GHCR packages public (todo.md F3) or a pull secret on the cluster.
+# The upgrade suite starts from the previous release — its chart from the OCI registry, its images
+# from GHCR — and the Rust suite runs the `helm upgrade` to this build, in the two steps the chart
+# documents for a release without RFC 0017's routes. Needs the GHCR packages public (todo.md F3) or
+# a pull secret on the cluster.
 deploy_previous_operator() {
-  version=${E2E_PREVIOUS_VERSION:-0.2.1}
+  version=${E2E_PREVIOUS_VERSION:-0.3.0}
   kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl label namespace "$NAMESPACE" hardening.weebo.io/exclude=true --overwrite >/dev/null
   helm upgrade --install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
@@ -802,7 +807,7 @@ deploy() {
   say "loading the :e2e images"
   load_images
   if [ "$suite" = upgrade ]; then
-    say "weebo-si-operator ${E2E_PREVIOUS_VERSION:-0.2.1}, the release the suite upgrades from"
+    say "weebo-si-operator ${E2E_PREVIOUS_VERSION:-0.3.0}, the release the suite upgrades from"
     deploy_previous_operator
     return
   fi

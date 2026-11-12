@@ -254,3 +254,65 @@ async fn teams_with_match_expressions_round_trip() {
 
     let _ = api.delete("team-1", &DeleteParams::default()).await;
 }
+
+/// RFC 0017's CEL rules, against a real apiserver: the standard's rule set is accepted, and each
+/// structural mistake is refused at write with the rule's own message — a typo never reaches the
+/// operator to silently disable every rule.
+#[tokio::test]
+async fn image_rewrite_cel_rules_accept_the_standard_and_refuse_each_mistake() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |rules: serde_json::Value| {
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"imageRewrite": {"mode": "DryRun", "rules": rules}}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    api.create(
+        &PostParams::default(),
+        &spec(serde_json::json!([
+            {"from": "docker.io", "to": "registry.pkg.weebo.poc/hub"},
+            {"from": "quay.io", "to": "registry.pkg.weebo.poc/quay"},
+        ])),
+    )
+    .await
+    .expect("the standard's rules should be accepted");
+    let _ = api.delete("cluster", &DeleteParams::default()).await;
+
+    for (rules, expected) in [
+        (
+            serde_json::json!([{"from": "quay.io", "to": "a.io/x"}, {"from": "QUAY.io", "to": "b.io/x"}]),
+            "share the same",
+        ),
+        (
+            serde_json::json!([{"from": "quay.io", "to": "mirror.io/quay"}, {"from": "mirror.io", "to": "b.io/x"}]),
+            "chain or loop",
+        ),
+        (
+            serde_json::json!([{"from": "quay.io", "to": "mirror.io"}]),
+            "at least one path component",
+        ),
+        (
+            serde_json::json!([{"from": "quay.io", "to": "harbor/quay"}]),
+            "Docker Hub namespace",
+        ),
+        (
+            serde_json::json!([{"from": "quay", "to": "mirror.io/quay"}]),
+            "Docker Hub namespace",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(rules.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{rules}: unexpected error: {error}"
+        );
+    }
+}

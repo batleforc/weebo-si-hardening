@@ -178,6 +178,71 @@ impl ImageReference {
     }
 }
 
+impl ImageReference {
+    /// The same image under another registry: `host` replaces this reference's host and `path`
+    /// is prepended to its normalised path — `docker.io/library/postgres:18` under
+    /// `(registry.pkg.weebo.poc, hub)` is `registry.pkg.weebo.poc/hub/library/postgres:18`.
+    /// Tag and digest are copied as they are, so a digest-pinned image stays the same bytes.
+    ///
+    /// The result is re-parsed and must come back identical, so a rewritten reference reads
+    /// exactly as the kubelet and `image-policy` will read it (RFC 0017): too long, or a host
+    /// the grammar would not see as one, is an error rather than a different image.
+    pub fn with_prefix(&self, host: &str, path: &str) -> Result<Self, ParseError> {
+        let rewritten = Self {
+            host: host.to_string(),
+            path: format!("{path}/{}", self.path),
+            tag: self.tag.clone(),
+            digest: self.digest.clone(),
+        };
+        if Self::parse(&rewritten.to_string())? != rewritten {
+            return Err(ParseError::Malformed);
+        }
+        Ok(rewritten)
+    }
+}
+
+/// Parse and normalise a bare registry host, exactly as a reference's host is normalised:
+/// lowercased, one trailing dot stripped, labels and port validated. RFC 0017's rule `from`.
+///
+/// Not [`ImageReference::parse`]: that one treats a lone `quay.io` as the Docker Hub path
+/// `library/quay.io`, which is right for an image and wrong for a host.
+///
+/// Held to [`split_host`]'s rule too: a host with no `.`, no `:` and other than `localhost` is
+/// refused, because in an image it reads as a Docker Hub namespace — a `to: harbor/quay` would
+/// send every rewritten pull to `docker.io/harbor/…`, a namespace anyone can register.
+pub fn parse_host(raw: &str) -> Result<String, ParseError> {
+    if raw.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if raw.len() > MAX_REFERENCE_LEN {
+        return Err(ParseError::TooLong);
+    }
+    let host = normalize_host(Some(raw))?;
+    if host.contains('.') || host.contains(':') || host == "localhost" {
+        Ok(host)
+    } else {
+        Err(ParseError::IllegalHost)
+    }
+}
+
+/// Parse a registry host followed by one or more path components — RFC 0017's rule `to`.
+/// Returns the normalised host and the path. No tag, no digest, no glob, no variable, no empty
+/// component: each component is held to the reference grammar, so a `to` can never carry a
+/// wildcard into a derived platform pattern.
+pub fn parse_prefix(raw: &str) -> Result<(String, String), ParseError> {
+    if raw.len() > MAX_REFERENCE_LEN {
+        return Err(ParseError::TooLong);
+    }
+    let Some((host, path)) = raw.split_once('/') else {
+        return Err(ParseError::Malformed);
+    };
+    let host = parse_host(host)?;
+    for component in path.split('/') {
+        validate_path_component(component)?;
+    }
+    Ok((host, path.to_string()))
+}
+
 impl fmt::Display for ImageReference {
     /// The normalized form, as `images check` prints it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -611,5 +676,89 @@ mod tests {
         let reference = parsed("registry.internal/teams/team-1/dev");
         let components: Vec<&str> = reference.path_components().collect();
         assert_eq!(components, vec!["teams", "team-1", "dev"]);
+    }
+
+    #[test]
+    fn a_rule_host_is_normalised_like_a_reference_host() {
+        // RFC 0017, T1: a rule and an image cannot disagree on what a host is.
+        assert_eq!(parse_host("Quay.IO.").unwrap(), "quay.io");
+        assert_eq!(parse_host("quay.io").unwrap(), parsed("quay.io/x/y").host());
+        assert_eq!(
+            parse_host("registry.example:5000").unwrap(),
+            "registry.example:5000"
+        );
+        for bad in [
+            "",
+            "quay.io/x",
+            "-bad.io",
+            "quay.io:",
+            "quay.io:x",
+            "*.io",
+            "{TEAM_NAME}",
+            // No `.`, no `:`: an image would read it as a Docker Hub namespace.
+            "harbor",
+            "HARBOR.",
+        ] {
+            assert!(parse_host(bad).is_err(), "{bad:?} must not parse as a host");
+        }
+    }
+
+    #[test]
+    fn a_rule_target_is_a_host_and_a_path_with_no_glob_or_variable() {
+        // RFC 0017, T9: nothing a `to` carries can widen a derived platform pattern.
+        assert_eq!(
+            parse_prefix("Registry.pkg.weebo.poc/quay").unwrap(),
+            ("registry.pkg.weebo.poc".to_string(), "quay".to_string())
+        );
+        for bad in [
+            "registry.pkg.weebo.poc",
+            "registry.pkg.weebo.poc/",
+            "registry.pkg.weebo.poc/quay/",
+            "registry.pkg.weebo.poc//quay",
+            "registry.pkg.weebo.poc/*",
+            "registry.pkg.weebo.poc/**",
+            "registry.pkg.weebo.poc/{TEAM_NAME}",
+            "registry.pkg.weebo.poc/quay:v1",
+            "registry.pkg.weebo.poc/Quay",
+            "harbor/quay",
+        ] {
+            assert!(
+                parse_prefix(bad).is_err(),
+                "{bad:?} must not parse as a target"
+            );
+        }
+    }
+
+    #[test]
+    fn with_prefix_keeps_the_digest_and_writes_dockers_implicit_library() {
+        let rewritten = parsed("postgres:18")
+            .with_prefix("registry.pkg.weebo.poc", "hub")
+            .unwrap();
+        assert_eq!(
+            rewritten.to_string(),
+            "registry.pkg.weebo.poc/hub/library/postgres:18"
+        );
+        assert_eq!(
+            ImageReference::parse(&rewritten.to_string()).unwrap(),
+            rewritten
+        );
+
+        let pinned = parsed(&format!("quay.io/devfile/project-clone:v1@{DIGEST}"))
+            .with_prefix("registry.pkg.weebo.poc", "quay")
+            .unwrap();
+        assert_eq!(
+            pinned.to_string(),
+            format!("registry.pkg.weebo.poc/quay/devfile/project-clone@{DIGEST}")
+        );
+    }
+
+    #[test]
+    fn with_prefix_refuses_a_result_past_the_length_cap() {
+        let long = format!("quay.io/{}:v1", "a".repeat(400));
+        let prefix = "b".repeat(200);
+        assert_eq!(
+            parsed(&long).with_prefix("registry.pkg.weebo.poc", &prefix),
+            Err(ParseError::TooLong)
+        );
     }
 }

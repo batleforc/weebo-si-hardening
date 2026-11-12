@@ -73,7 +73,7 @@ tasks:
       - cargo test --release -p endpoint-gateway --bin endpoint-gateway cost -- --ignored --nocapture --test-threads=1
 
   operator-perf:
-    desc: "Measure the operator's resource budget on a release build: the controller binary against envtest, start time, convergence of PERF_NAMESPACES workspace namespaces, idle CPU, memory — what .github/workflows/operator-perf.yaml runs"
+    desc: "Measure the operator's resource budget on a release build: the controller binary against envtest, start time, convergence of PERF_NAMESPACES workspace namespaces, idle CPU, memory, and RFC 0017's in-process image admission cost — what .github/workflows/operator-perf.yaml runs"
     silent: true
     deps:
       - setup

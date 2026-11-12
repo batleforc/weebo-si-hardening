@@ -14,8 +14,13 @@ and in `crates/weebo-si-operator/tests/perf_envtest.rs` in the same commit.
 
 The test refuses a debug build: the memory and CPU of a debug binary describe nothing we ship.
 
-What it does **not** measure: the webhook role (its cost per admission request is RFC 0009's
-territory for endpoint-auth, and has no budget of its own yet), the apiserver's side of the load,
+A second case in the same file, RFC 0017's, measures one admission path of the webhook role
+in-process: a pod with 10 images under 64 `imageRewrite` rules, through `/mutate/v1/pods`'
+extraction, rewrite and patch, then `image-policy`'s judgement of the rewritten pod, via the
+same `registries()` the webhook role builds (`PERF_IMAGE_ADMISSIONS` runs, 5 000 by default).
+
+What it does **not** measure: the rest of the webhook role (its cost per admission request is
+RFC 0009's territory for endpoint-auth, and has no budget of its own yet), the apiserver's side of the load,
 and a real cluster's network round trip — envtest is loopback, so latencies here are a floor.
 
 ## The budget
@@ -28,6 +33,7 @@ and a real cluster's network round trip — envtest is loopback, so latencies he
 | CPU idle | ≤ 10 millicores | `PERF_BUDGET_IDLE_MILLICORES` | What the controller costs all day on a cluster where nothing changes. |
 | Memory peak (`VmHWM`) | ≤ 96 MiB | `PERF_BUDGET_PEAK_MIB` | Three quarters of the chart's controller limit (`128Mi`), headroom for a larger fleet. |
 | Memory resident after idle (`VmRSS`) | ≤ 64 MiB | `PERF_BUDGET_RSS_MIB` | The steady state the memory request should be sized for. |
+| Image admission p99, mutate + validate (one pod, 10 images, 64 rules) | ≤ 5 ms | `PERF_BUDGET_IMAGE_P99_MS` | Our CPU on each side of two webhook calls bounded by `webhook.timeoutSeconds` (5 s); fifty times the first measurement, so only a change of complexity — a scan gone quadratic, a parse per rule per pattern — trips it. |
 
 Latency is timed from each namespace's `create` returning to the first list that shows its
 baseline. The list polls every 100 ms while the fleet is still being created, so a figure is at
@@ -59,6 +65,14 @@ The max across the 20 runs stayed between 0.21 s and 0.63 s.
 The resident figure is above the chart's controller memory request (`32Mi`): the request
 under-reserves what the process actually holds. Raising it to `48Mi` is a chart change of its
 own, left for when the nightly figures confirm it.
+
+### 2026-11-12, release build, laptop, image admission (RFC 0017)
+
+| Measure | Measured |
+| --- | --- |
+| `/mutate/v1/pods` p50 / p99 | 19 µs / 48 µs |
+| `/validate/v1/pods` p99 | 43 µs |
+| Mutate + validate p99 | 92 µs |
 
 Add the first nightly run's table here, with its date and run link, once it has run.
 

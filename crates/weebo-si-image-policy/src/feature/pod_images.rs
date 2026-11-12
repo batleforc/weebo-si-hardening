@@ -23,11 +23,13 @@ use weebo_si_crd::ResolvedImagePolicyConfig;
 use crate::feature::core::{FEATURE_ID, bind_builtins, judge_images, render_note};
 use crate::port::{ImagePolicyObserver, Resource};
 use crate::resolve::allowed_set;
+use crate::rewrite::LoadedRewrite;
 use crate::subject::PodImages;
 
 /// `image-policy`'s `Pod` half.
 pub struct PodImagesFeature {
     config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
+    rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
     observer: Arc<dyn ImagePolicyObserver>,
 }
 
@@ -38,7 +40,20 @@ impl PodImagesFeature {
         config: Arc<RwLock<Option<ResolvedImagePolicyConfig>>>,
         observer: Arc<dyn ImagePolicyObserver>,
     ) -> Self {
-        Self { config, observer }
+        Self {
+            config,
+            rewrite: Arc::default(),
+            observer,
+        }
+    }
+
+    /// Read the platform set the config store derives once per reload, through
+    /// `spec.features.imageRewrite`'s valid rules (RFC 0017). Without it — or before the first
+    /// reload — the set is built from `imagePolicy` alone, per admission.
+    #[must_use]
+    pub fn with_rewrite(mut self, rewrite: Arc<RwLock<Option<LoadedRewrite>>>) -> Self {
+        self.rewrite = rewrite;
+        self
     }
 }
 
@@ -77,8 +92,13 @@ impl Feature<PodImages> for PodImagesFeature {
             self.observer.as_ref(),
         );
 
+        let loaded = self
+            .rewrite
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let judgement = judge_images(
             &config,
+            loaded.as_ref(),
             &provenance,
             &subject.images,
             &variables,

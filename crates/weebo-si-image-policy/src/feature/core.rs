@@ -11,6 +11,7 @@ use weebo_si_crd::{NamespaceName, ResolvedImagePolicyConfig, TeamName};
 
 use crate::port::{ImagePolicyObserver, Resource};
 use crate::resolve::{Provenance, effective_patterns, judge};
+use crate::rewrite::LoadedRewrite;
 use crate::subject::ContainerImage;
 use crate::variable::{VariableName, VariableValues};
 use crate::verdict::{ImageVerdict, PermittedBy, Verdict, escape_reference};
@@ -70,8 +71,13 @@ pub fn bind_builtins(
 /// Every image is judged, not just up to the first failure: the log line and the metrics are
 /// worth more complete, and `DryRun`'s whole job is telling an admin the full list of what would
 /// break rather than the first thing that would.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the one judging core both halves call; a struct would only rename the list"
+)]
 pub fn judge_images(
     config: &ResolvedImagePolicyConfig,
+    loaded: Option<&LoadedRewrite>,
     provenance: &Provenance,
     images: &[ContainerImage],
     variables: &VariableValues,
@@ -82,9 +88,18 @@ pub fn judge_images(
     // An unparseable `platform.extra` leaves the platform set *empty* rather than partially
     // applied — the same fail-toward-denying rule a broken catalogue entry gets. `validate` has
     // already reported it as `Degraded`, so this is the runtime half of a fault an admin is
-    // being told about, not a silent one.
-    let platform = crate::platform::platform_patterns(&config.platform).unwrap_or_default();
-    let union = effective_patterns(config, &provenance.resolved, &platform);
+    // being told about, not a silent one. The patterns `imageRewrite` derives cannot cause it:
+    // a derived text that does not parse is dropped on its own (RFC 0017). `loaded` is that set,
+    // built once per reload by the config store; without it, it is built here from `config`.
+    let built;
+    let platform = match loaded {
+        Some(loaded) => &loaded.platform,
+        None => {
+            built = crate::platform::platform_patterns(&config.platform, None).unwrap_or_default();
+            &built
+        }
+    };
+    let union = effective_patterns(config, &provenance.resolved, platform);
 
     if !provenance.dropped_not_granted.is_empty() {
         observer.not_granted(
@@ -327,6 +342,7 @@ mod tests {
         let observer = RecordingObserver::default();
         let judgement = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &[
                 ContainerImage::new("bad", "ghcr.io/someone/x:1"),
@@ -348,6 +364,7 @@ mod tests {
         let observer = RecordingObserver::default();
         let judgement = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &[
                 ContainerImage::new("tools", "docker.io/library/postgres:16"),
@@ -369,6 +386,7 @@ mod tests {
         let observer = RecordingObserver::default();
         judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &[
                 ContainerImage::new("clone", "quay.io/devfile/project-clone:v0.30.0"),
@@ -392,6 +410,7 @@ mod tests {
         let observer = RecordingObserver::default();
         judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &["dockerhub-library"]),
             &[],
             &VariableValues::new(),
@@ -408,6 +427,7 @@ mod tests {
         let observer = RecordingObserver::default();
         let judgement = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &[ContainerImage::new("tools", "registry.internal/DEV")],
             &VariableValues::new(),
@@ -428,6 +448,7 @@ mod tests {
         let observer = RecordingObserver::default();
         let judgement = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &[ContainerImage::new("tools", "evil\u{1b}[31m\"name")],
             &VariableValues::new(),
@@ -446,6 +467,7 @@ mod tests {
         let images = [ContainerImage::new("tools", "ghcr.io/someone/x:1")];
         let workspace = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &images,
             &VariableValues::new(),
@@ -455,6 +477,7 @@ mod tests {
         );
         let pod = judge_images(
             &config(),
+            None,
             &provenance(&["internal"], &[]),
             &images,
             &VariableValues::new(),
