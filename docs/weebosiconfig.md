@@ -747,6 +747,7 @@ endpointAuth:
     dialect: Traefik # Traefik | HaproxyIngress | OpenShiftRoute | Custom
     enforcement: Enforce # Observe | Enforce — the gate's own verdict, not the feature's mode
     allowedMiddlewares: [] # Traefik only: appended after ours on every gated Ingress
+    # errorPageMiddleware: weebo-si-hardening-endpoint-gateway-errors@kubernetescrd # Traefik only
     haproxyPrerequisite: false # HaproxyIngress only, and required there — see below
   breakGlassIdentities: []
   owner:
@@ -783,6 +784,7 @@ endpointAuth:
 | `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik` is the one with no caveat. ingress-nginx is not supported: it is archived upstream, and the `Nginx` dialect was removed. `HaproxyIngress` needs the prerequisite below. `OpenShiftRoute` is **deferred** to [RFC 0010](./rfc/0010-endpoint-auth-openshift.md) — written, never run against a router. |
 | `gateway.enforcement` | `Observe`/`Enforce` | no | `Enforce` | `Observe` computes and counts every decision and answers `200` — the rollout step that finds the unauthenticated probe before it breaks. |
 | `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Middlewares (`<namespace>-<name>@kubernetescrd`) appended **after** ours, in this order, on **every** gated `Ingress`. The guard pins the whole chain, so an `Ingress` cannot carry a subset, an extra entry or one in front. See *The Traefik middleware* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
+| `gateway.errorPageMiddleware` | string | no | — | Traefik only. One `errors` middleware placed **before** ours, so a gateway outage reads as the platform's error page rather than a bare `500`. Must be `<gateway.service.namespace>-<name>@kubernetescrd`; anything else is not attached and raises `Degraded`. See *The gateway's error page* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |

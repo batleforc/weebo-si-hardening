@@ -714,6 +714,7 @@ mod tests {
                 dialect: Dialect::Traefik,
                 enforcement: GateEnforcement::Enforce,
                 allowed_middlewares: Vec::new(),
+                error_page_middleware: None,
                 custom: None,
                 haproxy_prerequisite: false,
             },

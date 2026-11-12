@@ -283,6 +283,11 @@
                   ],
                   "type": "string"
                 },
+                "errorPageMiddleware": {
+                  "description": "Traefik only: one `errors` middleware placed **before** ours, so it also answers the `5xx`\n`forwardAuth` returns when the gateway is unreachable — after ours it never sees that one.\nIt must be `<service.namespace>-<name>@kubernetescrd`, a middleware in the operator's own\nnamespace, which only an admin writes; anything else is not attached and is reported.",
+                  "nullable": true,
+                  "type": "string"
+                },
                 "externalUrl": {
                   "description": "Where a browser is sent to sign in.",
                   "type": "string"

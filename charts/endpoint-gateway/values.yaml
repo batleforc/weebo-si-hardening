@@ -286,7 +286,9 @@ podDisruptionBudget:
 # something that stays up (a static-page deployment, the platform's status page proxy) and the
 # chart renders a Traefik `errors` middleware for 5xx only — a 401, a 403 and the framed sign-in
 # page are answers the gateway means, and replacing those would hide the messages that make this
-# feature usable.
+# feature usable. Then name it in the WeeboSiConfig's `endpointAuth.gateway.errorPageMiddleware`
+# (`<namespace>-<fullname>-errors@kubernetescrd`): only there, in front of `forwardAuth`, does it
+# see the `500` an unreachable gateway produces.
 errorPage:
   enabled: true
   service:
