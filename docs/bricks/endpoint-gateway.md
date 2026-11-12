@@ -21,7 +21,7 @@ Design and rationale: [RFC 0009](../rfc/0009-endpoint-auth.md). This page is the
 | `endpoint-gateway` | its own Deployment, 3 replicas | answers `/auth` per request, and runs the sign-in flow |
 | mutating webhook | `weebo-si-operator webhook` | attaches the gate to every routing object in a Che workspace namespace |
 | validating webhook | `weebo-si-operator webhook` | host ownership, and the nine-row guard table that pins the gate |
-| reconcile sweep | `weebo-si-operator controller` | covers objects that existed before the feature, and owns the shared Traefik `Middleware` |
+| reconcile sweep | `weebo-si-operator controller` | covers objects that existed before the feature, and owns the shared Traefik `Middleware` (*The Traefik middleware*) |
 
 ## Usage
 
@@ -288,6 +288,137 @@ extraCa:
   key: ca.crt
 ```
 
+## The Traefik middleware
+
+On `gateway.dialect: Traefik` the gate is one `forwardAuth` `Middleware` that the controller
+writes and every gated `Ingress` names. Nothing in this section applies to the other dialects.
+
+### Before you turn it on
+
+1. **Traefik allows cross-namespace references.** Every workspace `Ingress` names a `Middleware`
+   in the operator's namespace, which Traefik refuses unless it runs with
+   `providers.kubernetesCRD.allowCrossNamespace: true` (Helm: `providers.kubernetesCRD.allowCrossNamespace=true`).
+   Without it Traefik logs that the middleware does not exist and answers `404` on every gated
+   endpoint.
+2. **The chart grants the controller that one object.** `endpointAuth.rbac.enabled=true` with
+   `endpointAuth.dialect=Traefik` renders the endpoint-auth webhooks and a `Role` on
+   `traefik.io/middlewares` in the operator's namespace only — not a `ClusterRole`, since that
+   would be the ability to rewrite any middleware chain in the cluster:
+
+   ```console
+   $ helm upgrade --install weebo-si-operator charts/weebo-si-operator \
+       -n weebo-si-hardening --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Traefik
+   ```
+
+3. **`gateway.service.namespace` is the operator's namespace.** The annotation names the
+   middleware by that namespace, and the controller can only write it in its own. When the two
+   differ nothing creates the object; the only signal is this error, every 30 seconds:
+
+   ```text
+   ERROR endpoint-auth gateway.service.namespace=<ns> is not the operator's namespace <ns>; the shared Middleware cannot be created where the annotations name it
+   ```
+
+   So the endpoint-gateway release goes into the operator's namespace.
+
+### What the controller writes
+
+In `mode: Enforce` only, every 30 seconds, by server-side apply with field manager
+`weebo-si-operator` (forced, so a hand edit is put back within that period):
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: weebo-si-endpoint-auth
+  namespace: <operator namespace>
+  labels: { hardening.weebo.io/managed-by: weebo-si-operator }
+spec:
+  forwardAuth:
+    address: http://<service.name>.<service.namespace>.svc.<clusterDomain>:<service.port>/auth
+    trustForwardHeader: false          # the client's X-Forwarded-* would let it choose the path judged
+    authResponseHeaders: [X-Auth-Request-User, X-Auth-Request-Groups, X-Auth-Request-Email]
+    addAuthCookiesToResponse: [__Host-weebo-endpoint]   # the sliding session re-mint
+    maxResponseBodySize: 65536
+```
+
+It is not in Git and has no owner reference: Argo CD does not see it, and deleting it is
+harmless — the next tick recreates it. In `DryRun` and `Off` the controller stops applying it and
+leaves it where it is.
+
+Every gated `Ingress` then carries:
+
+```yaml
+metadata:
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: <operator namespace>-weebo-si-endpoint-auth@kubernetescrd[,<allowedMiddlewares>…]
+    hardening.weebo.io/endpoint-auth: managed
+```
+
+Ours is always first, followed by **every** entry of `gateway.allowedMiddlewares`, in order, on
+every gated `Ingress`. The validating webhook pins that whole value: an update that prepends,
+appends, removes or reorders an entry is refused with `the gate is managed by weebo-si-operator:
+… may not be changed`, because a middleware ahead of `forwardAuth` (a `headers` rewrite) could
+change the path the gate judges. A middleware a team needs on its endpoints (compression, a
+strip-prefix) is added for everyone through `allowedMiddlewares`, as
+`<namespace>-<name>@kubernetescrd`.
+
+On creation the mutating webhook overwrites a `router.middlewares` value the object arrived with;
+for objects that existed before the feature, the sweep does, and says what it dropped:
+
+```text
+WARN endpoint-auth replacing traefik.ingress.kubernetes.io/router.middlewares namespace=<ns> ingress=<name> was="<old chain>" now="<new chain>"
+```
+
+### When an endpoint does not answer
+
+```console
+# the object exists, with the gateway's address
+$ kubectl get middleware.traefik.io weebo-si-endpoint-auth -n weebo-si-hardening -o yaml
+# the Ingress names it, first
+$ kubectl get ingress <name> -n <workspace-ns> \
+    -o jsonpath='{.metadata.annotations.traefik\.ingress\.kubernetes\.io/router\.middlewares}'
+# the controller could write it
+$ kubectl logs -n weebo-si-hardening deploy/weebo-si-operator-controller | grep 'endpoint-auth middleware'
+```
+
+| Symptom | Cause |
+| --- | --- |
+| `404` on every gated endpoint, the `Middleware` absent | not `Enforce` yet, `gateway.service.namespace` is not the operator's namespace, or the `Role` is missing (`endpointAuth.rbac.enabled`); the controller log says which |
+| `404`, the `Middleware` present | Traefik without `allowCrossNamespace`, or an `allowedMiddlewares` entry naming a middleware that does not exist (Traefik refuses the whole router) |
+| `500` on every gated endpoint | Traefik cannot reach the gateway at `forwardAuth.address`: its `Service`, its pods, or a NetworkPolicy between them |
+| a write to an `Ingress` refused, `may not be changed` | the chain or the managed marker was edited; see *Argo CD* below |
+
+No metric counts the `Middleware` itself: the controller log above and Traefik's own are where a
+missing one shows.
+
+### Argo CD
+
+An `Ingress` Argo CD applies into a gated namespace gets the two annotations above from the
+webhook, so Argo reports drift on them, and a sync that writes its own `router.middlewares`
+there is refused by the guard. Tell Argo to leave them alone:
+
+```yaml
+spec:
+  ignoreDifferences:
+    - group: networking.k8s.io
+      kind: Ingress
+      jqPathExpressions:
+        - '.metadata.annotations["traefik.ingress.kubernetes.io/router.middlewares"]'
+        - '.metadata.annotations["hardening.weebo.io/endpoint-auth"]'
+  syncPolicy:
+    syncOptions: [RespectIgnoreDifferences=true]
+```
+
+### The gateway's error page
+
+The endpoint-gateway chart's `errorPage` renders a Traefik `errors` middleware,
+`<release>-errors` in the gateway's namespace, for `5xx` answers. It only takes effect where an
+`Ingress` names it, which on gated endpoints means `allowedMiddlewares` — that is, **after**
+`forwardAuth`. A `forwardAuth` that cannot reach the gateway answers its `500` itself, without
+calling the middlewares behind it, so in that position the page is not served for the outage it
+was written for; it does cover a `5xx` from the workspace behind the gate. The gateway's own sign-in
+`Ingress` can name it directly.
+
 ## Rollout
 
 Four steps, and the third is the interesting one:
@@ -311,7 +442,11 @@ ours*, which also records what the IDE has instead of a token, which is the work
 identity.
 
 **Rollback** is `mode: Off`: the sweep strips the annotations it owns — never the developer's —
-and nothing is persisted. Between the two, `gateway.enforcement: Observe` reopens every endpoint
+and nothing is persisted. It touches only an object marked `hardening.weebo.io/endpoint-auth:
+managed`, removes the whole `router.middlewares` value (the `allowedMiddlewares` entries with it),
+and acts only when the `WeeboSiConfig` itself says `Off`: narrowing `namespaceSelector` does not
+strip the namespaces it leaves. The shared `Middleware` is not deleted; remove it by hand once no
+`Ingress` names it. Between the two, `gateway.enforcement: Observe` reopens every endpoint
 within a request while keeping the telemetry.
 
 ## Break-glass

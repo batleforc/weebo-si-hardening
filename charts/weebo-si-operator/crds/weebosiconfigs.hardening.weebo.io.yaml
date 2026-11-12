@@ -200,7 +200,9 @@ spec:
                         properties:
                           allowedMiddlewares:
                             default: []
-                            description: 'Traefik only: middleware names an `Ingress` may carry **after** ours.'
+                            description: |-
+                              Traefik only: middlewares appended after ours, in this order, on every gated `Ingress`; the
+                              guard pins the whole chain.
                             items:
                               type: string
                             type: array

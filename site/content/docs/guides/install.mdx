@@ -24,6 +24,14 @@ never admitted through its own webhook.
   configuration — see the operator page's *Rollback*.
 </Callout>
 
+<Callout type="warn">
+  **Upgrading.** Helm never updates `crds/`: apply them first, with
+  `kubectl apply --server-side -f charts/weebo-si-operator/crds/`, or new
+  fields are pruned and their feature stays `Off`. From 0.3.x to 0.4.x,
+  `helm upgrade` twice: with `--set imageRewrite.webhooks.enabled=false`,
+  then with the default — see the operator page's *Upgrading*.
+</Callout>
+
 With no `WeeboSiConfig` yet, every feature is `Off` and every request
 round-trips through the webhook unchanged — the state to leave a fresh
 install in. The five-step rollout, the rollback levels and the install

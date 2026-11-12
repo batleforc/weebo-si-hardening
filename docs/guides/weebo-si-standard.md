@@ -127,9 +127,9 @@ Read off `weebo-si` at the time of writing, against this standard:
 
 ```bash
 helm upgrade --install weebo-si-operator oci://ghcr.io/batleforc/charts/weebo-si-operator \
-  --version 0.3.0 -n weebo-si-hardening -f deploy/weebo-si/values/weebo-si-operator.yaml
+  --version 0.4.0 -n weebo-si-hardening -f deploy/weebo-si/values/weebo-si-operator.yaml
 helm upgrade --install endpoint-gateway oci://ghcr.io/batleforc/charts/endpoint-gateway \
-  --version 0.3.0 -n weebo-si-hardening -f deploy/weebo-si/values/endpoint-gateway.yaml
+  --version 0.4.0 -n weebo-si-hardening -f deploy/weebo-si/values/endpoint-gateway.yaml
 
 kubectl apply -f deploy/weebo-si/dwoc/
 kubectl apply -R -f deploy/weebo-si/templates/
@@ -458,7 +458,7 @@ or with `kubectl annotate` (until the next start): `hardening.weebo.io/access: t
 
 | Action | Result | Why |
 | --- | --- | --- |
-| an `Ingress` with another Traefik middleware before the gate | refused | `allowedMiddlewares: []`: a middleware before forwardAuth sees the request unauthenticated |
+| an `Ingress` whose Traefik middleware chain is not exactly the gate's (one prepended, appended or replaced) | refused | the guard pins the whole chain; with `allowedMiddlewares: []` the chain is the gate alone, and a middleware before forwardAuth could rewrite what it judges ([`endpoint-gateway.md`](../bricks/endpoint-gateway.md#the-traefik-middleware)) |
 | a host outside `{user}-{workspace}-{endpoint}.cde.dev.weebo.poc` | refused at admission | host ownership is how the gate knows whose endpoint it is |
 | a host naming another user | refused | same |
 | removing the gate annotation | refused by the guard rows, re-added by the sweep | |

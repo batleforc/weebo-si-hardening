@@ -746,7 +746,7 @@ endpointAuth:
     clusterDomain: cluster.local # qualifies the in-cluster URL the router calls
     dialect: Traefik # Traefik | HaproxyIngress | OpenShiftRoute | Custom
     enforcement: Enforce # Observe | Enforce — the gate's own verdict, not the feature's mode
-    allowedMiddlewares: [] # Traefik only: entries an Ingress may name *after* ours
+    allowedMiddlewares: [] # Traefik only: appended after ours on every gated Ingress
     haproxyPrerequisite: false # HaproxyIngress only, and required there — see below
   breakGlassIdentities: []
   owner:
@@ -778,11 +778,11 @@ endpointAuth:
 | `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `Off` also strips the annotations the sweep wrote. |
 | `namespaceSelector` | selector | no | everything | Narrows within the webhook's own scope. |
 | `gateway.externalUrl` | URL | yes | — | Where a browser is sent to sign in. Must be `https`. |
-| `gateway.service` | `{name,namespace,port}` | yes | — | The gateway's in-cluster `Service`. |
+| `gateway.service` | `{name,namespace,port}` | yes | — | The gateway's in-cluster `Service`. On `Traefik`, `namespace` must be the operator's own: the shared `Middleware` is written there and named after it, and a different namespace leaves every gated `Ingress` without a route, with only a controller log line to say so. |
 | `gateway.clusterDomain` | string | no | `cluster.local` | The cluster's DNS domain. The gate is called at `http://<name>.<namespace>.svc.<clusterDomain>:<port>`, fully qualified because a router with its own resolver applies no search domains. Set it on a cluster whose domain is not `cluster.local`. |
 | `gateway.dialect` | enum | yes | — | Which router attaches the gate. Decides which *kind* the webhook rules cover. `Traefik` is the one with no caveat. ingress-nginx is not supported: it is archived upstream, and the `Nginx` dialect was removed. `HaproxyIngress` needs the prerequisite below. `OpenShiftRoute` is **deferred** to [RFC 0010](./rfc/0010-endpoint-auth-openshift.md) — written, never run against a router. |
 | `gateway.enforcement` | `Observe`/`Enforce` | no | `Enforce` | `Observe` computes and counts every decision and answers `200` — the rollout step that finds the unauthenticated probe before it breaks. |
-| `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Entries an `Ingress` may carry **after** ours; anything else is denied, because the chain runs before `forwardAuth`. |
+| `gateway.allowedMiddlewares` | `[string]` | no | `[]` | Traefik only. Middlewares (`<namespace>-<name>@kubernetescrd`) appended **after** ours, in this order, on **every** gated `Ingress`. The guard pins the whole chain, so an `Ingress` cannot carry a subset, an extra entry or one in front. See *The Traefik middleware* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
@@ -1020,9 +1020,10 @@ rather than one per edit round-trip.
 
 ## When the configuration is wrong
 
-Validation is **reconcile-time, not write-time**: the apiserver accepts a structurally valid
-object, and the controller reports what is semantically wrong as `Degraded` conditions. A
-validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+Validation is **mostly reconcile-time**: the apiserver accepts a structurally valid object, and
+the controller reports what is semantically wrong as `Degraded` conditions. The exception is
+CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
+above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 
