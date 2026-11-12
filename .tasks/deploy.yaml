@@ -19,3 +19,12 @@ tasks:
       REQUIRE_ENVTEST: "1"
     cmds:
       - cargo test -p weebo-si-crd --features envtest --test deploy_weebo_si
+
+  t6-probe:
+    desc: "RFC 0017's T6 probe on a real cluster: does the kubelet offer the mirror a pull secret keyed on the upstream host? Needs T6_NAMESPACE (a workspace namespace image-rewrite applies to in Enforce)"
+    requires:
+      vars: [T6_NAMESPACE]
+    env:
+      T6_NAMESPACE: "{{.T6_NAMESPACE}}"
+    cmds:
+      - "{{.ROOT_DIR}}/scripts/t6-probe.sh"
