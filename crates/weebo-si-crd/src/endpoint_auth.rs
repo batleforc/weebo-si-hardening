@@ -479,7 +479,8 @@ pub struct GatewayRef {
     /// Whether the gate's own verdict is answered or only counted.
     #[serde(default = "default_enforcement")]
     pub enforcement: GateEnforcement,
-    /// Traefik only: middleware names an `Ingress` may carry **after** ours.
+    /// Traefik only: middlewares appended after ours, in this order, on every gated `Ingress`; the
+    /// guard pins the whole chain.
     #[serde(default)]
     pub allowed_middlewares: Vec<String>,
     /// `Custom` only: the annotations this cluster's controller wants, and the keys the template

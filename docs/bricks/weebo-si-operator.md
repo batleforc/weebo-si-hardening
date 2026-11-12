@@ -14,6 +14,9 @@ cluster-wide `WeeboSiConfig` singleton, and nothing happens until it is.
 | `registry-config` | Package-manager configuration copied into every workspace namespace of a team | [`registry-config.md`](./registry-config.md) | [0007](../rfc/0007-registry-config.md) |
 | `endpoint-auth` | Who may reach a workspace endpoint on its own FQDN | [`endpoint-gateway.md`](./endpoint-gateway.md) | [0009](../rfc/0009-endpoint-auth.md) |
 | `identity` | The Authentik account and Argo CD application a `WeeboSiUser` maps to | [`teams-and-users.md`](./teams-and-users.md) | [0011](../rfc/0011-teams-and-users.md) |
+| `pod-security` | The Pod Security Admission level of every workspace namespace, per team | [`pod-security.md`](./pod-security.md) | [0013](../rfc/0013-pod-security.md) |
+| `resource-quotas` | A `ResourceQuota` and `LimitRange` in every workspace namespace, per team | [`resource-quotas.md`](./resource-quotas.md) | [0014](../rfc/0014-resource-quotas.md) |
+| `image-rewrite` | Rewrites upstream image names onto the mirror before `image-policy` judges them | [`image-rewrite.md`](./image-rewrite.md) | [0017](../rfc/0017-image-rewrite.md) |
 
 This page is the operator's copy — how to install it, roll it out, and roll it back; the RFCs are
 the *why* and stay the reference when the two disagree. Everything here applies to every feature;
@@ -64,8 +67,8 @@ webhook role, the one an untrusted `AdmissionReview` body reaches, never holds t
 both `Service`s, both Deployments with their `PodDisruptionBudget`s, and last the
 `MutatingWebhookConfiguration` — the one object that actually puts the webhook in the admission
 path. It installs the CRD from the chart's `crds/` directory; Helm installs `crds/` once and never
-manages it after, so a CRD schema change on upgrade still needs `kubectl apply -f
-charts/weebo-si-operator/crds/` by hand — see [Helm's own docs on
+manages it after, so a CRD schema change on upgrade needs the CRDs applied by hand, **before**
+the `helm upgrade` (*Upgrading* below) — see [Helm's own docs on
 `crds/`](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/).
 
 RFC 0002 has no self-signed fallback of its own: `certificates.provider` is a prerequisite
@@ -121,7 +124,49 @@ reads `Off` on the next watch event. It stops the features rather than rolling t
 already written stay where they are, unrepaired, because only a config that *says* `mode: Off`
 tears anything down. Set `mode: Off` first if the goal is a clean removal.
 
-### Before creating a `WeeboSiConfig`
+### Upgrading
+
+1. **CRDs first**, server-side (the `WeeboSiConfig` CRD is too large for a client-side apply's
+   annotation):
+
+   ```bash
+   kubectl apply --server-side -f charts/weebo-si-operator/crds/   # from the release's chart
+   ```
+
+   An operator started against an older CRD reads a config whose new fields the apiserver has
+   already pruned: the feature they configure stays `Off` with nothing to say why.
+2. **Then `helm upgrade`.** From **0.3.x or older to 0.4.x**, twice: once with
+   `--set imageRewrite.webhooks.enabled=false`, wait for the roll, then with the default. In one
+   step the new `image-rewrite` webhooks (`failurePolicy: Fail`) would be registered while 0.3.x
+   pods, which have no such route, still answer: every workspace pod is refused for the length of
+   the roll. See [`image-rewrite.md`](./image-rewrite.md#upgrade).
+
+Argo CD applies `crds/` on sync (with `ServerSideApply=true`), so step 1 is done for you there;
+the two-step `helm upgrade` is two commits.
+
+### Chart values
+
+The feature switches (`<feature>.rbac.enabled`, each webhook's `failurePolicy`,
+`imageRewrite.webhooks.enabled`) are on each feature's page. The rest:
+
+| Key | Default | What it is |
+| --- | --- | --- |
+| `image.repository` / `tag` / `digest` | `ghcr.io/batleforc/weebo-si-operator`, `appVersion`, — | `digest` pins over `tag` |
+| `namespace.create` / `extraLabels` | `true`, `{}` | the release namespace, labelled with `namespaceExclusionLabel` |
+| `namespaceExclusionLabel` | `hardening.weebo.io/exclude` | a namespace carrying it is skipped by every webhook — the operator's own, and any system namespace you label |
+| `webhook.replicaCount` / `controller.replicaCount` | `2` / `2` | under 2 with the webhook PDB on, the render fails: its one allowed eviction would be an outage of every `Fail` webhook |
+| `webhook.podDisruptionBudget` / `controller.podDisruptionBudget` | `maxUnavailable: 1` / `minAvailable: 1` | the render fails if a budget could never allow an eviction; set `enabled: false` with one replica |
+| `webhook.podAntiAffinity` / `controller.podAntiAffinity` | `true` | preferred, across nodes |
+| `webhook.timeoutSeconds` | `5` | the apiserver's wait for one admission |
+| `webhook.extraArgs` / `controller.extraArgs` | `[]` | extra flags (*Usage*), e.g. `--quota-template-namespace` |
+| `controller.leaderElection` | `true` | the replicas race for one `Lease`; only the holder reconciles |
+| `priorityClassName`, `nodeSelector`, `tolerations` | empty | both Deployments |
+| `metrics.service` | `enabled: true`, port `8081` | the `/metrics` `Service` |
+| `certificates.provider` | `cert-manager` | `cert-manager`, `openshift`, or `none`: no webhook configuration and no certificate rendered — apply your own, with the TLS `Secret` named by `certificates.secretName` (default `<fullname>-webhook-tls`) |
+| `certificates.certManager.issuerRef` | empty: a self-signed `Issuer` | your own issuer instead |
+| `serviceAccount.webhook` / `serviceAccount.controller` | `create: true` | two accounts, never one: the webhook's never holds the controller's writes |
+| `rbac.create` | `true` | the roles of both accounts |
+| `networkPolicy.*` | `enabled: false` | see the chart's `NOTES.txt`: the policy needs the apiserver's addresses |
 
 Two things belong on the checklist, not in code — the operator cannot verify either:
 
@@ -151,7 +196,7 @@ weebo-si-operator webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/cer
                                [--metrics-addr :8080] [--health-addr :8081]
                                --operator-identity <system:serviceaccount:ns:name>
 weebo-si-operator controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
-                               [--canary-image <ref>]
+                               [--canary-image <ref>] [--quota-template-namespace <ns>]
 weebo-si-operator crd         [weebosiconfigs|weebositeams|weebosiusers]
                                # print the generated CRD YAML — what `task recu` writes
 weebo-si-operator features    # print the registry: id, originating RFC, target resource
@@ -164,7 +209,9 @@ weebo-si-operator canary      [--namespace <ns>] [--canary-image <ref>]
                                # run the enforcement probe once and report whether this
                                # cluster's CNI actually enforces NetworkPolicy (RFC 0004);
                                # non-zero exit on anything but `enforcing`
-weebo-si-operator images platform          # the compiled-in image-policy platform patterns
+weebo-si-operator images platform [--cluster]
+                               # the compiled-in platform patterns; --cluster: the live set,
+                               # with the patterns image-rewrite derives and their source
 weebo-si-operator images check <ref>       # parse, normalize and judge one reference
                                [--team <name>] [--namespace <ns>]
 weebo-si-operator images audit             # every image running now and the verdict this
@@ -287,8 +334,14 @@ Three levels, increasingly blunt:
   to know it exists:
 
   ```console
-  kubectl delete mutatingwebhookconfiguration weebo-si-hardening-devworkspaces
+  # every webhook configuration of the release (DevWorkspaces, pods, endpoints, the guard)
+  kubectl delete mutatingwebhookconfiguration,validatingwebhookconfiguration \
+    -l app.kubernetes.io/instance=weebo-si-operator
+  # or only the DevWorkspace one: <release>-devworkspaces
+  kubectl delete mutatingwebhookconfiguration weebo-si-operator-devworkspaces
   ```
+
+  The next `helm upgrade` (or Argo CD sync) puts them back.
 
 - **Uninstall.**
 

@@ -127,7 +127,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `allowedMiddlewares` | `string[]` | no | `[]` | Traefik only: middleware names an `Ingress` may carry **after** ours. |
+| `allowedMiddlewares` | `string[]` | no | `[]` | Traefik only: middlewares appended after ours, in this order, on every gated `Ingress`; the guard pins the whole chain. |
 | `clusterDomain` | `string` | no | `"cluster.local"` | The cluster's DNS domain, which the gateway's in-cluster URL is qualified with.<br /><br />Qualified rather than left to the search path because not every router resolves through it: a proxy with its own resolver applies no search domains, so `<name>.<ns>.svc` is `Host not found` and every gated request a `500`. |
 | [`custom`](#spec.features.endpointAuth.gateway.custom) | `object` | no |  | `Custom` only: the annotations this cluster's controller wants, and the keys the template declares it owns. |
 | `dialect` | `string` | yes |  | Which router this cluster runs.<br /><br />Values: `"Traefik"`, `"HaproxyIngress"`, `"OpenShiftRoute"`, `"Custom"` |

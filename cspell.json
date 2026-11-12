@@ -337,6 +337,7 @@
     "tmpfs",
     "tokenreviews",
     "tokio",
+    "tolerations",
     "typosquat",
     "typosquats",
     "uidmap",

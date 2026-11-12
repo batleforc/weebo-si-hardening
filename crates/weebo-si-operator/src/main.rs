@@ -52,8 +52,9 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
   canary      [--namespace <ns>] [--canary-image <ref>]
               run the enforcement probe once and report whether this cluster's
               CNI actually enforces NetworkPolicy; non-zero exit if it does not
-  images      platform
-                print the compiled-in image-policy platform patterns
+  images      platform [--cluster]
+                print the compiled-in image-policy platform patterns; --cluster
+                reads the live WeeboSiConfig and adds what image-rewrite derives
               check <ref> [--team <name>] [--namespace <ns>]
                 parse, normalize and judge one reference; non-zero if denied
               audit [--namespace <ns> | --all-namespaces]
