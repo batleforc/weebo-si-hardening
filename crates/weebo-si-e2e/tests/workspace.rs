@@ -369,8 +369,8 @@ fn an_upstream_workspace_image_is_rewritten_onto_the_mirror_and_runs() {
 
 /// Observation 2: the Pod half, on an image nobody wrote. A workspace with a project gets
 /// DevWorkspace Operator's `project-clone` init container from `quay.io`; the pod carries it
-/// under the mirror. Asserted on the pod spec, which is what the rewrite changes: whether the
-/// node can then pull that name is the mirror's business, not this row's.
+/// under the mirror. Asserted on the pod spec, or on the name the kubelet then pulled, which is
+/// what the rewrite changes: whether the node can pull it is the mirror's business, not this row's.
 #[test]
 fn an_init_container_devworkspace_operator_injects_is_rewritten_at_the_pod() {
     set_features(json!({
@@ -399,7 +399,10 @@ fn an_init_container_devworkspace_operator_injects_is_rewritten_at_the_pod() {
     apply(&manifest.to_string());
     let _cleanup = Cleanup::new(&["devworkspace", "-n", &ns.name, "with-project"]);
 
-    let init_images = wait_until("the workspace pod to exist", WORKSPACE_START, || {
+    // The mirror does not hold project-clone on kind, so the pull fails at once and DevWorkspace
+    // Operator fails the workspace and removes its pod within seconds: read the pod while it
+    // exists, else the kubelet's pull event, which outlives it.
+    let clone = wait_until("project-clone to reach a pod", WORKSPACE_START, || {
         let pods = get(&[
             "pods",
             "-n",
@@ -408,22 +411,41 @@ fn an_init_container_devworkspace_operator_injects_is_rewritten_at_the_pod() {
             "controller.devfile.io/devworkspace_name=with-project",
         ])
         .ok_or("no pod list")?;
-        let images: Vec<(String, String)> = pods
+        if let Some(init) = pods
             .pointer("/items/0/spec/initContainers")
             .and_then(serde_json::Value::as_array)
-            .ok_or("no pod yet")?
-            .iter()
-            .map(|c| (text(c, "/name"), text(c, "/image")))
-            .collect();
-        Ok(images)
+        {
+            return init
+                .iter()
+                .find(|c| text(c, "/name") == "project-clone")
+                .map(|c| text(c, "/image"))
+                .ok_or_else(|| format!("no project-clone init container: {init:?}"));
+        }
+        let events = get(&["events", "-n", &ns.name]).ok_or("no event list")?;
+        let pulled = events
+            .pointer("/items")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                text(e, "/message")
+                    .strip_prefix("Pulling image ")
+                    .map(str::to_owned)
+            })
+            .find(|image| image.contains("project-clone"));
+        if let Some(image) = pulled {
+            return Ok(image.trim_matches('"').to_owned());
+        }
+        let workspace = get(&["devworkspace", "-n", &ns.name, "with-project"]).unwrap_or_default();
+        let message = text(&workspace, "/status/message");
+        if text(&workspace, "/status/phase") == "Failed" {
+            panic!("the workspace failed before project-clone reached a pod: {message}; {events}");
+        }
+        Err(format!("no pod yet: {message}"))
     });
-    let clone = init_images
-        .iter()
-        .find(|(name, _)| name == "project-clone")
-        .unwrap_or_else(|| panic!("no project-clone init container: {init_images:?}"));
     assert!(
-        clone.1.starts_with("localhost/quay/"),
-        "project-clone was not rewritten: {init_images:?}"
+        clone.starts_with("localhost/quay/"),
+        "project-clone was not rewritten: {clone}"
     );
 }
 
