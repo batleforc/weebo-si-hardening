@@ -89,9 +89,13 @@ jobs:
       - name: Build the workspace image
         run: |
           docker load -i "$RUNNER_TEMP/images/passwd-append.tar"
+          # Second tag: the mirror path RFC 0017's rewrite rule sends `example.invalid/…` to, which
+          # scripts/e2e.sh loads alongside the first (its IMAGES list).
           docker build -f e2e/images/workspace/Containerfile -t localhost/e2e-workspace:e2e \
+            -t localhost/e2e/e2e-workspace:e2e \
             --build-arg PASSWD_APPEND_IMAGE=localhost/passwd-append:e2e e2e/images/workspace
-          docker save -o "$RUNNER_TEMP/e2e-workspace.tar" localhost/e2e-workspace:e2e
+          docker save -o "$RUNNER_TEMP/e2e-workspace.tar" localhost/e2e-workspace:e2e \
+            localhost/e2e/e2e-workspace:e2e
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-e2e-workspace
