@@ -197,7 +197,66 @@ opaque CORS failure the developer will attribute to their own code.
 | `curl`, CI, a test suite | a token from this cluster's IdP **minted for an audience in `bearer.audiences`**, verified and then authorised like a cookie |
 | a task or an extension inside the IDE | nothing, or the workspace SA token — Che forwards no user token into the workspace, so code there is the workspace, not the person |
 | an application with its own token auth | ask for `bearer: Passthrough` on the paths where that is true |
-| a probe or a third-party webhook | ask for an `open` path rule, scoped to that path and method |
+| a probe or a third-party webhook | an `open` path rule, scoped to that path and method (*Opting an endpoint out of sign-in*) |
+
+## Opting an endpoint out of sign-in
+
+Every endpoint is gated by default. Some are called by clients that cannot follow a sign-in — a
+third-party webhook, a CLI, a mobile app, an API another service calls. For those, the opt-out is
+an **anonymous access key**: the admin decides which teams may use it, the developer decides which
+endpoint (or which path) uses it.
+
+**The admin** catalogues the key on the team, in its `WeeboSiTeam`. A team reaches the keys of its
+own catalogue plus the cluster `default`, so a key catalogued on one team is out of every other
+team's reach:
+
+```yaml
+spec:
+  features:
+    endpointAuth:
+      catalog:
+        - { key: open, anonymous: true, delegation: [] }   # anonymous may not delegate
+      default: private
+```
+
+**The developer** selects it on the devfile endpoint; it reaches the generated `Ingress` at the
+next workspace start. The whole endpoint:
+
+```yaml
+endpoints:
+  - name: api
+    targetPort: 8080
+    exposure: public
+    annotation:
+      hardening.weebo.io/access: open
+```
+
+or only the paths that need it, the rest keeping the endpoint's access (first match wins; at most
+`rules.max_per_endpoint`, default 16):
+
+```yaml
+    annotation:
+      hardening.weebo.io/rules: |
+        - { path: /api/webhooks/, match: prefix, access: open, methods: [POST] }
+        - { path: /healthz, match: exact, access: open }
+```
+
+Prefer the path rule: a webhook needs one path and one method open, not the application.
+
+| What happens | |
+| --- | --- |
+| a request to an `open` endpoint or path | answered `200` by the gate, with no identity: the application receives no `X-Auth-Request-User` |
+| `access: open`, or a `rules` entry naming it, from a team without the key | refused at admission in `Enforce`: `the endpoint-auth annotations on this Ingress are not usable: … not granted`. The `Ingress` is not created, so the workspace does not start and says why; nothing is refused in `DryRun` |
+| the gate itself | stays in the chain: the forwardAuth hop, the error page (*The gateway's error page*) and every decision counted in `weebo_si_endpoint_auth_decisions_total` |
+
+Neither the admin nor the developer can annotate a DevWorkspace-generated `Ingress` by hand on a
+default Che install: the guard refuses the first (row 7), and Che's workspace role grants the
+second no write on `ingresses`. The devfile is the path.
+
+An `open` endpoint answers **anyone who knows its URL**: authenticate what it serves yourself (an
+API token, a webhook signature). And it is not a way around the gate: when the forwardAuth hop
+itself is what breaks an endpoint, that is *Break-glass*, which an admin sets and which stays
+visible.
 
 ## Configuration
 
