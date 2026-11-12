@@ -206,8 +206,8 @@ fn measure_whether_a_che_workspace_starts_under_restricted() {
     drop(workspace);
 }
 
-/// Pinned by digest: the `v1.45.1-immutable` tag's, since quay garbage-collects a digest no tag
-/// holds any more. Newer than the one scripts/runtime-matrix-k8s.sh measured, whose digest is gone.
+/// Pinned by digest, the image the runtime matrix measures (scripts/runtime-matrix-k8s.sh): the
+/// `v1.45.1-immutable` tag's, since quay garbage-collects a digest no tag holds any more.
 const BUILDAH: &str = "quay.io/buildah/stable@sha256:e5a33092657823b0830186ea525054cf4cdeef29b6a44833444c59d86f561f29";
 const BUSYBOX: &str = "quay.io/libpod/busybox@sha256:a9286defaba7b3a519d585ba0e37d0b2cbee74ebfe590960b0b1d6a5e97d1e1d";
 

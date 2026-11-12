@@ -25,9 +25,10 @@ RUNTIMES=${RUNTIMES:-"crun runc"}
 PROFILES=${PROFILES:-"weebo-container-build weebo-container-build-chroot weebo-workspace"}
 RUNC_VERSION=1.5.2 # = RUNC_VERSION in .github/workflows/runtime-matrix.yaml
 
-# Pinned by digest, so a cell changes because a runtime or a profile changed, not an image.
-BUILDAH=quay.io/buildah/stable@sha256:77a555756c942f4f0e2916a2a95bace8f109622201b3b70b008a597cf5b7aa69
-PODMAN=quay.io/podman/stable@sha256:90c7dcc328ae74710338fbb37f4505fafe38e63c93cfa61b43e1907d0817871a
+# Pinned by digest, so a cell changes because a runtime or a profile changed, not an image: the
+# `-immutable` tags' (buildah v1.45.1, podman v6.1.3), as quay garbage-collects a `stable` digest.
+BUILDAH=quay.io/buildah/stable@sha256:e5a33092657823b0830186ea525054cf4cdeef29b6a44833444c59d86f561f29
+PODMAN=quay.io/podman/stable@sha256:4cc31850c189386faca95d72988fe9573b3df06360cb65aea3ff5b17a04d0454
 BUSYBOX=quay.io/libpod/busybox@sha256:a9286defaba7b3a519d585ba0e37d0b2cbee74ebfe590960b0b1d6a5e97d1e1d
 
 # id | image | user | /proc | command. Every build has a RUN step, so it really starts a container.
