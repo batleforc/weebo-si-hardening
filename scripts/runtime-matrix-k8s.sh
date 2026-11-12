@@ -47,7 +47,7 @@ POD_TIMEOUT=${POD_TIMEOUT:-300}
 USER_NAMESPACE=${USER_NAMESPACE:-true}
 
 # Same images, same digests as the local tier.
-BUILDAH=quay.io/buildah/stable@sha256:77a555756c942f4f0e2916a2a95bace8f109622201b3b70b008a597cf5b7aa69
+BUILDAH=quay.io/buildah/stable@sha256:e5a33092657823b0830186ea525054cf4cdeef29b6a44833444c59d86f561f29
 PODMAN=quay.io/podman/stable@sha256:90c7dcc328ae74710338fbb37f4505fafe38e63c93cfa61b43e1907d0817871a
 BUSYBOX=quay.io/libpod/busybox@sha256:a9286defaba7b3a519d585ba0e37d0b2cbee74ebfe590960b0b1d6a5e97d1e1d
 
