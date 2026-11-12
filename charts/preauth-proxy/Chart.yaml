@@ -2,8 +2,8 @@ apiVersion: v2
 name: preauth-proxy
 description: A reverse proxy that attaches a renewed upstream credential to forwarded requests that don't already carry one
 type: application
-version: 0.3.0
-appVersion: "0.3.0"
+version: 0.4.0
+appVersion: "0.4.0"
 keywords:
   - reverse-proxy
   - authentication

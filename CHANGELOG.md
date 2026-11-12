@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.0](https://github.com/batleforc/weebo-si-hardening/compare/5c598eff8699684c330d560c3276a8464300ca06..v0.4.0) - 2026-11-12
+#### Features
+- (**deploy**) the weebo-si standard, as a staged reference configuration (#10) - ([5c598ef](https://github.com/batleforc/weebo-si-hardening/commit/5c598eff8699684c330d560c3276a8464300ca06)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+- (**rfc-0017**) image-rewrite, upstream images pulled through the mirror (#11) - ([d18ab1d](https://github.com/batleforc/weebo-si-hardening/commit/d18ab1d12a2a81f285fa4d1d740d0cabc483dbc6)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.0](https://github.com/batleforc/weebo-si-hardening/compare/8bdb63405e1fa4551a6cf6afe8d61e6d8ae2a6ac..v0.3.0) - 2026-11-02
 #### Features
 - (**perf**) the operator's resource budget, measured nightly on a release build - ([220f406](https://github.com/batleforc/weebo-si-hardening/commit/220f406f8dd67fc2bb8b7a3dbd4daa8ff0a1dc5e)) - Max Batleforc, Claude Opus 5.5 (1M context)
