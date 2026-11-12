@@ -22,6 +22,12 @@
 //! are the margin the nightly runs set, written down in `docs/operator-performance.md` — tighten
 //! them there and here together.
 //!
+//! A second case, RFC 0017's *Capacity*: the in-process cost of admitting one pod with 10 images
+//! under 64 `imageRewrite` rules — the `/mutate/v1/pods` work (extraction, rewrite, patch) and
+//! then `image-policy`'s judgement of the rewritten names, through the same `registries()` the
+//! webhook role builds. No apiserver: the network hop is the webhook's `timeoutSeconds`' business,
+//! and what this RFC added is the CPU on each side of it.
+//!
 //! Run with `task envtest:operator-perf`; the `Operator perf` workflow runs it nightly. It is in
 //! the `envtest` feature, but in no suite list: a debug build measures the wrong binary.
 
@@ -37,22 +43,36 @@
     reason = "an integration test's assertions ARE its documentation; a failed expect/panic is the test failing"
 )]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use kube::api::DynamicObject;
 use kube::api::{Api, ListParams, Patch, PatchParams, PostParams};
 use kube::{CustomResourceExt, ResourceExt};
-use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam, WeeboSiUser};
+use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
+use weebo_si_chassis::port::feature_gate::testing::FakeFeatureGate;
+use weebo_si_chassis::port::namespace_view::testing::FakeNamespaceView;
+use weebo_si_chassis::{AdmitOutcome, NamespaceFacts, admit};
+use weebo_si_crd::{
+    FeatureMode, ImagePolicyConfig, ImageRewriteConfig, NamespaceName, WeeboSiConfig, WeeboSiTeam,
+    WeeboSiUser,
+};
 use weebo_si_envtest_support::{EnvTest, free_port};
+use weebo_si_image_policy::port::{ImagePolicyObserver, Resource};
+use weebo_si_image_policy::{LoadedRewrite, VariableName, VariableResult, VariableValues};
+use weebo_si_image_policy_adapters::{
+    pod_images_from_object, registries, rewrite_images_from_object,
+};
+use weebo_si_webhook::render::render_patch;
 
 const OPERATOR_NAMESPACE: &str = "weebo-si-hardening";
 const MANAGED_BY: &str = "hardening.weebo.io/managed-by=weebo-si-operator";
@@ -560,12 +580,21 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
         },
     ];
 
-    let mut report = format!(
-        "### Operator resource budget — controller, {fleet} workspace namespaces, {}s idle\n\n\
-         | measure | measured | budget | |\n| --- | --- | --- | --- |\n",
-        idle.as_secs()
+    report(
+        &format!(
+            "Operator resource budget — controller, {fleet} workspace namespaces, {}s idle",
+            idle.as_secs()
+        ),
+        &rows,
     );
-    for row in &rows {
+}
+
+/// Print `rows` as a Markdown table (stdout, and the job summary when set), then fail on any row
+/// over its budget.
+fn report(title: &str, rows: &[Row]) {
+    let mut report =
+        format!("### {title}\n\n| measure | measured | budget | |\n| --- | --- | --- | --- |\n");
+    for row in rows {
         let verdict = if row.within { "✅" } else { "❌" };
         writeln!(
             report,
@@ -590,4 +619,178 @@ async fn the_controller_brings_a_fleet_under_network_profiles_within_its_budget(
         .map(|row| row.what)
         .collect();
     assert!(over.is_empty(), "over budget: {}", over.join(", "));
+}
+
+/// Discards every observation: the measurement is the decision, not a counter.
+struct SilentObserver;
+
+impl weebo_si_chassis::port::observer::Observer for SilentObserver {
+    fn decided(
+        &self,
+        _feature: weebo_si_chassis::FeatureId,
+        _mode: FeatureMode,
+        _outcome: &weebo_si_chassis::FeatureOutcome,
+    ) {
+    }
+}
+
+impl ImagePolicyObserver for SilentObserver {
+    fn image_judged(
+        &self,
+        _resource: Resource,
+        _team: Option<&weebo_si_crd::TeamName>,
+        _verdict: &weebo_si_image_policy::ImageVerdict,
+        _platform_only: bool,
+    ) {
+    }
+    fn not_granted(
+        &self,
+        _resource: Resource,
+        _team: Option<&weebo_si_crd::TeamName>,
+        _count: usize,
+    ) {
+    }
+    fn variable_resolved(&self, _variable: &VariableName, _result: VariableResult) {}
+    fn variable_value_seen(&self, _ns: &NamespaceName, _v: &VariableName, _value: &str) {}
+}
+
+#[test]
+fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() {
+    if cfg!(debug_assertions) {
+        panic!(
+            "the budget describes the release binary — run with `cargo test --release` (task envtest:operator-perf)"
+        );
+    }
+    let admissions: usize = env_or("PERF_IMAGE_ADMISSIONS", 5000);
+    let budget_p99 = Duration::from_secs_f64(env_or("PERF_BUDGET_IMAGE_P99_MS", 5.0) / 1000.0);
+
+    // 63 rules that never match, then the one that does: the worst case of the linear scan.
+    let mut rules: Vec<serde_json::Value> = (0..63)
+        .map(|i| serde_json::json!({"from": format!("r{i}.example.io"), "to": format!("registry.pkg.weebo.poc/r{i}")}))
+        .collect();
+    rules.push(serde_json::json!({"from": "quay.io", "to": "registry.pkg.weebo.poc/quay"}));
+    let rewrite: ImageRewriteConfig =
+        serde_json::from_value(serde_json::json!({"mode": "Enforce", "rules": rules})).unwrap();
+    let policy: ImagePolicyConfig = serde_json::from_value(serde_json::json!({
+        "mode": "Enforce",
+        "catalog": [{"key": "mirror", "patterns": ["registry.pkg.weebo.poc/quay/devfile/**"]}],
+        "default": ["mirror"],
+    }))
+    .unwrap();
+    let (policy, _) = policy.resolve(&[]);
+    let loaded = LoadedRewrite::load(Some(&policy), Some(&rewrite));
+    assert!(loaded.rules.is_ok(), "{:?}", loaded.rules);
+    let (_, pod_registry, rewrite_registry) = registries(
+        Arc::new(RwLock::new(Some(policy))),
+        Arc::new(RwLock::new(Some(loaded))),
+        Arc::new(SilentObserver),
+    );
+
+    let namespace = NamespaceName::new("dev-ws-perf");
+    let pod = |host: &str| -> DynamicObject {
+        let containers: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "image": format!("{host}/devfile/tool-{i}:v1")}))
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "workspace-perf", "namespace": namespace.as_str()},
+            "spec": {"containers": containers},
+        }))
+        .unwrap()
+    };
+    let upstream = pod("quay.io");
+    let body = serde_json::to_value(&upstream).unwrap();
+    // What the apiserver sends the validating webhook once the patch is applied.
+    let mirrored = pod("registry.pkg.weebo.poc/quay");
+
+    let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+    let namespaces = FakeNamespaceView::new([(
+        namespace.clone(),
+        NamespaceFacts {
+            labels: BTreeMap::new(),
+            selection_annotation: None,
+        },
+    )]);
+    let catalog = FakeDwocCatalog::new(std::iter::empty());
+    let observer = SilentObserver;
+
+    let (mut mutate, mut validate, mut both) = (
+        Vec::with_capacity(admissions),
+        Vec::with_capacity(admissions),
+        Vec::with_capacity(admissions),
+    );
+    for _ in 0..admissions {
+        let started = Instant::now();
+        let subject = rewrite_images_from_object(&namespace, Resource::Pod, &upstream, None, false);
+        let Ok(AdmitOutcome::Allow(mutations)) = admit(
+            &rewrite_registry,
+            &subject,
+            &gate,
+            &namespaces,
+            &catalog,
+            &observer,
+        ) else {
+            panic!("the rewrite must allow");
+        };
+        let patch = render_patch(&body, &mutations);
+        let mutated = started.elapsed();
+        assert_eq!(mutations.len(), 11, "10 images and the annotation");
+        std::hint::black_box(patch);
+
+        let started = Instant::now();
+        let subject = pod_images_from_object(&namespace, &mirrored, VariableValues::new());
+        let outcome = admit(
+            &pod_registry,
+            &subject,
+            &gate,
+            &namespaces,
+            &catalog,
+            &observer,
+        );
+        let validated = started.elapsed();
+        assert!(
+            matches!(outcome, Ok(AdmitOutcome::Allow(_))),
+            "the rewritten pod must be admitted: {outcome:?}"
+        );
+
+        mutate.push(mutated);
+        validate.push(validated);
+        both.push(mutated + validated);
+    }
+    for samples in [&mut mutate, &mut validate, &mut both] {
+        samples.sort();
+    }
+
+    let micros = |d: Duration| format!("{:.0} µs", d.as_secs_f64() * 1e6);
+    let p99 = percentile(&both, 99.0);
+    report(
+        &format!("Image admission — one pod, 10 images, 64 imageRewrite rules, {admissions} runs"),
+        &[
+            Row {
+                what: "/mutate/v1/pods p50",
+                measured: micros(percentile(&mutate, 50.0)),
+                budget: "—".into(),
+                within: true,
+            },
+            Row {
+                what: "/mutate/v1/pods p99",
+                measured: micros(percentile(&mutate, 99.0)),
+                budget: "—".into(),
+                within: true,
+            },
+            Row {
+                what: "/validate/v1/pods p99",
+                measured: micros(percentile(&validate, 99.0)),
+                budget: "—".into(),
+                within: true,
+            },
+            Row {
+                what: "mutate + validate p99",
+                measured: micros(p99),
+                budget: micros(budget_p99),
+                within: p99 <= budget_p99,
+            },
+        ],
+    );
 }

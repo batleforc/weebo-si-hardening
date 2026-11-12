@@ -14,6 +14,7 @@ pub mod feature_mode;
 pub mod free_form;
 pub mod identity;
 pub mod image_policy;
+pub mod image_rewrite;
 pub mod kubearmor_policy;
 pub mod labels;
 mod merge;
@@ -57,6 +58,9 @@ pub use image_policy::{
     Entry, EntryKey, ImageCatalog, ImageGrant, ImageNamespaceSelection, ImagePolicyConfig,
     ImagePolicyConfigViolation, ImageWorkspaceSelection, PlatformConfig, RESERVED_VARIABLES,
     ResolvedImagePolicyConfig, VariableBinding, is_legal_variable_name,
+};
+pub use image_rewrite::{
+    IMAGE_REWRITE_ANNOTATION, ImageRewriteConfig, MAX_REWRITE_RULES, RewriteRule,
 };
 pub use kubearmor_policy::{
     DefaultPosture, KUBEARMOR_CAPABILITIES_POSTURE_ANNOTATION, KUBEARMOR_FILE_POSTURE_ANNOTATION,

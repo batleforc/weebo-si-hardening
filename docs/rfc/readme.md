@@ -97,6 +97,7 @@ fails if it is stale.
 | [0012](./0012-operator-kit-migration.md) | operator kit migration | `Implemented` | `crates/weebo-si-operator` |
 | [0013](./0013-pod-security.md) | pod-security | `Implemented` | `crates/weebo-si-pod-security` |
 | [0014](./0014-resource-quotas.md) | resource-quotas | `Implemented` | `crates/weebo-si-resource-quotas` |
+| [0017](./0017-image-rewrite.md) | image-rewrite | `Accepted` | `crates/weebo-si-image-policy` |
 
 <!-- rfc-index:end -->
 

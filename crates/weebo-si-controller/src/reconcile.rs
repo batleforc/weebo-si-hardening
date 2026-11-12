@@ -270,6 +270,22 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0017's `imageRewrite`. The CRD's CEL rules refuse most mistakes at write; what they
+    // cannot judge — a host by the reference parser's own normalisation — is reported here, and
+    // while it stands the rewrite applies nothing and derives no platform pattern. A warning
+    // (an empty rule set, a rule set deriving nothing) stays in the message, never `Degraded`.
+    if let Some(image_rewrite) = &resolved.image_rewrite {
+        let (state, message, violations) =
+            image_rewrite_status(image_rewrite, resolved.image_policy.as_ref());
+        violation_messages.extend(violations);
+        features.push(FeatureStatus {
+            name: "image-rewrite".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
     // configuration this repo already knew how to reject was reported nowhere — including the one
     // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the
@@ -463,6 +479,35 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
+/// `image-rewrite`'s entry in `status.features[]`: its state, its message, and the violations
+/// that also become the config's conditions — RFC 0017's *Operational considerations* wording.
+fn image_rewrite_status(
+    image_rewrite: &weebo_si_crd::ImageRewriteConfig,
+    image_policy: Option<&weebo_si_crd::ResolvedImagePolicyConfig>,
+) -> (FeatureState, String, Vec<String>) {
+    match weebo_si_image_policy::Rules::new(image_rewrite) {
+        Ok(rules) => {
+            let warnings =
+                weebo_si_image_policy::rewrite_warnings(image_rewrite, &rules, image_policy);
+            let message = if warnings.is_empty() {
+                "configuration valid".to_string()
+            } else {
+                warnings.join("; ")
+            };
+            let state = match image_rewrite.mode {
+                FeatureMode::Off => FeatureState::Disabled,
+                FeatureMode::DryRun => FeatureState::DryRun,
+                FeatureMode::Enforce => FeatureState::Active,
+            };
+            (state, message, Vec::new())
+        }
+        Err(violations) => {
+            let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
+            (FeatureState::Degraded, messages.join("; "), messages)
+        }
+    }
+}
+
 fn degraded_status(generation: i64, message: String) -> WeeboSiConfigStatus {
     let now =
         k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now());
@@ -505,4 +550,62 @@ pub fn error_policy(object: Arc<WeeboSiConfig>, error: &Error, ctx: Arc<Ctx>) ->
         ReasonCode::ConfigReconcileFailed,
         error,
     )
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed assertion is the test failing"
+)]
+mod tests {
+    use super::*;
+
+    fn rewrite(mode: &str, rules: serde_json::Value) -> weebo_si_crd::ImageRewriteConfig {
+        serde_json::from_value(serde_json::json!({
+            "mode": mode,
+            "namespaceSelector": {"matchLabels": {"hardening.weebo.io/workspace-namespace": "true"}},
+            "rules": rules,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_image_rewrite_status_follows_the_rfc_wording() {
+        let quay = serde_json::json!([{"from": "quay.io", "to": "registry.pkg.weebo.poc/quay"}]);
+        assert_eq!(
+            image_rewrite_status(&rewrite("Enforce", quay.clone()), None),
+            (
+                FeatureState::Active,
+                "configuration valid".to_string(),
+                Vec::new()
+            )
+        );
+        assert_eq!(
+            image_rewrite_status(&rewrite("DryRun", serde_json::json!([])), None),
+            (
+                FeatureState::DryRun,
+                "no rules: nothing is rewritten".to_string(),
+                Vec::new()
+            )
+        );
+        assert_eq!(
+            image_rewrite_status(&rewrite("Off", quay), None).0,
+            FeatureState::Disabled
+        );
+    }
+
+    #[test]
+    fn an_invalid_rule_set_is_degraded_and_reaches_the_conditions() {
+        let (state, message, violations) = image_rewrite_status(
+            &rewrite(
+                "Enforce",
+                serde_json::json!([{"from": "quay.io", "to": "registry.pkg.weebo.poc/Quay"}]),
+            ),
+            None,
+        );
+        assert_eq!(state, FeatureState::Degraded);
+        assert!(message.contains("registry.pkg.weebo.poc/Quay"), "{message}");
+        assert_eq!(violations, vec![message]);
+    }
 }

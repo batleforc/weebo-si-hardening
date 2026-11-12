@@ -2275,14 +2275,17 @@ async fn start_image_policy_webhook(env_test: &EnvTest, cert_dir: &std::path::Pa
         ImageMetrics::register(&prometheus_registry).expect("image metrics should register"),
     );
 
-    let (workspace_registry, pod_registry) = weebo_si_image_policy_adapters::registries(
-        config_store.image_policy_config(),
-        Arc::clone(&image_observer),
-    );
+    let (workspace_registry, pod_registry, rewrite_registry) =
+        weebo_si_image_policy_adapters::registries(
+            config_store.image_policy_config(),
+            config_store.image_rewrite_config(),
+            Arc::clone(&image_observer),
+        );
     let state = Arc::new(ImagePolicyState {
         config: config_store.image_policy_config(),
         workspace_registry,
         pod_registry,
+        rewrite_registry,
         gate: Arc::clone(&config_store) as _,
         namespace_view: ns_store as _,
         dwoc_catalog: dwoc_store as _,
@@ -2377,11 +2380,84 @@ async fn register_image_policy_webhooks(client: kube::Client, port: u16, ca_bund
         }]),
     };
 
+    let pod_webhook = pods.webhooks.as_ref().and_then(|w| w.first()).cloned();
     for config in [devworkspaces, pods] {
         api.create(&PostParams::default(), &config)
             .await
             .expect("the validating webhook configuration should be accepted");
     }
+
+    let ca_bundle = pod_webhook
+        .as_ref()
+        .and_then(|w| w.client_config.ca_bundle.clone());
+    // RFC 0017's Pod rewrite, scoped like the Pod rule above. Inert while the config carries no
+    // `imageRewrite` block, so every RFC 0005 test below runs through it unchanged.
+    let rewrite = MutatingWebhookConfiguration {
+        metadata: ObjectMeta {
+            name: Some("weebo-si-hardening-pods-rewrite-envtest".to_string()),
+            ..Default::default()
+        },
+        webhooks: Some(vec![
+            k8s_openapi::api::admissionregistration::v1::MutatingWebhook {
+                name: "images-rewrite.hardening.weebo.io".to_string(),
+                admission_review_versions: vec!["v1".to_string()],
+                side_effects: "None".to_string(),
+                match_policy: Some("Equivalent".to_string()),
+                failure_policy: Some("Fail".to_string()),
+                reinvocation_policy: Some("IfNeeded".to_string()),
+                timeout_seconds: Some(5),
+                rules: Some(vec![RuleWithOperations {
+                    operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
+                    api_groups: Some(vec![String::new()]),
+                    api_versions: Some(vec!["v1".to_string()]),
+                    resources: Some(vec![
+                        "pods".to_string(),
+                        "pods/ephemeralcontainers".to_string(),
+                    ]),
+                    scope: Some("Namespaced".to_string()),
+                }]),
+                namespace_selector: pod_webhook
+                    .as_ref()
+                    .and_then(|w| w.namespace_selector.clone()),
+                client_config: WebhookClientConfig {
+                    url: Some(format!("https://127.0.0.1:{port}/mutate/v1/pods")),
+                    ca_bundle: ca_bundle.clone(),
+                    service: None::<ServiceReference>,
+                },
+                ..Default::default()
+            },
+            // The DevWorkspace half, on its own route (RFC 0017, resolved 8); opt-out, like the
+            // validating DevWorkspace rule above.
+            k8s_openapi::api::admissionregistration::v1::MutatingWebhook {
+                name: "images-rewrite.devworkspaces.hardening.weebo.io".to_string(),
+                admission_review_versions: vec!["v1".to_string()],
+                side_effects: "None".to_string(),
+                match_policy: Some("Equivalent".to_string()),
+                failure_policy: Some("Fail".to_string()),
+                reinvocation_policy: Some("IfNeeded".to_string()),
+                timeout_seconds: Some(5),
+                rules: Some(vec![RuleWithOperations {
+                    operations: Some(vec!["CREATE".to_string(), "UPDATE".to_string()]),
+                    api_groups: Some(vec!["workspace.devfile.io".to_string()]),
+                    api_versions: Some(vec!["v1alpha2".to_string()]),
+                    resources: Some(vec!["devworkspaces".to_string()]),
+                    scope: Some("Namespaced".to_string()),
+                }]),
+                client_config: WebhookClientConfig {
+                    url: Some(format!(
+                        "https://127.0.0.1:{port}/mutate/v1alpha1/devworkspaces/images"
+                    )),
+                    ca_bundle,
+                    service: None::<ServiceReference>,
+                },
+                ..Default::default()
+            },
+        ]),
+    };
+    Api::<MutatingWebhookConfiguration>::all(api.into_client())
+        .create(&PostParams::default(), &rewrite)
+        .await
+        .expect("the mutating webhook configuration should be accepted");
 }
 
 /// A workspace namespace belonging to `team`, carrying the positive label the Pod rule requires.
@@ -2538,6 +2614,171 @@ async fn dry_run_admits_exactly_what_enforce_would_have_denied() {
     })
     .await
     .expect("DryRun must not refuse a pod either");
+}
+
+/// RFC 0017 against a live apiserver: a pod naming an upstream image is rewritten onto the mirror
+/// by the mutating webhook, and `image-policy` — which runs after every mutating webhook — judges
+/// the rewritten name. Without the rewrite this image is refused (the test above's twin).
+#[tokio::test]
+async fn an_upstream_image_is_rewritten_onto_the_mirror_before_image_policy_judges_it() {
+    let env_test = envtest_or_skip!();
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    start_image_policy_webhook(&env_test, cert_dir.path()).await;
+    let mut spec = rfc5_config_spec("Enforce");
+    spec["features"]["imageRewrite"] = serde_json::json!({
+        "mode": "Enforce",
+        "rules": [
+            {"from": "ghcr.io", "to": "registry.internal/shared/ghcr"},
+            {"from": "quay.io", "to": "registry.internal/mirror/quay"},
+        ],
+    });
+    create_config(client.clone(), spec).await;
+    create_rfc5_namespace(client.clone(), TEAM_2_NAMESPACE, "team-2").await;
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    let pods: Api<Pod> = Api::namespaced(client, TEAM_2_NAMESPACE);
+    let created = retry_until_webhook_routes(|| async {
+        pods.create(
+            &PostParams::default(),
+            &pod_with_image(
+                TEAM_2_NAMESPACE,
+                "rewritten-pod",
+                "ghcr.io/someone/tool:main",
+            ),
+        )
+        .await
+    })
+    .await
+    .expect("the rewritten image is in the catalogue and must be admitted");
+    let image = created.spec.unwrap().containers[0].image.clone();
+    assert_eq!(
+        image.as_deref(),
+        Some("registry.internal/shared/ghcr/someone/tool:main")
+    );
+    assert_eq!(
+        created
+            .metadata
+            .annotations
+            .unwrap_or_default()
+            .get(weebo_si_crd::IMAGE_REWRITE_ANNOTATION)
+            .map(String::as_str),
+        Some(r#"{"dev":"ghcr.io/someone/tool:main"}"#)
+    );
+
+    // The derived platform set: Che's injected image arrives rewritten and is still admitted,
+    // with no `extra` written for it.
+    let clone = pods
+        .create(
+            &PostParams::default(),
+            &pod_with_image(
+                TEAM_2_NAMESPACE,
+                "clone-pod",
+                "quay.io/devfile/project-clone:v0.30.0",
+            ),
+        )
+        .await
+        .expect("the mirrored platform image must be admitted by the derived pattern");
+    assert_eq!(
+        clone.spec.unwrap().containers[0].image.as_deref(),
+        Some("registry.internal/mirror/quay/devfile/project-clone:v0.30.0")
+    );
+    // UPDATE: a new image on a running pod is rewritten, and its record follows; a write that
+    // changes no image (the label patch) leaves both alone.
+    let updated = pods
+        .patch(
+            "rewritten-pod",
+            &PatchParams::default(),
+            &Patch::<serde_json::Value>::Json(
+                serde_json::from_value(serde_json::json!([
+                    {"op": "replace", "path": "/spec/containers/0/image", "value": "ghcr.io/someone/tool:v2"},
+                ]))
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("a rewritten new image must be admitted on UPDATE");
+    assert_eq!(
+        updated.spec.unwrap().containers[0].image.as_deref(),
+        Some("registry.internal/shared/ghcr/someone/tool:v2")
+    );
+    let relabelled = pods
+        .patch(
+            "rewritten-pod",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"metadata": {"labels": {"touched": "yes"}}})),
+        )
+        .await
+        .expect("a label patch must be admitted");
+    assert_eq!(
+        relabelled
+            .metadata
+            .annotations
+            .unwrap_or_default()
+            .get(weebo_si_crd::IMAGE_REWRITE_ANNOTATION)
+            .map(String::as_str),
+        Some(r#"{"dev":"ghcr.io/someone/tool:v2"}"#)
+    );
+
+    // The `pods/ephemeralcontainers` subresource: the debug container is rewritten, and no
+    // annotation is recorded — that write keeps nothing but the ephemeral list.
+    let debugged = pods
+        .patch_subresource(
+            "ephemeralcontainers",
+            "rewritten-pod",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"spec": {"ephemeralContainers": [
+                {"name": "debug", "image": "ghcr.io/someone/debug:1"},
+            ]}})),
+        )
+        .await
+        .expect("a rewritten debug container must be admitted");
+    assert_eq!(
+        debugged.spec.unwrap().ephemeral_containers.unwrap()[0]
+            .image
+            .as_deref(),
+        Some("registry.internal/shared/ghcr/someone/debug:1")
+    );
+
+    // The DevWorkspace route: the component is rewritten in the stored object, so the developer
+    // reads the mirror name in their own workspace, and `image-policy`'s DevWorkspace half
+    // admits it.
+    let workspaces: Api<DynamicObject> = Api::namespaced_with(
+        pods.into_client(),
+        TEAM_2_NAMESPACE,
+        &devworkspace_resource(),
+    );
+    let workspace = retry_until_webhook_routes(|| async {
+        workspaces
+            .create(
+                &PostParams::default(),
+                &devworkspace_with_image(
+                    TEAM_2_NAMESPACE,
+                    "rewritten-ws",
+                    "ghcr.io/someone/tool:main",
+                ),
+            )
+            .await
+    })
+    .await
+    .expect("the rewritten component image is in the catalogue and must be admitted");
+    assert_eq!(
+        workspace
+            .data
+            .pointer("/spec/template/components/0/container/image")
+            .and_then(|value| value.as_str()),
+        Some("registry.internal/shared/ghcr/someone/tool:main")
+    );
+    assert_eq!(
+        workspace
+            .metadata
+            .annotations
+            .unwrap_or_default()
+            .get(weebo_si_crd::IMAGE_REWRITE_ANNOTATION)
+            .map(String::as_str),
+        Some(r#"{"dev":"ghcr.io/someone/tool:main"}"#)
+    );
 }
 
 /// The floor: a pod carrying an image no DevWorkspace ever named — which is the case the

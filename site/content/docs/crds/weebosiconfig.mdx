@@ -43,6 +43,7 @@ spec:
 | [`endpointAuth`](#spec.features.endpointAuth) | `object` | no |  | `spec.features.endpointAuth`, per RFC 0009. |
 | [`identity`](#spec.features.identity) | `object` | no |  | `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems other than this cluster's own, and the only one with allow-lists of its own. |
 | [`imagePolicy`](#spec.features.imagePolicy) | `object` | no |  | `spec.features.imagePolicy`, per RFC 0005. |
+| [`imageRewrite`](#spec.features.imageRewrite) | `object` | no |  | `spec.features.imageRewrite`, per RFC 0017. |
 | [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | `spec.features.kubearmorPolicy`, per RFC 0006. |
 | [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | `spec.features.networkProfiles`, per RFC 0004. |
 | [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | `spec.features.podSecurity`, per RFC 0013. |
@@ -307,6 +308,43 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `attribute` | `string` | no | `"hardening.weebo.io/image-policy"` | DevWorkspace attribute naming a comma-separated entry key list. The empty string disables this selection step entirely. |
+
+### `spec.features.imageRewrite` [#spec.features.imageRewrite]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.imageRewrite.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| [`rules`](#spec.features.imageRewrite.rules) | `object[]` | no | `[]` | The rules, at most 64. Empty is legal and rewrites nothing.<br /><br />Constraints: `maxItems: 64` |
+
+**Rules**
+
+- `rules`: two rules share the same `from`: which one wins would be declaration order — `self.all(r, self.exists_one(s, s.from.lowerAscii() == r.from.lowerAscii()))`
+- `rules`: a rule's `to` host must not be another rule's `from` (chain or loop) — `self.all(r, !self.exists(s, r.to.lowerAscii().startsWith(s.from.lowerAscii() + '/')))`
+- `rules`: a rule's `to` must be a host followed by at least one path component — `self.all(r, r.to.contains('/'))`
+- `rules`: a rule's `from` and the host of its `to` must contain a `.` or a `:`, or be `localhost`: an image reads any other first component as a Docker Hub namespace — `self.all(r, (r.from.matches('[.:]') || r.from.lowerAscii() == 'localhost') && (r.to.matches('^[^/]*[.:][^/]*/') || r.to.lowerAscii().startsWith('localhost/')))`
+
+### `spec.features.imageRewrite.namespaceSelector` [#spec.features.imageRewrite.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.imageRewrite.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.imageRewrite.namespaceSelector.matchExpressions[]` [#spec.features.imageRewrite.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.imageRewrite.rules[]` [#spec.features.imageRewrite.rules]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `from` | `string` | yes |  | A registry host — `docker.io`, `quay.io`, `registry.example:5000`.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `to` | `string` | yes |  | A host followed by at least one `/`-separated path component — `registry.pkg.weebo.poc/quay`.<br /><br />Constraints: `minLength: 1`, `maxLength: 512` |
 
 ### `spec.features.kubearmorPolicy` [#spec.features.kubearmorPolicy]
 

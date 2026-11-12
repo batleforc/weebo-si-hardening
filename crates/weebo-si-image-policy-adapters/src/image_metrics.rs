@@ -41,6 +41,8 @@ pub struct ImageMetrics {
     platform_total: IntCounterVec,
     variable_total: IntCounterVec,
     variable_changed_total: IntCounterVec,
+    /// RFC 0017's `weebo_si_image_rewrites_total{resource, result}`.
+    rewrites_total: IntCounterVec,
     /// Last-seen value per (namespace, variable), so a *change* can be told from a first
     /// observation. Bounded by the namespace count times the declared-variable count, and held
     /// here rather than exported: it is the counter's state, not a metric of its own — the
@@ -80,7 +82,17 @@ impl ImageMetrics {
             &["variable"],
         )?;
 
+        let rewrites_total = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_image_rewrites_total",
+                "Images image-rewrite looked at, by resource and result \
+                 (rewritten, unmatched, unparseable, error)",
+            ),
+            &["resource", "result"],
+        )?;
+
         registry.register(Box::new(policy_total.clone()))?;
+        registry.register(Box::new(rewrites_total.clone()))?;
         registry.register(Box::new(platform_total.clone()))?;
         registry.register(Box::new(variable_total.clone()))?;
         registry.register(Box::new(variable_changed_total.clone()))?;
@@ -90,6 +102,7 @@ impl ImageMetrics {
             platform_total,
             variable_total,
             variable_changed_total,
+            rewrites_total,
             seen: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
@@ -121,6 +134,28 @@ impl ImagePolicyObserver for ImageMetrics {
         self.policy_total
             .with_label_values(&["not_granted", resource.label(), team_label(team)])
             .inc();
+    }
+
+    /// The reference goes to the log line, never to a label: same rule as every metric here.
+    fn image_rewritten(
+        &self,
+        resource: Resource,
+        subject: &str,
+        result: &'static str,
+        rewrite: Option<(&str, &str)>,
+    ) {
+        self.rewrites_total
+            .with_label_values(&[resource.label(), result])
+            .inc();
+        if let Some((from, to)) = rewrite {
+            tracing::info!(
+                "image-rewrite match resource={} subject={} from={} to={}",
+                resource.kind(),
+                weebo_si_image_policy::escape_reference(subject),
+                weebo_si_image_policy::escape_reference(from),
+                weebo_si_image_policy::escape_reference(to),
+            );
+        }
     }
 
     fn variable_resolved(&self, variable: &VariableName, result: VariableResult) {

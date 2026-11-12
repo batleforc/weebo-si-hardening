@@ -109,6 +109,49 @@ impl Subject for PodImages {
     }
 }
 
+/// One image `image-rewrite` may rewrite, and where it sits in the admitted object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageSlot {
+    /// Path segments from the object's root to the image string —
+    /// `["spec", "initContainers", "0", "image"]`. What the `SetString` mutation writes.
+    pub location: Vec<String>,
+    /// The container, component or `volume/<name>`: the key of the annotation entry.
+    pub name: String,
+    /// The image exactly as written.
+    pub image: String,
+}
+
+/// A `DevWorkspace` or a `Pod` under `image-rewrite` (RFC 0017).
+///
+/// Carries only the images the adapter decided may change: on `UPDATE`, an entry equal to
+/// `oldObject`'s is left out, which is what keeps switching to `Enforce` from restarting running
+/// workspaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RewriteImages {
+    /// The object's name, for the log line.
+    pub name: String,
+    /// The namespace it is being written in.
+    pub namespace: NamespaceName,
+    /// `DevWorkspace` or `Pod`.
+    pub resource: Resource,
+    /// The images that may be rewritten.
+    pub images: Vec<ImageSlot>,
+    /// The `hardening.weebo.io/image-rewrite` annotation as the object carries it, parsed —
+    /// merged with, never replaced. `None` when the write cannot carry an annotation (the
+    /// `pods/ephemeralcontainers` subresource keeps only `spec.ephemeralContainers`).
+    pub recorded: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl Subject for RewriteImages {
+    fn namespace(&self) -> &NamespaceName {
+        &self.namespace
+    }
+
+    fn resource(&self) -> &'static str {
+        self.resource.kind()
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,

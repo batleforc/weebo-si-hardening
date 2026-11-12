@@ -41,6 +41,13 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0005",
         resource: "DevWorkspace, Pod",
     },
+    // Its own `FeatureId` beside `image-policy`, so the rewrite can be dry-run while the policy
+    // enforces (RFC 0017, resolved 6).
+    FeatureDescriptor {
+        id: "image-rewrite",
+        rfc: "RFC 0017",
+        resource: "DevWorkspace, Pod",
+    },
     FeatureDescriptor {
         id: "kubearmor-policy",
         rfc: "RFC 0006",

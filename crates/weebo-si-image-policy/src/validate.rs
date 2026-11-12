@@ -8,11 +8,18 @@
 //! than left to be rediscovered.
 
 use weebo_si_crd::{
-    ImagePolicyConfigViolation, RESERVED_VARIABLES, ResolvedImagePolicyConfig, Team,
+    FeatureMode, ImagePolicyConfigViolation, ImageRewriteConfig, Operator, RESERVED_VARIABLES,
+    ResolvedImagePolicyConfig, Team,
 };
 
 use crate::pattern::Pattern;
 use crate::platform::platform_patterns;
+use crate::rewrite::Rules;
+
+/// The label the chart's pod webhooks select on (`templates/mutatingwebhookconfiguration.yaml`):
+/// a namespace without it gets no `/mutate/v1/pods` call, so its injected images are never
+/// rewritten (RFC 0017, T10).
+pub const POD_WEBHOOK_LABEL: &str = "hardening.weebo.io/workspace-namespace";
 use crate::variable::{PathComponent, VariableName};
 
 /// Every violation this configuration has — structural and parse-dependent, in that order.
@@ -70,7 +77,7 @@ pub fn validate(
     // An unparseable `platform.extra` entry is reported against a synthetic `platform` key: it
     // is not a catalogue entry, and inventing an entry key for it would be less honest than
     // naming the field it came from.
-    if let Err((raw, reason)) = platform_patterns(&config.platform) {
+    if let Err((raw, reason)) = platform_patterns(&config.platform, None) {
         violations.push(ImagePolicyConfigViolation::UnparseablePattern {
             entry: weebo_si_crd::EntryKey::new("platform.extra"),
             pattern: raw,
@@ -126,6 +133,61 @@ pub fn validate(
     violations
 }
 
+/// RFC 0017's `image-rewrite` warnings, worded as its *Operational considerations* table fixes
+/// them: things that work but not as the admin probably meant, reported in the feature's status
+/// message and never as `Degraded`. Empty when the feature is `Off` — nothing runs to warn about.
+///
+/// `policy` is `imagePolicy`, when present: without it nothing judges a rewritten image, so no
+/// rule can be "refused by every pattern".
+pub fn rewrite_warnings(
+    config: &ImageRewriteConfig,
+    rules: &Rules,
+    policy: Option<&ResolvedImagePolicyConfig>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if config.mode == FeatureMode::Off {
+        return warnings;
+    }
+    if rules.is_empty() {
+        warnings.push("no rules: nothing is rewritten".to_string());
+    }
+    if let Some(policy) = policy {
+        let mut patterns = platform_patterns(&policy.platform, Some(rules)).unwrap_or_default();
+        patterns.extend(
+            policy
+                .catalog
+                .entries()
+                .iter()
+                .flat_map(|entry| &entry.patterns)
+                .filter_map(|raw| Pattern::parse(raw).ok()),
+        );
+        for (from, to) in rules.iter() {
+            let (host, prefix) = to.split_once('/').unwrap_or((&to, ""));
+            if !patterns
+                .iter()
+                .any(|pattern| pattern.may_match_under(host, prefix))
+            {
+                warnings.push(format!(
+                    "rule {from} → {to}: no imagePolicy pattern permits anything under it"
+                ));
+            }
+        }
+    }
+    let requires_label = config.namespace_selector.as_ref().is_some_and(|selector| {
+        selector.match_labels.contains_key(POD_WEBHOOK_LABEL)
+            || selector.match_expressions.iter().any(|expression| {
+                expression.key == POD_WEBHOOK_LABEL
+                    && matches!(expression.operator, Operator::Exists | Operator::In)
+            })
+    });
+    if !requires_label {
+        warnings.push(format!(
+            "selects namespaces without {POD_WEBHOOK_LABEL}: injected images there are not rewritten"
+        ));
+    }
+    warnings
+}
+
 /// Whether `name` may be used in a pattern under this configuration — the two built in, plus
 /// whatever `spec.variables` declares. Exposed for `images check`, which reports an undeclared
 /// name the same way this validator does.
@@ -169,6 +231,96 @@ mod tests {
             on_not_granted: OnUnknownKey::default(),
             platform: PlatformConfig::default(),
         })
+    }
+
+    fn rewrite(selector: Option<Selector>, rules: &[(&str, &str)]) -> ImageRewriteConfig {
+        ImageRewriteConfig {
+            mode: FeatureMode::Enforce,
+            namespace_selector: selector,
+            rules: rules
+                .iter()
+                .map(|(from, to)| weebo_si_crd::RewriteRule {
+                    from: (*from).to_string(),
+                    to: (*to).to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn workspace_selector() -> Option<Selector> {
+        Some(Selector {
+            match_labels: BTreeMap::from([(POD_WEBHOOK_LABEL.to_string(), "true".to_string())]),
+            match_expressions: Vec::new(),
+        })
+    }
+
+    fn warnings(config: &ImageRewriteConfig, policy: &ResolvedImagePolicyConfig) -> Vec<String> {
+        rewrite_warnings(config, &Rules::new(config).unwrap(), Some(policy))
+    }
+
+    #[test]
+    fn selector_wider_than_pod_webhook_warns() {
+        // RFC 0017, T10: no selector, or one not requiring the pod webhook's label, selects
+        // namespaces whose injected images the pod route never sees.
+        let policy = config(
+            vec![entry("mirror", &["registry.pkg.weebo.poc/**"])],
+            &["mirror"],
+        );
+        let rules = [("quay.io", "registry.pkg.weebo.poc/quay")];
+        let wider = "selects namespaces without hardening.weebo.io/workspace-namespace: \
+                     injected images there are not rewritten";
+        assert_eq!(warnings(&rewrite(None, &rules), &policy), vec![wider]);
+        let other = Some(Selector {
+            match_labels: BTreeMap::from([("team".to_string(), "a".to_string())]),
+            match_expressions: Vec::new(),
+        });
+        assert_eq!(warnings(&rewrite(other, &rules), &policy), vec![wider]);
+        assert!(warnings(&rewrite(workspace_selector(), &rules), &policy).is_empty());
+        let exists = Some(Selector {
+            match_labels: BTreeMap::new(),
+            match_expressions: vec![weebo_si_crd::Expression {
+                key: POD_WEBHOOK_LABEL.to_string(),
+                operator: Operator::Exists,
+                values: Vec::new(),
+            }],
+        });
+        assert!(warnings(&rewrite(exists, &rules), &policy).is_empty());
+    }
+
+    #[test]
+    fn a_rule_no_pattern_permits_and_an_empty_set_warn_and_off_warns_nothing() {
+        let policy = config(
+            vec![entry("hub", &["registry.pkg.weebo.poc/hub/**"])],
+            &["hub"],
+        );
+        let config = rewrite(
+            workspace_selector(),
+            &[
+                ("docker.io", "registry.pkg.weebo.poc/hub"),
+                ("ghcr.io", "registry.pkg.weebo.poc/ghcr"),
+            ],
+        );
+        assert_eq!(
+            warnings(&config, &policy),
+            vec![
+                "rule ghcr.io → registry.pkg.weebo.poc/ghcr: no imagePolicy pattern permits \
+                 anything under it"
+            ]
+        );
+        // `quay.io`'s rule is permitted by the patterns it derives from the builtin list.
+        let quay = rewrite(
+            workspace_selector(),
+            &[("quay.io", "registry.pkg.weebo.poc/quay")],
+        );
+        assert!(warnings(&quay, &policy).is_empty());
+        let empty = rewrite(workspace_selector(), &[]);
+        assert_eq!(
+            warnings(&empty, &policy),
+            vec!["no rules: nothing is rewritten"]
+        );
+        let mut off = rewrite(None, &[]);
+        off.mode = FeatureMode::Off;
+        assert!(rewrite_warnings(&off, &Rules::default(), Some(&policy)).is_empty());
     }
 
     fn team(name: &str) -> Team {

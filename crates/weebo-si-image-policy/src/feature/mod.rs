@@ -12,5 +12,6 @@
 //! govern both, exactly as `network-profiles`' reconcile and admission halves share theirs.
 
 pub mod core;
+pub mod image_rewrite;
 pub mod pod_images;
 pub mod workspace_images;

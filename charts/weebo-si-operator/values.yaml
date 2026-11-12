@@ -359,6 +359,15 @@ imagePolicy:
   podWebhook:
     failurePolicy: Fail
 
+# RFC 0017's `image-rewrite` webhooks: `/mutate/v1/pods`, and a second webhook on the DevWorkspace
+# MutatingWebhookConfiguration. Off by default for the release that ships the routes, so an
+# upgrade never registers a webhook before the pods serving it are rolled out (a 404 under
+# `failurePolicy: Fail` refuses every workspace pod); turn it on once the new operator is running.
+# The rules themselves live on the `WeeboSiConfig` (`spec.features.imageRewrite`).
+imageRewrite:
+  webhooks:
+    enabled: false
+
 serviceAccount:
   webhook:
     create: true

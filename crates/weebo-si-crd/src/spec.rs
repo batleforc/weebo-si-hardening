@@ -10,6 +10,7 @@ use crate::dwoc_pin::{DwocPinConfig, ResolvedDwocPinConfig};
 use crate::endpoint_auth::{EndpointAuthConfig, ResolvedEndpointAuthConfig};
 use crate::identity::IdentityConfig;
 use crate::image_policy::{ImagePolicyConfig, ResolvedImagePolicyConfig};
+use crate::image_rewrite::ImageRewriteConfig;
 use crate::kubearmor_policy::{KubeArmorPolicyConfig, ResolvedKubeArmorPolicyConfig};
 use crate::network_profiles::{NetworkProfilesConfig, ResolvedNetworkProfilesConfig};
 use crate::pod_security::{PodSecurityConfig, ResolvedPodSecurityConfig};
@@ -54,6 +55,9 @@ pub struct Features {
     /// `spec.features.resourceQuotas`, per RFC 0014.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quotas: Option<ResourceQuotasConfig>,
+    /// `spec.features.imageRewrite`, per RFC 0017.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_rewrite: Option<ImageRewriteConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -125,6 +129,8 @@ pub struct ResolvedFeatures {
     pub pod_security: Option<ResolvedPodSecurityConfig>,
     /// `spec.features.resourceQuotas`, resolved.
     pub resource_quotas: Option<ResolvedResourceQuotasConfig>,
+    /// `spec.features.imageRewrite`, unchanged: not team-overridable (RFC 0017, resolved 7).
+    pub image_rewrite: Option<ImageRewriteConfig>,
 }
 
 impl WeeboSiConfigSpec {
@@ -274,6 +280,7 @@ impl WeeboSiConfigSpec {
             identity: self.features.identity.clone(),
             pod_security,
             resource_quotas,
+            image_rewrite: self.features.image_rewrite.clone(),
         };
         (resolved, conflicts)
     }
