@@ -74,7 +74,7 @@ never remove one. The upstream names stay allowed, for the namespaces the rewrit
 | `kubectl get weebosiconfig cluster -o jsonpath='{.status.features[?(@.name=="image-rewrite")]}'` | `configuration valid`, or the warnings below; `Degraded` with every reason when a rule is refused |
 | `weebo_si_image_rewrites_total{resource, result}` | `resource` ∈ `pod`, `devworkspace`; `result` ∈ `rewritten`, `unmatched`, `unparseable`, `error` |
 | `weebo_si_feature_mode{feature="image-rewrite"}` | the mode in force |
-| webhook logs | `image-rewrite match resource=… subject=… from=… to=…` per rewritten image |
+| webhook logs | `image-rewrite match resource=… namespace=… subject=… from=… to=…` per rewritten image |
 
 **Warnings** (the feature stays `Active`):
 

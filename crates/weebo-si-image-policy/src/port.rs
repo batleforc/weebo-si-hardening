@@ -103,6 +103,7 @@ pub trait ImagePolicyObserver: Send + Sync {
     fn image_rewritten(
         &self,
         _resource: Resource,
+        _namespace: &weebo_si_crd::NamespaceName,
         _subject: &str,
         _result: &'static str,
         _rewrite: Option<(&str, &str)>,
@@ -125,7 +126,13 @@ pub mod testing {
     /// One recorded not-granted observation: resource, team, how many keys were dropped.
     pub type NotGrantedRecord = (Resource, Option<TeamName>, usize);
     /// One recorded rewrite observation: resource, subject, result, `(from, to)` when rewritten.
-    pub type RewriteRecord = (Resource, String, &'static str, Option<(String, String)>);
+    pub type RewriteRecord = (
+        Resource,
+        String,
+        String,
+        &'static str,
+        Option<(String, String)>,
+    );
 
     /// Records every observation, for a test to assert over.
     #[derive(Default)]
@@ -226,6 +233,7 @@ pub mod testing {
         fn image_rewritten(
             &self,
             resource: Resource,
+            namespace: &weebo_si_crd::NamespaceName,
             subject: &str,
             result: &'static str,
             rewrite: Option<(&str, &str)>,
@@ -235,6 +243,7 @@ pub mod testing {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push((
                     resource,
+                    namespace.as_str().to_string(),
                     subject.to_string(),
                     result,
                     rewrite.map(|(from, to)| (from.to_string(), to.to_string())),
