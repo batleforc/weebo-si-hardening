@@ -13,13 +13,13 @@ superseded-by: []
 
 # RFC 0017 — image-rewrite
 
-| Field     | Value                                                                  |
-| --------- | ---------------------------------------------------------------------- |
-| Short     | rewrite workspace image names onto a mirror                            |
-| Settles   | an image named from an upstream registry is pulled through the mirror  |
-| Co-author | Claude Opus 5.5                                                        |
+| Field     | Value                                                                                                                                                                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Short     | rewrite workspace image names onto a mirror                                                                                                                                                                                              |
+| Settles   | an image named from an upstream registry is pulled through the mirror                                                                                                                                                                    |
+| Co-author | Claude Opus 5.5                                                                                                                                                                                                                          |
 | Touches   | `crates/weebo-si-image-policy`, `crates/weebo-si-image-policy-adapters`, `crates/weebo-si-crd`, `crates/weebo-si-runtime`, `crates/weebo-si-controller`, `crates/weebo-si-operator`, `charts/weebo-si-operator`, `deploy/weebo-si`, docs |
-| Risk      | medium (*Security considerations*)                                     |
+| Risk      | medium (*Security considerations*)                                                                                                                                                                                                       |
 
 > Reference material (~8 000 words). A reviewer short on time reads *Summary*,
 > *Security considerations* and *Unresolved questions*.
