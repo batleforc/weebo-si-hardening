@@ -350,12 +350,13 @@ Every gated `Ingress` then carries:
 ```yaml
 metadata:
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: <operator namespace>-weebo-si-endpoint-auth@kubernetescrd[,<allowedMiddlewares>…]
+    traefik.ingress.kubernetes.io/router.middlewares: [<errorPageMiddleware>,]<operator namespace>-weebo-si-endpoint-auth@kubernetescrd[,<allowedMiddlewares>…]
     hardening.weebo.io/endpoint-auth: managed
 ```
 
-Ours is always first, followed by **every** entry of `gateway.allowedMiddlewares`, in order, on
-every gated `Ingress`. The validating webhook pins that whole value: an update that prepends,
+Ours comes first — after only `gateway.errorPageMiddleware` when it is set (*The gateway's error
+page* below) — followed by **every** entry of `gateway.allowedMiddlewares`, in order, on every
+gated `Ingress`. The validating webhook pins that whole value: an update that prepends,
 appends, removes or reorders an entry is refused with `the gate is managed by weebo-si-operator:
 … may not be changed`, because a middleware ahead of `forwardAuth` (a `headers` rewrite) could
 change the path the gate judges. A middleware a team needs on its endpoints (compression, a
@@ -412,12 +413,23 @@ spec:
 ### The gateway's error page
 
 The endpoint-gateway chart's `errorPage` renders a Traefik `errors` middleware,
-`<release>-errors` in the gateway's namespace, for `5xx` answers. It only takes effect where an
-`Ingress` names it, which on gated endpoints means `allowedMiddlewares` — that is, **after**
-`forwardAuth`. A `forwardAuth` that cannot reach the gateway answers its `500` itself, without
-calling the middlewares behind it, so in that position the page is not served for the outage it
-was written for; it does cover a `5xx` from the workspace behind the gate. The gateway's own sign-in
-`Ingress` can name it directly.
+`<release>-errors` in the gateway's namespace, for `5xx` answers. To serve it when the gateway
+itself is down, name it in `gateway.errorPageMiddleware`:
+
+```yaml
+gateway:
+  errorPageMiddleware: weebo-si-hardening-endpoint-gateway-errors@kubernetescrd
+```
+
+It goes **in front of** `forwardAuth`, the only middleware allowed there. Behind it, it would
+never see that outage: a `forwardAuth` that cannot reach the gateway answers its `500` itself,
+without calling what follows (checked on Traefik 3.7.13: behind, a bare `500`; in front, the
+page). An `errors` middleware only replaces a `5xx` answer and never touches the request, so in
+front of the gate it cannot change what the gate judges. That is also why it must be a middleware
+of the operator's namespace, `<gateway.service.namespace>-<name>@kubernetescrd`, which only an
+admin writes: any other value is not attached, and the configuration is `Degraded` with
+`gateway.errorPageMiddleware "…" is not attached`. It also covers a `5xx` from the workspace
+behind the gate.
 
 ## Rollout
 

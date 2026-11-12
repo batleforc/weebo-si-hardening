@@ -459,6 +459,23 @@ fn template_users(template: &str, stem: &str) -> std::collections::BTreeSet<Stri
     out
 }
 
+impl GatewayRef {
+    /// `error_page_middleware`, when it names a middleware in the gateway's own namespace —
+    /// the only place a middleware may sit in front of the gate.
+    pub fn error_page_entry(&self) -> Option<&str> {
+        let entry = self.error_page_middleware.as_deref()?;
+        let name = entry
+            .strip_prefix(self.service.namespace.as_str())?
+            .strip_prefix('-')?
+            .strip_suffix("@kubernetescrd")?;
+        let valid = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        valid.then_some(entry)
+    }
+}
+
 /// Where the gateway is, and how the routing object is told to consult it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -483,6 +500,12 @@ pub struct GatewayRef {
     /// guard pins the whole chain.
     #[serde(default)]
     pub allowed_middlewares: Vec<String>,
+    /// Traefik only: one `errors` middleware placed **before** ours, so it also answers the `5xx`
+    /// `forwardAuth` returns when the gateway is unreachable — after ours it never sees that one.
+    /// It must be `<service.namespace>-<name>@kubernetescrd`, a middleware in the operator's own
+    /// namespace, which only an admin writes; anything else is not attached and is reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_page_middleware: Option<String>,
     /// `Custom` only: the annotations this cluster's controller wants, and the keys the template
     /// declares it owns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -664,10 +687,18 @@ impl Dialect {
         let url = gateway.service_url();
         match self {
             Self::Traefik => {
-                let mut chain = vec![format!(
+                // The error page wraps the gate so it sees the gate's own `500`; it only rewrites
+                // a `5xx` answer and never the request, so in front of `forwardAuth` it cannot
+                // change what the gate judges.
+                let mut chain: Vec<String> = gateway
+                    .error_page_entry()
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect();
+                chain.push(format!(
                     "{}-{}@kubernetescrd",
                     gateway.service.namespace, MIDDLEWARE_NAME
-                )];
+                ));
                 chain.extend(gateway.allowed_middlewares.iter().cloned());
                 annotations.insert(
                     "traefik.ingress.kubernetes.io/router.middlewares".to_owned(),
@@ -944,6 +975,9 @@ pub enum EndpointAuthConfigViolation {
     /// The `HaproxyIngress` dialect is selected without the admin asserting that the controller
     /// carries the prerequisite this dialect cannot install for itself.
     HaproxyPrerequisiteNotAsserted,
+    /// `gateway.errorPageMiddleware` is set on a dialect other than Traefik, or does not name a
+    /// middleware in the gateway's namespace: it is not attached.
+    BadErrorPageMiddleware(String),
 }
 
 impl fmt::Display for EndpointAuthConfigViolation {
@@ -982,6 +1016,11 @@ impl fmt::Display for EndpointAuthConfigViolation {
                  its auth request from the caller's own headers, so without the config-frontend \
                  lines in docs/bricks/endpoint-gateway.md a caller states the host it is judged \
                  against",
+            ),
+            Self::BadErrorPageMiddleware(entry) => write!(
+                f,
+                "gateway.errorPageMiddleware {entry:?} is not attached: it must be \
+                 <gateway.service.namespace>-<name>@kubernetescrd on dialect Traefik"
             ),
         }
     }
@@ -1186,6 +1225,15 @@ impl ResolvedEndpointAuthConfig {
             ));
         }
 
+        if let Some(entry) = self.gateway.error_page_middleware.as_ref()
+            && (self.gateway.dialect != Dialect::Traefik
+                || self.gateway.error_page_entry().is_none())
+        {
+            violations.push(EndpointAuthConfigViolation::BadErrorPageMiddleware(
+                entry.clone(),
+            ));
+        }
+
         if self.gateway.dialect == Dialect::HaproxyIngress && !self.gateway.haproxy_prerequisite {
             violations.push(EndpointAuthConfigViolation::HaproxyPrerequisiteNotAsserted);
         }
@@ -1260,6 +1308,7 @@ mod tests {
             dialect,
             enforcement: GateEnforcement::Enforce,
             allowed_middlewares: Vec::new(),
+            error_page_middleware: None,
             custom: None,
             // Deliberately false, so every test that reaches for a haproxy config starts from
             // what an admin who has not read the prerequisite would have written.
@@ -1430,6 +1479,53 @@ mod tests {
         assert!(hosts.governs("alice-ws-api.weebo.si"));
         assert!(!hosts.governs("che.weebo.si"));
         assert!(!hosts.governs("notweebo.si"));
+    }
+
+    #[test]
+    fn an_error_page_wraps_the_gate_only_from_the_gateways_namespace() {
+        let mut config = config(Dialect::Traefik);
+        config.gateway.allowed_middlewares = vec!["traefik-compress@kubernetescrd".to_owned()];
+        config.gateway.error_page_middleware =
+            Some("weebo-si-hardening-endpoint-gateway-errors@kubernetescrd".to_owned());
+        let chain = |config: &ResolvedEndpointAuthConfig| {
+            Dialect::Traefik.annotations(&config.gateway)
+                ["traefik.ingress.kubernetes.io/router.middlewares"]
+                .clone()
+        };
+        assert_eq!(
+            chain(&config),
+            "weebo-si-hardening-endpoint-gateway-errors@kubernetescrd,\
+             weebo-si-hardening-weebo-si-endpoint-auth@kubernetescrd,\
+             traefik-compress@kubernetescrd"
+        );
+        assert!(
+            config
+                .validate(&[])
+                .iter()
+                .all(|v| !matches!(v, EndpointAuthConfigViolation::BadErrorPageMiddleware(_)))
+        );
+
+        // Anywhere else — another namespace, a lookalike prefix, another provider — nothing goes
+        // in front of the gate, and the configuration says why.
+        for entry in [
+            "team-a-headers@kubernetescrd",
+            "weebo-si-hardening-evil@file",
+            "weebo-si-hardeningx-errors@kubernetescrd",
+            "weebo-si-hardening-@kubernetescrd",
+            "weebo-si-hardening-a,b@kubernetescrd",
+        ] {
+            config.gateway.error_page_middleware = Some(entry.to_owned());
+            assert!(
+                chain(&config).starts_with("weebo-si-hardening-weebo-si-endpoint-auth@"),
+                "{entry} was put in front of the gate"
+            );
+            assert!(
+                config.validate(&[]).contains(
+                    &EndpointAuthConfigViolation::BadErrorPageMiddleware(entry.to_owned())
+                ),
+                "{entry} was not reported"
+            );
+        }
     }
 
     #[test]
