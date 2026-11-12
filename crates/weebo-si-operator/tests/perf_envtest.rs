@@ -656,10 +656,12 @@ impl ImagePolicyObserver for SilentObserver {
 
 #[test]
 fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() {
+    // Skipped rather than failed on a debug build: it needs no apiserver, so unlike the case above
+    // nothing else keeps it out of `cargo test --all-features`, and a debug build's microseconds
+    // describe nothing we ship. `task envtest:operator-perf` runs it on the release build.
     if cfg!(debug_assertions) {
-        panic!(
-            "the budget describes the release binary — run with `cargo test --release` (task envtest:operator-perf)"
-        );
+        eprintln!("skipped: the budget describes the release build (task envtest:operator-perf)");
+        return;
     }
     let admissions: usize = env_or("PERF_IMAGE_ADMISSIONS", 5000);
     let budget_p99 = Duration::from_secs_f64(env_or("PERF_BUDGET_IMAGE_P99_MS", 5.0) / 1000.0);
