@@ -396,6 +396,9 @@ fn an_init_container_devworkspace_operator_injects_is_rewritten_at_the_pod() {
         "name": "sample",
         "git": { "remotes": { "origin": "https://example.invalid/sample.git" } },
     }]);
+    // project-clone mounts the `projects` volume, which DevWorkspace Operator only adds when a
+    // container mounts sources: without it the Deployment is invalid and no pod is ever made.
+    manifest["spec"]["template"]["components"][0]["container"]["mountSources"] = json!(true);
     apply(&manifest.to_string());
     let _cleanup = Cleanup::new(&["devworkspace", "-n", &ns.name, "with-project"]);
 
