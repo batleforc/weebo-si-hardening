@@ -28,3 +28,5 @@ shellcheck = "latest"
 # `task seccomp:gen` / `seccomp:check` — resolves the upstream seccomp profile
 jq = "latest"
 traefik = "latest"
+"pipx:graphifyy" = "latest"
+uv = "latest"
