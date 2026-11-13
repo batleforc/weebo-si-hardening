@@ -1,0 +1,3182 @@
+{
+  ".claude/settings.json": {
+    "mtime": 1794527989.537178,
+    "seen": 1794528008.3268812,
+    "ast_hash": "f5748345efb56df332f3b76361cfa798",
+    "semantic_hash": ""
+  },
+  ".github/workflows/brick.yaml": {
+    "mtime": 1794527989.4678924,
+    "seen": 1794528008.3268898,
+    "ast_hash": "944baa1ad99617e40d36eea6b5ec755e",
+    "semantic_hash": ""
+  },
+  ".github/workflows/build-endpoint-gateway.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3268945,
+    "ast_hash": "820adcd24d76f10e7f4defc88fddbdee",
+    "semantic_hash": ""
+  },
+  ".github/workflows/build-passwd-append.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3268976,
+    "ast_hash": "1337fa907b5a7b8ee10aa39305fe873b",
+    "semantic_hash": ""
+  },
+  ".github/workflows/build-preauth-proxy.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269005,
+    "ast_hash": "21db9069eb28b680cee6e5182e01cd65",
+    "semantic_hash": ""
+  },
+  ".github/workflows/build-weebo-si-operator.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269033,
+    "ast_hash": "6d3f147b29d39e0543f7cefe300e4e38",
+    "semantic_hash": ""
+  },
+  ".github/workflows/codeql.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269053,
+    "ast_hash": "5e1f97e06f57fcd1da671e0d4b028c10",
+    "semantic_hash": ""
+  },
+  ".github/workflows/dep-audit.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269074,
+    "ast_hash": "61c8faab319ff3a595db64ee932de33b",
+    "semantic_hash": ""
+  },
+  ".github/workflows/e2e.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269098,
+    "ast_hash": "d4b7027d4e6191a18abea6eadc2789fa",
+    "semantic_hash": ""
+  },
+  ".github/workflows/envtest.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.326912,
+    "ast_hash": "4a532551aed459c8e8dfab8a8195be58",
+    "semantic_hash": ""
+  },
+  ".github/workflows/helm.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.326914,
+    "ast_hash": "4e22de0da7511596b83c0cc8ebd988f8",
+    "semantic_hash": ""
+  },
+  ".github/workflows/operator-perf.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.326916,
+    "ast_hash": "f2af2f44c4f24d28cfe5b73239a8ada5",
+    "semantic_hash": ""
+  },
+  ".github/workflows/pages.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269184,
+    "ast_hash": "34fc011a05959bf02fe24b72854f188c",
+    "semantic_hash": ""
+  },
+  ".github/workflows/perf.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269207,
+    "ast_hash": "0f7897b3857721dbf95cf77d23b975c9",
+    "semantic_hash": ""
+  },
+  ".github/workflows/postmortem.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269227,
+    "ast_hash": "810629549ca1a88732f7e38a270e4658",
+    "semantic_hash": ""
+  },
+  ".github/workflows/publish.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269248,
+    "ast_hash": "5ef715effc5e189310ed274f91dde041",
+    "semantic_hash": ""
+  },
+  ".github/workflows/release.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.326927,
+    "ast_hash": "2e5ad02ca08f0c85045aedda26cc8e4d",
+    "semantic_hash": ""
+  },
+  ".github/workflows/repo.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269289,
+    "ast_hash": "269ee6bec36e726326e8626e81485aa6",
+    "semantic_hash": ""
+  },
+  ".github/workflows/runtime-matrix.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.326931,
+    "ast_hash": "c99728ed9fd175ac0d50d7dcbe678cd6",
+    "semantic_hash": ""
+  },
+  ".github/workflows/semgrep.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269331,
+    "ast_hash": "007656577e4dd23022d250ddd5bbda56",
+    "semantic_hash": ""
+  },
+  ".github/workflows/test.yaml": {
+    "mtime": 1794527989.4679759,
+    "seen": 1794528008.3269353,
+    "ast_hash": "8f86838432de1d8bc9ce44a27d0d9d14",
+    "semantic_hash": ""
+  },
+  ".hooks/end-of-line.sh": {
+    "mtime": 1794527989.468141,
+    "seen": 1794528008.3269377,
+    "ast_hash": "f15d934cd0028b5234c4b624337a3ae2",
+    "semantic_hash": ""
+  },
+  ".hooks/whitespace-fixer.sh": {
+    "mtime": 1794527989.4691117,
+    "seen": 1794528008.3269398,
+    "ast_hash": "718483beffd71dc1b53edc574f20ddc5",
+    "semantic_hash": ""
+  },
+  ".impeccable/config.json": {
+    "mtime": 1794527989.4691117,
+    "seen": 1794528008.326942,
+    "ast_hash": "43e25aa78899663342ccf50ee571f6a6",
+    "semantic_hash": ""
+  },
+  ".markdownlint.yaml": {
+    "mtime": 1794527989.4691117,
+    "seen": 1794528008.326944,
+    "ast_hash": "7431ec2be5ef129195a762985a4d39af",
+    "semantic_hash": ""
+  },
+  ".tasks/ci.yaml": {
+    "mtime": 1794527989.4691117,
+    "seen": 1794528008.326946,
+    "ast_hash": "fa7179ded91aabec8f13a59e9d677dea",
+    "semantic_hash": ""
+  },
+  ".tasks/crd.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269484,
+    "ast_hash": "f7195bae98e875769f0f552481824d1a",
+    "semantic_hash": ""
+  },
+  ".tasks/deploy.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269503,
+    "ast_hash": "fd463035d615550b3e241501ace7f59f",
+    "semantic_hash": ""
+  },
+  ".tasks/docs.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269525,
+    "ast_hash": "64b29a15bd5831650f713a25a2a5d097",
+    "semantic_hash": ""
+  },
+  ".tasks/e2e.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269546,
+    "ast_hash": "7f542caa8b32b571996411b1b20c0e2c",
+    "semantic_hash": ""
+  },
+  ".tasks/envtest.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269563,
+    "ast_hash": "0528c9ec0ef3511864f4ba696335a6b4",
+    "semantic_hash": ""
+  },
+  ".tasks/helm.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269582,
+    "ast_hash": "4666a63a58f45dab25d7b413a9d59894",
+    "semantic_hash": ""
+  },
+  ".tasks/mise.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269606,
+    "ast_hash": "4432de74c046eb1b069cd031a04ea870",
+    "semantic_hash": ""
+  },
+  ".tasks/rfc.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269627,
+    "ast_hash": "3843577ce314431f6a828d5156186b55",
+    "semantic_hash": ""
+  },
+  ".tasks/runtimes.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269649,
+    "ast_hash": "5adcb1a5b13d7e29d70445f85e7b0dc4",
+    "semantic_hash": ""
+  },
+  ".tasks/rust.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269665,
+    "ast_hash": "105d6b057a1509862d9d46ad2ccd7919",
+    "semantic_hash": ""
+  },
+  ".tasks/seccomp.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269687,
+    "ast_hash": "d8cb5f1848f7fb93125ab5c91e6828b7",
+    "semantic_hash": ""
+  },
+  ".tasks/shell.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269706,
+    "ast_hash": "72a914fc27e706ded1a89f7f6d081c86",
+    "semantic_hash": ""
+  },
+  ".tasks/spike.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269725,
+    "ast_hash": "accb12c8998ac79bf8f2bd81419e5446",
+    "semantic_hash": ""
+  },
+  "Cargo.toml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269744,
+    "ast_hash": "97b4903052a9dda7a9a58ab16e8c328c",
+    "semantic_hash": ""
+  },
+  "Taskfile.yaml": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3269765,
+    "ast_hash": "521868ed8796fde026f1598b44d38281",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/Cargo.toml": {
+    "mtime": 1794527989.4706538,
+    "seen": 1794528008.3269782,
+    "ast_hash": "0401f583cc0755e2784d3abb2d8210c8",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/introspection.rs": {
+    "mtime": 1794527989.4707782,
+    "seen": 1794528008.3269804,
+    "ast_hash": "3b443f125605bc65b77675e20739fe0a",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/jwt_crypto.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269825,
+    "ast_hash": "ba4c418e03b6e90b980cfd1e26a09857",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/kube_catalog.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269846,
+    "ast_hash": "e4b493779efd0d671d7037504985fe4e",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/kube_revocations.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269868,
+    "ast_hash": "f6bd3530256f470ee7c00b5ba196cb6a",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/kube_workload.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269892,
+    "ast_hash": "656a1ea7f5fcb638b0fe8666fc8994c2",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/metrics.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.326991,
+    "ast_hash": "ea42891adb0ea9f83fdea2143b25568c",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/mod.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269932,
+    "ast_hash": "91d76aa72787fa35efa0e872ecc7eead",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/oidc.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.3269951,
+    "ast_hash": "133bd6990eea528f0f7e3a0841658ffa",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/adapters/session.rs": {
+    "mtime": 1794527989.4708889,
+    "seen": 1794528008.326997,
+    "ast_hash": "03d41f6935a7e390684e5a8be9e88ced",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/config.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.326999,
+    "ast_hash": "2145edb5e3ce64f3819afca05a997ae5",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/cost.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270016,
+    "ast_hash": "d376f099dcdf2432ee1d005875ebd0d6",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/http.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270037,
+    "ast_hash": "db68a8db1f0ae92e40a61acf9168ea7d",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/main.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270056,
+    "ast_hash": "83f4496d856aed2167d225a6eaaabb42",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/outbound.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270078,
+    "ast_hash": "fca5df4718a7953f773aa4f3512426c4",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/probe.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270097,
+    "ast_hash": "3a1bfe96bf97636592426a97217ee91e",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/proxy.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.3270118,
+    "ast_hash": "f41b66a64aec7dbfb15d4cf50c40a200",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/ratelimit.rs": {
+    "mtime": 1794527989.4711409,
+    "seen": 1794528008.327014,
+    "ast_hash": "6494502a68de14e8ddcdc5bd52ddd94e",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/src/state.rs": {
+    "mtime": 1794527989.472141,
+    "seen": 1794528008.3270159,
+    "ast_hash": "64a50aa930b47f05e613dd02a59ff839",
+    "semantic_hash": ""
+  },
+  "bins/endpoint-gateway/tests/conformance.rs": {
+    "mtime": 1794527989.472141,
+    "seen": 1794528008.327018,
+    "ast_hash": "10ae585b202ed527b690a7432b4ce065",
+    "semantic_hash": ""
+  },
+  "bins/passwd-append/Cargo.toml": {
+    "mtime": 1794527989.472141,
+    "seen": 1794528008.3270197,
+    "ast_hash": "1c01810d3f13cfa8cf96122982601a1a",
+    "semantic_hash": ""
+  },
+  "bins/passwd-append/src/entry.rs": {
+    "mtime": 1794527989.4735305,
+    "seen": 1794528008.3270218,
+    "ast_hash": "bf65c7265d8527b3850fb513552e0751",
+    "semantic_hash": ""
+  },
+  "bins/passwd-append/src/main.rs": {
+    "mtime": 1794527989.4736571,
+    "seen": 1794528008.327024,
+    "ast_hash": "99c097068615bb3d081e57942c6c6c33",
+    "semantic_hash": ""
+  },
+  "bins/passwd-append/src/nss.rs": {
+    "mtime": 1794527989.4736571,
+    "seen": 1794528008.327026,
+    "ast_hash": "cf41c49ec1738f227b883b24b17488df",
+    "semantic_hash": ""
+  },
+  "bins/passwd-append/tests/integration.rs": {
+    "mtime": 1794527989.4736571,
+    "seen": 1794528008.3270278,
+    "ast_hash": "729b5e859d98c4fb321c3f3c2e997975",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/Cargo.toml": {
+    "mtime": 1794527989.4736571,
+    "seen": 1794528008.32703,
+    "ast_hash": "75f0b5066388a5f987c49cc075538b63",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/adapters/config_file.rs": {
+    "mtime": 1794527989.474082,
+    "seen": 1794528008.327032,
+    "ast_hash": "d89d0ad081fba1780972244f2664d851",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/adapters/http_client.rs": {
+    "mtime": 1794527989.4741626,
+    "seen": 1794528008.327034,
+    "ast_hash": "d1595ea5f45cb3bbcbe64a7efc188182",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/adapters/inbound_http.rs": {
+    "mtime": 1794527989.4741626,
+    "seen": 1794528008.3270364,
+    "ast_hash": "a67e3add6b0ce5c39d82d4c0a867e3e3",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/adapters/mod.rs": {
+    "mtime": 1794527989.4741626,
+    "seen": 1794528008.3270385,
+    "ast_hash": "fa93c25c2405892620bccd237a7d1a72",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/config.rs": {
+    "mtime": 1794527989.4741626,
+    "seen": 1794528008.3270404,
+    "ast_hash": "c177cfd14cdbe5fea2429d7cc826c886",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/credential.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.3270426,
+    "ast_hash": "dee83f62dcf4a55b6439611afd577675",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/exchange.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.327045,
+    "ast_hash": "b3738f83367c84c54b8bbd2ea5588f5b",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/mod.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.3270466,
+    "ast_hash": "4147559d7ffb9d74cf018f17ef1a9588",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/policy.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.3270485,
+    "ast_hash": "85637a41601e7f81cb00ca467b598c45",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/domain/port.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.3270507,
+    "ast_hash": "641a765c77010bd185f41f0f227dcdb2",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/src/main.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.327053,
+    "ast_hash": "49293c01beb26c6c4f25f6d70a85122a",
+    "semantic_hash": ""
+  },
+  "bins/preauth-proxy/tests/integration.rs": {
+    "mtime": 1794527989.4746032,
+    "seen": 1794528008.3270547,
+    "ast_hash": "740446f74e5bb9fe45a1ae4ab286d32f",
+    "semantic_hash": ""
+  },
+  "charts/endpoint-gateway/Chart.yaml": {
+    "mtime": 1794527989.4751184,
+    "seen": 1794528008.327057,
+    "ast_hash": "7651973a2630bd6bd9960095544347a1",
+    "semantic_hash": ""
+  },
+  "charts/endpoint-gateway/values.schema.json": {
+    "mtime": 1794527989.4752727,
+    "seen": 1794528008.3270593,
+    "ast_hash": "524cef2556643786b0c20e8b5d6ca93b",
+    "semantic_hash": ""
+  },
+  "charts/endpoint-gateway/values.yaml": {
+    "mtime": 1794527989.4752727,
+    "seen": 1794528008.327061,
+    "ast_hash": "3465c9c592425916d3a383d641f5a947",
+    "semantic_hash": ""
+  },
+  "charts/preauth-proxy/Chart.yaml": {
+    "mtime": 1794527989.4758804,
+    "seen": 1794528008.327063,
+    "ast_hash": "77a8d3ec8f3ebf884f870fe7fd714872",
+    "semantic_hash": ""
+  },
+  "charts/preauth-proxy/values.schema.json": {
+    "mtime": 1794527989.4759753,
+    "seen": 1794528008.327065,
+    "ast_hash": "42d8fcfa63326897592ef492bea69525",
+    "semantic_hash": ""
+  },
+  "charts/preauth-proxy/values.yaml": {
+    "mtime": 1794527989.4759753,
+    "seen": 1794528008.3270671,
+    "ast_hash": "4b9952d7ab4975c2a4f4fe52ebb8acca",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/Chart.yaml": {
+    "mtime": 1794527989.4764056,
+    "seen": 1794528008.3270767,
+    "ast_hash": "21e726ef6d43ced9840a5e2170af1542",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/crds/weebosiconfigs.hardening.weebo.io.yaml": {
+    "mtime": 1794527989.4764056,
+    "seen": 1794528008.3270788,
+    "ast_hash": "acb472ceee21037e71aaf67ff233f497",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/crds/weebositeams.hardening.weebo.io.yaml": {
+    "mtime": 1794527989.4767113,
+    "seen": 1794528008.3270812,
+    "ast_hash": "ff6cfd3e2863742e4e9ff9b17ecc7188",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/crds/weebosiusers.hardening.weebo.io.yaml": {
+    "mtime": 1794527989.4767113,
+    "seen": 1794528008.3270836,
+    "ast_hash": "5e684748408cca2940e588572b64bf37",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/values.schema.json": {
+    "mtime": 1794527989.4773886,
+    "seen": 1794528008.3270853,
+    "ast_hash": "967bfd1349d5945a20ce2b50cb4e8d88",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/values.yaml": {
+    "mtime": 1794527989.4773886,
+    "seen": 1794528008.3270874,
+    "ast_hash": "e91f9bd2359c53a2f08a087615b34a45",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/Cargo.toml": {
+    "mtime": 1794527989.4784207,
+    "seen": 1794528008.3270893,
+    "ast_hash": "b07e007dc5f6015ee815fb9144772719",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/admit.rs": {
+    "mtime": 1794527989.4784694,
+    "seen": 1794528008.3270915,
+    "ast_hash": "16dc715db5bc93846638a77deee702df",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/error.rs": {
+    "mtime": 1794527989.478549,
+    "seen": 1794528008.3270938,
+    "ast_hash": "44817248ea331d577c3e1472c4d6b035",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/feature/mod.rs": {
+    "mtime": 1794527989.478549,
+    "seen": 1794528008.327096,
+    "ast_hash": "adcdd7583ceee77f9e8be4c933804ed9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/feature/reconcile.rs": {
+    "mtime": 1794527989.4786518,
+    "seen": 1794528008.3270981,
+    "ast_hash": "21ca8f36a0634b6b9d066b673608f4a8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/feature/registry.rs": {
+    "mtime": 1794527989.4786518,
+    "seen": 1794528008.3271003,
+    "ast_hash": "192d7d21a41768080b256b4bb3773b1e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/feature/value.rs": {
+    "mtime": 1794527989.4786518,
+    "seen": 1794528008.3271027,
+    "ast_hash": "2d2749330ba87b6e5f2cc8ec5556b197",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/lib.rs": {
+    "mtime": 1794527989.4786518,
+    "seen": 1794528008.3271048,
+    "ast_hash": "dc4fc30df001690c18e2e45cfa7a2faa",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/managed/diff.rs": {
+    "mtime": 1794527989.4786518,
+    "seen": 1794528008.3271072,
+    "ast_hash": "e355e1d4b7c03224e8cd0eebcdb4fd80",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/managed/mod.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271093,
+    "ast_hash": "7581d714b11911055073132ac36e65da",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/managed/object.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271117,
+    "ast_hash": "2974fd755e1cbe1280702fdc84cd34c1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/managed/scope.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271134,
+    "ast_hash": "f9801bf175f98397eb39045b9e49575b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/mutation.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271155,
+    "ast_hash": "d618164dbe2890622c4629827e440ee9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/namespace_facts.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271177,
+    "ast_hash": "df88151e3453f8bf9a7d46a919777c75",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/port/dwoc_catalog.rs": {
+    "mtime": 1794527989.478993,
+    "seen": 1794528008.3271198,
+    "ast_hash": "bccc1ae8c526fe5d72de3563dc9f0c6b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/port/feature_gate.rs": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.327122,
+    "ast_hash": "c22ad036906bed748c93f7cbae8e5ab5",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/port/mod.rs": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.327124,
+    "ast_hash": "f3564dba836d24e3ecb22a868099fd93",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/port/namespace_view.rs": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.3271263,
+    "ast_hash": "15b64c78b1eb5a5c70819ebbcea65df1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/port/observer.rs": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.3271284,
+    "ast_hash": "f82a11b178d70db222d5d06d7be5b998",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-chassis/src/teardown.rs": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.3271303,
+    "ast_hash": "e3d6dee37a15fd54c5bd701c766e80e2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-controller/Cargo.toml": {
+    "mtime": 1794527989.4792483,
+    "seen": 1794528008.3271325,
+    "ast_hash": "ca2ec0def8663d2e8f744ea17191ec00",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-controller/src/events.rs": {
+    "mtime": 1794527989.4795597,
+    "seen": 1794528008.3271344,
+    "ast_hash": "57e11b46255c782e54b4c135c118e199",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-controller/src/lib.rs": {
+    "mtime": 1794527989.47963,
+    "seen": 1794528008.3271368,
+    "ast_hash": "f495c9f72dfebf1478c59c9f1ff82669",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-controller/src/reconcile.rs": {
+    "mtime": 1794527989.47963,
+    "seen": 1794528008.327139,
+    "ast_hash": "2eca142136ccff6546cde6fdce72bfc0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-controller/src/workspace.rs": {
+    "mtime": 1794527989.47963,
+    "seen": 1794528008.327141,
+    "ast_hash": "cfc97918ffed32276885f718e3d07c19",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/Cargo.toml": {
+    "mtime": 1794527989.47963,
+    "seen": 1794528008.3271432,
+    "ast_hash": "00e3af4966deeb366340293361a7c0d0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/argo.rs": {
+    "mtime": 1794527989.4799633,
+    "seen": 1794528008.327145,
+    "ast_hash": "0923ac04301a23659a17668a31b24862",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/dwoc.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271475,
+    "ast_hash": "90cfb93376a4cdea6378425b753cc1f8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/dwoc_pin.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271496,
+    "ast_hash": "c4f5075e3a52d3430e5d7f792973b705",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/endpoint_auth.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.327152,
+    "ast_hash": "33ae47f252fdc65336960cb2c3d0d61b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/feature_mode.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271544,
+    "ast_hash": "7327a6535e2b900369ac6f5dd4bf40bb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/free_form.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271568,
+    "ast_hash": "6e77718023581011ee007d644ff450f6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/identity.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271585,
+    "ast_hash": "72a577428fed3e643ec73a04831ca24b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/image_policy.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.327161,
+    "ast_hash": "6f94c17735eeac3737d3c30e7ed45b71",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/image_rewrite.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271632,
+    "ast_hash": "72a1d4bb65b354bd8ba7a2a6db95d254",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/kubearmor_policy.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271654,
+    "ast_hash": "ca0c18a611031d6e327508c12cba46b7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/labels.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271677,
+    "ast_hash": "4892c6fe708fca662b601a4cb577f3b7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/lib.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.32717,
+    "ast_hash": "dcea7846efc2d4e0125b2c6f47d9aada",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/merge.rs": {
+    "mtime": 1794527989.4800653,
+    "seen": 1794528008.3271718,
+    "ast_hash": "600a16786b43261827d428d2e44d70a8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/namespace.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.327174,
+    "ast_hash": "dda13cbccf5fe231c2ec0a8ab1feea60",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/network_profiles.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.327176,
+    "ast_hash": "fc2b965fa0a98c36be36cfae1bd8d153",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/pod_security.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271785,
+    "ast_hash": "6f90ffc7050ac40c949800d435386f6e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/policy_guard.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271806,
+    "ast_hash": "c91c26793a52eaa686ff95beed7644c0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/registry_config.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271823,
+    "ast_hash": "ddba7caaa7f6856d24172f38b6be6c85",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/resolved.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271844,
+    "ast_hash": "1ab1f8c0f3366c182eed0d64a0c98072",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/resource_quotas.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271866,
+    "ast_hash": "e043a30cd08051e129da175eecb70e5e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/selector.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.327189,
+    "ast_hash": "aa90caf3d18432fdf213cbed830cfdd0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/spec.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.327191,
+    "ast_hash": "24483f6e41fa427038a01cf6c9470b7c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/team.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.327193,
+    "ast_hash": "cf44c631fdca0dd106f4f25ba78de6a9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/template.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271954,
+    "ast_hash": "a304e9545768317d4606e6832da44c18",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/src/user.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271976,
+    "ast_hash": "4dd519f0d3d0194ab19582cd41484530",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/tests/deploy_weebo_si.rs": {
+    "mtime": 1794527989.4801407,
+    "seen": 1794528008.3271992,
+    "ast_hash": "77d875b8a26c31f7e110c90ce74fdeff",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-crd/tests/envtest.rs": {
+    "mtime": 1794527989.4819982,
+    "seen": 1794528008.3272014,
+    "ast_hash": "8e4e78cc567427900b17d82f3295703a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-dwoc-pin/Cargo.toml": {
+    "mtime": 1794527989.4819982,
+    "seen": 1794528008.327203,
+    "ast_hash": "f3a9b1d5dab712c8aac3a72adfed0d64",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-dwoc-pin/src/feature.rs": {
+    "mtime": 1794527989.4821572,
+    "seen": 1794528008.3272052,
+    "ast_hash": "069c9acb75e7d461c4a11816379440a8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-dwoc-pin/src/lib.rs": {
+    "mtime": 1794527989.4822688,
+    "seen": 1794528008.327207,
+    "ast_hash": "d8f41c1c91d82e0054eba2a3ce729a40",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-dwoc-pin/src/resolve.rs": {
+    "mtime": 1794527989.4822688,
+    "seen": 1794528008.3272095,
+    "ast_hash": "3c19a5517197d5fbaf99176bda9c379a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-dwoc-pin/src/workspace.rs": {
+    "mtime": 1794527989.4822688,
+    "seen": 1794528008.3272119,
+    "ast_hash": "d49407bdbe61b5569139d24dc6db008c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/Cargo.toml": {
+    "mtime": 1794527989.4822688,
+    "seen": 1794528008.3272138,
+    "ast_hash": "dad4f4182e5c5b63477815c1915bdcbb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/src/lib.rs": {
+    "mtime": 1794527989.4825509,
+    "seen": 1794528008.327216,
+    "ast_hash": "8cf6a91fca2fcefd5b8b110054144ec0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/endpoint_auth.rs": {
+    "mtime": 1794527989.4825509,
+    "seen": 1794528008.3272178,
+    "ast_hash": "6c174c61fe60ae4a34eacf10c334c95e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/identity.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.3272197,
+    "ast_hash": "b9ccefc37bc427117013cee44669bbd8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/kubearmor.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.3272219,
+    "ast_hash": "955617ccc8826d90d88dbc07f3ca90eb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/pod_security.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.3272238,
+    "ast_hash": "88f041bae82dd5e9dd74cf1af04ac5f0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/resource_quotas.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.327226,
+    "ast_hash": "151c4635e918f14dd002c0d2847dc141",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/upgrade.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.3272278,
+    "ast_hash": "7b6fef1aa03cfa6e543eb872b6641f68",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-e2e/tests/workspace.rs": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.32723,
+    "ast_hash": "4630dab315ffa294a043b9cd28e040dd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/Cargo.toml": {
+    "mtime": 1794527989.482906,
+    "seen": 1794528008.327232,
+    "ast_hash": "7bec797f07826da3372bebca2027e868",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/src/controller.rs": {
+    "mtime": 1794527989.4834712,
+    "seen": 1794528008.327234,
+    "ast_hash": "820e1c3d55c3251ef2b69ef71aa5efd0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/src/endpoint_auth.rs": {
+    "mtime": 1794527989.4836485,
+    "seen": 1794528008.327236,
+    "ast_hash": "d4d6ec790830178fc57bdcab271a2b41",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/src/lib.rs": {
+    "mtime": 1794527989.4836485,
+    "seen": 1794528008.327238,
+    "ast_hash": "14d611ae739eb00dccc2e923819375c9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/tests/endpoint_auth_envtest.rs": {
+    "mtime": 1794527989.4836485,
+    "seen": 1794528008.3272402,
+    "ast_hash": "b4485352491ceeb75855b999ba383f33",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth-adapters/tests/openshift_envtest.rs": {
+    "mtime": 1794527989.484037,
+    "seen": 1794528008.3272421,
+    "ast_hash": "40a60c6e2f76fec2e98b8c513bcf1df6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/Cargo.toml": {
+    "mtime": 1794527989.484037,
+    "seen": 1794528008.3272448,
+    "ast_hash": "72fc60c73e8fe9afe5d937329e2cbdb2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/benches/decide.rs": {
+    "mtime": 1794527989.484184,
+    "seen": 1794528008.327247,
+    "ast_hash": "0169f4e58482506f8d25ba4e10daf655",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/application.rs": {
+    "mtime": 1794527989.484184,
+    "seen": 1794528008.3272488,
+    "ast_hash": "8aaeb66850f4ea68f1206b24a3404962",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/bearer.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.327251,
+    "ast_hash": "27d6707ad16b642bcee5ea1e9646da29",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/cache.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.327253,
+    "ast_hash": "20da86905ffacff8fc5beea308eae747",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/compile.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.327255,
+    "ast_hash": "6eb867833b0cd74010034d62a8a9f8d7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/decide.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272572,
+    "ast_hash": "6c4339d850c44afb3386f0fbcfb3c851",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/host.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.327259,
+    "ast_hash": "4abb65e6b10c427d5cdf4c6c9a7f4884",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/identity.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272614,
+    "ast_hash": "df696026424e757c702ad4703b5e0cc2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/index.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272636,
+    "ast_hash": "ac5753005ea5d383f7b4877af39e9388",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/lib.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272655,
+    "ast_hash": "a5cd09ee9adc73730d23c40edf3f9474",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/path.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.327268,
+    "ast_hash": "038d726c20717caff7a00f7d1cc83a73",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/policy.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272696,
+    "ast_hash": "7735b20c0845d311f0f81b0f7c43feb0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/port.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272717,
+    "ast_hash": "68c8a169be268d641e7b508fc9735ffc",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/testing.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272738,
+    "ast_hash": "dfb4f8d10921d92ddcb588b54ada2f1e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/src/time.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272758,
+    "ast_hash": "a841517f619e638444c354da9f26ec68",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-endpoint-auth/tests/developer_continuity.rs": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272781,
+    "ast_hash": "f41be6121d1036a46ffc3af14ab94dd6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/Cargo.toml": {
+    "mtime": 1794527989.4843888,
+    "seen": 1794528008.3272803,
+    "ast_hash": "ea0d952ac42ffd7fb59d176649d22f23",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/application-crd.yaml": {
+    "mtime": 1794527989.4853976,
+    "seen": 1794528008.3272824,
+    "ast_hash": "bb50099d99e0e8b2c530ec9ad073ab9c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/authentikuser-crd.yaml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272848,
+    "ast_hash": "484c7a0083518a13abeae869d4b3d70c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/devworkspace-crd.yaml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272867,
+    "ast_hash": "a30b39216febf2124f1aa8ba713121aa",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/devworkspaceoperatorconfig-crd.yaml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272889,
+    "ast_hash": "0d7ac47bd0fbceb03a873c9058a701fd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/kubearmorpolicy-crd.yaml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272913,
+    "ast_hash": "21f8ac9a8e9961f276aab4c61d946215",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/fixtures/route-crd.yaml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272932,
+    "ast_hash": "46a82bde0d2645630bbcb8ab25500adf",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-envtest-support/src/lib.rs": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272953,
+    "ast_hash": "724d9b18983f4b3e9fcd1e2b02e8fc06",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity-adapters/Cargo.toml": {
+    "mtime": 1794527989.4854472,
+    "seen": 1794528008.3272974,
+    "ast_hash": "d273f5b6e1173d3b0de5253d0e29f67c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity-adapters/src/controller.rs": {
+    "mtime": 1794527989.4857595,
+    "seen": 1794528008.3272994,
+    "ast_hash": "9aaa2ba453d076bb3eaa26bca45bd1b6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity-adapters/src/identity_metrics.rs": {
+    "mtime": 1794527989.4858665,
+    "seen": 1794528008.3273013,
+    "ast_hash": "1fd2f8c93691f9ce030b71b877ebf984",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity-adapters/src/kube_provisioner.rs": {
+    "mtime": 1794527989.4858665,
+    "seen": 1794528008.3273036,
+    "ast_hash": "5c0c5989cbea7863b7217aefb180deda",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity-adapters/src/lib.rs": {
+    "mtime": 1794527989.4858665,
+    "seen": 1794528008.3273056,
+    "ast_hash": "61f9b82b99fc50627cccf5e761eae745",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity/Cargo.toml": {
+    "mtime": 1794527989.4858665,
+    "seen": 1794528008.3273077,
+    "ast_hash": "bc6a7cd88cf7098f0e491506ac0451b1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity/src/application.rs": {
+    "mtime": 1794527989.486052,
+    "seen": 1794528008.32731,
+    "ast_hash": "50e3b33030d77622ad56be18102e6690",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity/src/lib.rs": {
+    "mtime": 1794527989.4861515,
+    "seen": 1794528008.3273122,
+    "ast_hash": "8ca363d956fa8f353341f3da1f621b38",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity/src/port.rs": {
+    "mtime": 1794527989.4861515,
+    "seen": 1794528008.3273141,
+    "ast_hash": "3ece73a653bb80fa29051f658f2360f0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-identity/src/testing.rs": {
+    "mtime": 1794527989.4861515,
+    "seen": 1794528008.3273163,
+    "ast_hash": "92183e2f1da0588de8a654f7a7d89ab1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy-adapters/Cargo.toml": {
+    "mtime": 1794527989.4861515,
+    "seen": 1794528008.3273182,
+    "ast_hash": "91c74b9b909bfd1e0b0d851e9734506a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy-adapters/src/image_metrics.rs": {
+    "mtime": 1794527989.4863071,
+    "seen": 1794528008.3273206,
+    "ast_hash": "b27caf840fcaaf159e5616d37cd88aa2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy-adapters/src/image_policy.rs": {
+    "mtime": 1794527989.486432,
+    "seen": 1794528008.3273227,
+    "ast_hash": "c172fbf80691148f9625cb041794bdda",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy-adapters/src/lib.rs": {
+    "mtime": 1794527989.486432,
+    "seen": 1794528008.3273246,
+    "ast_hash": "c1d7dcca0fb976b084514b60b7aa1304",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/Cargo.toml": {
+    "mtime": 1794527989.486432,
+    "seen": 1794528008.3273268,
+    "ast_hash": "0b8d58f80aba4955887a2949a2792dd7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/feature/core.rs": {
+    "mtime": 1794527989.4866724,
+    "seen": 1794528008.3273287,
+    "ast_hash": "f35f7a4f8b99454f4ec49b15362a1c41",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/feature/image_rewrite.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273308,
+    "ast_hash": "f7e05dcb0761c7824be0a75134ebd8c7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/feature/mod.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273332,
+    "ast_hash": "3ef8695b74cfeb1d3de88de825f34a4b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/feature/pod_images.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273351,
+    "ast_hash": "97a2152033e26f21c8165d8c126fa493",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/feature/workspace_images.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273375,
+    "ast_hash": "b2b631336fa60f7909a0e9067f1603c6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/lib.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273394,
+    "ast_hash": "19e7ba5a11a6b3850b7b26e42e1c1045",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/pattern.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273416,
+    "ast_hash": "09d51db6e6b942d863e37a33255e7b7c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/platform.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273435,
+    "ast_hash": "04312bbcb0867629ca90e2d495af60cd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/port.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273456,
+    "ast_hash": "58f0c2d877958415a125f4b24a0f9c79",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/reference.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273478,
+    "ast_hash": "48a017e6cddf56cc156e5814b3c1085a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/resolve.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.32735,
+    "ast_hash": "014b0a35220ee37b6b9e952aea7359c0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/rewrite.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273518,
+    "ast_hash": "fbf5177136804bf05331d5ae940bdde4",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/subject.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273542,
+    "ast_hash": "0dce718e93ed436eaafac77e385d298f",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/validate.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.327356,
+    "ast_hash": "dedabfb3fb8c723982d41ebc6265b88c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/variable.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273582,
+    "ast_hash": "c2ee39886c6b652d0d59c5c3715069f0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-image-policy/src/verdict.rs": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273602,
+    "ast_hash": "e5a2d5b0c1e02c427cbedb7c0b1828fd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/Cargo.toml": {
+    "mtime": 1794527989.4867861,
+    "seen": 1794528008.3273623,
+    "ast_hash": "bce521fdd381dfcfce509f80fa87613a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/controller.rs": {
+    "mtime": 1794527989.4880521,
+    "seen": 1794528008.3273644,
+    "ast_hash": "05bc5988ad88820cf16a4bd9b8d305d3",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/kubearmor_capabilities.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273666,
+    "ast_hash": "5562de5d6451f217486fba119bf77589",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/kubearmor_metrics.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273687,
+    "ast_hash": "edf13c226361b036014a942f648da323",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/kubearmor_policy_store.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273711,
+    "ast_hash": "e2b328c754c33523bf1d3e42f4148458",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/kubearmor_template_store.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273733,
+    "ast_hash": "c0a3ca7b9e85ee923c77dbb73c1961e5",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/lib.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273757,
+    "ast_hash": "8bd0cbde91e204de3fbc18c3c4917d6c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/src/node_enforcer.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.3273776,
+    "ast_hash": "88d3ea682e464513fa8419a62dbdb8b8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy-adapters/tests/kubearmor_envtest.rs": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.32738,
+    "ast_hash": "ecb8ffcd9b2001098f17c4944cd0fdd4",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/Cargo.toml": {
+    "mtime": 1794527989.4881938,
+    "seen": 1794528008.327382,
+    "ast_hash": "31a4c55816aa43064890f91ab9f89822",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/application.rs": {
+    "mtime": 1794527989.4887714,
+    "seen": 1794528008.327384,
+    "ast_hash": "694bab869fca689e6713166c457ca34a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/backend.rs": {
+    "mtime": 1794527989.4888828,
+    "seen": 1794528008.3273864,
+    "ast_hash": "c635c031ecca6e7e91b23c1295a49b86",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/feature/kubearmor_policy.rs": {
+    "mtime": 1794527989.4888828,
+    "seen": 1794528008.3273885,
+    "ast_hash": "a0c0f61429cc1abc912e33363b9339e2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/feature/mod.rs": {
+    "mtime": 1794527989.4890144,
+    "seen": 1794528008.3273904,
+    "ast_hash": "23d769a82cf6039a4b9c1ea49cc54cfc",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/lib.rs": {
+    "mtime": 1794527989.4890144,
+    "seen": 1794528008.3273926,
+    "ast_hash": "6a6a0eb6e129b43c5fc9de4db497ffe8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/model/diff.rs": {
+    "mtime": 1794527989.4890144,
+    "seen": 1794528008.3273947,
+    "ast_hash": "6143469a810577dbc92ca61ff8b7d3a2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/model/mod.rs": {
+    "mtime": 1794527989.4891803,
+    "seen": 1794528008.3273966,
+    "ast_hash": "acc0a67d09297170a2055a3ad9d69845",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/model/policy.rs": {
+    "mtime": 1794527989.4891803,
+    "seen": 1794528008.327399,
+    "ast_hash": "a62e484b8c0f9605ee4c219cea3e25e8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/port.rs": {
+    "mtime": 1794527989.4891803,
+    "seen": 1794528008.3274007,
+    "ast_hash": "da1a93dbc9a3f00a3c0b62b602ccbb64",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-kubearmor-policy/src/resolve.rs": {
+    "mtime": 1794527989.4891803,
+    "seen": 1794528008.3274028,
+    "ast_hash": "d22469e307ae9c46413f2e17121d2ab8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/Cargo.toml": {
+    "mtime": 1794527989.4891803,
+    "seen": 1794528008.3274047,
+    "ast_hash": "5d9ee88368dead821b7b09949d77cb7d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/controller.rs": {
+    "mtime": 1794527989.4894497,
+    "seen": 1794528008.327407,
+    "ast_hash": "601cd216a271b1dfc902339393bf4097",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/kube_canary.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274093,
+    "ast_hash": "e389dfe1a06faeff0cfb7621ae0a66c8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/kube_capabilities.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274112,
+    "ast_hash": "22b8feccea370e660f40780d7b2c80b9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/kube_policy_store.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274136,
+    "ast_hash": "5349d06266f7d8419fe9567fad586faf",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/kube_template_store.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274155,
+    "ast_hash": "5fb1201eb0a43f5af4919e0acbd87705",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/lib.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274176,
+    "ast_hash": "ae00c997f1896551a24746206e9a1c36",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/src/network_metrics.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.32742,
+    "ast_hash": "cdd06f193b704439c0105edd8f29ed98",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles-adapters/tests/envtest.rs": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.327422,
+    "ast_hash": "0b17dcc1e662c7482017b22a30a4ffc6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/Cargo.toml": {
+    "mtime": 1794527989.489557,
+    "seen": 1794528008.3274243,
+    "ast_hash": "f1b88b3dac880551eca21013601b98e4",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/application.rs": {
+    "mtime": 1794527989.490025,
+    "seen": 1794528008.3274262,
+    "ast_hash": "058d8c58ced1cc1daa4c035b1558b27d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/backend.rs": {
+    "mtime": 1794527989.490161,
+    "seen": 1794528008.3274286,
+    "ast_hash": "ec3ab2b1ca3940d84c1405c692c77e82",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/canary.rs": {
+    "mtime": 1794527989.490161,
+    "seen": 1794528008.327431,
+    "ast_hash": "cb57b0fbf0cd009db858478ceac66d2c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/exclusion.rs": {
+    "mtime": 1794527989.490161,
+    "seen": 1794528008.3274329,
+    "ast_hash": "fec5d4f3a14fb7d5158ebcb5268d81aa",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/feature/mod.rs": {
+    "mtime": 1794527989.490161,
+    "seen": 1794528008.327435,
+    "ast_hash": "4bd82b0f6df195797f442e478f37e32c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/feature/network_profiles.rs": {
+    "mtime": 1794527989.4903188,
+    "seen": 1794528008.3274374,
+    "ast_hash": "36b08a3c31b57e2fd3084f8fe2c2305a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/feature/workspace_gate.rs": {
+    "mtime": 1794527989.4903188,
+    "seen": 1794528008.3274395,
+    "ast_hash": "a77d6d657ccbb3265a22b6c68891aa2b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/lib.rs": {
+    "mtime": 1794527989.4903188,
+    "seen": 1794528008.3274422,
+    "ast_hash": "9b48f13e8992af87d66b308b7ac7ad89",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/model/diff.rs": {
+    "mtime": 1794527989.4903188,
+    "seen": 1794528008.3274622,
+    "ast_hash": "713895356022f4204086c99e2d05ba41",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/model/mod.rs": {
+    "mtime": 1794527989.490581,
+    "seen": 1794528008.327464,
+    "ast_hash": "6d7e8dc0eee9934b688a336ff881c706",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/model/policy.rs": {
+    "mtime": 1794527989.490581,
+    "seen": 1794528008.3274665,
+    "ast_hash": "44ed41f04b34c8a6006f553665435245",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/port.rs": {
+    "mtime": 1794527989.490581,
+    "seen": 1794528008.3274693,
+    "ast_hash": "20e261002d39772b804e1b852bbd752e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-network-profiles/src/resolve.rs": {
+    "mtime": 1794527989.490581,
+    "seen": 1794528008.3274717,
+    "ast_hash": "20f870623c76f6b66a21e7795e7df6b1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/Cargo.toml": {
+    "mtime": 1794527989.490581,
+    "seen": 1794528008.327474,
+    "ast_hash": "cbfd59bfecc38de3eeeeb5488f298121",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/deploy/crd.yaml": {
+    "mtime": 1794527989.4908273,
+    "seen": 1794528008.3274765,
+    "ast_hash": "f665a9318c21a1a1270d29077a4298b4",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/backends_cmd.rs": {
+    "mtime": 1794527989.4908273,
+    "seen": 1794528008.3274791,
+    "ast_hash": "8978ad8bddf8a09e85569663c972b1fb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/canary_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274808,
+    "ast_hash": "1831632cc905be443d177ff0a0d18604",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/cli.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274837,
+    "ast_hash": "3067f0ddc6d659384a9b25d055d1df7f",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/controller_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274863,
+    "ast_hash": "f812c6b610ffb4baaa8e732dbd387c87",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/features.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274882,
+    "ast_hash": "bbb5b7976973eaf5bc6f4ac22ddf3dfa",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/images_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274903,
+    "ast_hash": "ef0378b591ba2f49ac2df673c5ec3333",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/kubearmor_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274922,
+    "ast_hash": "e67328b929d0e45c72d2fb6c6ea72edb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/main.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3274946,
+    "ast_hash": "2273267c7a729c5e9be653e01cbb33e6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/observability.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.327497,
+    "ast_hash": "bcc5c03d8cf7525af4f12913701533fd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/pods_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.327499,
+    "ast_hash": "aae7487e8cb7235dc7fb6f55b923e5a0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/quotas_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3275013,
+    "ast_hash": "5863ace23f992696c7b86cdd2beef241",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/registry_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.327504,
+    "ast_hash": "66cc0ac4313244ccfe084910ad80ffbd",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/teams_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3275056,
+    "ast_hash": "36fc046110fc1ca3a8fe178fcfbb826e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/src/webhook_cmd.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.3275077,
+    "ast_hash": "eea36f56e924cfe37f0997bd112e9b50",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/tests/admission_envtest.rs": {
+    "mtime": 1794527989.4912317,
+    "seen": 1794528008.32751,
+    "ast_hash": "e2d7e987b75dd755be0dc327d9d40268",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/tests/controller_envtest.rs": {
+    "mtime": 1794527989.4924223,
+    "seen": 1794528008.3275123,
+    "ast_hash": "99f3e81727777257da50db75207feca3",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/tests/envtest.rs": {
+    "mtime": 1794527989.4924223,
+    "seen": 1794528008.3275146,
+    "ast_hash": "4930bde51cd31a92af5b7ff8f82692b5",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-operator/tests/perf_envtest.rs": {
+    "mtime": 1794527989.4924223,
+    "seen": 1794528008.3275163,
+    "ast_hash": "ec2340d34210e268b5b5e7840049de04",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/Cargo.toml": {
+    "mtime": 1794527989.4924223,
+    "seen": 1794528008.3275185,
+    "ast_hash": "e6b5bc0f0ac9eafb4f397c8887ae5237",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/src/controller.rs": {
+    "mtime": 1794527989.4927976,
+    "seen": 1794528008.3275213,
+    "ast_hash": "10ae6f4fbbfb8353a8f3e24c60b07998",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/src/found.rs": {
+    "mtime": 1794527989.4928818,
+    "seen": 1794528008.327524,
+    "ast_hash": "a21b6729d7b2154d9a5866b82175c330",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/src/lib.rs": {
+    "mtime": 1794527989.4928818,
+    "seen": 1794528008.327526,
+    "ast_hash": "1401b5c0ef8b46bd17fbeeab3a1fcb32",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/src/namespace_label_store.rs": {
+    "mtime": 1794527989.4928818,
+    "seen": 1794528008.3275282,
+    "ast_hash": "4f78bd8f21d1ee532171b7b6afd756df",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/src/pod_security_metrics.rs": {
+    "mtime": 1794527989.4928818,
+    "seen": 1794528008.3275309,
+    "ast_hash": "482e9d12993a1a61cce16968a535b342",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/tests/openshift_pod_security_envtest.rs": {
+    "mtime": 1794527989.4928818,
+    "seen": 1794528008.3275332,
+    "ast_hash": "629d20b21bf1cf4dbc8675ae01c7f8ea",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security-adapters/tests/pod_security_envtest.rs": {
+    "mtime": 1794527989.4932065,
+    "seen": 1794528008.3275356,
+    "ast_hash": "c97bfdf5e7362bbf309a6a08c50c05d0",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/Cargo.toml": {
+    "mtime": 1794527989.4932065,
+    "seen": 1794528008.3275385,
+    "ast_hash": "3d655e02a04e95e54b829a880795b911",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/application.rs": {
+    "mtime": 1794527989.493306,
+    "seen": 1794528008.3275406,
+    "ast_hash": "cce4dbf6b390d284eed724e716f68364",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/feature/mod.rs": {
+    "mtime": 1794527989.4933817,
+    "seen": 1794528008.3275428,
+    "ast_hash": "de22c54b63c8fbc8fdc2bb62a91b6325",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/feature/pod_security.rs": {
+    "mtime": 1794527989.493417,
+    "seen": 1794528008.3275456,
+    "ast_hash": "2a273958cae11616565f069b99a508a5",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/lib.rs": {
+    "mtime": 1794527989.493417,
+    "seen": 1794528008.3275478,
+    "ast_hash": "a92afed79a57356a58ed56c3aa4a2001",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/model/backend.rs": {
+    "mtime": 1794527989.493417,
+    "seen": 1794528008.32755,
+    "ast_hash": "94bb55be207112d7c82333735225144d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/model/labels.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275523,
+    "ast_hash": "0e3112b114763ce84c7fb292d2a0e992",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/model/mod.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275552,
+    "ast_hash": "7e0aacad74353a1a223cfbe48f29f096",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/model/plan.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275573,
+    "ast_hash": "d5ae87695a9489cf920fa67aa37fd67f",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/model/restore.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275604,
+    "ast_hash": "f80c635314d7aee73d16e1df1d9f6224",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/port.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275628,
+    "ast_hash": "622551f041dfdb29bc1a4ed649d7a342",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-pod-security/src/resolve.rs": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275652,
+    "ast_hash": "d2529dcdfd147e9c1fd0f40f89808769",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard-adapters/Cargo.toml": {
+    "mtime": 1794527989.4935381,
+    "seen": 1794528008.3275678,
+    "ast_hash": "ef4fd63d9be4d3259c2a48fecf29a7a5",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard-adapters/src/lib.rs": {
+    "mtime": 1794527989.4938352,
+    "seen": 1794528008.32757,
+    "ast_hash": "f1574dcb41550a4040049c98026a83af",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard-adapters/src/policy_guard.rs": {
+    "mtime": 1794527989.4938881,
+    "seen": 1794528008.327572,
+    "ast_hash": "b7e766008e8d5f979189a32d63abc673",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard-adapters/src/registry_guard.rs": {
+    "mtime": 1794527989.4938881,
+    "seen": 1794528008.3275745,
+    "ast_hash": "bc6b50f0b07c5cbaeaa411ba1dfa643d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard/Cargo.toml": {
+    "mtime": 1794527989.4938881,
+    "seen": 1794528008.327577,
+    "ast_hash": "94eebdaaf93e5be607d3d6bc3e3c7b60",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard/src/endpoint_routing.rs": {
+    "mtime": 1794527989.4940565,
+    "seen": 1794528008.3275797,
+    "ast_hash": "ea80e496527f3d130f3c75e03756259e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard/src/guard.rs": {
+    "mtime": 1794527989.4941912,
+    "seen": 1794528008.3275821,
+    "ast_hash": "0d18c4ef0dbb52ffef4a260cac9be835",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard/src/lib.rs": {
+    "mtime": 1794527989.4941912,
+    "seen": 1794528008.3275845,
+    "ast_hash": "f2e3ccaaf60bef8f39343fc292fffc20",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-policy-guard/src/resource.rs": {
+    "mtime": 1794527989.4941912,
+    "seen": 1794528008.3275871,
+    "ast_hash": "68416ce8381452a47c81a9d779688115",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/Cargo.toml": {
+    "mtime": 1794527989.4941912,
+    "seen": 1794528008.327589,
+    "ast_hash": "594b53b2d26ab59a986f2dc4415dfb19",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/src/controller.rs": {
+    "mtime": 1794527989.4943762,
+    "seen": 1794528008.3275917,
+    "ast_hash": "7b8d51af4b4c1129b6edffd8afaedd71",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/src/lib.rs": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3275943,
+    "ast_hash": "117ade03bdb463b6c08addcb0115f775",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/src/registry_metrics.rs": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3275964,
+    "ast_hash": "0666e39cd11068b43f58845dd292849e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/src/registry_object_store.rs": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3275988,
+    "ast_hash": "4de01032c93a7da80d84b1e48beeb6bb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/src/registry_template_store.rs": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3276014,
+    "ast_hash": "c184b6ccd2219aeebe0125ec361ba482",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config-adapters/tests/registry_envtest.rs": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3276038,
+    "ast_hash": "55ccc9d40b3bbf3d05607b5e44846cb2",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/Cargo.toml": {
+    "mtime": 1794527989.4944413,
+    "seen": 1794528008.3276062,
+    "ast_hash": "dd3e95df565660af6640b5322783ebeb",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/application.rs": {
+    "mtime": 1794527989.4947956,
+    "seen": 1794528008.3276086,
+    "ast_hash": "ba7b99ed43b181ef2acc231eb81dd844",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/feature/mod.rs": {
+    "mtime": 1794527989.4948754,
+    "seen": 1794528008.3276112,
+    "ast_hash": "691532e27d466b87e1bb925099e4a71c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/feature/registry_config.rs": {
+    "mtime": 1794527989.494916,
+    "seen": 1794528008.3276136,
+    "ast_hash": "e87389696c26fabc2399428eed3fc0d8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/feature/registry_guard.rs": {
+    "mtime": 1794527989.494916,
+    "seen": 1794528008.327616,
+    "ast_hash": "c9feb845417fcfd5405c2c881f9d4810",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/lib.rs": {
+    "mtime": 1794527989.494916,
+    "seen": 1794528008.3276186,
+    "ast_hash": "b112bc37b6b4f83c1074f6ed7d111064",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/model/diff.rs": {
+    "mtime": 1794527989.494916,
+    "seen": 1794528008.3276203,
+    "ast_hash": "713af894166396fa5a6e011ed7dd104e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/model/mod.rs": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276224,
+    "ast_hash": "b9f7786e90a7d915245714d8580fd7e1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/model/mount.rs": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276246,
+    "ast_hash": "5985cbecef3f08e107e3af65abc6c86e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/model/object.rs": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276265,
+    "ast_hash": "f58481340f2cac3251ba2332822022d8",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/port.rs": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276289,
+    "ast_hash": "e5c4943616933c568999efe8bc29eb5c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-registry-config/src/resolve.rs": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276315,
+    "ast_hash": "1f46fedaf3ffa3d3f1341e35a3e898d6",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/Cargo.toml": {
+    "mtime": 1794527989.4951932,
+    "seen": 1794528008.3276339,
+    "ast_hash": "e8d276c6506915de8b5deb419379ddc9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/src/controller.rs": {
+    "mtime": 1794527989.495563,
+    "seen": 1794528008.3276365,
+    "ast_hash": "f2c2433fb05438ce3eae410e162ec702",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/src/lib.rs": {
+    "mtime": 1794527989.4956346,
+    "seen": 1794528008.3276393,
+    "ast_hash": "8ff8f527254f886d8a8e31877e090b26",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/src/quota_metrics.rs": {
+    "mtime": 1794527989.4956346,
+    "seen": 1794528008.3276415,
+    "ast_hash": "00528de9d49d56e58f6fe619443f3c5f",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/src/quota_stores.rs": {
+    "mtime": 1794527989.4956346,
+    "seen": 1794528008.3276436,
+    "ast_hash": "a32798e86dcb7ae74193acb835086954",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas-adapters/tests/resource_quotas_envtest.rs": {
+    "mtime": 1794527989.4956346,
+    "seen": 1794528008.3276465,
+    "ast_hash": "239152fc4c58e06ec703c76f15b77392",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/Cargo.toml": {
+    "mtime": 1794527989.4956346,
+    "seen": 1794528008.3276494,
+    "ast_hash": "cc8c992a2c00ea792dac463b5b94fdc1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/application.rs": {
+    "mtime": 1794527989.4959893,
+    "seen": 1794528008.3276513,
+    "ast_hash": "af1637524a83ad9d78cbc464bef7118b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/feature/mod.rs": {
+    "mtime": 1794527989.496092,
+    "seen": 1794528008.3276534,
+    "ast_hash": "01103ba77f0794793ab8f64f7a7f1d74",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/feature/resource_quotas.rs": {
+    "mtime": 1794527989.4961412,
+    "seen": 1794528008.327656,
+    "ast_hash": "0ed8887d721ded1216f9ed3841b39754",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/lib.rs": {
+    "mtime": 1794527989.4961412,
+    "seen": 1794528008.3276584,
+    "ast_hash": "929d2bfcbbcddbe416e15e1bbc06bc6b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/mod.rs": {
+    "mtime": 1794527989.4961412,
+    "seen": 1794528008.3276606,
+    "ast_hash": "08592619caea82ad1dca2a1bb5b1e65e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/object.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276634,
+    "ast_hash": "5a25960150907d254dac695037254c41",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/quantity.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276656,
+    "ast_hash": "5c4ea5534bbcf4c0043ce78127fab744",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/template.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276677,
+    "ast_hash": "d36cf0a44f2e2907a3b4a54c51683658",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/usage.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276699,
+    "ast_hash": "2ab3c2e7729c0c0709404aa22c73743a",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/model/validate.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.327672,
+    "ast_hash": "20fcf32f49bbe519051b10597121bf79",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/port.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276746,
+    "ast_hash": "16b37bac97dcbafa9aca6eeb4f159666",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-resource-quotas/src/resolve.rs": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.327677,
+    "ast_hash": "3f86026a9ddbc41759951fa16b714b7b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/Cargo.toml": {
+    "mtime": 1794527989.4962702,
+    "seen": 1794528008.3276803,
+    "ast_hash": "3fe4fa9fe8f6ffb06cd442ccf26ef386",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/access.rs": {
+    "mtime": 1794527989.496681,
+    "seen": 1794528008.3276827,
+    "ast_hash": "2079252439eb243f4682db01d45f665d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/config_store.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.327685,
+    "ast_hash": "e0a48bb40a1055f9d9d9eb8ca6f7582b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/delete.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3276877,
+    "ast_hash": "7a3b4b808a11cee6c27a78ec4584562c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/dwoc_store.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.32769,
+    "ast_hash": "2299ab5a4047b293dbf4ef7205725a59",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/lib.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3276923,
+    "ast_hash": "4f9a9e98b92305c864dc78f8c365ced7",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/ns_index.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3276947,
+    "ast_hash": "f027653c71c0e7557edc9c6a0513f1c9",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/ns_store.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.327697,
+    "ast_hash": "aae3f08ea4120b2017b341f54cdbd9c4",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/owner_reference.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3276997,
+    "ast_hash": "ecd35344dffd29fa997a276c794d182c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/prometheus.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3277018,
+    "ast_hash": "456af3f459e69aa6ad702ef904f77147",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-runtime/src/watch.rs": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.3277044,
+    "ast_hash": "a08dbea6f923be5e508afecc9aa2664b",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/Cargo.toml": {
+    "mtime": 1794527989.496776,
+    "seen": 1794528008.327706,
+    "ast_hash": "6d0ae416f0b4bd794d98aa15b9e5cc5d",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/extract.rs": {
+    "mtime": 1794527989.4974313,
+    "seen": 1794528008.3277085,
+    "ast_hash": "d34d9a1d7bd509bc4eeceeb8feebab89",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/lib.rs": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.3277104,
+    "ast_hash": "b35283cdad6ab0e80c195f6b18a7092c",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/metrics.rs": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.327713,
+    "ast_hash": "86d9329a8fe9e564e937f55050f5aac1",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/render.rs": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.3277154,
+    "ast_hash": "3029f9a91ea6aadb5dcd13a8dd6cc34e",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/router.rs": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.3277175,
+    "ast_hash": "49fe91ea62e9c2a3eb22c150fe77bd99",
+    "semantic_hash": ""
+  },
+  "crates/weebo-si-webhook/src/shared.rs": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.3277197,
+    "ast_hash": "69874a3301be53646b6a5e0ff93070d0",
+    "semantic_hash": ""
+  },
+  "cspell.json": {
+    "mtime": 1794527989.497491,
+    "seen": 1794528008.327722,
+    "ast_hash": "5c4ac1420fd2340ab7df480111ca8fdd",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/machineconfig-worker.yaml": {
+    "mtime": 1794527989.4979358,
+    "seen": 1794528008.3277242,
+    "ast_hash": "cbeabdef7d3b8fb27f96c321fb24b1d0",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/profiles/weebo-container-build-chroot.json": {
+    "mtime": 1794527989.4980211,
+    "seen": 1794528008.3277266,
+    "ast_hash": "6320b7f99230f8e802789037868e4227",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/profiles/weebo-container-build-log.json": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.327729,
+    "ast_hash": "93c345085924e5da6a1a3313cc2c8463",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/profiles/weebo-container-build.json": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.3277311,
+    "ast_hash": "711d6f6ad9e2e5bc573ff538a2ab4a9b",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/profiles/weebo-workspace.json": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.3277335,
+    "ast_hash": "ee64ab9c01bdaf511023fdfc2b52f070",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/talos-patch.yaml": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.327736,
+    "ast_hash": "71dd9b88ee62efa5b244219870dbb2d6",
+    "semantic_hash": ""
+  },
+  "deploy/seccomp/upstream/moby-default.json": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.3277378,
+    "ast_hash": "3c2f9deb2a88ab66eb50f244b19c7ca5",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/config/weebosiconfig.yaml": {
+    "mtime": 1794527989.4984047,
+    "seen": 1794528008.3277402,
+    "ast_hash": "2179f4825e170a099a63277b989e0952",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/dwoc/weebo-build.yaml": {
+    "mtime": 1794527989.4984047,
+    "seen": 1794528008.3277433,
+    "ast_hash": "11624327c020335020f4c35b38e8c031",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/dwoc/weebo-workspace.yaml": {
+    "mtime": 1794527989.4985552,
+    "seen": 1794528008.3277462,
+    "ast_hash": "3eca899f62e1aab7c18cf3fdffb4e0b8",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/examples/devfile.yaml": {
+    "mtime": 1794527989.4985552,
+    "seen": 1794528008.327748,
+    "ast_hash": "9a58e386945ce74b49c50bad877a4417",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/examples/namespace.yaml": {
+    "mtime": 1794527989.498665,
+    "seen": 1794528008.327751,
+    "ast_hash": "e9e91789bea52b5e81104fca3cb1bafb",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/01-observe.yaml": {
+    "mtime": 1794527989.498665,
+    "seen": 1794528008.3277535,
+    "ast_hash": "d4a08d45b5fe286e0230b74219c4c93a",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/02-workspace-shape.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.327756,
+    "ast_hash": "cad20ed7d015d414ff1ea41d6087a939",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/03-network.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.327758,
+    "ast_hash": "d3d5f04b06e2a9ea2c73b143106580d0",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/04-images.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277605,
+    "ast_hash": "d84a38b659871631062365861394907c",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/05-pods.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277628,
+    "ast_hash": "6a4796e25ea2013fafd072226695d90f",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/06-endpoints-observe.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277652,
+    "ast_hash": "0a429b26dc0799f29e418d9af2a36300",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/07-endpoints-enforce.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277678,
+    "ast_hash": "3affff054b2430766778332acabee34c",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/08-runtime.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.32777,
+    "ast_hash": "c7cf15d106cd93e1c04dfe8e8c71ed3c",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/stages/09-identity.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277724,
+    "ast_hash": "8c1173f0c2ca5728ec719881db72f0c6",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/teams/weebo-build.yaml": {
+    "mtime": 1794527989.49877,
+    "seen": 1794528008.3277748,
+    "ast_hash": "e082473f962c4b7f9dbc679b3613c937",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/teams/weebo.yaml": {
+    "mtime": 1794527989.499163,
+    "seen": 1794528008.327777,
+    "ast_hash": "d6a26561db84a3e9fc3e72e6c3d1e0b2",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/kubearmor/weebo-armor-base.yaml": {
+    "mtime": 1794527989.4992268,
+    "seen": 1794528008.3277793,
+    "ast_hash": "529965ca9ea76afb5e76a8075232de9f",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/kubearmor/weebo-armor-build.yaml": {
+    "mtime": 1794527989.4992962,
+    "seen": 1794528008.3277817,
+    "ast_hash": "a5b474eba69a837639171ae3e16f6be3",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/network/weebo-net-anthropic.yaml": {
+    "mtime": 1794527989.4992962,
+    "seen": 1794528008.3277836,
+    "ast_hash": "6ce029872b0e2dd67fb60d96f471d909",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/network/weebo-net-base.yaml": {
+    "mtime": 1794527989.4993968,
+    "seen": 1794528008.327786,
+    "ast_hash": "745723ff55bb6d83967a845e04c8d86b",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/network/weebo-net-dev-registries.yaml": {
+    "mtime": 1794527989.4993968,
+    "seen": 1794528008.3277888,
+    "ast_hash": "ffcb177342dd4d92669b3dc54f75cf5f",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/network/weebo-net-internet.yaml": {
+    "mtime": 1794527989.4993968,
+    "seen": 1794528008.3277912,
+    "ast_hash": "ce714f33b6237085bcd7153e86684e18",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/network/weebo-net-kube-api.yaml": {
+    "mtime": 1794527989.4993968,
+    "seen": 1794528008.3277931,
+    "ast_hash": "a64bccf5d9c11521218d3b812e9381c3",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/quotas/build.yaml": {
+    "mtime": 1794527989.4993968,
+    "seen": 1794528008.3277957,
+    "ast_hash": "9799b7b9b1b99728e37a8eba35e3db62",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/quotas/standard.yaml": {
+    "mtime": 1794527989.4996164,
+    "seen": 1794528008.3277977,
+    "ast_hash": "1f00b7ef852730631f335e4d9315b7cc",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/registry/weebo-cargo-config.yaml": {
+    "mtime": 1794527989.4996164,
+    "seen": 1794528008.3278,
+    "ast_hash": "068626c0bd0e96c938b945ea23a98bc6",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/templates/registry/weebo-pkg-env.yaml": {
+    "mtime": 1794527989.4997191,
+    "seen": 1794528008.3278027,
+    "ast_hash": "ebc9d6b201878fd9b7ff21f7a137f704",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/users/example.yaml": {
+    "mtime": 1794527989.4997191,
+    "seen": 1794528008.3278053,
+    "ast_hash": "b89ab736637b9ff709aa932acdff8f77",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/values/endpoint-gateway.yaml": {
+    "mtime": 1794527989.4997191,
+    "seen": 1794528008.327808,
+    "ast_hash": "d6db2e88cf8b7396d65a84ded21b2753",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/values/weebo-si-operator.yaml": {
+    "mtime": 1794527989.4998703,
+    "seen": 1794528008.3278105,
+    "ast_hash": "bc2d9e1b94aebd0a9d0646ddbac4a77c",
+    "semantic_hash": ""
+  },
+  "devfile.yaml": {
+    "mtime": 1794527989.4998703,
+    "seen": 1794528008.327813,
+    "ast_hash": "8a94623e54ecf12da1e9bcf1acf72d47",
+    "semantic_hash": ""
+  },
+  "e2e/charts/che-user/Chart.yaml": {
+    "mtime": 1794527989.5069828,
+    "seen": 1794528008.327815,
+    "ast_hash": "59bea7042fb38d16f51c73292a148809",
+    "semantic_hash": ""
+  },
+  "e2e/charts/che-user/values.yaml": {
+    "mtime": 1794527989.5070493,
+    "seen": 1794528008.327818,
+    "ast_hash": "e38a165593d745f63d8bbd439d93add0",
+    "semantic_hash": ""
+  },
+  "e2e/images/workspace/serve.py": {
+    "mtime": 1794527989.5071974,
+    "seen": 1794528008.3278203,
+    "ast_hash": "bbc23cebcda24233b35abcf1c596e172",
+    "semantic_hash": ""
+  },
+  "e2e/runtime-matrix/kind-runtimes.sh": {
+    "mtime": 1794527989.5071974,
+    "seen": 1794528008.3278224,
+    "ast_hash": "6431db92a9c9057f5a29fd97c8e49816",
+    "semantic_hash": ""
+  },
+  "e2e/runtime-matrix/kind-userns.sh": {
+    "mtime": 1794527989.5072985,
+    "seen": 1794528008.3278248,
+    "ast_hash": "c4eed8ad57b36c606f539acbe059881e",
+    "semantic_hash": ""
+  },
+  "e2e/runtime-matrix/kind.yaml": {
+    "mtime": 1794527989.5072985,
+    "seen": 1794528008.3278275,
+    "ast_hash": "a6ce5d82bb3ab2298a93850aa62c5a2c",
+    "semantic_hash": ""
+  },
+  "e2e/runtime-matrix/runtimeclasses.yaml": {
+    "mtime": 1794527989.5072985,
+    "seen": 1794528008.32783,
+    "ast_hash": "a82e5e6b636ab061ca1c85b20e663c8c",
+    "semantic_hash": ""
+  },
+  "e2e/values/endpoint-gateway.yaml": {
+    "mtime": 1794527989.5072985,
+    "seen": 1794528008.3278325,
+    "ast_hash": "d1bb161b2552180e6b192bd4c48aede8",
+    "semantic_hash": ""
+  },
+  "e2e/values/weebo-si-operator.yaml": {
+    "mtime": 1794527989.5074432,
+    "seen": 1794528008.3278356,
+    "ast_hash": "c5661c7ed0be18c28a00b5355fd05d0a",
+    "semantic_hash": ""
+  },
+  "scripts/crd-regen.sh": {
+    "mtime": 1794527989.5074432,
+    "seen": 1794528008.3278382,
+    "ast_hash": "e35bcf9e7e6f1dcfb5118ae271804381",
+    "semantic_hash": ""
+  },
+  "scripts/e2e.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.327841,
+    "ast_hash": "70ff4d2104b1fd1dc3a6e5a2173b25af",
+    "semantic_hash": ""
+  },
+  "scripts/kind-che.yaml": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278434,
+    "ast_hash": "1b66db7187f77ef2f1a0b4c79485b1f0",
+    "semantic_hash": ""
+  },
+  "scripts/kind-e2e.yaml": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278458,
+    "ast_hash": "b45f96373951793b7c770e6abec421cd",
+    "semantic_hash": ""
+  },
+  "scripts/rfc-check.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278487,
+    "ast_hash": "bca0d97a9bcbb52ef3d380ecde11d8ef",
+    "semantic_hash": ""
+  },
+  "scripts/rfc-index.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278508,
+    "ast_hash": "1a3f0a25a0dc8c6528edba864a2229a8",
+    "semantic_hash": ""
+  },
+  "scripts/rfc-lib.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.327853,
+    "ast_hash": "d743461513d1075f5c33429a49fe7f7a",
+    "semantic_hash": ""
+  },
+  "scripts/runtime-matrix-k8s.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278556,
+    "ast_hash": "1897c13b315ce8b32acdfdb0d9802830",
+    "semantic_hash": ""
+  },
+  "scripts/runtime-matrix.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278582,
+    "ast_hash": "6a91e4e24a7377401165babf1976fa6d",
+    "semantic_hash": ""
+  },
+  "scripts/seccomp-profiles.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.32786,
+    "ast_hash": "07c3fa0991dee8f902b8bf11beb65d97",
+    "semantic_hash": ""
+  },
+  "scripts/spike-0009-che.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278625,
+    "ast_hash": "fee45d618d67f575a040b5b152df1d15",
+    "semantic_hash": ""
+  },
+  "scripts/spike-0009-rig.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278646,
+    "ast_hash": "dcdebbad7a8c293cd1c6d1d7cb55368b",
+    "semantic_hash": ""
+  },
+  "scripts/spike-0009.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278675,
+    "ast_hash": "4daf65439fffdc02c5dce9f977080a89",
+    "semantic_hash": ""
+  },
+  "site/content/docs/crds/meta.json": {
+    "mtime": 1794527989.5088685,
+    "seen": 1794528008.3278744,
+    "ast_hash": "628c1f5427685f66fea4da831bd1f4fd",
+    "semantic_hash": ""
+  },
+  "site/content/docs/meta.json": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3278766,
+    "ast_hash": "477b445e7e3cc986a42c964067d75fa1",
+    "semantic_hash": ""
+  },
+  "site/crd-docs.config.mjs": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3278792,
+    "ast_hash": "81ba09f0c6ea77d75dfe49296cc652f4",
+    "semantic_hash": ""
+  },
+  "site/eslint.config.mjs": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3278816,
+    "ast_hash": "60bbb6cffde5eb155da632c787346894",
+    "semantic_hash": ""
+  },
+  "site/next.config.mjs": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.327884,
+    "ast_hash": "c047f510a7203a8e57bb12038083af9a",
+    "semantic_hash": ""
+  },
+  "site/package.json": {
+    "mtime": 1794527989.5101404,
+    "seen": 1794528008.3278866,
+    "ast_hash": "a8e057d5769148df28af047e5b0b3149",
+    "semantic_hash": ""
+  },
+  "site/postcss.config.mjs": {
+    "mtime": 1794527989.5101404,
+    "seen": 1794528008.327889,
+    "ast_hash": "e9d66e1263ec6f84f9c7f4b88b00e4f9",
+    "semantic_hash": ""
+  },
+  "site/proxy.ts": {
+    "mtime": 1794527989.5101404,
+    "seen": 1794528008.3278913,
+    "ast_hash": "6ca8929c17c74a803bb35d9f42249ffa",
+    "semantic_hash": ""
+  },
+  "site/public/crd-schemas/index.json": {
+    "mtime": 1794527989.5112102,
+    "seen": 1794528008.3278942,
+    "ast_hash": "bdd89b8d8a5444cd68b204fddb5bf88c",
+    "semantic_hash": ""
+  },
+  "site/public/crd-schemas/links.json": {
+    "mtime": 1794527989.511265,
+    "seen": 1794528008.3278966,
+    "ast_hash": "b78de41ac11ecda38aa5539b381abc30",
+    "semantic_hash": ""
+  },
+  "site/public/crd-schemas/weebosiconfig.schema.json": {
+    "mtime": 1794527989.511265,
+    "seen": 1794528008.3278987,
+    "ast_hash": "d3a2fce1f5e2787ad4fc5814b4342527",
+    "semantic_hash": ""
+  },
+  "site/public/crd-schemas/weebositeam.schema.json": {
+    "mtime": 1794527989.511265,
+    "seen": 1794528008.3279011,
+    "ast_hash": "7a13205bc88d21645f4ce4399803b0a5",
+    "semantic_hash": ""
+  },
+  "site/public/crd-schemas/weebosiuser.schema.json": {
+    "mtime": 1794527989.511265,
+    "seen": 1794528008.3279035,
+    "ast_hash": "486f0e6faa8f736fbfee4c3e2246ef34",
+    "semantic_hash": ""
+  },
+  "site/source.config.ts": {
+    "mtime": 1794527989.511265,
+    "seen": 1794528008.3279057,
+    "ast_hash": "78107d328a350c360bedb1b7bf242768",
+    "semantic_hash": ""
+  },
+  "site/src/app/(home)/layout.tsx": {
+    "mtime": 1794527989.511724,
+    "seen": 1794528008.3279078,
+    "ast_hash": "2505cdd84e8476d4390dfbbd9d9ee708",
+    "semantic_hash": ""
+  },
+  "site/src/app/(home)/page.tsx": {
+    "mtime": 1794527989.511792,
+    "seen": 1794528008.3279104,
+    "ast_hash": "ef0aee97602216503fc408f915408f7a",
+    "semantic_hash": ""
+  },
+  "site/src/app/api/search/route.ts": {
+    "mtime": 1794527989.5118413,
+    "seen": 1794528008.3279128,
+    "ast_hash": "c4e817e8367bd85bb1c4e0d5e3b1a51e",
+    "semantic_hash": ""
+  },
+  "site/src/app/docs/[[...slug]]/page.tsx": {
+    "mtime": 1794527989.5119057,
+    "seen": 1794528008.3279154,
+    "ast_hash": "8ab04596bd261ed11eb32dac3b04a97c",
+    "semantic_hash": ""
+  },
+  "site/src/app/docs/layout.tsx": {
+    "mtime": 1794527989.5119057,
+    "seen": 1794528008.327918,
+    "ast_hash": "045acaf88411f8be70a4c582eaf51bcb",
+    "semantic_hash": ""
+  },
+  "site/src/app/layout.tsx": {
+    "mtime": 1794527989.5119057,
+    "seen": 1794528008.3279204,
+    "ast_hash": "425b5e609a4f6d59de48227d4b5224ec",
+    "semantic_hash": ""
+  },
+  "site/src/app/llms-full.txt/route.ts": {
+    "mtime": 1794527989.5119057,
+    "seen": 1794528008.3279226,
+    "ast_hash": "fdcf44c5cdb365ff50cf2e39585c33a8",
+    "semantic_hash": ""
+  },
+  "site/src/app/llms.mdx/docs/[[...slug]]/route.ts": {
+    "mtime": 1794527989.5121343,
+    "seen": 1794528008.3279252,
+    "ast_hash": "cdae1a48de8ed209dc5944212064cb72",
+    "semantic_hash": ""
+  },
+  "site/src/app/llms.txt/route.ts": {
+    "mtime": 1794527989.5121343,
+    "seen": 1794528008.3279276,
+    "ast_hash": "05d1692d00092edb65aca5431412788f",
+    "semantic_hash": ""
+  },
+  "site/src/app/og/docs/[...slug]/route.tsx": {
+    "mtime": 1794527989.512248,
+    "seen": 1794528008.3279302,
+    "ast_hash": "05cbfbb248732ace305eaff23dc5aa57",
+    "semantic_hash": ""
+  },
+  "site/src/components/mdx.tsx": {
+    "mtime": 1794527989.512248,
+    "seen": 1794528008.3279321,
+    "ast_hash": "01d216b86147b49c4fce707f0e1f94cc",
+    "semantic_hash": ""
+  },
+  "site/src/lib/crd-choices.ts": {
+    "mtime": 1794527989.512248,
+    "seen": 1794528008.3279347,
+    "ast_hash": "82e8721e368642e54dbc4ab0e54d5343",
+    "semantic_hash": ""
+  },
+  "site/src/lib/shared.ts": {
+    "mtime": 1794527989.5124085,
+    "seen": 1794528008.3279376,
+    "ast_hash": "75fab4e0b6d1fe7561d3f2351ba5eacb",
+    "semantic_hash": ""
+  },
+  "site/src/lib/source.ts": {
+    "mtime": 1794527989.5124085,
+    "seen": 1794528008.32794,
+    "ast_hash": "17ec5254be180217e295eee6e3177a3b",
+    "semantic_hash": ""
+  },
+  "site/tsconfig.json": {
+    "mtime": 1794527989.5124085,
+    "seen": 1794528008.3279421,
+    "ast_hash": "4a695d7d731851d41c5fd7d780d6c161",
+    "semantic_hash": ""
+  },
+  ".claude/CLAUDE.md": {
+    "mtime": 1794527989.54195,
+    "seen": 1794528008.3279445,
+    "ast_hash": "9b31786b637be3c13978bec4c2330752",
+    "semantic_hash": ""
+  },
+  "CHANGELOG.md": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.327947,
+    "ast_hash": "2cc0279c2be0de2fa9516a60d2f68062",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1794527989.521586,
+    "seen": 1794528008.3279493,
+    "ast_hash": "d4aa299f77dec8272c6da9877dc7b87f",
+    "semantic_hash": ""
+  },
+  "LICENSE.md": {
+    "mtime": 1794527989.469322,
+    "seen": 1794528008.3279514,
+    "ast_hash": "e9ccf6d1651e1bfe4d55c466d8c0bc4a",
+    "semantic_hash": ""
+  },
+  "charts/endpoint-gateway/templates/NOTES.txt": {
+    "mtime": 1794527989.4752123,
+    "seen": 1794528008.3279536,
+    "ast_hash": "96ca2f167664bad598c36410126ba749",
+    "semantic_hash": ""
+  },
+  "charts/preauth-proxy/templates/NOTES.txt": {
+    "mtime": 1794527989.4758804,
+    "seen": 1794528008.327956,
+    "ast_hash": "24febca8b830f0de8e81dba6ad0d559f",
+    "semantic_hash": ""
+  },
+  "charts/weebo-si-operator/templates/NOTES.txt": {
+    "mtime": 1794527989.4767113,
+    "seen": 1794528008.3279586,
+    "ast_hash": "fea841e277823ee441d1d249ba4863c9",
+    "semantic_hash": ""
+  },
+  "deploy/weebo-si/README.md": {
+    "mtime": 1794527989.4980896,
+    "seen": 1794528008.3279607,
+    "ast_hash": "c5ac89d1f580d7e2ecff7fc27d0641b6",
+    "semantic_hash": ""
+  },
+  "docs/architecture/hexagonal.md": {
+    "mtime": 1794527989.4999576,
+    "seen": 1794528008.3279629,
+    "ast_hash": "8df86a008aca757320600a200b5f63a7",
+    "semantic_hash": ""
+  },
+  "docs/architecture/operator-internals.md": {
+    "mtime": 1794527989.500035,
+    "seen": 1794528008.327965,
+    "ast_hash": "322fa70c37220972aef9b6563ec39b74",
+    "semantic_hash": ""
+  },
+  "docs/architecture/readme.md": {
+    "mtime": 1794527989.500035,
+    "seen": 1794528008.3279676,
+    "ast_hash": "7ea2b51dfeb711bd6c425d16ed20223f",
+    "semantic_hash": ""
+  },
+  "docs/architecture/repo-layout.md": {
+    "mtime": 1794527989.500035,
+    "seen": 1794528008.32797,
+    "ast_hash": "d83a42f553129e3836086713f8f09e4f",
+    "semantic_hash": ""
+  },
+  "docs/bricks/endpoint-gateway.md": {
+    "mtime": 1794527989.500035,
+    "seen": 1794528008.3279724,
+    "ast_hash": "d626025728f95c6acb01e47de6d61de1",
+    "semantic_hash": ""
+  },
+  "docs/bricks/image-policy.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279746,
+    "ast_hash": "c6980fef35164d547cff698a92da25db",
+    "semantic_hash": ""
+  },
+  "docs/bricks/kubearmor-policy.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.32798,
+    "ast_hash": "6b9bf71b99ba8a278ff7dfd693f367a4",
+    "semantic_hash": ""
+  },
+  "docs/bricks/network-profiles.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279824,
+    "ast_hash": "86a817400a7e4e8f06b7f3e0450f3719",
+    "semantic_hash": ""
+  },
+  "docs/bricks/passwd-append.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279846,
+    "ast_hash": "08270b639d46d104fa77c515c5d3a23d",
+    "semantic_hash": ""
+  },
+  "docs/bricks/pod-security.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279867,
+    "ast_hash": "09b4698c0b353d474d18064556d4c466",
+    "semantic_hash": ""
+  },
+  "docs/bricks/preauth-proxy.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.327989,
+    "ast_hash": "d44d749cfaafa0b36607084038112e42",
+    "semantic_hash": ""
+  },
+  "docs/bricks/readme.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279912,
+    "ast_hash": "a20e163b745d85b20e745a30b973daf0",
+    "semantic_hash": ""
+  },
+  "docs/bricks/registry-config.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279939,
+    "ast_hash": "2dd1dfefefc6380d49264f04a70104b5",
+    "semantic_hash": ""
+  },
+  "docs/bricks/resource-quotas.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.327996,
+    "ast_hash": "0c44e90003a0953971cfc4772e5429be",
+    "semantic_hash": ""
+  },
+  "docs/bricks/teams-and-users.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.327998,
+    "ast_hash": "12d407bd7ed3b077224b38ec9be5f5e6",
+    "semantic_hash": ""
+  },
+  "docs/bricks/weebo-si-operator.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3280005,
+    "ast_hash": "9dac2005b4f3dacada1832ab97fe4a18",
+    "semantic_hash": ""
+  },
+  "docs/che-min-mise-review.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3280032,
+    "ast_hash": "124e50ce08e61630b6b4fd9b028f5fe2",
+    "semantic_hash": ""
+  },
+  "docs/ci.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3280053,
+    "ast_hash": "d0ceaf6b9e0de823545a057faf3089d4",
+    "semantic_hash": ""
+  },
+  "docs/endpoint-auth-performance.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.328008,
+    "ast_hash": "9eb7d46d6c13e8a2ffe7ce3227b4693d",
+    "semantic_hash": ""
+  },
+  "docs/guides/weebo-si-standard.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.32801,
+    "ast_hash": "24604794defed90fad33f3bacef99e14",
+    "semantic_hash": ""
+  },
+  "docs/operator-performance.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3280122,
+    "ast_hash": "79eb808cc1a51774ef51c7ddcf773181",
+    "semantic_hash": ""
+  },
+  "docs/readme.md": {
+    "mtime": 1794527989.5011404,
+    "seen": 1794528008.3280146,
+    "ast_hash": "ac5ae4bb12819c3e7d8b5e6595f7fb42",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0000-template.md": {
+    "mtime": 1794527989.5011404,
+    "seen": 1794528008.3280168,
+    "ast_hash": "5bc6a0f126f0b59afcc4413e08f14a3d",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0001-passwd-append.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.328019,
+    "ast_hash": "2c15119000ecc4182608b03ed4a1aaa1",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0002-weebo-si-operator.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.328021,
+    "ast_hash": "dbe0a19171bbd818c3b86da2494baa5d",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0003-preauth-proxy.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.328023,
+    "ast_hash": "4e62df49a13537361376ebd2e4b24b33",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0004-network-profiles.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.328025,
+    "ast_hash": "6ba3f91bf9bf33f2f42233973c7eb15c",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0005-image-policy.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.3280277,
+    "ast_hash": "6957226144847a8b57425b82863a89f2",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0006-kubearmor-policy.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.3280299,
+    "ast_hash": "4556f552f7f0ef93a0e4829c4ba63b55",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0007-registry-config.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.3280323,
+    "ast_hash": "f9cd1956c98ec6627e497e39f668998c",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0008-policy-guard-coverage.md": {
+    "mtime": 1794527989.5022802,
+    "seen": 1794528008.3280344,
+    "ast_hash": "19c622de8619e672672774d494bea69c",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0009-endpoint-auth.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.3280363,
+    "ast_hash": "f14fe82d72ea95bbac6a62bb091e827a",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0010-endpoint-auth-openshift.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.3280385,
+    "ast_hash": "af98eef6d9ddce06931647766ae7c5da",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0011-teams-and-users.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.3280406,
+    "ast_hash": "02248cb8767f44d67c8a8d0d059cdee0",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0012-operator-kit-migration.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.328043,
+    "ast_hash": "ab9e20bedde7866dacb1cc96fbfeefc9",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0013-pod-security.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.3280451,
+    "ast_hash": "85ece87549f6a9177392bbcc3cd2efb6",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0014-resource-quotas.md": {
+    "mtime": 1794527989.5041404,
+    "seen": 1794528008.328047,
+    "ast_hash": "1ba3f71ce22eaaadd54c9eb38d43aa10",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0015-platform-api-group.md": {
+    "mtime": 1794527989.5504327,
+    "seen": 1794528008.3280492,
+    "ast_hash": "a0f89c2eb436df926322ea32eac5350d",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0016-weebo-si-project.md": {
+    "mtime": 1794527989.5541396,
+    "seen": 1794528008.328051,
+    "ast_hash": "fa5d8e8916f7e62e083107942316582f",
+    "semantic_hash": ""
+  },
+  "docs/rfc/0017-image-rewrite.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.328053,
+    "ast_hash": "5a4c59c3a214e70a365a8c281ee23430",
+    "semantic_hash": ""
+  },
+  "docs/rfc/readme.md": {
+    "mtime": 1794527989.9101343,
+    "seen": 1794528008.3280556,
+    "ast_hash": "7a9d24bb7cc3be0ca0bd0888ca7a5425",
+    "semantic_hash": ""
+  },
+  "docs/runtime-matrix.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.3280575,
+    "ast_hash": "781469b11278b6dd8bd2b09b359ccb11",
+    "semantic_hash": ""
+  },
+  "docs/seccomp-profiles.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.3280602,
+    "ast_hash": "376c5d166a043b26c065b696a2b76f6c",
+    "semantic_hash": ""
+  },
+  "docs/weebosiconfig.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.3280625,
+    "ast_hash": "8aa7eafb314e22a4595af112baf8f42b",
+    "semantic_hash": ""
+  },
+  "docs/weebositeam.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.328065,
+    "ast_hash": "bc813ee6ff59d77e4c550aeac724d404",
+    "semantic_hash": ""
+  },
+  "docs/weebosiuser.md": {
+    "mtime": 1794527989.5051403,
+    "seen": 1794528008.3280673,
+    "ast_hash": "d5855e7585db91b7a3dde9ba010aa5a9",
+    "semantic_hash": ""
+  },
+  "readme.md": {
+    "mtime": 1794527989.5074432,
+    "seen": 1794528008.328077,
+    "ast_hash": "20f264d39b780dd911eb64ea5174f211",
+    "semantic_hash": ""
+  },
+  "site/AGENTS.md": {
+    "mtime": 1794527989.5087438,
+    "seen": 1794528008.3280797,
+    "ast_hash": "c98dbebb744eadc1acc4b9f58bfe0f42",
+    "semantic_hash": ""
+  },
+  "site/README.md": {
+    "mtime": 1794527989.5087438,
+    "seen": 1794528008.3280818,
+    "ast_hash": "660e49bfc4a2c90cbbdb00d40b388d4b",
+    "semantic_hash": ""
+  },
+  "site/content/docs/crds/index.mdx": {
+    "mtime": 1794527989.5088108,
+    "seen": 1794528008.328084,
+    "ast_hash": "08766e52313ea7d55f8cbfe9ae05877f",
+    "semantic_hash": ""
+  },
+  "site/content/docs/crds/weebosiconfig.mdx": {
+    "mtime": 1794527989.5088685,
+    "seen": 1794528008.3280864,
+    "ast_hash": "70ce40a15e0f9d23310a6b2e3bc0d69a",
+    "semantic_hash": ""
+  },
+  "site/content/docs/crds/weebositeam.mdx": {
+    "mtime": 1794527989.5088685,
+    "seen": 1794528008.3280883,
+    "ast_hash": "22f652a87939566fa2d04650f1df3b91",
+    "semantic_hash": ""
+  },
+  "site/content/docs/crds/weebosiuser.mdx": {
+    "mtime": 1794527989.5088685,
+    "seen": 1794528008.3280902,
+    "ast_hash": "84530bc789081a5018cc99196d3c0dd1",
+    "semantic_hash": ""
+  },
+  "site/content/docs/guides/design.mdx": {
+    "mtime": 1794527989.5088685,
+    "seen": 1794528008.328092,
+    "ast_hash": "d86ea959159cec39402589f58725f5cc",
+    "semantic_hash": ""
+  },
+  "site/content/docs/guides/features.mdx": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3280945,
+    "ast_hash": "d7c485c03a6551e621d7a34f28fd0c34",
+    "semantic_hash": ""
+  },
+  "site/content/docs/guides/install.mdx": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3280966,
+    "ast_hash": "e415d47bf4d0fa941d75803d4e392a1b",
+    "semantic_hash": ""
+  },
+  "site/content/docs/guides/observability.mdx": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.328099,
+    "ast_hash": "aab8928c3da5ef7adf040859a3090c9f",
+    "semantic_hash": ""
+  },
+  "site/content/docs/ide.mdx": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3281014,
+    "ast_hash": "581555bc78d411091b44a50f02f96fb4",
+    "semantic_hash": ""
+  },
+  "site/content/docs/index.mdx": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3281043,
+    "ast_hash": "20829c62c06e2f7d2868597b999914dd",
+    "semantic_hash": ""
+  },
+  "todo.md": {
+    "mtime": 1794527989.5124085,
+    "seen": 1794528008.3281066,
+    "ast_hash": "df88fd04bb5f37c9abed24a0bc35131a",
+    "semantic_hash": ""
+  },
+  "site/src/app/icon.png": {
+    "mtime": 1794527989.5119057,
+    "seen": 1794528008.3281088,
+    "ast_hash": "e7ea3e779d0e1a48d83743a19cadaf12",
+    "semantic_hash": ""
+  },
+  "docs/bricks/image-rewrite.md": {
+    "mtime": 1794527989.500469,
+    "seen": 1794528008.3279777,
+    "ast_hash": "6a52218f01d01c2f82f27e6d19777a2a",
+    "semantic_hash": ""
+  },
+  "scripts/t6-probe.sh": {
+    "mtime": 1794527989.5076954,
+    "seen": 1794528008.3278716,
+    "ast_hash": "2b18b30c943ffb6954ccde81c8ae89ea",
+    "semantic_hash": ""
+  },
+  "site/package-lock.json": {
+    "mtime": 1794527989.5092692,
+    "seen": 1794528008.3281112,
+    "ast_hash": "df4eef4e48138d6597304413df5e1ea0",
+    "semantic_hash": ""
+  }
+}

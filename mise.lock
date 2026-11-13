@@ -81,6 +81,10 @@ backend = "core:node"
 checksum = "sha256:6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff"
 url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz"
 
+[[tools."pipx:graphifyy"]]
+version = "0.9.102"
+backend = "pipx:graphifyy"
+
 [[tools.rtk]]
 version = "0.51.0"
 backend = "aqua:rtk-ai/rtk"
@@ -130,6 +134,16 @@ checksum = "sha256:2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be43
 url = "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
 url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/514339431"
 provenance = "cosign"
+
+[[tools.uv]]
+version = "0.13.7"
+backend = "aqua:astral-sh/uv"
+
+[tools.uv."platforms.linux-x64"]
+checksum = "sha256:c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/704009823"
+provenance = "github-attestations"
 
 [[tools.yq]]
 version = "4.54.1"

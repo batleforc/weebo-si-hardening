@@ -97,6 +97,8 @@ fails if it is stale.
 | [0012](./0012-operator-kit-migration.md) | operator kit migration | `Implemented` | `crates/weebo-si-operator` |
 | [0013](./0013-pod-security.md) | pod-security | `Implemented` | `crates/weebo-si-pod-security` |
 | [0014](./0014-resource-quotas.md) | resource-quotas | `Implemented` | `crates/weebo-si-resource-quotas` |
+| [0015](./0015-platform-api-group.md) | platform API group for teams and users | `Draft` | `crates/weebo-si-crd` |
+| [0016](./0016-weebo-si-project.md) | WeeboSiProject | `Draft` | `crates/weebo-si-project` |
 | [0017](./0017-image-rewrite.md) | image-rewrite | `Implemented` | `crates/weebo-si-image-policy` |
 
 <!-- rfc-index:end -->
