@@ -722,6 +722,18 @@ Honest list, kept here rather than in the RFC's prose:
   in this repo installs it or can detect its absence. What exists is the assertion —
   `gateway.haproxyPrerequisite`, `Degraded` while it is unset — which is a promise recorded, not a
   property verified.
+- **`HaproxyIngress` has never met the real gate.** Rows 5 to 5d above were read with the spike's
+  auth *stub*, and the conformance suite (`task envtest:conformance`) runs the real gateway behind
+  Traefik only. The missing proof is an operator-free run: the gateway's informers already read
+  the `WeeboSiConfig`, the `Namespace`s and the `Ingress`es themselves, so the controller is only
+  needed to *write* the annotations, and a test can write them by hand. The intended shape is a
+  second router in the conformance suite — the haproxy-ingress controller itself against the
+  ephemeral apiserver (plain HAProxy will not do, the external-auth logic is the controller's
+  lua), the seven `config-frontend` lines in its ConfigMap, the dialect's annotations on the
+  suite's `Ingress`es — reusing the backend mirror and the assertion matrix as they stand. Not
+  checked yet: that the controller runs outside a cluster against a bare apiserver, and that mise
+  carries it. The rows needing a minted session stay out of reach for the reason the suite's
+  header gives for Traefik.
 - **Trusted-proxy `Auto`**: the peer check against the ingress controller's own `EndpointSlice`.
   `trustedProxy: {cidrs: [...]}` covers the same ground with a value an admin writes.
 - **`--check` does not run the self-origin probe once**; the running gateway probes on its own
