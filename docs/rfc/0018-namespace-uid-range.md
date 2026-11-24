@@ -550,7 +550,7 @@ and the namespace's dwoc annotation are admin-only [R22]; the node-side range is
 | 7 | E: a process still running as node uid 1234 owns every workspace's files on disk (inodes are 1234 under idmapped mounts) | pods in the node's user namespace at uid 1234: today DWO's two `devworkspace-webhook-server` pods [R77]; pre-`Enforce` pods | none in this RFC: an escape from such a pod lands as the owner of every workspace volume | T-30 from a pod at node uid 1234 | **accepted, named**: the same exposure exists today for every workspace; it shrinks to those pods, and closes only with per-user owners on disk (Q16) |
 | 8 | T/E: two users share files through one volume | a volume mounted by two namespaces | none today: Longhorn RWO, PVCs are namespaced; inodes carry the in-pod id [R20] | — | **accepted**: an RWX class or a restore into another namespace is shared by uid (Q16) |
 | 9 | R: a node uid cannot be tied to a workspace after the pod ended | node audit, files | per-pod range while it runs; KubeArmor carries the pod [R46] | V-07 | not kept after the pod ends (Q19) |
-| 10 | D: webhook unavailable → no workspace pod starts | both webhooks at `Fail` | 2 replicas + PDB survive a pod restart, not a node reboot (*Operational*); selector limited to workspace namespaces | T-10, T-10 after reboot; envtest `identity_webhooks_skip_excluded_namespaces` | outage blocks workspace starts (accepted); the image-policy Pod webhook already does at `Fail` [R78] |
+| 10 | D: webhook unavailable → no workspace pod starts | both webhooks at `Fail` | selector limited to workspace namespaces; the lab keeps 1 replica (Q23), the chart's 2 replicas + PDB cover a pod restart on a multi-node cluster, never a node reboot (*Operational*) | T-10, T-10 after reboot; envtest `identity_webhooks_skip_excluded_namespaces` | outage blocks workspace starts (accepted); the image-policy Pod webhook already does at `Fail` [R78] |
 | 11 | E: feature silently `Off` while believed on | webhooks not registered; `WeeboSiConfig` absent or unparsed → every feature `Off` [R74] | alert on `admission_requests_total{feature="pod-identity"}` flat while workspace pods start, and on the feature state leaving `Active` (L24) | alert rule test in the runbook | the config-absent → `Off` behaviour is house-wide, kept (L24) |
 | 12 | E/T: `grantGroupZero: true` — every workspace can rewrite its image's `g=u` files | config opt-in | default `false`; warning while on; mutation adds `0` only when set | `group_zero_absent_unless_opted_in` | accepted by whoever sets the flag |
 | 13 | S: a process claims another name | the image's `/etc/passwd`, read-only without group 0 | names are not rights: the kernel ids come from the pod spec [R53] | probe [R53] | none |
@@ -587,7 +587,7 @@ The node-side id range is chosen by the kubelet and not recorded by this feature
 | --- | --- | --- |
 | webhook down or timing out | closed: workspace pods refused | a floor removable by causing an error is not a floor [R7]; the image-policy Pod webhook, on the same Deployment at `Fail`, already makes this true today [R78] |
 | an outage outlasting DWO's start timeout | closed, then the workspace stays `Failed` until restarted | DWO does not retry a `FailedCreate` it judged unrecoverable [R69] |
-| node reboot (single node: both replicas restart together) | closed until a webhook replica is Ready; workspaces started meanwhile go `Failed` | 2 replicas only cover a pod restart or a rolling update on one node [R79]; the boot runbook gains "restart failed workspaces once the webhook is Ready" |
+| node reboot or webhook restart (one replica on the lab, Q23) | closed until a webhook replica is Ready; workspaces started meanwhile go `Failed` | 2 replicas only cover a pod restart or a rolling update on one node [R79]; the boot runbook gains "restart failed workspaces once the webhook is Ready" |
 | mutation fails, validation answers | closed: the unrewritten pod is refused | security rests on validation |
 | mutation not registered, validation registered | closed: every DWO pod refused (`fixable_by_mutation=true`, page) | registering validation alone is a misconfiguration, not a bypass |
 | `WeeboSiConfig` absent or unparsed | **open**: every feature reads `Off` [R74] | house-wide behaviour, kept; alerted (row 11, L24) |
@@ -595,8 +595,8 @@ The node-side id range is chosen by the kubelet and not recorded by this feature
 
 **Rollout (L22).**
 
-1. Webhook HA (2 replicas + PDB) and PSA `restricted` on the namespaces about to enter scope
-   (L20), Q20's image changes deployed.
+1. PSA `restricted` on the namespaces about to enter scope (L20), Q20's image changes deployed.
+   (No webhook HA on the lab: Q23.)
 2. Release with the feature; `podIdentity.webhooks.enabled=true` once it runs (paths answer
    under `Off`).
 3. `mode: DryRun` scoped to `dev-ws-batleforc-test`, ≥ 7 days: read `would_refuse` with
@@ -647,7 +647,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 - **Licensing:** nothing new.
 - **Documentation:** `docs/bricks/pod-identity.md` (refusals and their fixes, "my sidecar now
   gets Permission denied", the rollout gate one-liner), `docs/weebosiconfig.md` (`podIdentity`),
-  the install checklist (webhook HA, PSA `restricted`, user-namespace node prerequisites as RFC
+  the install checklist (webhook HA on multi-node clusters, PSA `restricted`, user-namespace node prerequisites as RFC
   0013 lists them), the weebo-si boot runbook and campaign page.
 
 ## Alternatives considered
@@ -691,7 +691,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | D2 | Who allocates, where is it recorded? | *Superseded by Q15: nothing is allocated.* ~~The leader controller, as `hardening.weebo.io/uid-range`.~~ |
 | D3 | How is the annotation protected? | *Superseded by Q15: no annotation.* |
 | D4 | Where is it enforced? | **At the Pod, not via `pod-overrides`.** The Pod is the last point every path crosses; DWO's cleanup/async/backup pods copy the same security context [R18] and are rewritten like the workspace. |
-| D5 | `failurePolicy` of the mutating webhook? | **`Fail`, namespace selector limited to workspace namespaces plus the exclusion label.** Depends on webhook HA (2 replicas + PDB) landing before `Enforce`. |
+| D5 | `failurePolicy` of the mutating webhook? | **`Fail`, namespace selector limited to workspace namespaces plus the exclusion label.** ~~Depends on webhook HA (2 replicas + PDB) landing before `Enforce`.~~ *HA prerequisite waived for the lab by Q23.* |
 | D6 | Chown existing PVCs automatically? | *Superseded by Q15: nothing to chown, owners stay 1234.* |
 | D7 | Set `hostUsers: false` here? | *Superseded by Q15: yes, it is the separation.* ~~No: a DWOC field for phase 5.~~ |
 | D8 | The `/etc/passwd` entry? | *Superseded by Q3 and L12, then by Q15: 1234's entry is in the image [R60].* |
@@ -727,6 +727,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | Q22 | (owner, 2026-11-24) What if user namespaces become unusable tomorrow (a kernel or runtime regression, a filesystem without idmap mounts, Kata)? | **Fallback: static per-namespace UID/GID blocks (this RFC's first design, git `8228ec5`), with the passwd entry added at container creation by a containerd NRI plugin, as CRI-O does natively [R36][R54].** User namespaces stay the primary mechanism. The fallback is documented, not built: NRI is enabled on the node (socket present, no plugin) [R85], but a plugin is node-root-equivalent and sees no image rootfs [R54], so it is only worth its cost when user namespaces are gone. The mounted-ConfigMap answer (V-29 [R52]) is the lighter variant if NRI is refused. |
 | Q20 | (owner, 2026-11-24, was Still open) The images write group-0 directories at runtime (che-lgtm `/data`, `/etc/lgtm`, `/otel-lgtm`; che-android `$ANDROID_SDK_ROOT`, `$APPIUM_HOME`; che-min-mise `/home/tooling`, `/globals`, `.oh-my-zsh`, the `.config` files reached through stow) [R68] | **WeeboDevImage replaces `chgrp -R 0` by `chown -R 1234:0` and keeps `chmod -R g=u`, in the same `RUN` as each install; `COPY --chown=0:0` of user-edited config becomes `--chown=1234:0`. A prerequisite of `Enforce`.** Owner 1234 writes under this feature (fixed uid, no group 0) and group 0 still writes for an arbitrary uid on OpenShift, so the images serve both. A separate `RUN` would copy every file into a new layer (che-android warns about it for `chgrp`, `Containerfile:58`) [R68]. Rejected: `chown 1234:1234` (breaks arbitrary-uid use), `emptyDir` in every devfile, `grantGroupZero` per namespace (group 0 back). |
 | Q21 | (owner, 2026-11-24, was Still open) Pods the workspace creates itself, and uids other than 1234 | **Set 1234 only where a pod gives no uid, gid or `fsGroup`; rewrite gid/`fsGroup` 0 (DWO's default) to 1234; keep any other non-zero id; refuse `runAsUser: 0` and any effective uid 0.** No silent change of an id someone chose, still no uid 0 and no group 0; inside its own user namespace any non-zero id is unprivileged. kubedock is used by one project only; its root-only images need non-root variants or `--runas-user` [R86]. Rejected: forcing 1234 everywhere (rewrites explicit choices such as V-28's 10100) and allowing root in a user namespace for non-DWO pods (one more exception, a wider kernel surface). Revisit if kubedock use grows. |
+| Q23 | (owner, 2026-11-24) Must the webhook run 2 replicas before `Enforce` (D5)? | **No on the lab: it stays at 1 replica, single node accepted.** Two replicas on one node only cover a pod restart, not a node reboot [R79]; the image-policy Pod webhook already puts every workspace pod behind this single replica at `Fail` [R78], so this feature adds no new class of outage. Accepted residual: a webhook restart refuses workspace starts until it is Ready, and workspaces started meanwhile go `Failed` and are restarted by hand (reboot runbook). The chart keeps 2 replicas + PDB as its default for multi-node clusters. |
 | Q19 | How is a node-side uid tied to a workspace after the pod ends? | **Deferred to phase 1's observability, recorded as a gap on the campaign page.** The range is in `/proc/<pid>/uid_map` while the pod runs, and KubeArmor events carry the pod [R46]; keeping the mapping is a node agent's job, not admission's. Motivation 3 is half-solved until then. |
 | L16 | (last review 2, security) Is `fsGroup: 0` checked? | **Yes: refused unless `grantGroupZero`.** The kubelet adds `fsGroup` as a supplementary group, which `Strict` does not drop. |
 | L17 | (last review 2, security) An unset uid falls back to the image's `USER`? | **Validation resolves each container's effective uid and gid and refuses 0 or unset.** PSA relaxes its non-root checks for user-namespaced pods [R20], so this webhook is the only guard. |
@@ -745,7 +746,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 
 ### Still open
 
-None: Q20 and Q21 were decided by the owner on 2026-11-24 (Q1 to Q22, L1 to L29 above).
+None: Q20, Q21 and Q23 were decided by the owner on 2026-11-24 (Q1 to Q23, L1 to L29 above).
 
 ## Future work
 
@@ -818,12 +819,12 @@ An analogy with the measured RFCs, not a measurement.
 | 4 e2e + docs | M (≈ 1 500) | RFC 0013's e2e | one suite against kind + Che |
 | **Total** | ≈ 6 200 | half of RFC 0013 (≈ 11 500, 2 days) | admission-only, no state |
 | **Outside this repo** | S | — | WeeboDevImage `chown` instead of `chgrp 0` (Q20); Che's DWOC values (rollout step 5) |
-| **Integration and validation on the cluster** | calendar-bound | — | webhook HA, PSA `restricted`, Q20 images; ≥ 7 days `DryRun`; T-11 and V-10 on `dev-ws-batleforc-test`, then `dev-ws-batleforc` |
+| **Integration and validation on the cluster** | calendar-bound | — | PSA `restricted`, Q20 images; ≥ 7 days `DryRun`; T-11 and V-10 on `dev-ws-batleforc-test`, then `dev-ws-batleforc` |
 
 ### Integration in weebo-si
 
-- Prerequisite: `2.argo/helm/che/main/values.yaml` `che.hardening.replicas: 2` [R26], the chart's
-  own default with its PDB [R12] (phase 1).
+- Not a prerequisite on the lab: the webhook stays at `che.hardening.replicas: 1` [R26] (Q23);
+  the chart's default of 2 with its PDB [R12] applies to a multi-node cluster.
 - Prerequisite: PSA `restricted` on the workspace namespaces in scope, after V-10's DWOC fixes
   (RFC 0013, L20).
 - Prerequisite: `persistUserHome` stays enabled in Che's DWOC (Q9, [R42][R43]).
@@ -935,3 +936,4 @@ An analogy with the measured RFCs, not a measurement.
 | 2026-11-24 | Bank-vaults and CheCluster checked (R81–R84); Q22: fallback = static per-namespace blocks + NRI plugin for the passwd entry, documented, not built |
 | 2026-11-24 | Q20 and Q21 decided by the owner: `chown 1234:0` + `g=u` in WeeboDevImage; keep non-zero ids, set 1234 when absent, refuse uid 0. Still open: none |
 | 2026-11-24 | Accepted by the owner |
+| 2026-11-24 | Q23: webhook HA prerequisite waived for the lab (1 replica, single node accepted) |
