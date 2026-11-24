@@ -617,7 +617,7 @@ Cluster test ids: T-47 is rows 2 (no contract → warning), 2 (branch parent →
 resolves in DWO v1.1.1) must pass before the warning tells people to pin; V-14 records where the
 dashboard shows rows 2 and 4; **V-23 (new)** "which devfile fields survive into the DevWorkspace":
 partly answered by the probe [R15] — `schemaVersion` survives in `che.eclipse.org/devfile`,
-`parent` is kept unflattened — and still to be tested for top-level `attributes`; V-23 gates `Enforce` (resolved R-9).
+`parent` is kept unflattened — and validated by the owner on 2026-11-24 for top-level `attributes`, which reach `spec.template.attributes` (resolved R-9).
 
 **Deliberately untouched**, so reviewers do not go looking:
 
@@ -626,7 +626,7 @@ partly answered by the probe [R15] — `schemaVersion` survives in `che.eclipse.
 - `dwoc-pin`'s `Workspace`, its evaluation and its log line — unchanged (resolved R-8).
 - The image-policy workspace layer on `/validate/v1alpha1/devworkspaces` [R23] — it judges
   component images; this feature judges provenance.
-- `metadata.attributes` of the devfile — read nowhere until V-23 says where it lands.
+- `metadata.attributes` of the devfile — read nowhere: V-23 showed top-level `attributes` reach `spec.template.attributes`, which is where the contract is read.
 - The parent's content — never fetched, never resolved.
 - Annotations already written when the feature goes `Off` — left in place.
 - policy-guard — the two annotations are advisory; guarding them would add a rule for no gain,
@@ -719,7 +719,7 @@ anywhere, responses byte-identical. (2) `DryRun` on `dev-ws-batleforc-test` only
 (`namespaceSelector` on its name), then all workspace namespaces, for at least 7 days, watching
 `weebo_si_devfile_contract_total` by `result` and the log reasons. (3) Fix the real devfiles that
 warn (weebo-che-project, weebo-dotfiles-che) — the point of the dry run. (4) After V-13 (pinned
-parents resolve), V-14 (R-10) and V-23 (R-9), which gate `Enforce`, `Enforce` on
+parents resolve), which gates `Enforce` (V-14 and V-23 are answered: R-10, R-9), `Enforce` on
 `dev-ws-batleforc-test`, then everywhere. The denied list
 stays empty until the first incident that needs it.
 
@@ -798,14 +798,14 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 | R-6 | Renovate and the generator | **Out of this RFC; follow-ups in weebo-si / weebo-che-project.** Different repos, different release cycles. |
 | R-7 | Generated vs hand-written | **Exactly the same checks.** The plan insists hand-writing neither exempts nor adds [R20]. |
 | R-8 | Registry placement (was Still open 1; deviates from R-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3][R8]; accepted by the RFC owner 2026-11-24. |
-| R-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **`Enforce` is blocked on V-23; if only `metadata.attributes` survive, read them from the `che.eclipse.org/devfile` annotation with the same bounded line-scan discipline.** The probe [R15] does not prove the copy, and without it every dashboard workspace would be `unknown`. |
+| R-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **`Enforce` is blocked on V-23; if only `metadata.attributes` survive, read them from the `che.eclipse.org/devfile` annotation with the same bounded line-scan discipline.** V-23 validated by the owner on 2026-11-24: top-level `attributes` do reach `spec.template.attributes`, so the attribute is read there and the fallback is not needed; V-23 no longer gates `Enforce`. The probe [R15] does not prove the copy, and without it every dashboard workspace would be `unknown`. |
 | R-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
 | R-11 | Contract number as a metric label (was Still open 4) | **The contract number goes in the log line only; a generic `detail: Option<&'static str>` on `FeatureOutcome` comes only if a second feature needs a bounded detail label.** `FeatureOutcome` carries `result` and `team` only [R1], and a field for one feature is the coupling `Decision`'s doc comment refuses. |
 
 ### Still open
 
-None: every question is resolved above. V-23 and V-14 remain gating tests for `Enforce`
-(*Test plan*, *Operational considerations*), not open design questions.
+None: every question is resolved above. V-13 remains the gating test for `Enforce`
+(*Test plan*, *Operational considerations*); V-14 and V-23 are answered (R-10, R-9).
 
 ## Future work
 
@@ -838,7 +838,7 @@ None: every question is resolved above. V-23 and V-14 remain gating tests for `E
   `AdmissionReview` response, the patch merges dwoc-pin's `SetConfigRef` with this feature's
   annotations onto an object carrying no annotations, a network-profiles denial still wins.
 - **E2E (kind + Che):** observations 1–7 of *Proof*.
-- **Cluster:** V-13, V-14 and V-23 gate `Enforce` (R-9, R-10); T-47 after.
+- **Cluster:** V-13 gates `Enforce`; V-14 and V-23 answered on 2026-11-24 (R-10, R-9); T-47 after.
 - **Must stay green:** every existing suite, in particular `workspace.rs` (dwoc-pin, image-policy
   rows), the endpoint-auth, policy-guard and image-policy envtests that match `AdmitOutcome`, and
   `perf_envtest`.
@@ -872,7 +872,7 @@ An analogy with measured work in this repo [R25], not a measurement.
 | **total** | **L (~6 000)** | RFC 0014 (≈ +6 800, two days) and 0017 (≈ +5 750, one day) | same order as both: expect one to two days of effort |
 
 **Integration and validation on the cluster** is calendar-bound, not effort-bound: ≥ 7 days of
-`DryRun` on all workspace namespaces, V-13, V-14 and V-23 run on `dev-ws-batleforc-test` during
+`DryRun` on all workspace namespaces, V-13 runs on `dev-ws-batleforc-test` during
 that week, fixing weebo-che-project and weebo-dotfiles-che's devfiles, then `Enforce` on the test
 namespace for 2 days before everywhere. Expect two weeks end to end.
 
@@ -928,4 +928,5 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | V-23 validated by the owner: top-level `attributes` reach `spec.template.attributes` (R-9) |
 | 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (R-10, R28) |
