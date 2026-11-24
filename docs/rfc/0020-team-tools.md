@@ -13,15 +13,16 @@ superseded-by: []
 
 # RFC 0020 — team tools
 
-> Reference material (~9 000 words). A reviewer short on time reads *Summary*, *Security
+> Reference material (~11 000 words). A reviewer short on time reads *Summary*, *Security
 > considerations*, *Unresolved questions* and the BuildKit section of *Design*.
 
 ## Summary
 
-A hardened workspace runs under restricted PSA, `hostUsers: false` (on runc: youki cannot do user namespaces, V-06) and KubeArmor. That is
-the point of this repository, and it also means a workspace can neither build a container image
-(BuildKit wants a nested user namespace and unconfined seccomp and AppArmor) nor run an Android
-emulator (it wants `/dev/kvm`). Today the choice is "impossible" or "weaken every workspace".
+A hardened workspace runs under restricted PSA, `hostUsers: false` (on runc: youki cannot do user
+namespaces, V-06 [R26]) and KubeArmor. That is the point of this repository, and it also means a
+workspace can neither build a container image (BuildKit wants a nested user namespace and unconfined
+seccomp and AppArmor) nor run an Android emulator (it wants `/dev/kvm`). Today the choice is
+"impossible" or "weaken every workspace".
 
 `team-tools` is a new reconcile feature that moves those tools out of the workspace into a
 **tools namespace per team**, declared by the admin in Git, and starts them **on demand**. An
@@ -45,8 +46,12 @@ ERROR: Cannot connect to the Docker daemon ... (Che: disableContainerBuildCapabi
 # devfile.yaml
 attributes:
   hardening.weebo.io/team-tools: buildkit
+$ echo $BUILDKIT_HOST                      # from the generated ConfigMap, mounted as env
+tcp://buildkitd.team-weebo-tools.svc:1234
+$ C=/home/user/.config/weebo/buildkit     # the client certificate Secret, mounted as files
+$ docker buildx create --name team --driver remote \
+    --driver-opt cacert=$C/ca.crt,cert=$C/tls.crt,key=$C/tls.key "$BUILDKIT_HOST"   # once
 $ docker buildx build --builder team -t registry.pkg.weebo.poc/weebo/app:dev --push .
-#1 [internal] connecting to tcp://buildkitd.team-weebo-tools.svc:1234 (mTLS, CN=batleforc)
 ...
 #12 pushing layers to registry.pkg.weebo.poc/weebo/app:dev  done
 ```
@@ -70,31 +75,32 @@ and the refused path (another team's workspace) is refused twice, by the network
 
 ## Motivation
 
-1. **No workspace can build an image today.** Che forces `disableContainerBuildCapabilities` on
-   Kubernetes, and the workspace pod runs under PSA `restricted` with `hostUsers: false` and a
-   KubeArmor policy. Rootless `buildkitd` needs `seccomp=unconfined` and `apparmor=unconfined`
-   for `unshare` and `mount` [R22]. Falsifiable: `buildctl build` inside a hardened workspace on
-   `dev-ws-batleforc-test` fails; the cluster test V-16 measures the PSA level the daemon needs.
-2. **No workspace can run an Android emulator.** It needs `/dev/kvm`, exposed by a device plugin
-   (V-17), and 2 to 4 GiB per instance. Granting a device to a workspace pod is exactly the
-   exception the hardening plan refuses.
-3. **The only existing remedy weakens every workspace.** Raising a namespace's PSA level or
-   adding a KubeArmor exception applies to every pod of that namespace, so to every workspace of
-   that user, whether it builds or not. Falsifiable: `pod-security` (RFC 0013) writes one level
-   per namespace, not per workspace.
-4. **Nothing starts and stops a shared tool on demand.** A tool left at one replica costs RAM on
-   a single 64 GiB node [R17]; a tool at zero replicas is a manual `kubectl scale` per build.
-   The controller already watches every DevWorkspace cluster-wide [R13, R14], so the signal
-   exists and nobody reads it for this.
-5. **A per-team tool needs a client side no admin wants to write by hand.** The workspace needs
-   the endpoint, a client certificate and an egress rule towards exactly that tool. Without
-   automation those are per-user objects in per-user namespaces, created and garbage-collected by
-   hand.
+1. **No workspace can build an image today, nor in the target state.** The CheCluster sets
+   `disableContainerBuildCapabilities: true` [R25]. The plan's target state for the workspace pod is
+   PSA `restricted`, `hostUsers: false` and a KubeArmor policy; today the namespaces are at
+   `baseline` [R17], and `hostUsers: false` under youki is blocked by the runtime itself [R26].
+   Rootless `buildkitd` needs `seccomp=unconfined` and `apparmor=unconfined` for `unshare` and
+   `mount` [R22]. Falsifiable: `buildctl build` inside a hardened workspace on
+   `dev-ws-batleforc-test` fails; V-16 (PASS, 2026-11-24) showed the daemon needs PSA `privileged`.
+2. **No workspace can run an Android emulator** (deferred: no entry in this RFC). It needs
+   `/dev/kvm`, exposed by a device plugin (V-17), and 2 to 4 GiB per instance. Granting a device to
+   a workspace pod is exactly the exception the hardening plan refuses.
+3. **The only existing remedy weakens every workspace.** Raising a namespace's PSA level or adding a
+   KubeArmor exception applies to every pod of that namespace, so to every workspace of that user,
+   whether it builds or not. Falsifiable: `pod-security` (RFC 0013) writes one level per namespace,
+   not per workspace.
+4. **Nothing starts and stops a shared tool on demand.** A tool left at one replica costs RAM on a
+   single 64 GiB node [R17]; a tool at zero replicas is a manual `kubectl scale` per build. The
+   controller already watches every DevWorkspace cluster-wide [R13, R14], so the signal exists and
+   nobody reads it for this.
+5. **A per-team tool needs a client side no admin wants to write by hand.** The workspace needs the
+   endpoint, a client certificate and an egress rule towards exactly that tool. Without automation
+   those are per-user objects in per-user namespaces, created and garbage-collected by hand.
 
-**Outcome we are buying:** a workspace stays fully hardened and still builds images, and later
-runs emulators, against a per-team daemon that exists only while somebody needs it, reachable
-only from that team, with every privileged exception confined to a namespace the admin named in
-Git.
+**Outcome we are buying:** a workspace stays fully hardened and still builds images (motivation 2,
+emulators, is deferred to a later catalogue entry and only shapes the model), against a per-team
+daemon that exists only while somebody needs it, reachable only from that team, with every
+privileged exception confined to a namespace the admin named in Git.
 
 ## Goals and non-goals
 
@@ -150,7 +156,7 @@ metadata:
   name: team-weebo-tools
   labels:
     hardening.weebo.io/team-tools: weebo            # proof of admin intent, must equal the team
-    pod-security.kubernetes.io/enforce: privileged  # V-16 decides; an explicit Git decision
+    pod-security.kubernetes.io/enforce: privileged  # V-16, 2026-11-24; an explicit Git decision
     # NOT hardening.weebo.io/workspace-namespace: a tools namespace is not a workspace namespace
 ---
 apiVersion: v1
@@ -260,8 +266,17 @@ attributes:
   (`""`) means "no tool", even if the team has a default.
 - **Request.** The attribute is a comma-separated list of keys, at most 8, deduplicated in order.
   Each is checked against the team's `allowed`. An ungranted key is dropped and logged under
-  `onNotGranted: Default`; under `Deny` the DevWorkspace `CREATE`/`UPDATE` naming it is refused
-  at admission.
+  `onNotGranted: Default`. Under `Deny`, admission refuses only a `CREATE` naming it, or an
+  `UPDATE` that starts the workspace (`spec.started` false to true); any other `UPDATE` (a
+  grant revoked while the workspace exists, a label change by DWO) is admitted, the key is
+  dropped, and an Event plus an admission warning say so, so a revocation never wedges an
+  existing DevWorkspace.
+- **Verdict on the DevWorkspace.** As RFC 0019 does, the admission gate writes the annotation
+  `hardening.weebo.io/team-tools: granted=<keys>;dropped=<keys>` (`Enforce` only), the
+  developer's channel for "why is my tool missing".
+- **Attribute added to a running workspace.** The tool is rendered and scaled, but DWO mounts
+  the client objects only at pod creation: an Event `TeamToolRestartNeeded` asks for one
+  restart.
 - **Render.** While at least one DevWorkspace of the team requests a key (any phase, including
   stopped), the tool templates exist in the tools namespace and the requester objects exist in
   every requesting workspace namespace. Rendering early is what lets DWO automount the client
@@ -287,7 +302,8 @@ attributes:
 | Every template ref exists, is of an allowed kind, lives in the template namespace | hard, `validate()` | entry not applied; `WeeboSiConfig` `Degraded`; `entries{state="invalid"}` |
 | Tool template kinds ⊆ {`Deployment`, `StatefulSet`, `Service`, `ConfigMap`, `CiliumNetworkPolicy`}; requester kinds ⊆ {`ConfigMap`} | hard, `validate()` | same |
 | `workload` names exactly one `Deployment`/`StatefulSet` among the tool templates, with `spec.replicas: 0` written explicitly | hard, `validate()` | same |
-| Workload pod spec: `automountServiceAccountToken: false`, no `privileged: true`, no `hostNetwork`/`hostPID`/`hostIPC`, no `hostPath` volume | hard, `validate()` | same |
+| Workload pod spec: `automountServiceAccountToken: false` and no projected service-account-token volume, `serviceAccountName` absent or `default`, no `privileged: true`, no `capabilities.add`, no `hostNetwork`/`hostPID`/`hostIPC`, no `hostPort`, no `hostPath` volume, `runtimeClassName` absent or in the chart's `teamTools.allowedRuntimeClasses` (default `[]`) | hard, `validate()` | same |
+| A client certificate is minted only for a requesting namespace labelled `hardening.weebo.io/workspace-namespace=true`, not labelled `hardening.weebo.io/exclude`, and carrying `che.eclipse.org/username`; otherwise no certificate (fail closed) | hard, per reconcile | requester `Pending`; Event `TeamToolNoIdentity` on the DevWorkspace |
 | `service.port` is a port of the `Service` template | hard, `validate()` | same |
 | Team `allowed`/`default` keys exist in the catalogue, `default` ⊆ `allowed` | hard, `validate()` | team block ignored; `WeeboSiTeam` `Degraded` |
 | Team `namespace` exists, carries `hardening.weebo.io/team-tools=<team>`, does not carry `hardening.weebo.io/workspace-namespace`, is neither the operator nor the template namespace | hard, per reconcile | team `unbound`, nothing written there; `WeeboSiTeam` condition `TeamToolsReady=False`, reason `NamespaceNotBound` |
@@ -295,10 +311,12 @@ attributes:
 | A write in the tools namespace returns 403 (RoleBinding missing) | hard, per reconcile | team `unbound`, reason `Forbidden` |
 | A requested key the team is not granted | warning (`Default`) or refusal (`Deny`) | log `result=not_granted`; a Kubernetes `Event` on the DevWorkspace; refusal text in the client |
 
-There is no admission `warnings` field in the chassis today [R5], so a warning is seen in the
-`WeeboSiTeam` status, an Event on the DevWorkspace, and the log, not in the developer's
-`kubectl` output. An invalid entry **keeps** what is already rendered: "the new configuration is
-broken" never means "delete the running tool".
+The chassis has no admission `warnings` field today [R5]; RFC 0019's PR 1 adds it and lands before
+this feature's admission PR. From then, `onNotGranted: Default` also emits an admission warning,
+visible in `kubectl` only (the Che dashboard drops warnings, V-14). Until then, and for dashboard
+users always, a warning is seen in the verdict annotation, an Event on the DevWorkspace, the
+`WeeboSiTeam` status and the log. An invalid entry **keeps** what is already rendered: "the new
+configuration is broken" never means "delete the running tool".
 
 ### Mocks
 
@@ -361,11 +379,50 @@ The refusal, `onNotGranted: Deny`, as the developer sees it creating the workspa
 ```text
 $ kubectl apply -f devworkspace.yaml
 Error from server (Forbidden): error when creating "devworkspace.yaml": admission webhook
-"devworkspaces.weebo-si.hardening.weebo.io" denied the request: team-tools: key "android" is
-not granted to team weebo
+"devworkspaces.hardening.weebo.io" denied the request: team tool "android" is not granted to
+team weebo
 $ echo $?
 1
 ```
+
+A grant revoked while the workspace exists (`allowed: []` after the fact), on the next `UPDATE`
+(here a stop), under `Deny`: admitted, warned (once RFC 0019 PR 1 is in), the tool dropped:
+
+```text
+$ kubectl patch dw python-web --type merge -p '{"spec":{"started":false}}'
+Warning: team tool "buildkit" is no longer granted to team weebo; dropped
+devworkspace.workspace.devfile.io/python-web patched
+$ kubectl get dw python-web -o jsonpath='{.metadata.annotations.hardening\.weebo\.io/team-tools}'
+granted=;dropped=buildkit
+```
+
+Inside the workspace, nominal (what the generated ConfigMap and the certificate give):
+
+```text
+$ env | grep BUILDKIT_HOST
+BUILDKIT_HOST=tcp://buildkitd.team-weebo-tools.svc:1234
+$ ls /home/user/.config/weebo/buildkit
+ca.crt  tls.crt  tls.key
+```
+
+Cold start: the first build right after the IDE opens may find the daemon still starting. The
+expected client behaviour, to be replaced by the real text in the proof:
+
+```text
+$ docker buildx inspect --bootstrap team        # waits until the daemon answers
+Name:   team
+Driver: remote
+Status: running
+$ docker buildx inspect --bootstrap team        # still refused after ~2 min: check the verdict
+ERROR: ... connect: connection refused
+$ kubectl get dw python-web -o jsonpath='{.metadata.annotations.hardening\.weebo\.io/team-tools}'
+granted=buildkit;dropped=
+$ echo $?   # of the inspect
+1
+```
+
+Granted but refused after two minutes means the tool did not start: the team status
+(`state`, `TeamToolsReady`) says why.
 
 The cross-team refusal at the client (T-39), from a workspace of team `data`:
 
@@ -415,7 +472,7 @@ network timeout, not a TLS error, because the packet never reaches the daemon.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `namespace` | `NamespaceName` | — | required; the tools namespace, which must carry `hardening.weebo.io/team-tools=<team name>` |
-| `issuerRef` | `{kind: ClusterIssuer\|Issuer, name}` | — | required when any allowed entry has `tls`; this team's CA |
+| `issuerRef` | `{kind: ClusterIssuer, name}` | — | required when any allowed entry has `tls`; this team's CA. `kind` is `ClusterIssuer` only (CEL), since a namespaced `Issuer` cannot serve workspace namespaces |
 | `allowed` | `Vec<ToolKey>` | `[]` | keys this team may request |
 | `default` | `Vec<ToolKey>` | `[]` | keys a workspace with no attribute gets; ⊆ `allowed` |
 
@@ -442,8 +499,18 @@ Field manager `weebo-si-team-tools` for every apply; `/scale` writes under
 
 #### Admission
 
-`onNotGranted: Deny` adds a third registry to `/mutate/v1alpha1/devworkspaces`, after dwoc-pin's
-and network-profiles' [R11], with the same `failurePolicy: Fail`. It denies, never mutates.
+`team-tools` adds the **fourth** registry to `/mutate/v1alpha1/devworkspaces` (webhook
+`devworkspaces.hardening.weebo.io`, `failurePolicy: Fail` [R27]). The global order, stated
+identically in RFC 0019: network-profiles workspace gate → devfile-contract (RFC 0019) →
+dwoc-pin → team-tools. Its verdicts: deny a `CREATE` or a start naming an ungranted key under
+`Deny`; otherwise allow, with the verdict annotation as its only mutation and the warnings above.
+
+Being the fourth, this RFC carries the fold RFC 0019 deferred: `mutate_devworkspaces` becomes
+one loop over an ordered list of registries, first denial wins, mutations and warnings of every
+registry concatenated. Today the network-profiles branch drops its `Allow(_)` payload
+(`router.rs:183` [R11]); the router test `every_registry_allow_payload_is_kept` pins that no
+registry's mutations or warnings are lost. `bound_warnings` / `MAX_WARNINGS` (RFC 0019) run
+once, on the merged list, after the loop, not per `admit()`.
 
 #### Observability
 
@@ -477,7 +544,10 @@ loop, metrics). Ports, in domain vocabulary:
   objects, apply/delete, and `scale(workload, replicas)`.
 - `RequesterStore` — one workspace namespace: endpoint ConfigMap, copied ConfigMaps, client
   `Certificate`, egress CNPs; apply/delete.
-- The chassis's `NamespaceView`, `TeamView`, `FeatureGate`, and `compute_owned_diff` [R6].
+- The chassis's `NamespaceView`, `FeatureGate` (teams through `FeatureGate::teams()` and
+  `Context::teams()` [R28]), and `compute_owned_diff` [R6].
+- `Clock` — a new port in `weebo-si-team-tools`, the same shape as endpoint-auth's [R28]; not
+  shared, because the chassis has none and a domain crate must not depend on another feature's.
 
 Three reconcile subjects, each an `OwnedScope`:
 
@@ -527,17 +597,16 @@ The state machine proves T-41's claim: every path out of `Up` with zero requeste
 controller restart (the timer is in memory, see *Data and state*).
 
 **The invariant.** *Because a team-tools policy never carries `hardening.weebo.io/profile`,
-network-profiles cannot see it, so it can neither delete it as a stale profile object nor count
-it as a namespace baseline.* `KubePolicyStore::from_cilium` returns `None` for a managed CNP
-without that label [R7, `kube_policy_store.rs:188`], and both `managed_in` and `has_baseline`
-(`kube_policy_store.rs:291`) go through it. Carrying the label would be a real bug, not a
-cosmetic one: the egress CNP selects `controller.devfile.io/devworkspace_id`, which is exactly
-the `PodSelector::DevWorkspaceId` the network-profiles workspace pass owns [R6], so that pass
-would delete it on its next reconcile. The test `a_team_tools_policy_is_invisible_to_network_profiles`
-in the network-profiles adapter pins it. The second invariant: *because the controller can only
-write in a namespace the admin both labelled and bound with a RoleBinding, a mistyped
-`namespace: kube-system` renders nothing*: the label check is the feature's, the 403 is the
-apiserver's.
+network-profiles cannot see it, so it can neither delete it as a stale profile object nor count it
+as a namespace baseline.* `KubePolicyStore::from_cilium` returns `None` for a managed CNP without
+that label [R7, `kube_policy_store.rs:188`], and both `managed_in` and `has_baseline`
+(`kube_policy_store.rs:291`) go through it. Carrying the label would be a real bug, not a cosmetic
+one: the egress CNP selects `controller.devfile.io/devworkspace_id`, which is exactly the
+`PodSelector::DevWorkspaceId` the network-profiles workspace pass owns [R6], so that pass would
+delete it on its next reconcile. The test `a_team_tools_policy_is_invisible_to_network_profiles` in
+the network-profiles adapter pins it. The second invariant: *because the controller can only write
+in a namespace the admin both labelled and bound with a RoleBinding, a mistyped `namespace:
+kube-system` renders nothing*: the label check is the feature's, the 403 is the apiserver's.
 
 ```mermaid
 flowchart TB
@@ -557,26 +626,32 @@ the admin controls in Git and one of which the apiserver enforces.
 
 ### Data and state
 
-- **Watches.** DevWorkspaces cluster-wide (existing [R13]); the template namespace's six kinds;
-  per bound tools namespace, a namespaced watch of the rendered kinds filtered by
-  `managed-by` and of `resourcequotas` (metadata only); managed CNPs, ConfigMaps and
-  `certificates.cert-manager.io` cluster-wide filtered by `hardening.weebo.io/team-tool`.
+- **Watches.** DevWorkspaces cluster-wide (existing [R13]); the template namespace's five kinds; per
+  bound tools namespace, a namespaced watch of the rendered kinds filtered by `managed-by` and of
+  `resourcequotas` (metadata only); managed CNPs, ConfigMaps and `certificates.cert-manager.io`
+  cluster-wide filtered by `hardening.weebo.io/team-tool`. The `Certificate` and ConfigMap watches
+  start only when `teamTools` is configured **and** the CRD and the RBAC are present, as the Cilium
+  backend's watch does [R7]; a cluster without cert-manager runs every other feature unchanged.
 - **The grace timer is in memory.** Keyed by `(team, key)`, set when requesters reach 0. A
-  controller restart re-arms it from "now", so a tool may stay up one extra grace period, never
-  forever: the restarted controller sees zero requesters and starts a new timer. Persisting it
+  controller restart re-arms it from "now", so a tool may stay up one extra grace period. A
+  controller in a crash loop re-arms it on every restart and keeps the tool up indefinitely; that is
+  why the T-41 alert does not rely on the controller's own series (*Observability*). Persisting it
   in an annotation was rejected: one more write per idle transition for ten saved minutes.
 - **`replicas` has exactly one writer.** The workload is created with `replicas: 0` by a plain
-  create, then updated by server-side apply with `spec.replicas` stripped from the body, and
-  scaled only through `/scale`. Because the apply manager never owned `replicas`, a template
-  update cannot reset it to the API default of 1. `a_template_update_never_resets_replicas`
-  (envtest) pins that.
-- **The cache PVC** is created by the StatefulSet's `volumeClaimTemplates` and is never deleted
-  by the feature, including at `Off`: it holds the only state worth keeping. Deleting it is an
-  admin's `kubectl delete pvc`.
+  create, then updated by server-side apply with `spec.replicas` stripped from the body, and scaled
+  only through `/scale`. Because the apply manager never owned `replicas`, a template update cannot
+  reset it to the API default of 1. `a_template_update_never_resets_replicas` (envtest) pins that.
+- **The cache PVC** is created by the StatefulSet's `volumeClaimTemplates` and is never deleted by
+  the feature, including at `Off`: it holds the only state worth keeping. Deleting it is an admin's
+  `kubectl delete pvc`.
 - **Nothing else is persisted.** The rendered set is derived from `spec`, templates and
-  DevWorkspaces; the undo is deleting by label. `/readyz` waits for the template and tools
-  namespace caches, because an empty cache must never read as "no requester, scale everything
-  to 0": while a tools namespace cache is not synced, its tools are `held` (no scale, no delete).
+  DevWorkspaces; the undo is deleting by label. `/readyz` waits only for the static caches
+  (templates); a tools namespace cache that is not synced yet, or whose RoleBinding was removed,
+  must not make the whole operator unready. It makes that team's tools `held` (no scale, no delete),
+  because an empty cache must never read as "no requester, scale everything to 0".
+- **Client certificate readiness.** A requester namespace's state is `Pending` until its
+  `Certificate` is `Ready`, and the DevWorkspace gets the restart-once Event if it started before
+  (Resolved 11 stays the policy for the first-start race).
 
 ### Detailed design
 
@@ -586,10 +661,10 @@ the admin controls in Git and one of which the apiserver enforces.
 | `crates/weebo-si-crd/src/spec.rs` | `Features::team_tools` [R1] |
 | `crates/weebo-si-crd/src/team.rs` | `TeamFeatures::team_tools` [R2]; `WeeboSiTeamStatus::team_tools: Vec<TeamToolStatus>` |
 | `crates/weebo-si-crd/src/labels.rs` | `TEAM_TOOL_LABEL`, `TEAM_TOOLS_NAMESPACE_LABEL` |
-| `crates/weebo-si-team-tools/src/` (new) | `resolve.rs` (attribute parsing, grant), `validate.rs` (the table), `scale.rs` (`ScaleDecision`, the grace state machine, pure over a clock port), `feature/` (three subjects, `ReconcileFeature::desired` [R4]), `workspace_gate.rs` (admission `Deny`, shaped like `WorkspaceAdmission` [R11]) |
+| `crates/weebo-si-team-tools/src/` (new) | `resolve.rs` (attribute parsing, grant), `validate.rs` (the table), `scale.rs` (`ScaleDecision`, the grace state machine, pure over a clock port), `feature/` (three subjects, `ReconcileFeature::desired` [R4]), `workspace_gate.rs` (admission `Deny` on CREATE or start, verdict annotation, shaped like `WorkspaceAdmission` [R11]) |
 | `crates/weebo-si-team-tools-adapters/src/` (new) | `kube_template_store.rs`, `kube_tools_namespace_store.rs` (namespaced watches started per bound namespace, create-then-apply, `/scale`), `kube_requester_store.rs`, `metrics.rs`, `controller.rs` |
 | `crates/weebo-si-network-profiles-adapters/src/kube_policy_store.rs` | no change; one test pinning the invariant |
-| `crates/weebo-si-webhook/src/router.rs` | `AppState::team_tools: Option<TeamToolsAdmission>`, run after network-profiles |
+| `crates/weebo-si-webhook/src/router.rs` | `mutate_devworkspaces` folded into one loop over the ordered registries; `team_tools` the fourth |
 | `crates/weebo-si-operator` | wiring, `--team-tools-template-namespace` |
 | `charts/weebo-si-operator/templates/rbac.yaml` | `teamTools.rbac.enabled`: ClusterRole `weebo-si-team-tools` (unbound) and the cluster-wide additions; see *Privileges* |
 
@@ -601,34 +676,38 @@ so the existing `CiliumNetworkPolicy` row already refuses anyone but the operato
 - **Rootless on runc, exception isolated.** `moby/buildkit:<v>-rootless` with `seccomp` and
   `AppArmor` `Unconfined`, `procMount: Unmasked` and `hostUsers: false`, which keeps BuildKit's
   process sandbox [R22]; V-16 tries this first (Resolved, 12). Upstream's Kubernetes example uses
-  `--oci-worker-no-process-sandbox` instead [R23]; that flag lets a `RUN` step kill, and
-  depending on seccomp ptrace, any process of the daemon container, including reading the
-  mounted TLS server key [R22]. It is **the exception**, used only if V-16 shows the first
-  option fails, and then recorded as a residual with its owner (E1). The tools namespace runs
-  on runc via its own RuntimeClass choice in the template, never the workspace DWOC.
-- **mTLS per user, mandatory for this entry.** The reference BuildKit entry always carries
-  `tls`; the generic allowance for an entry without it (Resolved, 14) does not extend to a build
-  daemon, which executes code on the caller's behalf. The server certificate (`weebo-team-tool-buildkit-server`, dnsNames the
-  service FQDN) and each client certificate are issued by the team's `issuerRef`, a CA no other
-  team's daemon trusts. The client `Certificate` lives in the workspace namespace, `commonName`
-  set to the namespace's `che.eclipse.org/username` annotation (writable by admins only [R18]),
-  `organizations: [<team>]`, 24 h, and a `secretTemplate` carrying
-  `controller.devfile.io/mount-to-devworkspace` so DWO mounts it, as registry-config's objects
-  are [R12]. No Che user nor workspace token can create a `Certificate` or
+  `--oci-worker-no-process-sandbox` instead [R23]; that flag lets a `RUN` step kill, and depending
+  on seccomp ptrace, any process of the daemon container, including reading the mounted TLS server
+  key [R22]. V-16 already answered the PSA level (`privileged`, PASS 2026-11-24); the items still to
+  run under V-16, gating PR 4, are: the sandbox mode, whether buildkitd logs the peer CN, whether it
+  reloads a renewed server certificate without a restart (if not, the server certificate lasts 90
+  days and the tool's rollout on renewal is documented), and the daemon's RAM under a build. It is
+  **the exception**, used only if V-16 shows the first option fails, and then recorded as a residual
+  with its owner (E1). The tools namespace runs on runc via its own RuntimeClass choice in the
+  template, never the workspace DWOC.
+- **mTLS per user, mandatory for this entry.** The reference BuildKit entry always carries `tls`;
+  the generic allowance for an entry without it (Resolved, 14) does not extend to a build daemon,
+  which executes code on the caller's behalf. The server certificate
+  (`weebo-team-tool-buildkit-server`, dnsNames the service FQDN) and each client certificate are
+  issued by the team's `issuerRef`, a CA no other team's daemon trusts. The client `Certificate`
+  lives in the workspace namespace, `commonName` set to the namespace's `che.eclipse.org/username`
+  annotation (writable by admins only [R18]), `organizations: [<team>]`, 24 h, and a
+  `secretTemplate` carrying `controller.devfile.io/mount-to-devworkspace` so DWO mounts it, as
+  registry-config's objects are [R12]. No Che user nor workspace token can create a `Certificate` or
   `CertificateRequest` [R19], so nobody but the controller (and cluster admins) can mint one.
 - **Mirrors.** `image-rewrite` cannot reach inside BuildKit; `buildkitd.toml` names angos as the
-  mirror per upstream (`[registry."docker.io"] mirrors = [...]`) [R23]. Push goes to angos'
-  `weebo` repository with the developer's own registry credentials, which registry-config or
-  the developer provides in the workspace; the daemon holds none.
-- **`RUN` egress like a workspace.** The tool's egress CNP template allows DNS, angos and
-  BatleHub, the same destinations as the `dev-registries` network profile, and nothing else.
-- **Entitlements off.** `insecure-entitlements` (`network.host`, `security.insecure`, `device`)
-  is disabled by default [R23]; the template sets none and passes no
-  `--allow-insecure-entitlement`. T-40 checks it; the validation table does not parse TOML.
+  mirror per upstream (`[registry."docker.io"] mirrors = [...]`) [R23]. Push goes to angos' `weebo`
+  repository with the developer's own registry credentials, which registry-config or the developer
+  provides in the workspace; the daemon holds none.
+- **`RUN` egress like a workspace.** The tool's egress CNP template allows DNS, angos and BatleHub,
+  the same destinations as the `dev-registries` network profile, and nothing else.
+- **Entitlements off.** `insecure-entitlements` (`network.host`, `security.insecure`, `device`) is
+  disabled by default [R23]; the template sets none and passes no `--allow-insecure-entitlement`.
+  T-40 checks it; the validation table does not parse TOML.
 - **Cache** on the StatefulSet's PVC, sized under the tools quota; survives scale to zero.
 - **Android emulator** is the second entry, future: a `StatefulSet` per emulator with the
-  device-plugin resource, `adb` port on the ingress CNP, screen through endpoint-auth `team`
-  access (RFC 0009). Blocked on V-17.
+  device-plugin resource, `adb` port on the ingress CNP, screen through endpoint-auth `team` access
+  (RFC 0009). Blocked on V-17.
 
 ### Proof against a real client
 
@@ -662,19 +741,26 @@ cert-manager, then the cluster tests below on `dev-ws-batleforc-test`.
 7. **Refusal, forged namespace.** A `WeeboSiTeam` pointing `teamTools.namespace` at
    `kube-system` yields `TeamToolsReady=False, reason NamespaceNotBound`, and the apiserver
    audit log shows no write by the controller in `kube-system`.
-8. Stopping the workspace: the replica count stays `1` for 600 s, then reads `0`; the PVC
+8. A client certificate issued with a short duration in kind (1 h, cert-manager's minimum)
+   is renewed, and a build after renewal succeeds without a workspace restart (the 24 h case,
+   compressed).
+9. Stopping the workspace: the replica count stays `1` for 600 s, then reads `0`; the PVC
    `cache-buildkitd-0` still exists (T-41).
-9. **Refusal, springboard (T-40).** A `RUN curl https://example.com` fails (Hubble `DROPPED`
+10. **Refusal, springboard (T-40).** A `RUN curl https://example.com` fails (Hubble `DROPPED`
    at the tools egress); `RUN cat /var/run/secrets/kubernetes.io/serviceaccount/token` fails with
    `No such file`; `RUN --mount=type=bind,source=/etc,target=/x` reads the build context's
    `/etc` path, not the daemon's.
-10. A devfile sidecar with `privileged: true`, an image outside angos, or no limits is refused
+11. A devfile sidecar with `privileged: true`, an image outside angos, or no limits is refused
     as T-01, T-29 and T-11 are (T-42): the sidecar has no pass, and this feature did not touch
     that path.
 
-Mapping: observations 1–3, 5–8 to the kind suite `team-tools`; 4, 9 to the cluster only
-(angos, Hubble); V-16 before PR 5, V-17 before any Android entry; T-39 = 5, T-40 = 9, T-41 = 8,
-T-42 = 10.
+12. **Adoption from phase 0.** Objects created by the phase-0 chart (no `managed-by`) are taken
+    over by the controller's force apply; the StatefulSet keeps its pod and its PVC (no delete,
+    no re-create), checked by pod UID and PVC UID before and after.
+
+Mapping: observations 1–3, 5–9 and 12 to the kind suite `team-tools`; 4, 10 to the cluster only
+(angos, Hubble); V-16 before PR 4, V-17 before any Android entry; T-39 = 5, T-40 = 10, T-41 = 9,
+T-42 = 11.
 
 **Deliberately untouched.**
 
@@ -726,19 +812,21 @@ workspace pod into the privileged namespace; a `RUN` step into the network.
 | # | Threat | Where | Mitigation + enforcing fn | Negative test | Residual |
 | --- | --- | --- | --- | --- | --- |
 | S1 | Workspace of team B reaches team A's tool (T-39) | network, tools ns ingress | ingress CNP generated from team A's `namespaceSelector` + `workspace-namespace=true`, port only: `team_tools::render::ingress_policy`; client cert from team A's CA only: `buildkitd --tlscacert` | `ingress_admits_only_the_team_selector` (unit); e2e obs. 5 both layers | A namespace mislabelled `weebo.io/team=weebo` joins the team; labels are admin/Che-written [R18] |
-| S2 | Spoofing a user: client cert with another CN | cert issuance | only the controller writes `Certificate`; CN from `che.eclipse.org/username`, not from the DevWorkspace: `requester::client_certificate`; users cannot create `Certificate`/`CertificateRequest` [R19] | `the_cn_comes_from_the_namespace_annotation_not_the_attribute` | A cluster admin can mint any cert; accepted |
+| S2 | Spoofing a user: client cert with another CN | cert issuance | only the controller writes `Certificate`; CN from `che.eclipse.org/username`, not from the DevWorkspace: `requester::client_certificate`; users cannot create `Certificate`/`CertificateRequest` [R19] | `the_cn_comes_from_the_namespace_annotation_not_the_attribute`, `no_username_means_no_certificate` | A cluster admin can mint any cert; accepted |
+| S3 | Minting a team client cert through cert-manager's ingress-shim: a user creates an Ingress annotated `cert-manager.io/cluster-issuer: team-weebo-tools-ca` (users may create Ingresses [R29]; the shim is on [R29]) | workspace ns Ingress | endpoint-auth's Ingress admission (`/mutate/v1/ingresses` [R30]) admits `cert-manager.io/cluster-issuer`/`issuer` only from an allow-list (default `[vault-issuer]`) and refuses `cert-manager.io/common-name` and the other subject keys outside an allow-list: `endpoint_auth::ingress_issuer_allowed` | `an_ingress_naming_a_team_ca_issuer_is_refused` | Pre-existing, unverified: the same path may yield a `vault-issuer` certificate for another hostname unless OpenBao's PKI role restricts domains; owner batleforc, check in the runbook |
 | T1 | Forged request: the workspace token patches its own DevWorkspace attribute [R18] | admission + reconcile | the request is checked against the team grant: `resolve::requested_keys`; gains only tools the team is granted, started for itself | `an_ungranted_key_is_dropped` / `_denied_under_deny` | It can keep a granted tool up while its workspace runs; bounded by the tools quota |
 | T2 | Tampering with the egress CNP to reach elsewhere | workspace ns | managed-by label: policy-guard's CNP row refuses non-operator writes [R9]; invisible to network-profiles (invariant) | existing guard table test + `a_team_tools_policy_is_invisible_to_network_profiles` | none new |
 | T3 | Admin typo or hostile config points a team at `kube-system` | tools ns binding | label `team-tools=<team>` check + workspace-label refusal: `bind::check_tools_namespace`; RoleBinding only where the admin bound it | `an_unlabelled_namespace_is_never_written` + e2e obs. 7 | none |
 | T4 | A template smuggles a privileged pod (hostPath, hostNetwork, privileged, token) | templates | `validate::workload_pod_spec` refuses them | one test per refused field | PSA `privileged` on the ns would admit them if an admin wrote them outside the feature |
-| R1 | Who built what is unknown | buildkitd | per-user client cert; Hubble flow from the user's namespace | obs. 3 | buildkitd's own logging of the peer CN checked in V-16; Hubble flows are the audit trail if absent (Resolved, 13) |
+| R1 | Who built what is unknown | buildkitd | per-user client cert; Hubble flow from the user's namespace | obs. 3; `the_client_certificate_cn_is_the_namespace_owner` | buildkitd's own logging of the peer CN checked in V-16; Hubble flows are the audit trail if absent (Resolved, 13) |
+| T5 | A teammate poisons another's build: a shared `--mount=type=cache` or a cached layer is written by one build and read by the next; registry credentials sent with a build transit the shared daemon | shared daemon | none beyond the team boundary (S1); accepted with intra-team sharing (Resolved, 7) | — (accepted) | owner batleforc; one daemon per user stays future work |
 | I1 | A teammate reads another teammate's build cache or secrets | shared daemon | accepted within a team (Resolved, 7) | — | accepted by the team owner |
 | I2 | The client key leaks from the workspace | workspace ns | 24 h certificate, the key is the user's own credential, readable only in their namespace | `the_client_certificate_lasts_24h` | A compromised workspace builds as its user for ≤ 24 h |
 | D1 | Tools exhaust the single node | tools ns | binding refused without a `ResourceQuota` on `limits.memory`: `bind::has_memory_quota` | `a_namespace_without_quota_is_unbound` | Quota sizing is the admin's |
 | D2 | Tool stuck on with no requester (T-41) | scale | grace state machine: `scale::ScaleDecision`; alert on `up_without_requester` | `zero_requesters_reach_idle_after_grace` + obs. 8 | +1 grace after a restart |
 | D3 | Many keys in the attribute | admission/reconcile | at most 8 keys parsed, rest dropped: `resolve::requested_keys` | `a_ninth_key_is_dropped` | none |
-| E1 | BuildKit as a springboard (T-40): `RUN` egress, SA token, bind mounts | tools ns | tool egress CNP template; `automountServiceAccountToken: false` validated; bind mounts only from context or stages (BuildKit semantics); insecure entitlements off [R23] | obs. 9; `a_workload_with_a_token_is_invalid` | Only if V-16 forces `--oci-worker-no-process-sandbox`: a teammate's `RUN` step can signal or ptrace daemon processes and read the server key. The exception, owned by the RFC owner (batleforc), recorded in the runbook with the V-16 result |
-| E2 | Compromised controller writes privileged pods anywhere | RBAC | Deployment/StatefulSet write only through per-namespace RoleBindings the admin creates | `kubectl auth can-i create deployments -n kube-system --as=<controller SA>` = no (envtest) | Cluster-wide `certificates` write: can mint certs from any `ClusterIssuer` |
+| E1 | BuildKit as a springboard (T-40): `RUN` egress, SA token, bind mounts | tools ns | tool egress CNP template; `automountServiceAccountToken: false` validated; bind mounts only from context or stages (BuildKit semantics); insecure entitlements off [R23] | obs. 10; `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`, `added_capabilities_are_invalid` | Only if V-16 forces `--oci-worker-no-process-sandbox`: a teammate's `RUN` step can signal or ptrace daemon processes and read the server key. The exception, owned by the RFC owner (batleforc), recorded in the runbook with the V-16 result |
+| E2 | Compromised controller writes privileged pods, ConfigMaps or certificates anywhere | RBAC | Deployment/StatefulSet write only through per-namespace RoleBindings the admin creates in tools namespaces; ConfigMap and `Certificate` write only through a RoleBinding in each workspace namespace, rendered by `2.helm/user-app` | `the_controller_cannot_write_outside_a_bound_namespace` (e2e kind with the chart's RBAC: `kubectl auth can-i create deployments -n kube-system --as=<controller SA>` = no) | Within a bound workspace namespace, a `Certificate` naming any allow-listed `ClusterIssuer` |
 
 **Privileges (RBAC delta), controller role only.**
 
@@ -752,11 +840,14 @@ workspace pod into the privileged namespace; a `RUN` step into the network.
   RoleBinding per team in Git, next to the Namespace the admin already writes, and per-namespace
   watches instead of one cluster-wide watch. The pattern exists: identity's Role in Argo's
   namespace [R13].
-- *Cluster-wide*: `certificates.cert-manager.io` get, list, watch, create, update, patch, delete
-  (client certificates in workspace namespaces, which are dynamic); `configmaps` the same,
-  behind `teamTools.rbac.enabled` (registry-config grants it only under its own flag, and on
-  the cluster today the controller cannot create ConfigMaps [R21]); `ciliumnetworkpolicies`
-  already granted [R13, R21].
+- *Per workspace namespace*, through a RoleBinding to a second unbound ClusterRole
+  `weebo-si-team-tools-requester` (`configmaps`, `certificates.cert-manager.io`: create, update,
+  patch, delete), rendered in each workspace namespace by weebo-si's `2.helm/user-app` next to
+  the namespace it already creates. Kubernetes RBAC cannot scope a write by namespace label, so
+  the RoleBinding is the scope; a namespace without it reports `forbidden`, nothing else breaks.
+  On the cluster today the controller cannot create ConfigMaps or `Certificate`s [R21].
+- *Cluster-wide, read only*: `configmaps` and `certificates.cert-manager.io` get, list, watch,
+  for the label-filtered watches; `ciliumnetworkpolicies` write already granted [R13, R21].
 - *Template namespace*: read on the five template kinds, chart Role.
 - Today the controller cannot patch `deployments/scale` anywhere nor create `Certificate`s [R21].
 - Webhook role: unchanged; the admission gate reads the in-memory configuration.
@@ -789,6 +880,11 @@ image (`v0.35.1` at the time of writing [R24]), pulled through angos and pinned 
 admin's template, never by the operator. The kind e2e suite adds both images to its preload
 list.
 
+| Component | Version | Pinned by | Licence | CVE status | Maintenance |
+| --- | --- | --- | --- | --- | --- |
+| `moby/buildkit` rootless image | `v0.35.1-rootless` [R24] | digest, in the admin's template (`@sha256:…`), recorded in the runbook | Apache-2.0 | **not run**: `trivy` is not usable on this workstation (the mise shim has no version configured), so no scan backs this row; PR 6 runs `trivy image` in CI before the image enters the preload list | active upstream, release `v0.35.1` on 2026-11-19 [R24] |
+| cert-manager | `v1.21.3` (cluster) [R20] | the cluster's chart | Apache-2.0 | already in operation, unchanged by this RFC | active upstream |
+
 ## Data and privacy
 
 - **Usernames** appear in the client certificate's `commonName` and Secret, in the user's own
@@ -819,9 +915,13 @@ remove the selector.
 running without the tool. Surgical: remove the key from the team's `allowed`.
 
 **Observability.** To ClickStack via the existing OTel collectors: the six metrics, the reconcile
-logs, Events on DevWorkspaces. Alerts: `weebo_si_team_tools_up_without_requester == 1` for 10
-min (T-41), `reconcile_total{result="forbidden"|"unbound"}` increase, `entries{state="invalid"}
-> 0`.
+logs, Events on DevWorkspaces. Alerts: T-41 has two, because the controller's own gauge dies
+with the controller: `weebo_si_team_tools_up_without_requester == 1` for 10 min, **and**
+kube-state-metrics' `kube_statefulset_replicas` / `kube_deployment_spec_replicas` > 0 on a
+`hardening.weebo.io/team-tool` workload while the controller's metrics are stale (no scrape for
+10 min) or its pod restarted more than 3 times in 30 min (a crash loop re-arms the grace timer
+forever). Also `reconcile_total{result="forbidden"|"unbound"}` increase and
+`entries{state="invalid"} > 0`.
 
 **Upgrade.** Old and new controllers compute the same objects from the same inputs; SSA under
 one field manager converges; the scale writer is idempotent. CRD fields only grow.
@@ -886,6 +986,12 @@ one namespaced watch set per bound team, a timer per tool.
 | 12 | (was Still open 3) Process sandbox in buildkitd | **V-16 tries `procMount: Unmasked` with `hostUsers: false` first; `--oci-worker-no-process-sandbox` is the exception, used only if that fails, and recorded as a residual with its owner (E1).** Keeping the sandbox keeps a `RUN` step away from the daemon's processes and server key. Accepted as recommended. |
 | 13 | (was Still open 4) Does buildkitd log the client CN? | **Checked in V-16; if absent, Hubble flows per namespace are the audit trail.** No code depends on the answer. Accepted as recommended. |
 | 14 | (was Still open 5) An entry with a `service` but no `tls` | **Allowed and logged at `info`; the reference BuildKit entry keeps mTLS mandatory.** An emulator's `adb` has no TLS and the network already scopes it to the team; a build daemon runs code for its caller. Accepted as recommended. |
+| 15 | (from last review, UX) Refuse what under `onNotGranted: Deny`? | **Only a `CREATE`, or an `UPDATE` that starts the workspace; every other `UPDATE` is admitted with the key dropped, an Event and a warning.** Refines the draft, which refused every `UPDATE`: a revoked grant must not wedge the DevWorkspace. |
+| 16 | (from last review, stability) Phase 0 → phase 1 | **Argo `Delete=false,Prune=false`, then removal from the chart, then adoption by force server-side apply; never delete-then-create.** Keeps the pod and the cache PVC. |
+| 17 | (from last review, security) cert-manager ingress-shim can mint a team client cert | **endpoint-auth's Ingress admission allow-lists issuer annotations (default `[vault-issuer]`) and refuses subject-forging keys; lands before any team CA.** Users can create Ingresses and the shim is on [R29]. |
+| 18 | (from last review, security) `issuerRef.kind` | **`ClusterIssuer` only, by CEL.** A namespaced `Issuer` cannot serve dynamic workspace namespaces. |
+| 19 | (from last review, security) ConfigMap and `Certificate` writes | **Per workspace namespace through a RoleBinding rendered by `2.helm/user-app`; cluster-wide read only.** Goes against the draft's cluster-wide write; the apiserver scopes the blast. |
+| 20 | (from last review, cross-RFC) Registry order and the router | **Order network-profiles → devfile-contract → dwoc-pin → team-tools; this RFC folds the route into one loop, keeps every registry's payload, bounds warnings once after the merge.** One order stated in 0019 and 0020; the fourth registry is the point RFC 0019 deferred to. |
 
 ### Still open
 
@@ -901,60 +1007,85 @@ None: every question raised by this draft is resolved above.
 
 ## Test plan
 
-- **Unit** (`weebo-si-team-tools`): attribute parsing (absent, empty, 9 keys, duplicates);
-  grant resolution and `onNotGranted`; one test per validation row; `ScaleDecision` over a fake
-  clock (up, grace, return, idle, removed); ingress peer derivation from a `Selector` with
-  `matchLabels` and `matchExpressions`; CN from the annotation.
+- **Unit** (`weebo-si-team-tools`): attribute parsing (absent, empty, 9 keys, duplicates); grant
+  resolution and `onNotGranted`; one test per validation row; `ScaleDecision` over a fake clock (up,
+  grace, return, idle, removed); ingress peer derivation from a `Selector` with `matchLabels` and
+  `matchExpressions`; CN from the annotation.
 - **One negative test per STRIDE row:** S1 `ingress_admits_only_the_team_selector`; S2
   `the_cn_comes_from_the_namespace_annotation_not_the_attribute`; T1 `an_ungranted_key_is_dropped`,
-  `an_ungranted_key_is_denied_under_deny`; T2 `a_team_tools_policy_is_invisible_to_network_profiles`;
-  T3 `an_unlabelled_namespace_is_never_written`, `a_workspace_namespace_is_never_a_tools_namespace`;
-  T4 `a_privileged_template_is_invalid` (and hostPath, hostNetwork, hostPID, hostIPC); I2
+  `an_ungranted_key_is_denied_under_deny`; T2
+  `a_team_tools_policy_is_invisible_to_network_profiles`; T3
+  `an_unlabelled_namespace_is_never_written`, `a_workspace_namespace_is_never_a_tools_namespace`; T4
+  `a_privileged_template_is_invalid` (and hostPath, hostNetwork, hostPID, hostIPC); I2
   `the_client_certificate_lasts_24h`; D1 `a_namespace_without_quota_is_unbound`; D2
   `zero_requesters_reach_idle_after_grace`; D3 `a_ninth_key_is_dropped`; E1
-  `a_workload_with_a_token_is_invalid`; E2 envtest `the_controller_cannot_write_outside_a_bound_namespace`.
+  `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`,
+  `added_capabilities_are_invalid`; E2 e2e kind with the chart RBAC
+  `the_controller_cannot_write_outside_a_bound_namespace`; S3
+  `an_ingress_naming_a_team_ca_issuer_is_refused` (endpoint-auth); R1
+  `the_client_certificate_cn_is_the_namespace_owner`; T5 accepted, no test.
+- **Router:** `every_registry_allow_payload_is_kept` (four registries, mutations and warnings of
+  each survive the fold); `warnings_are_bounded_once_after_the_merge`.
 - **Envtest:** `a_template_update_never_resets_replicas`; "invalid entry keeps rendered objects";
   `Off` deletes everything but the PVC.
-- **e2e kind + Che** (`team-tools` suite, with cert-manager and buildkit): observations 1–3, 5–8.
+- **e2e kind + Che** (`team-tools` suite, with cert-manager and buildkit): observations 1–3, 5–9 and
+  12, plus E2. The RBAC test lives here, not in envtest: the chart's RBAC is what it proves, and the
+  default `EnvTest::start` runs `AlwaysAllow` [R31].
 - **Cluster:** V-16, V-17 (before Android), T-39, T-40, T-41, T-42 on `dev-ws-batleforc-test`.
-- **Must stay green:** `network-profiles`, `policy-guard`, `registry-config`, `resource-quotas`
-  e2e suites; the policy-guard verdict table; `cargo test` workspace-wide.
+- **Must stay green:** every e2e suite, including those that run without cert-manager installed (the
+  conditional watches must not fail them); the policy-guard verdict table; `cargo test`
+  workspace-wide.
 
 ## Implementation plan
 
-- [ ] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL. Feature
-      registered but with no reconcile loop: a configuration validates and does nothing.
+- [ ] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL (incl.
+      `issuerRef.kind: ClusterIssuer`). A configuration validates and does nothing; the feature
+      is listed in `crates/weebo-si-operator/src/features.rs` only in PR 4, with its wiring.
 - [ ] PR 2 — `weebo-si-team-tools`: resolution, validation table, `ScaleDecision`, three
       subjects' `desired()`, admission gate type; all unit tests above.
-- [ ] PR 3 — chart: unbound ClusterRole `weebo-si-team-tools`, cluster-wide `certificates` and
-      `configmaps` behind `teamTools.rbac.enabled` (default `false`), template-namespace Role,
+- [ ] PR 3a — endpoint-auth: the Ingress issuer allow-list and subject-key refusal (S3). Lands
+      before any team CA exists, so the shim path is closed first.
+- [ ] PR 3 — chart: unbound ClusterRoles `weebo-si-team-tools` and
+      `weebo-si-team-tools-requester`, cluster-wide read of `certificates` and `configmaps`
+      behind `teamTools.rbac.enabled` (default `false`), template-namespace Role,
       `--team-tools-template-namespace`. Lands **before** any writer so the boundary exists
       first.
 - [ ] PR 4 — `weebo-si-team-tools-adapters`: stores, `/scale`, controller loop, metrics,
-      status; envtest; the network-profiles invariant test. Security controls (binding gate,
+      status, `features.rs` entry; envtest; the network-profiles invariant test. Gated by the
+      remaining V-16 items. Security controls (binding gate,
       quota gate, template validation) are in PR 2 and wired here, never after.
-- [ ] PR 5 — webhook: `TeamToolsAdmission` on the mutate route for `Deny`.
+- [ ] PR 5 — webhook: fold `mutate_devworkspaces` into one loop over the ordered registries,
+      `TeamToolsAdmission` as the fourth, verdict annotation, router tests. After RFC 0019 PR 1
+      (chassis `warnings`).
 - [ ] PR 6 — e2e `team-tools` suite on kind with cert-manager and BuildKit.
 - [ ] PR 7 — docs: brick page, CRD pages; RFC to `Implemented`.
 
 ### Estimate
 
-An analogy with comparable work in this repository, not a measurement.
+An analogy with comparable work in this repository, not a measurement. The references, from
+`git show --shortstat` summed over each RFC's commits:
+
+| Reference | Scope | Lines changed | Calendar |
+| --- | --- | --- | --- |
+| RFC 0014 resource-quotas | reconcile feature, templates in operator ns | ≈ +6 800 | 2026-10-31 → 2026-11-01 |
+| RFC 0013 pod-security | reconcile feature + dry-run audit + e2e | ≈ +11 500 | 2026-10-31 → 2026-11-01 |
+| RFC 0017 image-rewrite | admission mutation on an existing feature | ≈ +5 750 | 2026-11-12 |
 
 | PR | Size | Compared to | Why |
 | --- | --- | --- | --- |
 | 1 CRD | S (≈ 800) | RFC 0014's CRD slice | two blocks, one status list, CEL |
 | 2 domain | M (≈ 3 500) | RFC 0014's domain crate | similar validation table, plus a state machine and three subjects |
-| 3 chart RBAC | S (≈ 300) | RFC 0014's RBAC item | one ClusterRole, two flags |
+| 3a endpoint-auth issuer allow-list | S (≈ 600) | RFC 0017 (smaller) | one admission rule on an existing feature |
+| 3 chart RBAC | S (≈ 400) | RFC 0014's RBAC item | two ClusterRoles, one flag |
 | 4 adapters | L (≈ 5 500) | RFC 0013's adapters | per-namespace watches, create-then-apply, `/scale`, cert-manager objects |
-| 5 admission | S (≈ 700) | network-profiles' `WorkspaceAdmission` | same shape, third registry |
+| 5 admission + router fold | M (≈ 1 500) | network-profiles' `WorkspaceAdmission` | same gate shape, plus the loop over four registries |
 | 6 e2e | M (≈ 2 500) | RFC 0013's e2e | two new preloaded images (cert-manager, buildkit) |
 | 7 docs | S (≈ 600) | — | |
 
-Total ≈ +14 000 lines, between RFC 0013 (≈ +11 500, two days) and twice RFC 0014 (≈ +6 800,
-two days): about three to five working days of implementation by the same method.
-**Integration and validation on the cluster** are calendar-bound: phase 0 one day; V-16 before
-PR 4 merges; ≥ 7 days of `DryRun`; then `Enforce` on `dev-ws-batleforc-test` with T-39 to T-42.
+Total ≈ +15 500 lines, between RFC 0013 (≈ +11 500, two days) and twice RFC 0014 (≈ +6 800, two
+days): about three to five working days of implementation by the same method. **Integration and
+validation on the cluster** are calendar-bound: phase 0 one day; the remaining V-16 items before PR
+4 merges; ≥ 7 days of `DryRun`; then `Enforce` on `dev-ws-batleforc-test` with T-39 to T-42.
 
 ### Integration in weebo-si
 
@@ -972,8 +1103,17 @@ PR 4 merges; ≥ 7 days of `DryRun`; then `Enforce` on `dev-ws-batleforc-test` w
   `dev-ws-batleforc-test`, the `weebo` team block (`allowed: [buildkit]`), and
   `teamTools.rbac.enabled: true` in the operator's values. Argo stops managing the workload, so
   `ignoreDifferences` goes away.
-- **Runbook:** "add a team tools namespace" (namespace, label, quota, RoleBinding, issuer) and
-  "rotate a team CA".
+- **Phase 0 → phase 1 adoption** (runbook, e2e observation 12): first set
+  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` on the phase-0 chart's
+  StatefulSet, Service, ConfigMap and CNPs and sync; then remove them from the chart, so Argo
+  forgets them without deleting; then enable `teamTools`. The controller adopts each object
+  lacking `managed-by` by server-side apply **with force** under `weebo-si-team-tools`, never
+  delete-then-create, so the pod and the cache PVC survive. A conflicting object it cannot
+  adopt (wrong kind or selector) is reported `invalid`, not replaced.
+- **Per workspace namespace:** `2.helm/user-app` renders the RoleBinding to
+  `weebo-si-team-tools-requester` next to the namespace (`dev-ns.yaml`).
+- **Runbook:** "add a team tools namespace" (namespace, label, quota, RoleBinding, issuer),
+  "rotate a team CA", the V-16 results, and the OpenBao PKI role check (S3 residual).
 
 ## References
 
@@ -989,7 +1129,7 @@ PR 4 merges; ≥ 7 days of `DryRun`; then `Enforce` on `dev-ws-batleforc-test` w
 | R8 | `crates/weebo-si-crd/src/labels.rs:8` | c412ee3 | `MANAGED_BY_LABEL` |
 | R9 | `crates/weebo-si-policy-guard/src/guard.rs:30-40`, `resource.rs:23` | c412ee3 | guard keys on `managed-by`; CNP row exists |
 | R10 | `charts/weebo-si-operator/templates/validatingwebhookconfiguration.yaml:50`, `mutatingwebhookconfiguration.yaml:126` | c412ee3 | guard and pod webhooks select `workspace-namespace` |
-| R11 | `crates/weebo-si-webhook/src/router.rs:62`, `:95`; `crates/weebo-si-network-profiles/src/feature/workspace_gate.rs:44` | c412ee3 | mutate route, second registry, admission `Deny` shape |
+| R11 | `crates/weebo-si-webhook/src/router.rs:62`, `:95`, `:183`; `crates/weebo-si-network-profiles/src/feature/workspace_gate.rs:44` | c412ee3 | mutate route, second registry, admission `Deny` shape |
 | R12 | `crates/weebo-si-registry-config-adapters/src/registry_template_store.rs:242` | c412ee3 | automount label copied, DWO mounts it |
 | R13 | `charts/weebo-si-operator/templates/rbac.yaml:127`, `:134`, `:234`, `:274-300` | c412ee3 | devworkspaces watch; CNP write; configmaps under registryConfig flag; Role in a foreign namespace |
 | R14 | `crates/weebo-si-network-profiles-adapters/src/controller.rs:215` | c412ee3 | DevWorkspace reconcile already exists |
@@ -1002,11 +1142,19 @@ PR 4 merges; ≥ 7 days of `DryRun`; then `Enforce` on `dev-ws-batleforc-test` w
 | R21 | Probe, `task k -- auth can-i … --as=system:serviceaccount:weebo-si-hardening:weebo-si-operator-controller`: `patch deployments/scale -n kube-system` no, `create certificates.cert-manager.io` no, `create ciliumnetworkpolicies` yes, `create configmaps` no (in `dev-ws-batleforc-test`); `task k -- version`: client v1.37.2, server v1.36.2 | 2026-11-24 | RBAC delta baseline |
 | R22 | moby/buildkit `docs/rootless.md`, `gh api repos/moby/buildkit/contents/docs/rootless.md?ref=v0.35.1` | v0.35.1, read 2026-11-24 | unconfined seccomp/AppArmor, `--oci-worker-no-process-sandbox` caveats, `procMount` note |
 | R23 | moby/buildkit `docs/buildkitd.toml.md` and `examples/kubernetes/deployment+service.rootless.yaml` | v0.35.1, read 2026-11-24 | `insecure-entitlements` off by default, `[registry] mirrors`, `[grpc.tls]`, TLS args |
-| R24 | https://github.com/moby/buildkit/releases | read 2026-11-24 | v0.35.1 latest |
+| R24 | https://github.com/moby/buildkit/releases | read 2026-11-24 | v0.35.1 latest, 2026-11-19 |
+| R25 | Probe, `task k -- get checluster -A -o jsonpath='{.items[0].spec.devEnvironments.disableContainerBuildCapabilities}'` → `true` | 2026-11-24 | Che disables container builds |
+| R26 | Probe, `task hardening:validate -- V-06`: a pod with `hostUsers: false` and `runtimeClassName: youki` → `FailedCreatePodSandBox … RuntimeClass handler "youki" does not support user namespaces`; cause: `youki features` reports `mountExtensions.idmap.enabled: false` (`crates/youki/src/commands/features.rs:82-83`, v0.7.0, v0.8.0 and main), read by containerd v2.3.7 `supportsCRIUserns` (`internal/cri/server/service.go:440`) | 2026-11-24 | the workspace target state is not reachable on youki today |
+| R27 | `charts/weebo-si-operator/templates/mutatingwebhookconfiguration.yaml:30` | c412ee3 | webhook name `devworkspaces.hardening.weebo.io`, `failurePolicy: Fail` |
+| R28 | `crates/weebo-si-chassis/src/port/feature_gate.rs:22`, `feature/registry.rs:72`; `crates/weebo-si-endpoint-auth/src/port.rs:142` | c412ee3 | teams via `FeatureGate::teams()`/`Context::teams()`; endpoint-auth's `Clock` port |
+| R29 | Probes (coordinator, last review): cert-manager controller args carry no `--controllers` exclusion (ingress-shim on); workspace Ingresses carry `cert-manager.io/cluster-issuer: vault-issuer`; `task k -- auth can-i create ingresses -n dev-ws-batleforc-test --as=labsso:batleforc-test@weebo.internal` → yes (workspace SA → no) | 2026-11-24 | S3 |
+| R30 | `charts/weebo-si-operator/templates/webhookconfiguration-endpoints.yaml:65`, `:89` | c412ee3 | endpoint-auth already admits Ingresses at `/mutate/v1/ingresses` |
+| R31 | `crates/weebo-si-envtest-support/src/lib.rs:23`, `:67`, `:129` | c412ee3 | `start` is `AlwaysAllow`; `start_rbac` exists |
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | Last review applied (6 lenses): Resolved 15–20, STRIDE S3 and T5, validation and RBAC tightened, adoption runbook, router fold. |
 | 2026-11-24 | Still-open 1–5 resolved by the owner as recommended (Resolved 10–14); BuildKit template keeps the process sandbox by default, mTLS mandatory for the BuildKit entry. |

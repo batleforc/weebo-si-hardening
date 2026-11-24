@@ -21,7 +21,7 @@ superseded-by: []
 | Touches   | `crates/weebo-si-chassis`, `crates/weebo-si-devfile-contract` (new), `crates/weebo-si-crd`, `crates/weebo-si-runtime`, `crates/weebo-si-webhook`, `crates/weebo-si-operator`, `crates/weebo-si-e2e`, every `*-adapters` crate that matches `AdmitOutcome`, docs |
 | Risk      | low (*Security considerations*); availability of the DevWorkspace route is the residual                                                                                |
 
-> Reference material (~8 800 words). A reviewer short on time reads *Summary*, *Guide-level
+> Reference material (~10 000 words). A reviewer short on time reads *Summary*, *Guide-level
 > explanation → Mocks*, *Security considerations* and *Unresolved questions*.
 
 ## Summary
@@ -31,10 +31,13 @@ reads four things a devfile already carries into its DevWorkspace — a `weebo.i
 integer attribute, the `parent` reference, the generator's version attributes and the
 `schemaVersion` the Che dashboard keeps in an annotation — and tells the developer, through
 Kubernetes admission warnings, when the devfile was written against old platform rules or follows
-a parent that can change under it. It writes its verdict on the DevWorkspace as the annotation
-`hardening.weebo.io/devfile-contract: current|outdated|unknown`, so a che-code extension can show
-it later. It refuses a workspace in exactly one case: the devfile names a contract or a parent an
-admin listed as denied, and that list is empty by default.
+a parent that can change under it. **Those warnings reach `kubectl` (and other API clients) only:
+the Che dashboard drops them [R28], so on the dashboard path a developer sees nothing until a
+refusal.** The verdict is also written on the DevWorkspace as the annotation
+`hardening.weebo.io/devfile-contract: current|outdated|unknown`, the input a che-code extension
+(or a che-dashboard fork patch) will read in its own, later RFC (D-12). It refuses a workspace in
+exactly one case: the devfile names a contract or a parent an admin listed as denied, and that
+list is empty by default — a refusal the dashboard does show as a failed start.
 
 To carry the warnings, the chassis gains a contract change every later feature can use:
 `Decision<S>` gets a `warnings` list, bounded in count and length, rendered into
@@ -79,12 +82,14 @@ flowchart LR
    DevWorkspace route runs the network-profiles gate and `dwoc-pin` only
    (`router.rs` `mutate_devworkspaces` [R3]); neither looks at the devfile's provenance. Falsified
    when a DevWorkspace without `weebo.io/platform-contract` produces a `Warning:` line on
-   `kubectl apply` (T-47, first row).
+   `kubectl apply` (T-47, first row). This RFC solves it for `kubectl` users; on the dashboard path
+   it only records the verdict in the annotation (D-12).
 2. **Platform rules are discovered by failure.** A rule change (an image moved behind angos, a
    UID range, a network profile) breaks a devfile at start, with an error from the feature that
    enforced it, and nothing ties that error to "your devfile was written for older rules".
-   Falsified when the warning names the contract number the devfile declares and the minimum the
-   platform expects.
+   Falsified when the `kubectl` warning names the contract number the devfile declares and the
+   minimum the platform expects; dashboard users get the same text once the extension of D-12
+   exists.
 3. **The production devfile follows a branch.** The live DevWorkspace `weebo-dotfiles-che-owjk`
    carries `parent.uri: …/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml` [R15], and the
    `weebo-che-project` devfile does the same [R19]: every commit on WeeboDevImage's `main` changes
@@ -115,6 +120,8 @@ Goals:
   (when the dashboard kept it).
 - A refusal only for an admin-curated denied list (contracts, parents), empty by default.
 - A verdict annotation on the DevWorkspace for later IDE display.
+- Scope of visibility, stated plainly: warnings are for `kubectl` and API clients; on the Che
+  dashboard path only a refusal is visible (D-12).
 - Admission warnings as a chassis capability, bounded, `Enforce`-only.
 
 Non-goals, each with why not:
@@ -137,7 +144,8 @@ Non-goals, each with why not:
   user's namespace [R15], created by the dashboard for every workspace. Warning on it would warn
   every workspace with nothing the developer can change; see *Deliberately untouched*.
 - **Scanning component images** for vulnerabilities (angos' scan, Phase 10). Future work.
-- **The che-code extension** that reads the annotation. Future work in `weebo-che-project`.
+- **The che-code extension** that reads the annotation, or a che-dashboard fork patch that keeps
+  the `Warning` header. Future work with its own RFC (D-12).
 
 ## Guide-level explanation
 
@@ -187,6 +195,10 @@ for each number. `minimumContract` follows later, once people had time to move.
   `unknown`, plus a warning naming the attribute to add and the current number. Because absent
   means `1`, an admin who lists `1` in `deniedContracts` refuses devfiles without the attribute:
   that is the one lever to make the attribute mandatory, and it is an explicit admin choice.
+  Precedence when `1` is also below `minimumContract`: the devfile gets **only** the "add the
+  attribute" warning (it already names the current number), never a second "below minimum" one,
+  and its verdict is `unknown` (`unknown` outranks `outdated`); the reason list carries
+  `contract-absent` only.
 - **Contract not an integer** (`"three"`, `1.5`, an object): verdict `unknown`, one warning
   ("must be an integer"), and it is evaluated as absent. An integer written as a string (`"2"`)
   is accepted: devfile attributes are free-form JSON and YAML authors quote numbers.
@@ -217,11 +229,12 @@ for each number. `minimumContract` follows later, once people had time to move.
   devfile) or unreadable: no warning, reason code `schema-unknown` in the annotation, verdict
   unaffected. The annotation is writable by the workspace token, so it can drive a warning and
   nothing else.
-- **Denied list.** On a *start* — a `CREATE`, or an `UPDATE` that turns `spec.started` from
-  not-true to `true` — a contract in `deniedContracts`, or a parent matching `deniedParents`, is a
-  denial under `Enforce` with `onDenied: Deny`. Under `onDenied: Warn` it is a warning. Any other
-  `UPDATE` (DevWorkspace Operator's finalizers, a stop, a label) is never refused: it gets the
-  warning "this workspace will be refused at its next start".
+- **Denied list.** On a *start* — a `CREATE`, an `UPDATE` that turns `spec.started` from
+  not-true to `true`, or an `UPDATE` that changes `spec.template` while `spec.started` is `true`
+  (D-13) — a contract in `deniedContracts`, or a parent matching `deniedParents`, is a denial
+  under `Enforce` with `onDenied: Deny`. Under `onDenied: Warn` it is a warning. Any other
+  `UPDATE` (DevWorkspace Operator's finalizers, a stop, a label, an annotation) is never refused:
+  it gets the warning "this workspace will be refused at its next start".
 - **Modes.** `Off`: the feature does not run. `DryRun`: it evaluates exactly as `Enforce` does,
   counts and logs the outcome, and returns **no warning, no annotation, no denial** — the
   developer sees nothing. `Enforce`: warnings, annotation and denials as above. This is the house
@@ -246,7 +259,7 @@ Hard errors, refused at `kubectl apply` of the `WeeboSiConfig` by CEL on the CRD
 
 Warnings to the admin: none beyond the CEL errors — every config the CEL rules accept is
 meaningful. The developer-facing warnings are the feature's output, seen in the `kubectl`
-`Warning:` lines and, once V-14 says so, in the dashboard (V-14 gates `Enforce`; resolved R-10).
+`Warning:` lines (probe [R29]) and **not** in the Che dashboard, which drops them (D-10, [R28]).
 DryRun's would-be warnings are seen by the admin in the log line and the metric (*Operational
 considerations*).
 
@@ -275,7 +288,9 @@ Warning: devfile written for platform contract 1, minimum is 2: see the User Gui
 devworkspace.workspace.devfile.io/legacy created
 ```
 
-**Unknown (contract absent) and parent on a branch** — the real `weebo-che-project` devfile [R19]:
+**Unknown (contract absent, `minimumContract: 2`) and parent on a branch** — the real
+`weebo-che-project` devfile [R19]. Absent counts as `1`, below the minimum, yet only the "add the
+attribute" warning is printed (precedence rule above):
 
 ```text
 $ kubectl apply -f weebo-che-project.devworkspace.yaml
@@ -331,22 +346,37 @@ trusted text and actionable. The same text, on an `UPDATE` that is not a start, 
 Error from server (Forbidden): error when creating "weebo-che-project.devworkspace.yaml": admission webhook "devworkspaces.hardening.weebo.io" denied the request: platform contract 1 is denied (devfiles without weebo.io/platform-contract count as 1): add "weebo.io/platform-contract: 3" and follow the User Guide
 ```
 
-**The annotation** (any outcome, `Enforce`):
+**The annotation** (any outcome, `Enforce`; this object was applied with `kubectl`, so it has no
+`che.eclipse.org/devfile` and the schema reason is `schema-unknown`):
 
 ```text
 $ kubectl get dw weebo-che-project -o json | jq '.metadata.annotations | with_entries(select(.key|startswith("hardening.weebo.io/devfile")))'
 {
   "hardening.weebo.io/devfile-contract": "unknown",
-  "hardening.weebo.io/devfile-contract-reason": "contract-absent,parent-branch,schema-ok"
+  "hardening.weebo.io/devfile-contract-reason": "contract-absent,parent-branch,schema-unknown"
 }
 ```
 
-**Che dashboard:** not mocked. Where the dashboard shows admission warnings — a toast, the
-workspace's event log, nowhere — is V-14's to say (resolved R-10); V-14 runs during the DryRun week. The dashboard
-creates the DevWorkspace through its own backend, so the working assumption is that warnings are
-**not** shown and the annotation (read by a future che-code extension) is the IDE channel.
-A denial is an API error on creation, which the dashboard does surface as a start failure; its
-exact rendering is also V-14's.
+**Che dashboard, warnings:** nothing. The dashboard backend's `propagateHeaders` returns `{}`, so
+the `Warning` headers never reach the frontend that would display them [R28] (D-10). An outdated
+or unknown devfile starts from the dashboard exactly as today; only the annotation records it.
+
+**Che dashboard, refusal** (wireframe; the frame is the dashboard's generic start-failure alert,
+the text after the colon is the webhook's denial verbatim; the exact chrome is compared at land):
+
+```text
+┌ Create workspace ───────────────────────────────────────────────────────────────┐
+│ ⚠ Failed to create the workspace                                                 │
+│   admission webhook "devworkspaces.hardening.weebo.io" denied the request:       │
+│   devfile parent is denied by the platform (deniedParents entry 1:               │
+│   https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/): move       │
+│   parent.uri to a newer version; contract 3 in the User Guide lists them         │
+│                                                         [ Close ]                │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Decides: on the dashboard path the denial text is the only thing a developer reads, so it must
+stand alone — no reference to a warning they never saw.
 
 ## Design
 
@@ -414,13 +444,16 @@ pub enum AdmitOutcome {
     Allow { mutations: Vec<Mutation>, warnings: Vec<String> },
     Deny(String),
 }
-pub const MAX_WARNINGS: usize = 6;       // per admission response, all features together
+pub const MAX_WARNINGS: usize = 6;       // per admission response, all registries together
 pub const MAX_WARNING_CHARS: usize = 120;
 pub fn bound_warnings(raw: Vec<String>) -> Vec<String>;
 ```
 
 `admit()` keeps a feature's warnings only under `Enforce`, exactly where it keeps its mutations
-today [R2]. `bound_warnings` replaces every control character (`char::is_control`, which covers
+today [R2], and does **not** bound them: a route may run several registries, so
+`bound_warnings` runs **once per response, after the route has merged every registry's
+warnings**, inside the one rendering helper every route calls,
+`weebo_si_webhook::render::with_warnings` (D-14). It replaces every control character (`char::is_control`, which covers
 CR, LF and ESC) with a space, truncates each warning to 120 characters on a character boundary
 with a trailing `…`, deduplicates, and keeps the first 6. Six times 120 is well under the
 apiserver's 4 096-character ceiling for all warnings of a request, and 120 is the length the
@@ -443,7 +476,7 @@ No new path, no new webhook configuration, no chart template change: the feature
 | `weebo_si_admission_warnings_total` (new, chassis-wide) | `feature`, `mode` | counted in `admit()` before the mode drops them, so DryRun shows what Enforce would print |
 
 All label values are compile-time constants. The contract number and the parent URI are not
-labels (the contract number goes in the log line, resolved R-11).
+labels (the contract number goes in the log line, resolved D-11).
 
 #### Log line
 
@@ -461,7 +494,11 @@ of `hexagonal.md` [R26]. The domain crate `weebo-si-devfile-contract` holds the 
 it needs is on the subject and in its config handle (a fake would be more code than nothing). It
 has **no adapters crate**: the only adapter work is extraction, rendering and metrics, which live
 where the route lives, in `weebo-si-webhook` and `weebo-si-runtime`. No controller, no store, no
-new RBAC.
+new RBAC. Said plainly, this is the **network-profiles gate's exception** to "Adding a feature"
+[R8]: that gate's admission half also lives in `weebo-si-webhook`, and like it this feature makes
+shared crates gain code (`extract.rs`, `router.rs`, `prometheus.rs`). PR 4 amends
+`operator-internals.md` "Adding a feature" to name the exception: a feature on the DevWorkspace
+mutation route is wired in `weebo-si-webhook`, not through `admission_routes`.
 
 **Deviation from the coordinator's decision 1 — read this.** The decision placed the feature *in
 dwoc-pin's `Workspace` registry*. `Workspace` is defined in `weebo-si-dwoc-pin`
@@ -471,7 +508,7 @@ either `weebo-si-devfile-contract` depending on `weebo-si-dwoc-pin` and `Workspa
 devfile fields, which is the exact coupling `AppState` documents it refused for network-profiles
 [R3] and `operator-internals.md` forbids when adding a feature [R8]. The nearest workable design,
 written here: **the same route and the same webhook configuration, but its own subject
-`DevfileWorkspace` and a third registry on the route**, the network-profiles precedent. Resolved R-8
+`DevfileWorkspace` and a third registry on the route**, the network-profiles precedent. Resolved D-8
 records the choice, accepted by the RFC owner.
 
 ```mermaid
@@ -505,11 +542,13 @@ sequenceDiagram
     DC-->>R: Allow {annotations, warnings}
     R->>DP: admit(Workspace)
     DP-->>R: Allow {SetConfigRef}
-    R->>API: one JSON Patch (both features' mutations) + warnings
+    R->>API: one JSON Patch (every registry's mutations) + bound_warnings(all warnings), once
 ```
 
-Proves: registries run in a fixed order, as RFC 0002 requires [R21]; a network-profiles refusal
-still wins (its message explains the more fundamental problem); a denied parent is refused before
+Proves: registries run in a fixed order, as RFC 0002 requires [R21]. The order on
+`/mutate/v1alpha1/devworkspaces` is global and stated identically in RFC 0020: **network-profiles
+workspace gate → devfile-contract → dwoc-pin → team-tools (RFC 0020)** (D-14). A network-profiles
+refusal still wins (its message explains the more fundamental problem); a denied parent is refused before
 a pin is computed for it; the patch is one patch, and `render_patch` already handles two writers
 into `metadata.annotations` [R6].
 
@@ -537,15 +576,21 @@ or nothing.
 
 **The invariant.** *Because a denial requires both a match against an admin-written list and a
 start transition, an outdated, unknown or unpinned devfile can never be refused, and DevWorkspace
-Operator's own updates (finalizers, deletion, status-adjacent metadata) can never be refused —
-so a workspace can always be stopped and deleted, whatever this feature decides.* Enforced by
+Operator's own updates (finalizers, deletion, status-adjacent metadata) can never be refused by
+this feature — so a workspace can always be stopped and deleted, whatever this feature decides.*
+One existing exception of the route is not this feature's and is not changed: while the webhook's
+namespace cache has not yet observed the namespace, `admit()` returns `NamespaceNotObserved` for
+any feature that is on, and the route denies the request [R2] (`admit.rs:56-60`). `starting` is
+computed in `extract.rs` from the object and `oldObject`: `CREATE`, `spec.started` going to `true`,
+or `spec.template` changing while `spec.started` is `true` (D-13). Enforced by
 `DevfileContract::evaluate` (the only `Decision::deny` call sits behind `denied_match(..) &&
-subject.starting`), proved by `outdated_is_never_a_denial` and
-`a_denied_parent_on_a_non_start_update_is_a_warning`.
+subject.starting`), proved by `outdated_is_never_a_denial`,
+`a_denied_parent_on_a_non_start_update_is_a_warning` and
+`changing_parent_while_running_is_refused`.
 
 Second invariant: *because `evaluate` has no fallible step (every parse failure becomes a verdict),
 this feature never returns `Err`, so it cannot turn a malformed devfile into a refusal of every
-workspace under `failurePolicy: Fail`.* Proved by the fuzz target and
+workspace under `failurePolicy: Fail`.* Proved by the parser table tests and
 `evaluate_never_errs_on_arbitrary_json`.
 
 ### Data and state
@@ -561,19 +606,20 @@ does not remove annotations already written; they go stale and say so only by no
 | File | Change |
 | --- | --- |
 | `crates/weebo-si-chassis/src/feature/value.rs` | `Decision.warnings`, `with_warnings`; `FeatureOutcome.warnings: usize` |
-| `crates/weebo-si-chassis/src/admit.rs` | `AdmitOutcome::Allow { mutations, warnings }`, Enforce-only collection, `bound_warnings`, `MAX_WARNINGS`, `MAX_WARNING_CHARS` |
+| `crates/weebo-si-chassis/src/admit.rs` | `AdmitOutcome::Allow { mutations, warnings }`, Enforce-only collection (unbounded); `bound_warnings`, `MAX_WARNINGS`, `MAX_WARNING_CHARS` as pure functions/constants |
 | `crates/weebo-si-chassis/src/port/observer.rs` | nothing: `FeatureOutcome` carries the count |
-| every `AdmitOutcome` matcher: `weebo-si-webhook/src/router.rs`, `weebo-si-image-policy-adapters/src/image_policy.rs`, `weebo-si-policy-guard-adapters/src/{policy_guard,registry_guard}.rs`, `weebo-si-endpoint-auth-adapters/src/endpoint_auth.rs`, `weebo-si-operator/tests/perf_envtest.rs` | match the struct variant; render `warnings` via one helper `weebo_si_webhook::render::with_warnings(response, warnings)` |
+| every `AdmitOutcome` matcher: `weebo-si-webhook/src/router.rs`, `weebo-si-image-policy-adapters/src/image_policy.rs`, `weebo-si-policy-guard-adapters/src/{policy_guard,registry_guard}.rs`, `weebo-si-endpoint-auth-adapters/src/endpoint_auth.rs`, `weebo-si-operator/tests/perf_envtest.rs` | match the struct variant; render `warnings` via one helper `weebo_si_webhook::render::with_warnings(response, warnings)`, which calls `bound_warnings` once on the merged list (every adapters crate already depends on `weebo-si-webhook`) |
 | `crates/weebo-si-crd/src/devfile_contract.rs` (new) | `DevfileContractConfig`, `DeniedParent`, `OnDenied`, CEL, constants for the two annotation keys and three attribute keys |
 | `crates/weebo-si-crd/src/spec.rs` | `Features.devfile_contract` and its resolved form |
 | `crates/weebo-si-runtime/src/config_store.rs` | publish the handle; `prometheus.rs`: `weebo_si_devfile_contract_total`, `weebo_si_admission_warnings_total` |
 | `crates/weebo-si-devfile-contract/` (new) | `DevfileWorkspace` (subject), `DevfileContract` (`Feature`), `classify_parent_uri`, `parse_contract`, `scan_schema_version`, `denied_match`, `render_*` message builders, `excerpt` (≤32 chars, control-free) |
-| `crates/weebo-si-webhook/src/extract.rs` | `devfile_workspace_from_object(namespace, obj, old_obj)` — reads the three attributes, `parent`, the first 4 KiB of `che.eclipse.org/devfile`, the two existing annotation values, `spec.started` old and new |
-| `crates/weebo-si-webhook/src/router.rs` | `AppState.devfile_contract: Option<DevfileContractAdmission>`, run between the two existing registries; merge mutations and warnings; log fields |
+| `crates/weebo-si-webhook/src/extract.rs` | `devfile_workspace_from_object(namespace, obj, old_obj, operation)` — reads the three attributes, `parent`, the first 4 KiB of `che.eclipse.org/devfile`, the two existing annotation values, and computes `starting` (`CREATE`; `spec.started` old/new; `spec.template` old ≠ new while started, D-13) |
+| `crates/weebo-si-webhook/src/router.rs` | `AppState.devfile_contract: Option<DevfileContractAdmission>`, run between the network-profiles gate and dwoc-pin (D-14 order); stop discarding the network-profiles registry's `Allow` payload (today `Ok(AdmitOutcome::Allow(_)) => None`, `router.rs:181-183`) and merge every registry's mutations and warnings; log fields. The fold into one loop over registries and the router test that every registry's payload is kept belong to RFC 0020 (D-14) |
 | `crates/weebo-si-operator/src/{webhook_cmd,features}.rs` | one line each |
 | `crates/weebo-si-e2e/src/lib.rs` | `try_apply_with_warnings` returning stderr on success (today stderr is dropped when kubectl exits 0 [R14]) |
 | `crates/weebo-si-e2e/tests/workspace.rs` | the rows of *Proof* |
-| `crates/weebo-si-devfile-contract/fuzz/` | `fuzz_classify` over `classify_parent_uri`, `parse_contract`, `scan_schema_version` |
+| `crates/weebo-si-operator/tests/admission_envtest.rs` | the envtest rows of *Test plan* (where `a_devworkspace_is_pinned_by_a_real_running_webhook` already lives) |
+| `docs/architecture/operator-internals.md` | route table, registry order, and the "Adding a feature" exception (PR 4) |
 | docs | `docs/bricks/devfile-contract.md`, `docs/weebosiconfig.md` section, `docs/architecture/operator-internals.md` route table and "two registries" paragraph |
 
 ### Proof against a real client
@@ -611,22 +657,30 @@ v0.43.0 and Che 7.122.0 in the nightly kind suite [R14]. The e2e rows run in
 7. **Bounds.** A DevWorkspace whose `weebo.io/generator` holds 10 KiB with `\x1b[31m` and CRLF:
    no warning line longer than 120 characters, no ESC byte in kubectl's stderr (`od -c`), log
    line's `generator=` field ≤ 32 characters.
+8. **Reinvocation.** With `imageRewrite.webhooks.enabled` (its second webhook in the same
+   configuration rewrites a component image, which makes the apiserver reinvoke
+   `devworkspaces.hardening.weebo.io` under `reinvocationPolicy: IfNeeded` [R11]), apply (2)'s
+   object with a component image from an upstream registry: record whether kubectl prints each
+   warning once or twice. The documentation does not say whether the apiserver deduplicates
+   [R10]; the row asserts the count observed at land, and if it is two, *Drawbacks* gains it.
 
 Cluster test ids: T-47 is rows 2 (no contract → warning), 2 (branch parent → warning) and 4
 (denied parent → refusal), in the plan's per-PR Chainsaw/e2e set [R20]; V-13 (a pinned parent
-resolves in DWO v1.1.1) must pass before the warning tells people to pin; V-14 records where the
-dashboard shows rows 2 and 4; **V-23 (new)** "which devfile fields survive into the DevWorkspace":
+resolves in DWO v1.1.1) must pass before the warning tells people to pin; V-14 showed kubectl
+prints admission warnings [R29] and the dashboard drops them [R28]; **V-23 (new)** "which devfile fields survive into the DevWorkspace":
 partly answered by the probe [R15] — `schemaVersion` survives in `che.eclipse.org/devfile`,
-`parent` is kept unflattened — and validated by the owner on 2026-11-24 for top-level `attributes`, which reach `spec.template.attributes` (resolved R-9).
+`parent` is kept unflattened — and validated by the owner on 2026-11-24 for top-level
+`attributes`, which reach `spec.template.attributes` (D-9, [R30]).
 
 **Deliberately untouched**, so reviewers do not go looking:
 
 - `spec.contributions` (the dashboard's editor DevWorkspaceTemplate) — dashboard-made for every
   workspace; a warning there is noise the developer cannot act on.
-- `dwoc-pin`'s `Workspace`, its evaluation and its log line — unchanged (resolved R-8).
+- `dwoc-pin`'s `Workspace`, its evaluation and its log line — unchanged (resolved D-8).
 - The image-policy workspace layer on `/validate/v1alpha1/devworkspaces` [R23] — it judges
   component images; this feature judges provenance.
-- `metadata.attributes` of the devfile — read nowhere: V-23 showed top-level `attributes` reach `spec.template.attributes`, which is where the contract is read.
+- `metadata.attributes` of the devfile — read nowhere: V-23 showed top-level `attributes` reach
+  `spec.template.attributes`, which is where the contract is read [R30].
 - The parent's content — never fetched, never resolved.
 - Annotations already written when the feature goes `Off` — left in place.
 - policy-guard — the two annotations are advisory; guarding them would add a rule for no gain,
@@ -638,12 +692,12 @@ partly answered by the probe [R15] — `schemaVersion` survives in `che.eclipse.
 only refusal is pulled by an admin. Its risk is availability: it runs on the `failurePolicy:
 Fail` DevWorkspace route, so a bug that errs or panics refuses every workspace start. The
 chassis change is the wider surface: warnings become possible on every route, so their bounds
-are enforced once, in `admit()`.
+are enforced once per response, in the rendering helper every route calls (D-14).
 
 **Attack surface.** Attacker-controlled inputs (any user who can create or patch a DevWorkspace,
 including the workspace's own token [R17]): the three attributes, `parent` in all three forms,
 the `che.eclipse.org/devfile` annotation, the two `hardening.weebo.io/devfile-contract*`
-annotations, `spec.started`. Admin-controlled: the config. Data moved: none off the node.
+annotations, `spec.started` and `spec.template` (old and new, for the start test). Admin-controlled: the config. Data moved: none off the node.
 
 ```mermaid
 flowchart LR
@@ -661,10 +715,11 @@ flowchart LR
 | T3 | Tampering: bypass the denied list by editing the URI (query string, other host, inlined components) | B1 | `denied_match` normalises (lowercase scheme and host, drop userinfo, query, fragment) and matches a prefix | `a_denied_prefix_matches_despite_query_and_userinfo` | a renamed host or inlined parent passes: not a security boundary (*Non-goals*), the cluster floor stays (accepted) |
 | R1 | Repudiation: a refusal nobody can trace | B1 | one log line per decision with namespace, workspace, verdict, reasons; `weebo_si_admission_requests_total{outcome="denied"}` | `a_denial_is_logged_with_its_reasons` | none |
 | I1 | Information disclosure: a parent URI with credentials (`https://user:token@…`) lands in logs, warnings or metrics | B1→logs, B3 | the URI is never logged nor labelled; a warning echoes at most the ref segment through `excerpt` (≤32 chars, after userinfo removal); a denial quotes the admin entry — `render_parent_warning`, `render_denial` | `a_token_in_parent_uri_never_reaches_a_warning_or_log` | none |
-| I2 | Information disclosure: terminal escape or CRLF injection into another person's terminal (an admin re-applying a user's object) | B3 | `bound_warnings` strips control characters, truncates to 120, caps at 6 — `admit()`; `excerpt` also allow-lists characters | `a_control_character_never_reaches_a_warning`, `warnings_are_capped_and_truncated` | none |
-| D1 | DoS: a huge or deep `che.eclipse.org/devfile` annotation or attribute makes admission slow | B1 | no YAML parser: `scan_schema_version` reads the first 4 KiB line by line; `parse_contract` accepts a JSON number or ≤10 ASCII digits; apiserver caps annotations at 256 KiB total | `fuzz_classify`; `a_4mib_annotation_is_scanned_in_bounded_time` | none |
+| I2 | Information disclosure: terminal escape or CRLF injection into another person's terminal (an admin re-applying a user's object) | B3 | `bound_warnings` strips control characters, truncates to 120, caps at 6 — called once per response by `render::with_warnings`; `excerpt` also allow-lists characters | `a_control_character_never_reaches_a_warning`, `warnings_are_capped_and_truncated` | none |
+| D1 | DoS: a huge or deep `che.eclipse.org/devfile` annotation or attribute makes admission slow | B1 | no YAML parser: `scan_schema_version` reads the first 4 KiB line by line; `parse_contract` accepts a JSON number or ≤10 ASCII digits; apiserver caps all annotations of an object at 256 KiB [R31] | table tests of the three parsers (malformed, huge, deep); `a_4mib_annotation_is_scanned_in_bounded_time` | none |
 | D2 | DoS: a malformed devfile makes `evaluate` err, and `failurePolicy: Fail` refuses every workspace | B1 | `evaluate` has no fallible step — every parse failure is a verdict | `evaluate_never_errs_on_arbitrary_json` (property test over arbitrary JSON) | a panic in a dependency; the house lints forbid `unwrap`/indexing (accepted) |
-| D3 | DoS: a newly denied parent blocks deletion of running workspaces | B1 | denial only on a start transition — `DevfileContract::evaluate` | `a_denied_parent_on_a_non_start_update_is_a_warning`, e2e row 5 | none |
+| D3 | DoS: a newly denied parent blocks deletion of running workspaces | B1 | denial only on a start transition — `DevfileContract::evaluate` | `a_denied_parent_on_a_non_start_update_is_a_warning`, e2e row 5 | a cold namespace cache refuses any request on the route (existing behaviour, `admit.rs:56-60`) |
+| T4 | Tampering: swap a running workspace's parent to a denied one by patching `spec.template` without a stop/start | B1 | a `spec.template` change while started counts as a start (D-13) — `devfile_workspace_from_object` computes `starting`, `DevfileContract::evaluate` denies | `changing_parent_while_running_is_refused` | none |
 | E1 | Elevation: the feature grants a profile, a DWOC or an image | — | it emits only `Annotate` mutations [R7] under its own two keys — `DevfileContract::evaluate` | `only_its_own_annotations_are_emitted` | none |
 
 - **Privileges.** RBAC delta: none. The webhook role stays read-only; it never reads a
@@ -685,8 +740,8 @@ flowchart LR
 
 No new dependency, image, action or tool: parsing uses `serde_json` (already the admission
 payload type) and `std`; no YAML crate is added because the schemaVersion scan is a line scan;
-the fuzz target uses `cargo-fuzz`/`libfuzzer-sys`, already in the workspace's fuzz setup.
-`task audit` is unchanged.
+the parsers are covered by table-driven tests, not fuzzing, because the repo has no fuzz
+infrastructure and this RFC does not add any (D-15). `task audit` is unchanged.
 
 ## Data and privacy
 
@@ -719,8 +774,8 @@ anywhere, responses byte-identical. (2) `DryRun` on `dev-ws-batleforc-test` only
 (`namespaceSelector` on its name), then all workspace namespaces, for at least 7 days, watching
 `weebo_si_devfile_contract_total` by `result` and the log reasons. (3) Fix the real devfiles that
 warn (weebo-che-project, weebo-dotfiles-che) — the point of the dry run. (4) After V-13 (pinned
-parents resolve), which gates `Enforce` and is deferred until WeeboDevImage is tagged (V-14 and V-23 are answered: R-10, R-9), `Enforce` on
-`dev-ws-batleforc-test`, then everywhere. The denied list
+parents resolve), which gates `Enforce` and is deferred until WeeboDevImage is tagged (V-14 and
+V-23 are answered: D-10, D-9), `Enforce` on `dev-ws-batleforc-test`, then everywhere. The denied list
 stays empty until the first incident that needs it.
 
 **Rollback.** `mode: Off` in the chart values, synced by Argo CD, effective at the next admission.
@@ -762,7 +817,7 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 | --- | --- |
 | Do nothing; rely on the User Guide | Motivations 1–3 stay true; the plan's "rules discovered by failure" is exactly what happens today |
 | The literal plan: a status condition on the DevWorkspace | DevWorkspace Operator owns `status` and rewrites it; a webhook cannot write status on the main resource, and a controller patching it would fight DWO every reconcile |
-| Register in dwoc-pin's `Workspace` registry (coordinator decision 1, literal) | makes a feature crate depend on another, against `AppState`'s and `operator-internals.md`'s rule [R3][R8]; rejected in R-8 |
+| Register in dwoc-pin's `Workspace` registry (coordinator decision 1, literal) | makes a feature crate depend on another, against `AppState`'s and `operator-internals.md`'s rule [R3][R8]; rejected in D-8 |
 | A separate webhook entry on a new path (RFC 0017's shape [R22]) | a second network round-trip and a second `caBundle` window for an advisory feature; RFC 0017 needed it to keep dwoc-pin's route untouched, here the route already runs two registries |
 | A controller that labels outdated workspaces | needs write RBAC on every DevWorkspace, a watch, and still cannot speak at `kubectl apply` time |
 | Kyverno `validate` with `failureAction: Audit` + warnings | a second admission engine for one rule set, with its own failure policy and upgrade cycle on the same DevWorkspace requests; the parent classifier and the start-only denial are awkward to state in its policy language and untestable from this repo's table tests |
@@ -773,16 +828,19 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 ## Drawbacks and risks
 
 - **One more feature on a `failurePolicy: Fail` route.** Mitigated by an infallible `evaluate` and
-  a fuzz target; a remaining panic would still refuse workspaces until `mode: Off`.
+  table tests of every parser; a remaining panic would still refuse workspaces until `mode: Off`.
 - **The chassis contract grows.** Every route now renders warnings; a future feature can spam
-  them. Bounded to 6 × 120 characters per response in `admit()`, but 6 is shared by all features
-  on a route, so a noisy one can crowd out another's (first come, registry order).
+  them. Bounded to 6 × 120 characters per response, once after the merge, but 6 is shared by all
+  registries on a route, so a noisy one can crowd out another's (first come, global registry
+  order, D-14).
 - **Unrecognised parent URIs warn.** A host whose raw URLs carry a version in a shape the
   classifier does not know gets a false "not pinned" warning until the classifier learns it.
 - **Stale annotations under `Off`.** Nothing clears them; a reader must check the feature's mode.
 - **The contract number is only as good as the User Guide.** If the platform team forgets to bump
   it, every devfile stays `current` through a breaking rule change.
-- **The dashboard shows no admission warning** (V-14, [R28]): on the most common creation path the warning reaches nobody until the che-code extension or a che-dashboard fork patch exists; the annotation still records the outcome.
+- **The dashboard shows no admission warning** (V-14, [R28]): on the most common creation path
+  the warning reaches nobody until the che-code extension or a che-dashboard fork patch exists
+  (D-12); the annotation still records the outcome.
 
 ## Unresolved questions
 
@@ -790,17 +848,21 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 
 | # | Question | Decision |
 | --- | --- | --- |
-| R-1 | Where does the feature run? | **A new admission feature `devfileContract` on the existing mutating DevWorkspace route; no controller, no new webhook configuration.** Same subject, one route, no new failure point. (Registry placement: R-8.) |
-| R-2 | How does a developer learn? | **The chassis gains admission warnings: `Decision.warnings` rendered into `AdmissionResponse.warnings`, bounded (6 × 120 chars) and control-character free.** Kubernetes' native channel, shown by kubectl and API clients [R10]. |
-| R-3 | DryRun visibility, and status vs annotation | **Warnings and the annotation only in `Enforce`; DryRun is metrics and logs only. Verdict in the annotation `hardening.weebo.io/devfile-contract` (+ `-reason`), not a status condition.** DryRun runs Enforce's code with the mode applied at the edge [R8]; DWO owns status. |
-| R-4 | What is checked? | **Contract attribute (absent = oldest + warning; below minimum = warning), parent pinning (branch, id without version, DevWorkspaceTemplate = warnings), generator attributes recorded only, schemaVersion minimum from `che.eclipse.org/devfile` when present.** The probe [R15] shows the dashboard keeps `schemaVersion` there; absent on kubectl-made workspaces → `schema-unknown`, no warning; the annotation is user-writable, so it drives a warning only. |
-| R-5 | When is a workspace refused? | **Only for an admin-curated `deniedContracts`/`deniedParents` list, default empty, `onDenied: Deny` default; outdated is never a refusal.** Safe side, harmless while empty. This RFC adds: only on a start transition (invariant). |
-| R-6 | Renovate and the generator | **Out of this RFC; follow-ups in weebo-si / weebo-che-project.** Different repos, different release cycles. |
-| R-7 | Generated vs hand-written | **Exactly the same checks.** The plan insists hand-writing neither exempts nor adds [R20]. |
-| R-8 | Registry placement (was Still open 1; deviates from R-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3][R8]; accepted by the RFC owner 2026-11-24. |
-| R-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **`Enforce` is blocked on V-23; if only `metadata.attributes` survive, read them from the `che.eclipse.org/devfile` annotation with the same bounded line-scan discipline.** V-23 validated by the owner on 2026-11-24: top-level `attributes` do reach `spec.template.attributes`, so the attribute is read there and the fallback is not needed; V-23 no longer gates `Enforce`. The probe [R15] does not prove the copy, and without it every dashboard workspace would be `unknown`. |
-| R-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
-| R-11 | Contract number as a metric label (was Still open 4) | **The contract number goes in the log line only; a generic `detail: Option<&'static str>` on `FeatureOutcome` comes only if a second feature needs a bounded detail label.** `FeatureOutcome` carries `result` and `team` only [R1], and a field for one feature is the coupling `Decision`'s doc comment refuses. |
+| D-1 | Where does the feature run? | **A new admission feature `devfileContract` on the existing mutating DevWorkspace route; no controller, no new webhook configuration.** Same subject, one route, no new failure point. (Registry placement: D-8.) |
+| D-2 | How does a developer learn? | **The chassis gains admission warnings: `Decision.warnings` rendered into `AdmissionResponse.warnings`, bounded (6 × 120 chars) and control-character free.** Kubernetes' native channel, shown by kubectl and API clients [R10]. |
+| D-3 | DryRun visibility, and status vs annotation | **Warnings and the annotation only in `Enforce`; DryRun is metrics and logs only. Verdict in the annotation `hardening.weebo.io/devfile-contract` (+ `-reason`), not a status condition.** DryRun runs Enforce's code with the mode applied at the edge [R8]; DWO owns status. |
+| D-4 | What is checked? | **Contract attribute (absent = oldest + warning; below minimum = warning), parent pinning (branch, id without version, DevWorkspaceTemplate = warnings), generator attributes recorded only, schemaVersion minimum from `che.eclipse.org/devfile` when present.** The probe [R15] shows the dashboard keeps `schemaVersion` there; absent on kubectl-made workspaces → `schema-unknown`, no warning; the annotation is user-writable, so it drives a warning only. |
+| D-5 | When is a workspace refused? | **Only for an admin-curated `deniedContracts`/`deniedParents` list, default empty, `onDenied: Deny` default; outdated is never a refusal.** Safe side, harmless while empty. This RFC adds: only on a start transition (invariant). |
+| D-6 | Renovate and the generator | **Out of this RFC; follow-ups in weebo-si / weebo-che-project.** Different repos, different release cycles. |
+| D-7 | Generated vs hand-written | **Exactly the same checks.** The plan insists hand-writing neither exempts nor adds [R20]. |
+| D-8 | Registry placement (was Still open 1; deviates from D-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3][R8]; accepted by the RFC owner 2026-11-24. The fold itself moves to RFC 0020, the fourth registry (D-14). |
+| D-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **V-23 is validated (owner's statement, 2026-11-24 [R30]): top-level devfile `attributes` reach `spec.template.attributes`; the contract is read there, no fallback is built, and V-23 no longer gates `Enforce`.** Supersedes the earlier decision (block `Enforce` on V-23, fall back to a line scan of `metadata.attributes`); the probe [R15] alone did not prove the copy. |
+| D-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. **Narrowed by D-12.** **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
+| D-11 | Contract number as a metric label (was Still open 4) | **The contract number goes in the log line only; a generic `detail: Option<&'static str>` on `FeatureOutcome` comes only if a second feature needs a bounded detail label.** `FeatureOutcome` carries `result` and `team` only [R1], and a field for one feature is the coupling `Decision`'s doc comment refuses. |
+| D-12 | Who sees the warnings? (from last review, UX) | **This RFC informs `kubectl` users and records the verdict in the annotation; on the dashboard path only the refusal is visible. The che-code extension (or a che-dashboard fork patch keeping the `Warning` header) is Future work with its own RFC.** The dashboard drops the headers [R28]; promising dashboard warnings here would be a claim no PR of this RFC delivers. Narrows D-10's "the extension is required". |
+| D-13 | Can a running workspace switch to a denied parent? (from last review, security) | **An `UPDATE` that changes `spec.template` while `spec.started` is `true` counts as a start, so the denied list applies; finalizer, stop, label and annotation updates stay always-allowed.** Otherwise the denied list is bypassed by a patch, without a stop. Extends D-5's "start transition". |
+| D-14 | Registry order and where warnings are bounded (from last review, code quality; cross-RFC with 0020) | **One global order on `/mutate/v1alpha1/devworkspaces`: network-profiles workspace gate → devfile-contract → dwoc-pin → team-tools (RFC 0020). `bound_warnings` runs once per response after the router merges every registry, not per `admit()`. RFC 0020, the fourth registry, folds `mutate_devworkspaces` into one loop and adds the router test that every registry's `Allow` payload is kept; this RFC's PR 4 already stops discarding the network-profiles payload.** Per-`admit()` bounding would let two registries print 12 warnings; the fold belongs to the RFC that triggers it (refines D-8). |
+| D-15 | Fuzzing the parsers (from last review, code quality) | **No fuzz target: table-driven tests of `classify_parent_uri`, `parse_contract` and `scan_schema_version`, plus the property test of `evaluate`.** The repo has no fuzz infrastructure; adding it for three small parsers costs more than the tables. Against the draft's fuzz-target claim. |
 
 ### Still open
 
@@ -809,12 +871,12 @@ None: every question is resolved above. V-13 remains the gating test for `Enforc
 purpose for now. Until it has one, every devfile on its parent follows `refs/heads/main` and is
 reported `outdated` ("follows branch") in `DryRun`; that is expected, not a fault. A 40-hex
 commit in the parent URI already counts as pinned and would let V-13 run without a tag.
-V-14 and V-23 are answered (R-10, R-9).
+V-14 and V-23 are answered (D-10, D-9).
 
 ## Future work
 
 - A che-code extension that reads `hardening.weebo.io/devfile-contract` and shows a notification
-  (weebo-che-project).
+  (weebo-che-project), or a che-dashboard fork patch keeping the `Warning` header — its own RFC (D-12).
 - The devfile generator and its golden path (Phase 8, step 1 and 2).
 - Renovate custom managers for `parent` and `image:` fields (V-22).
 - A warning when angos' scan marks a component image vulnerable.
@@ -831,18 +893,24 @@ V-14 and V-23 are answered (R-10, R-9).
 - **Unit (`weebo-si-devfile-contract`)**, a table of devfiles: every row of the *Behaviour rules*,
   plus one negative test per STRIDE row — `generator_attributes_never_change_the_verdict` (S1),
   `a_forged_current_annotation_is_overwritten` (T1), `a_kubernetes_parent_warns` (T2),
-  `a_denied_prefix_matches_despite_query_and_userinfo` (T3), `a_denial_is_logged_with_its_reasons`
-  (R1, in `weebo-si-webhook`), `a_token_in_parent_uri_never_reaches_a_warning_or_log` (I1),
+  `a_denied_prefix_matches_despite_query_and_userinfo` (T3), `changing_parent_while_running_is_refused`
+  (T4), `a_token_in_parent_uri_never_reaches_a_warning_or_log` (I1),
   `a_control_character_never_reaches_a_warning` (I2), `a_4mib_annotation_is_scanned_in_bounded_time`
   (D1), `evaluate_never_errs_on_arbitrary_json` (D2, property test),
   `a_denied_parent_on_a_non_start_update_is_a_warning` (D3), `only_its_own_annotations_are_emitted`
   (E1), `outdated_is_never_a_denial` (invariant).
-- **Fuzz:** `fuzz_classify` over the three parsers; run in the existing fuzz job.
-- **Envtest (`weebo-si-webhook`):** the router over a real apiserver: warnings reach the
+- **Parser tables (`weebo-si-devfile-contract`):** one table per parser — URIs (GitHub raw,
+  Forgejo raw, registry, 40-hex, semver, userinfo, query, unicode, 8 KiB), contract values (every
+  JSON type, signs, overflow, 11 digits), annotation bodies (empty, CRLF, 4 MiB, no newline)
+  (D-15).
+- **Unit (`weebo-si-webhook`):** `a_denial_is_logged_with_its_reasons` (R1), next to the
+  existing `log_admission` test in `router.rs`; `the_bound_runs_once_after_the_merge`.
+- **Envtest (`crates/weebo-si-operator/tests/admission_envtest.rs`):** the router over a real
+  apiserver: warnings reach the
   `AdmissionReview` response, the patch merges dwoc-pin's `SetConfigRef` with this feature's
   annotations onto an object carrying no annotations, a network-profiles denial still wins.
-- **E2E (kind + Che):** observations 1–7 of *Proof*.
-- **Cluster:** V-13 gates `Enforce` (deferred until WeeboDevImage is tagged); V-14 and V-23 answered on 2026-11-24 (R-10, R-9); T-47 after.
+- **E2E (kind + Che):** observations 1–8 of *Proof*.
+- **Cluster:** V-13 gates `Enforce` (deferred until WeeboDevImage is tagged); V-14 and V-23 answered on 2026-11-24 (D-10, D-9); T-47 after.
 - **Must stay green:** every existing suite, in particular `workspace.rs` (dwoc-pin, image-policy
   rows), the endpoint-auth, policy-guard and image-policy envtests that match `AdmitOutcome`, and
   `perf_envtest`.
@@ -850,16 +918,19 @@ V-14 and V-23 are answered (R-10, R-9).
 ## Implementation plan
 
 - [ ] **PR 1 — chassis warnings.** `Decision.warnings`, `AdmitOutcome::Allow { … }`,
-      `bound_warnings`, every route renders them, `weebo_si_admission_warnings_total`. No feature
-      emits one yet: tree green, responses unchanged.
+      `bound_warnings`, every route renders them once through `render::with_warnings`,
+      `weebo_si_admission_warnings_total`. No feature emits one yet: tree green, responses
+      unchanged. **Lands before RFC 0020 and RFC 0021 use warnings** (their
+      `onNotGranted: Default` and restricted-refusal warnings build on it).
 - [ ] **PR 2 — config.** `DevfileContractConfig` with CEL, resolution, config store handle,
       `docs/weebosiconfig.md`. Feature not registered: the block is accepted and does nothing.
 - [ ] **PR 3 — domain.** `weebo-si-devfile-contract`: subject, `evaluate`, classifiers, denial
-      and its start-only rule, unit and property tests, fuzz target. Not wired.
-- [ ] **PR 4 — wiring.** extraction, third registry on the route, metrics, operator lines,
-      envtest, perf delta, brick page and operator-internals. The denied list ships in the same PR
+      and its start-only rule (D-13), unit, parser-table and property tests. Not wired.
+- [ ] **PR 4 — wiring.** extraction, third registry on the route in the D-14 order, the
+      network-profiles `Allow` payload kept, metrics, operator lines, envtest, perf delta, brick
+      page and operator-internals (route table, order, "Adding a feature" exception). The denied list ships in the same PR
       as the surface it protects.
-- [ ] **PR 5 — e2e.** `try_apply_with_warnings`, the seven rows of *Proof*.
+- [ ] **PR 5 — e2e.** `try_apply_with_warnings`, the eight rows of *Proof*.
 - [ ] Docs updated; RFC flipped to `Implemented`.
 
 ### Estimate
@@ -870,9 +941,9 @@ An analogy with measured work in this repo [R25], not a measurement.
 | --- | --- | --- | --- |
 | 1 chassis warnings | S (~900 lines) | the chassis part of RFC 0017 | one field, one enum shape, six matchers, a bounded helper and its tests |
 | 2 config | S (~800) | RFC 0017's `imageRewrite` config (CEL, no teams) | same shape: one block, CEL rules, no team merge |
-| 3 domain | M (~2 500) | RFC 0017's rewrite feature | a pure feature with a table of cases, three small parsers and a fuzz target |
+| 3 domain | M (~2 500) | RFC 0017's rewrite feature | a pure feature with a table of cases and three small parsers with their own tables |
 | 4 wiring | S (~1 000) | network-profiles' second-registry wiring | one extract function, one router block, two metrics |
-| 5 e2e | S (~800) | RFC 0014's e2e rows | seven rows on the existing workspace suite, one harness helper |
+| 5 e2e | S (~800) | RFC 0014's e2e rows | eight rows on the existing workspace suite, one harness helper |
 | **total** | **L (~6 000)** | RFC 0014 (≈ +6 800, two days) and 0017 (≈ +5 750, one day) | same order as both: expect one to two days of effort |
 
 **Integration and validation on the cluster** is calendar-bound, not effort-bound: ≥ 7 days of
@@ -915,7 +986,7 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R15 | probe `task k -- -n dev-ws-batleforc get devworkspace weebo-dotfiles-che-owjk -o json` (and `get devworkspaces -A -o json \| jq …`) | 2026-11-24 | `che.eclipse.org/devfile` = `schemaVersion: 2.3.0`; other annotations; `spec.template` keys `attributes,parent,projects`; parent on `refs/heads/main`; editor contribution is a DevWorkspaceTemplate; attributes hold only `controller.devfile.io/*` |
 | R16 | probe `task k -- version -o json` | 2026-11-24 | kubectl v1.37.2, server v1.36.2 |
 | R17 | probes `task k -- get role devworkspace-default-role …`, `task k -- auth can-i … --as system:serviceaccount:…` | 2026-11-24 | workspace SA can patch devworkspaces and write devworkspacetemplates, cannot patch its namespace |
-| R18 | probe `task k -- get pods -A -o jsonpath` (container images), coordinator brief | 2026-11-24 | DWO `quay.io/devfile/devworkspace-controller:v1.1.1`; `ghcr.io/weebo-si/che-dashboard:develop` |
+| R18 | probe `task k -- get pods -A -o jsonpath` (container images) | 2026-11-24 | DWO `quay.io/devfile/devworkspace-controller:v1.1.1`; `ghcr.io/weebo-si/che-dashboard:develop` |
 | R19 | `/var/home/max/git/weebo-che-project/devfile.yaml:1-5` | read 2026-11-24 (file dated 2026-06-23) | the real devfile: parent on `refs/heads/main`, no contract attribute |
 | R20 | weebo-si `0.docs/content/todo/durcissement-workspaces.md`, Phase 8 (`:510-539`), test protocol V-13, V-14, V-22, T-47 (`:794`), per-PR cadence (`:802`) | read 2026-11-24 | the source plan, paraphrased |
 | R21 | `docs/rfc/0002-weebo-si-operator.md:604-607` | `c412ee3` | registry ordering contract |
@@ -925,7 +996,10 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R25 | `git show --shortstat` summed over `rfc-0014` and `rfc-0017` commits | `c412ee3` | the estimate's references |
 | R26 | `docs/architecture/hexagonal.md:19-31` | `c412ee3` | the three criteria for hexagonal |
 | R27 | Devfile 2.3.0, *Referring to a parent devfile* — https://devfile.io/docs/2.3.0/referring-to-a-parent-devfile | read 2026-11-24 | parent by `id`+`registryUrl`+`version`, `uri`, `kubernetes`; no version → "the default version for the stack" |
-| R28 | `weebo-si/che-dashboard` (deployed fork) `packages/dashboard-backend/src/devworkspaceClient/services/devWorkspaceApi.ts:84` (`propagateHeaders` returns `{}`) and `packages/dashboard-frontend/src/store/Workspaces/devWorkspaces/actions/actionCreators/createWorkspaceFromResources.ts:76` (reads `headers.warning`); same code in `eclipse-che/che-dashboard` `main` | `develop` at `d09699f` (2026-11-21), read 2026-11-24 | §Unresolved R-10: the dashboard drops admission warnings |
+| R28 | `weebo-si/che-dashboard` (deployed fork) `packages/dashboard-backend/src/devworkspaceClient/services/devWorkspaceApi.ts:84` (`propagateHeaders` returns `{}`) and `packages/dashboard-frontend/src/store/Workspaces/devWorkspaces/actions/actionCreators/createWorkspaceFromResources.ts:76` (reads `headers.warning`); same code in `eclipse-che/che-dashboard` `main` | `develop` at `d09699f` (2026-11-21), read 2026-11-24 | §Unresolved D-10, D-12: the dashboard drops admission warnings |
+| R29 | probe `task hardening:validate -- V-14` (a test `ValidatingAdmissionPolicy` returning a warning on a DevWorkspace, applied with kubectl v1.37.2): output `Warning: Validation failed for ValidatingAdmissionPolicy 'hardening-validate-v14' …` | 2026-11-24 | kubectl prints admission warnings on this cluster |
+| R30 | V-23, validated by the RFC owner — a statement, not a probe recorded in this repo | 2026-11-24 | top-level devfile `attributes` reach `spec.template.attributes` |
+| R31 | Kubernetes apimachinery `pkg/api/validation/objectmeta.go`, `TotalAnnotationSizeLimitB = 256 * (1 << 10)` — not re-fetched from the authoring environment (fetch blocked); verify at land | 2026-11-24 (not fetched) | the 256 KiB total-annotation cap in D1 |
 
 ## Changelog
 
@@ -933,5 +1007,6 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | --- | --- |
 | 2026-11-24 | Draft |
 | 2026-11-24 | V-13 deferred: WeeboDevImage is untagged on purpose; `Enforce` waits for it |
-| 2026-11-24 | V-23 validated by the owner: top-level `attributes` reach `spec.template.attributes` (R-9) |
-| 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (R-10, R28) |
+| 2026-11-24 | V-23 validated by the owner: top-level `attributes` reach `spec.template.attributes` (D-9) |
+| 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (D-10, R28) |
+| 2026-11-24 | Last review applied (6 lenses): kubectl-only scope (D-12), template change while running is a start (D-13), global registry order and bound-once (D-14), table tests instead of fuzzing (D-15), resolved ids renamed R-n → D-n |

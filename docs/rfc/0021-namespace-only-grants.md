@@ -86,14 +86,14 @@ write.
    Role grants `patch` on `devworkspaces` [R20][R19]. So any process in the workspace — an npm
    `postinstall`, an AI agent — runs `kubectl patch devworkspace … internet` with the mounted
    token and the next reconcile writes `weebo-internet-<id>` [R6]. Falsifiable: test **T-07** of
-   the cluster plan [R25] produces that CNP today.
+   the cluster plan [R25] is expected to produce that CNP today — read from the code, not probed.
 2. **A workspace can publish an unauthenticated endpoint to the Internet.** The access key of an
    endpoint is the `hardening.weebo.io/access` annotation, which DevWorkspace Operator copies from
    the devfile endpoint onto the `Ingress` and which `policy-guard` lets the developer edit
    directly [R9][R27]. Team `weebo` catalogues `open` with `anonymous: true` [R23], so `compile`
    accepts it for every namespace of the team [R10]. The DevWorkspace patch of (1) reaches it too:
-   DWO regenerates the `Ingress` from the patched devfile. Falsifiable: test **T-27** [R25] gets an
-   anonymous `200` from outside today.
+   DWO regenerates the `Ingress` from the patched devfile. Falsifiable: test **T-27** [R25] is
+   expected to get an anonymous `200` from outside today — read from the code, not probed.
 3. **Neither use leaves an alertable trace.** A granted key is a normal outcome: the only existing
    signal is `weebo_si_network_not_granted_total`, which counts the *refused* case [R8]; an
    honoured `internet` or `open` logs nothing specific. The cluster plan asks for an alert on every
@@ -152,7 +152,7 @@ teams:
             variants: [...]
       endpointAuth:
         catalog:
-          - { key: open, anonymous: true, delegation: [] }   # restricted: implied by anonymous
+          - { key: open, anonymous: true, restricted: true, delegation: [] }   # explicit
           - { key: team, anonymous: false, delegation: [Team] }
 ```
 
@@ -193,31 +193,38 @@ honourable.
 A grant annotation is read as a set: order, whitespace and duplicates do not matter, an unknown
 key is ignored. An absent annotation and an empty one mean the same: nothing unlocked.
 
-**Why the anonymous default differs.** `restricted` defaults to `false` on network-profile entries:
-an existing catalogue keeps its exact behaviour on upgrade, and `internet` is marked by the
-integration step. On an endpoint-auth entry with `anonymous: true`, `restricted` defaults to
-`true`: it is the one entry that removes authentication, and the safe side is the closed one. That
-is a behaviour change on upgrade, below.
+**Why the default is `false`, for every entry.** `restricted` defaults to `false`, anonymous
+entries included. That is not the closed side, and it is chosen deliberately: an upgrade of the
+operator must not change what any existing catalogue grants, so nothing changes until an admin
+writes `restricted: true` in Git — on `internet` and on `open` in the cluster's values, in the
+integration step. The safe side is reached by an explicit, reviewed line rather than by a silent
+default flip on upgrade. To keep the anonymous entry from being forgotten, an `anonymous: true`
+entry without `restricted: true` logs a warning at every config load. Flipping the default for
+anonymous entries is a later release, once deployed values carry the field (*Future work*).
 
 ### Upgrade: what an `open` user sees
 
-After the operator and the gateway are upgraded, an endpoint naming `open` in a namespace without
-`hardening.weebo.io/endpoint-access: open` stops answering anonymously: an unauthenticated browser
-is sent to sign in, a `curl` gets the gate's `401`, and the owner still reaches it. Their `Ingress`
-gets a Warning Event `RestrictedGrantRefused`. To keep the old behaviour, either annotate the
-namespaces that need it (the intended path), or write `restricted: false` on the `open` entry —
-which restores today's team-wide grant and is logged at every config load as a warning.
+Nothing, on the upgrade itself. When the values commit marks `open` `restricted: true`, an endpoint
+naming `open` in a namespace without `hardening.weebo.io/endpoint-access: open` stops answering
+anonymously: an unauthenticated browser is sent to sign in, a `curl` gets the gate's `401`, and the
+owner still reaches it. Their `Ingress` gets a Warning Event `RestrictedGrantRefused`. The intended
+path is to annotate the namespaces that need it before that commit (*Rollout*, step 2).
 
 ### Validation
 
 | Problem | Kind | Where seen |
 | --- | --- | --- |
-| A team or cluster `default` names a restricted key | hard error `RestrictedKeyInDefault`, condition `Degraded` | `kubectl get weebosiconfig cluster` conditions, operator log `WARN` |
+| A default names a restricted key — network-profiles: a team `default` or the cluster `baseline` (it has no cluster `default`); endpoint-auth: the cluster or a team `default` | hard error `RestrictedKeyInDefault`, condition `Degraded` | `kubectl get weebosiconfig cluster` conditions, operator log `WARN` |
 | A team re-declares a cluster entry with a different `restricted` | existing `CatalogKeyConflict`; the cluster entry stands [R4] | same condition as every conflict today |
-| `restricted: false` on an `anonymous: true` entry | warning, not an error (an admin may mean it) | operator log `WARN … anonymous entry open is not restricted` at each config load |
+| An `anonymous: true` entry without `restricted: true` | warning, not an error (an admin may mean it) | operator log `WARN … anonymous entry open is not restricted` at each config load |
+| `namespaceGrant.annotation` equal to `namespaceSelection.annotation` | hard error, CEL on the CRD | the apiserver refuses the `WeeboSiConfig` write |
 | A restricted entry with no namespace granting it anywhere | not checked (namespaces are not config) | the counter shows `result=refused` only |
 
-No admission warning is emitted anywhere: the chassis `Decision` has no `warnings` field [R15].
+Today no admission warning can be emitted: the chassis `Decision` has no `warnings` field [R15].
+Once RFC 0019 PR 1 (chassis `warnings`) is in — it lands before this RFC's PR 2 — the restricted
+refusal also emits an admission warning on the DevWorkspace write, computed before the gate's
+CREATE-only check and refusing nothing. It is visible to `kubectl` only: the Che dashboard drops
+admission warnings (V-14 [R25]); the Event and the log line remain the channels for everyone else.
 
 ### Mocks
 
@@ -284,9 +291,11 @@ INFO feature=endpoint-auth restricted=open namespace=dev-ws-batleforc-test ingre
 Under `onNotGranted: Deny`, a DevWorkspace **created** with a restricted key and no grant:
 
 ```text
-Error from server (Forbidden): admission webhook "devworkspaces.mutate.weebo-si" denied the request:
-workspace python-web requests network profile(s) [internet], which are restricted: namespace
-dev-ws-batleforc-test does not grant them (annotation hardening.weebo.io/network-grants)
+$ kubectl create -f python-web.yaml
+Error from server (Forbidden): error when creating "python-web.yaml": admission webhook
+"devworkspaces.hardening.weebo.io" denied the request: workspace python-web requests network
+profile(s) [internet], which are restricted: namespace dev-ws-batleforc-test does not grant them
+(annotation hardening.weebo.io/network-grants)
 ```
 
 Empty state — no entry is restricted: no Event, no log line, the counter is absent from
@@ -309,10 +318,12 @@ Each mock decides the wording a reviewer argues about before it is built.
 | --- | --- | --- | --- | --- |
 | `networkProfiles.catalog[]` (cluster and team) — `Profile` [R3] | `restricted` | `bool` (`#[serde(default)]`) | `false` | Honoured only if the namespace's `namespaceGrant.annotation` names it |
 | `networkProfiles` — `NetworkProfilesConfig` | `namespaceGrant.annotation` | `NamespaceGrant { annotation: String }` (`#[serde(default)]`) | `hardening.weebo.io/network-grants` | Namespace annotation granting restricted keys; never selects. `""` disables restricted grants: every restricted key refused |
-| `endpointAuth.catalog[]` (cluster and team) — `AccessEntry` [R9] | `restricted` | `Option<bool>` (`skip_serializing_if = is_none`) | `None` = same as `anonymous` | Honoured only if the namespace's `hardening.weebo.io/endpoint-access` names it |
+| `endpointAuth.catalog[]` (cluster and team) — `AccessEntry` [R9] | `restricted` | `bool` (`#[serde(default)]`) | `false`, anonymous entries included | Honoured only if the namespace's `hardening.weebo.io/endpoint-access` names it |
 
-`AccessEntry::is_restricted(&self) -> bool { self.restricted.unwrap_or(self.anonymous) }` is the
-only reader. No CEL rule is added: a boolean needs no bound.
+The booleans need no bound. One CEL rule is added on `networkProfiles`:
+`!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' ||
+self.namespaceGrant.annotation != self.namespaceSelection.annotation` — the grant annotation may
+not be the selection annotation, or a grant would select again.
 
 #### Annotations
 
@@ -334,11 +345,11 @@ is no selection annotation for it to collide with.
 
 | Signal | Name | Labels / fields | Emitted by |
 | --- | --- | --- | --- |
-| Counter | `weebo_si_restricted_grant_total` | `feature` ∈ {`network-profiles`, `endpoint-auth`}, `key` (catalogue-bounded), `result` ∈ {`honoured`, `refused`} | controller, once per reconcile pass that meets a restricted key |
+| Counter | `weebo_si_restricted_grant_total` | `feature` ∈ {`network-profiles`, `endpoint-auth`}, `key` (catalogue-bounded), `result` ∈ {`honoured`, `refused`} | controller, when an object's honoured or refused set differs from its last pass (not every pass) |
 | Event | reason `RestrictedGrantHonoured` (Normal), `RestrictedGrantRefused` (Warning) | regarding the DevWorkspace or the Ingress | controller `Recorder` [R14] |
 | Log | `INFO feature=… restricted=<key> namespace=<ns> workspace=<name>\|ingress=<name> mode=<mode> result=…` | — | controller |
 | Admission decision result | `denied_restricted` (new, beside `denied_not_granted` [R5]) | existing admission metric | webhook, `onNotGranted: Deny` CREATE only |
-| Config violation | `RestrictedKeyInDefault { team: Option<TeamName>, key }` in both features | — | `validate()` → `Degraded` |
+| Config violation | `RestrictedKeyInDefault { team: Option<TeamName>, key }` in both features (`None` = the cluster `baseline` or `default`) | — | `validate()` → `Degraded` |
 
 Never `namespace`, `user` or `workspace` as a metric label. No webhook path, route, CLI flag or exit
 code changes.
@@ -406,26 +417,41 @@ named by the Namespace grant annotation). Because the grant annotation is the on
 put a restricted key on the right-hand side, and the workspace token and the user cannot patch the
 Namespace [R19], nothing running in the workspace can make a restricted key honoured.
 
-**Cluster restriction wins.** `restricted` is part of the entry, and entries are compared whole
-when catalogues merge: a team re-declaring the cluster's `internet` with `restricted: false` is a
-*different* definition, reported as `CatalogKeyConflict`, and the cluster's restricted entry is
-the one that stands [R4]. A key defined only by a team is that team definition's call — and
-`WeeboSiTeam` is cluster-scoped and admin-owned, with no write verbs granted by the chart [R16][R17].
+**Cluster restriction wins.** `restricted` is part of the entry, and entries are compared whole when
+ catalogues merge: a team re-declaring the cluster's `internet` with `restricted: false` is a
+ *different* definition, reported as `CatalogKeyConflict`, and the cluster's restricted entry is the
+ one that stands [R4]. A key defined only by a team is that team definition's call — and
+ `WeeboSiTeam` is cluster-scoped and admin-owned, with no write verbs granted by the chart
+ [R16][R17].
 
 **Revocation is event-driven.** Today the Namespace loop reconciles only the baseline, and a
 workspace pass runs on a DevWorkspace event or the 300 s requeue [R7]. This RFC adds to the
 DevWorkspace `Controller` a `watches` on Namespaces whose mapper returns every DevWorkspace of the
-changed namespace, filtered to annotation changes. The mapping is fed from the same reflector as
-`namespace_view`, which kube-runtime updates before it yields the event, so the re-queued pass
-reads the new annotation and not a stale one. Because removing a grant is a Namespace event, the
-`internet` CNP is deleted at the next reconcile of that namespace's workspaces, in seconds; the
-300 s requeue stays as the backstop for a missed event.
+changed namespace, filtered to annotation changes. That watch is a second one: `KubeNsStore::spawn`
+consumes its own watcher and exposes no stream [R31], so `namespace_view` may lag the event that
+re-queued the pass. The grant is therefore read, in `reconcile_devworkspace`, with one `GET` of
+the Namespace (the controller already holds `get namespaces` [R16]) rather than from
+`namespace_view`; selection keeps its cached read. A shared stream (`reflect_shared`) would save
+the GET and is not worth a change to `KubeNsStore` for one read per pass. Because removing a grant
+is a Namespace event and the pass reads the live object, the `internet` CNP is deleted at the
+next reconcile of that namespace's workspaces, in seconds; the 300 s requeue stays as the backstop
+for a missed event. Connections already established survive the deletion (Cilium conntrack):
+an immediate cut needs a workspace restart, which the runbook says.
+
+**Cold cache.** The controller's gate answers `Off` for a namespace the watch has not yet seen
+when the feature has a `namespaceSelector` [R32] — the cluster sets one [R23] — so no pass, and no
+destructive write, runs on an unknown namespace. Without a selector the pass runs; its `GET` then
+either returns the namespace or fails the pass, which is retried: a grant is never read as absent
+because a cache was cold.
 
 ### Data and state
 
-Stateless. No new object, no cache: the namespace annotation is read from the namespace store
-each feature already keeps [R7][R12]. Losing the annotation loses the grant, which is the closed
-direction. The counter resets on restart like every operator counter.
+No new object. The grant annotation is read live (network-profiles) or from the namespace store
+the gateway already keeps [R12]; losing the annotation loses the grant, the closed direction. One
+in-memory map per feature in the controller remembers each object's last honoured/refused set,
+keyed by object UID, so the counter, the Event and the log fire on a change, not on every pass.
+Lost on restart: each object meeting a restricted key reports once more after a restart, which the
+alert's (namespace, key) deduplication absorbs. Entries are dropped when the object is deleted.
 
 ### Detailed design
 
@@ -435,13 +461,15 @@ direction. The counter resets on restart like every operator counter.
 - `NetworkProfilesConfig` gains `#[serde(default)] pub namespace_grant: NamespaceGrant`, a struct
   shaped like `ProfileNamespaceSelection` [R1] with `annotation` defaulting to
   `hardening.weebo.io/network-grants`.
-- `NetworkProfilesConfigViolation::RestrictedKeyInDefault { team: TeamName, key: ProfileKey }`,
-  pushed by `ResolvedNetworkProfilesConfig::validate` [R3] for each team default naming a
-  restricted entry. `Display`: `team {team}'s default names restricted profile {key}`.
+- `NetworkProfilesConfigViolation::RestrictedKeyInDefault { team: Option<TeamName>, key:
+  ProfileKey }`, pushed by `ResolvedNetworkProfilesConfig::validate` [R3] for each team default
+  naming a restricted entry (`Some`) and for a restricted `baseline` (`None`). `Display`: `team
+  {team}'s default names restricted profile {key}` / `baseline {key} is restricted`.
+- The CEL rule of *Contract* on `NetworkProfilesConfig`.
 
 **`crates/weebo-si-crd/src/endpoint_auth.rs`**
 
-- `AccessEntry` gains `restricted: Option<bool>` and `is_restricted()`.
+- `AccessEntry` gains `#[serde(default)] pub restricted: bool`.
 - `pub const ENDPOINT_ACCESS_NAMESPACE_ANNOTATION: &str = "hardening.weebo.io/endpoint-access";`
   beside the other constants [R9].
 - `EndpointAuthConfigViolation::RestrictedKeyInDefault { team: Option<TeamName>, key: AccessKey }`
@@ -462,11 +490,13 @@ direction. The counter resets on restart like every operator counter.
 **`crates/weebo-si-network-profiles/src/feature/`** — `Workspace` and `WorkspaceAdmission` gain
 `namespace_grant: Option<String>`; `DesiredState` carries the two lists to `ReconcileOutcome`;
 `workspace_gate.rs` words the restricted refusal [R5]. **`…-adapters/src/controller.rs`** —
-`reconcile_devworkspace` reads `namespace_grant.annotation` from `namespace_view` next to the
-selection annotation [R7]; `spawn` adds the Namespace → DevWorkspace `watches` mapping described
-under *Architecture*; `warn_not_granted` gains a sibling `report_restricted` that increments the
-counter and publishes the Event. The webhook adapter building `WorkspaceAdmission` reads the grant
-the same way; **`network_metrics.rs`** is untouched (the counter is shared, see
+`reconcile_devworkspace` reads `namespace_grant.annotation` with one `GET` of the Namespace,
+next to the cached selection read [R7]; `spawn` adds the Namespace → DevWorkspace `watches`
+mapping described under *Architecture*; `warn_not_granted` gains a sibling `report_restricted`
+that, when the object's restricted sets differ from the remembered ones, increments the counter,
+publishes the Event and logs. The webhook adapter building `WorkspaceAdmission` reads the grant
+from `namespace_view`: admission already refuses on a namespace its cache has not observed
+(`NamespaceNotObserved`). **`network_metrics.rs`** is untouched (the counter is shared, see
 below).
 
 **`crates/weebo-si-endpoint-auth/src/compile.rs`** [R10]
@@ -509,10 +539,10 @@ workspace [R22]. The kubeconfig inside the workspace is the mounted SA token.
    `weebo_si_restricted_grant_total{feature="network-profiles",key="internet",result="refused"}`
    moved by ≥ 1; from the workspace `curl -m 5 https://example.com` still times out. The refused
    egress was never opened.
-2. **Honoured.** A cluster-admin sets `hardening.weebo.io/network-grants=internet` on the
-   namespace; the attribute set in (1) still selects `internet`. Within seconds (the Namespace
-   event re-queues the workspace), `weebo-internet-<id>` exists, a `RestrictedGrantHonoured` Normal Event is on the DevWorkspace,
-   and the `result="honoured"` series moved. `curl https://example.com` answers.
+2. **Honoured.** A cluster-admin sets `hardening.weebo.io/network-grants=internet` on the namespace;
+   the attribute set in (1) still selects `internet`. Within seconds (the Namespace event re-queues
+   the workspace), `weebo-internet-<id>` exists, a `RestrictedGrantHonoured` Normal Event is on the
+   DevWorkspace, and the `result="honoured"` series moved. `curl https://example.com` answers.
 3. **T-12, refusal by RBAC.** `kubectl annotate ns dev-ws-batleforc-test
    hardening.weebo.io/endpoint-access=open`, run as `labsso:batleforc-test@weebo.internal` and
    again with the workspace token, exits 1 with `Forbidden … cannot patch resource "namespaces"`
@@ -529,14 +559,20 @@ workspace [R22]. The kubeconfig inside the workspace is the mounted SA token.
 6. **Removal.** The admin removes both grant annotations. The endpoint is back to `401` within
    ≈ 100 ms; the `internet` CNP is deleted at the next reconcile, which the Namespace event
    triggers — observed in seconds, asserted ≤ 30 s by the e2e — and `curl https://example.com`
-   from the workspace times out again.
+   from the workspace times out again on a new connection (an established one survives until
+   the workspace restarts, Cilium conntrack).
+7. **`onNotGranted: Deny`, refusal (kind only).** With the feature set to `Deny`, `kubectl create`
+   of a DevWorkspace naming `internet` without a grant exits 1 with the *Mocks* text from webhook
+   `devworkspaces.hardening.weebo.io` [R33]; no DevWorkspace object exists afterwards. The cluster
+   runs `Default` [R23], so this one is not repeated there.
 
 Mapping: (1)(2) → new `weebo-si-e2e/tests/workspace.rs` case
 `a_restricted_profile_is_honoured_only_through_the_namespace`; (6) network half → new case
 `removing_a_network_grant_removes_the_profile_within_30_seconds`; (4)(5) → new
 `weebo-si-e2e/tests/endpoint_auth.rs` case `an_open_endpoint_needs_the_namespace_grant`, beside
 `an_open_rule_serves_one_path_to_anybody_and_nothing_else`; (3) is a cluster-only check (kind has
-no Che user). Cluster ids: **T-07** (1), **T-12** (3), **T-27** (4)(5).
+no Che user); (7) → a `Deny` variant of the `workspace.rs` case. Cluster ids: **T-07** (1),
+**T-12** (3), **T-27** (4)(5).
 
 **Deliberately untouched:**
 
@@ -587,12 +623,12 @@ flowchart LR
 | S3 | User or token annotates own Namespace (T-12) | apiserver RBAC [R19] | no new defence; RBAC refuses `patch namespaces` | cluster check (3) | an identity with namespace `patch` (cluster-admin, Argo CD, the weebo-si controller [R16], `eclipse-che:che-operator` — probed yes; `che`, `che-dashboard`, the DWO controller and the weebo-si webhook — probed no [R19]) can grant; accepted: they are already admin-equivalent |
 | S4 | Team definition marks a cluster-restricted key `restricted: false` | `merge_catalogs` [R4] | entry compared whole; first (cluster) definition stands, `CatalogKeyConflict` reported | unit `a_team_cannot_unrestrict_a_cluster_entry` (merge.rs, alongside `a_team_cannot_shadow_a_cluster_entry`) | a team-only key is the team definition's choice; `WeeboSiTeam` is admin-owned [R17] |
 | S5 | Restricted key slipped into a `default` | `validate` + runtime filter | `RestrictedKeyInDefault` → `Degraded`; resolve/compile filter it anyway | unit `a_restricted_default_is_a_violation_and_is_filtered` | none |
-| S6 | Grant removed, CNP / profile outlives it | Namespace → DevWorkspace mapping in the network-profiles controller; gateway rebuild [R12] | the Namespace event re-queues the namespace's workspaces; the 300 s requeue [R7] is the backstop | e2e `removing_a_network_grant_removes_the_profile_within_30_seconds`; e2e (6) | reconcile latency, measured in the e2e (asserted ≤ 30 s); up to 300 s only if the Namespace event is lost; endpoint-auth ≈ 100 ms |
+| S6 | Grant removed, CNP / profile outlives it | Namespace → DevWorkspace mapping in the network-profiles controller; gateway rebuild [R12] | the Namespace event re-queues the namespace's workspaces; the 300 s requeue [R7] is the backstop | e2e `removing_a_network_grant_removes_the_profile_within_30_seconds`; e2e (6) | reconcile latency, measured in the e2e (asserted ≤ 30 s); up to 300 s only if the Namespace event is lost; endpoint-auth ≈ 100 ms; connections established before revocation survive (Cilium conntrack) until the workspace restarts — the runbook restarts it for an immediate cut |
 | S7 | Repudiation: an honoured `open` nobody noticed | controller reporter | counter + Event + INFO line; ClickStack alert | unit on the reporter; e2e (5) asserts the counter | an alert pipeline outage hides it; Events stay in the namespace for the apiserver TTL |
 | S8 | Information disclosure via metric labels | metric registration | labels bounded: `feature`, catalogue `key`, `result` | unit `the_restricted_counter_never_carries_a_namespace` | none |
 | S9 | Tampering in DryRun period goes unseen | reporter runs in every mode | log carries `mode=DryRun`, counter moves | e2e DryRun variant of (1) | none |
-| S11 | Admin confuses selection and grant, granting `internet` by rewriting `network-profiles` and dropping the team default | annotation contract | grant and selection are two annotations; the grant never selects, so granting never changes what an attribute-less workspace gets | unit `a_grant_never_selects` | none |
 | S10 | Denial of service: a grant typo locks a namespace out | resolve/compile | refusal is the default profile, never a stopped workspace (Default) or endpoint (fallback) | e2e (4): workspace starts | under `onNotGranted: Deny`, CREATE refused — the admin's chosen mode |
+| S11 | Admin confuses selection and grant, granting `internet` by rewriting `network-profiles` and dropping the team default | annotation contract | grant and selection are two annotations; the grant never selects, so granting never changes what an attribute-less workspace gets | unit `a_grant_never_selects` | none |
 
 - **Privileges.** No RBAC delta for the webhook. The controller already has `events create/patch`
   [R16]; the endpoint-auth controller pass reads namespaces through the store it already lists.
@@ -640,33 +676,39 @@ by the apiserver for the Event TTL. They never appear as metric labels: the coun
   still reports; endpoint-auth in `DryRun` attaches no gate, so no traffic reaches it [R28], and
   the controller pass still reports. Both features are already `Enforce` on the cluster [R23], so
   the staged rollout is by data, test namespace first:
-  1. Ship the code with `open` written `restricted: false` and `internet` unmarked: no behaviour
-     change; the warning log names the anonymous entry.
+  1. Ship the code. `restricted` defaults to `false` everywhere, so no behaviour changes; the
+     warning log names the anonymous `open` entry.
   2. Inventory current users: `kubectl get devworkspaces -A -o json | jq -r '.items[] |
      select(.spec.template.attributes["hardening.weebo.io/network-profiles"] // "" |
-     test("internet")) | .metadata.namespace'` and the same over Ingress `hardening.weebo.io/access`
-     and `rules`. Annotate every namespace found **except** `dev-ws-batleforc-test`.
-  3. Mark `internet` restricted and drop `restricted: false` from `open`. Only un-annotated
-     namespaces are affected — `dev-ws-batleforc-test` first. Run §6.P there.
+     test("internet")) | .metadata.namespace'`; the namespaces whose existing selection annotation
+     names it: `kubectl get ns -o json | jq -r '.items[] |
+     select(.metadata.annotations["hardening.weebo.io/network-profiles"] // "" |
+     test("internet")) | .metadata.name'`; and the same over Ingress `hardening.weebo.io/access`
+     and `rules`. Grant every namespace found **except** `dev-ws-batleforc-test`.
+  3. Write `restricted: true` on `internet` (cluster and team entry, one commit) and on `open`.
+     Only ungranted namespaces are affected — `dev-ws-batleforc-test` first. Run §6.P there.
   4. Watch `result="refused"` for ≥ 7 days; each one is either an attack, or a namespace step 2
      missed.
-- **Rollback.** One line: set `restricted: false` on the entry (or revert the values commit); the
-  next config load restores the team-wide grant.
+- **Rollback.** One line: remove `restricted: true` from the entry (or revert the values commit);
+  the next config load restores the team-wide grant.
 - **Observability.** Counter `weebo_si_restricted_grant_total`; Events
   `RestrictedGrantHonoured`/`Refused`; INFO lines shipped by the existing OTel collector to
   ClickStack. Alerts (integration, in weebo-si): any `feature=endpoint-auth result=honoured` new
-  (namespace, ingress) pair; any `result=refused` at all (an attempt, or a missed grant).
-- **Upgrade.** Old and new side by side: the CRD gains optional fields, so an old operator ignores
-  them and a new one reads absent as the defaults above. During the gateway rollout, an old replica
-  may still serve `open` anonymously for the length of the rolling update; acceptable since the
-  current state already serves it.
+  (namespace, key) pair; any new (namespace, key) pair with `result=refused` (an attempt, or a
+  missed grant).
+- **Upgrade.** No behaviour change on upgrade: every `restricted` defaults to `false`. Old and new
+  side by side: the CRD gains optional fields, so an old operator ignores them and a new one reads
+  absent as `false`. Values that write `restricted: true` must wait for the new CRD and operator.
+  During the gateway rollout, an old replica may still serve `open` anonymously for the length of
+  the rolling update; acceptable since the current state already serves it.
 - **Capacity.** Per pass: one set built from a short annotation, one set difference over a
   catalogue of ≤ a dozen keys [R23] — negligible beside the template fetch. Log volume: one INFO
-  line per pass per object meeting a restricted key; at the 300 s requeue [R7][R13] that is 12
-  lines/hour per such object. Event volume: folded into a series by the `Recorder` [R14]. The
+  line per change of an object's restricted sets, not per pass, plus one per such object after a
+  controller restart. Event volume: folded into a series by the `Recorder` [R14]. One extra
+  `GET namespace` per network-profiles workspace pass. The
   Namespace mapping adds one workspace pass per DevWorkspace of a namespace per annotation change
-  — one to three workspaces per `dev-ws-<user>`, and namespace annotations change rarely (admin
-  grants, the operator's own pod-security bookkeeping).
+  — an estimate of one to three workspaces per `dev-ws-<user>`, not measured; namespace
+  annotations change rarely (admin grants, the operator's own pod-security bookkeeping).
 
 ## Other concerns
 
@@ -699,13 +741,14 @@ by the apiserver for the Event TTL. They never appear as metric labels: the coun
   and a grant annotation; an admin must know which is which (the Guide says it in one line each).
 - **More workspace passes.** Every annotation change on a Namespace re-reconciles its
   DevWorkspaces (*Capacity*).
-- **A behaviour change on upgrade** for `open` users (*Upgrade* above), mitigated by the rollout
-  order.
-- **`Option<bool>` and merging.** A team that re-declares the cluster's anonymous entry with an
-  explicit `restricted: true` differs from one that omits it, so the merge reports a conflict that
-  is harmless (both effectively restricted). Noise, not a hole.
-- **The audit is per pass, not per transition.** The counter rate depends on the requeue; alerts
-  must deduplicate on (namespace, object).
+- **The default is the open side.** Until values write `restricted: true`, nothing is restricted;
+  a new anonymous entry added without it is team-wide, as today. The config-load warning is the
+  only nudge until the default flips (*Future work*).
+- **Two edits in one commit.** The cluster and team `internet` entries must change together:
+  entries are compared whole (`merge.rs:53` [R4]), so a team copy left behind is a
+  `CatalogKeyConflict` until it catches up — closed (the cluster entry stands), but `Degraded`.
+- **In-memory audit state.** The change-only reporting forgets on restart and re-reports once.
+- **Established connections outlive a network revocation** until the workspace restarts.
 
 ## Unresolved questions
 
@@ -715,16 +758,20 @@ by the apiserver for the Event TTL. They never appear as metric labels: the coun
 | --- | --- | --- |
 | R-1 | One concept or one per feature? | **One shared `restricted` flag on catalogue entries, granted by a Namespace annotation** — the probe shows neither user nor workspace token can patch a Namespace while both can patch the DevWorkspace [R19]; it is the only admin-only channel that already exists, needing no new CRD field per namespace and no new RBAC. |
 | R-2 | Does selection move? | **No; only the grant changes.** A restricted key selected without the namespace grant is not granted: network-profiles applies `onNotGranted`; endpoint-auth falls back to the endpoint default (`private` for team `weebo`) and the Event says why. Non-restricted keys: no change. |
-| R-3 | Default of `restricted` | **`false` for network profiles; `anonymous` for access entries** — existing catalogues keep working; the one entry that removes authentication is closed unless it says otherwise. |
+| R-3 | Default of `restricted` | **`false` for network profiles; `anonymous` for access entries** — existing catalogues keep working; the one entry that removes authentication is closed unless it says otherwise. *Superseded by R-13 (last review).* |
 | R-4 | How is each use audited? | **Counter `weebo_si_restricted_grant_total{feature,key,result}`, Event on the DevWorkspace/Ingress, INFO log with namespace and key** — bounded labels; ClickStack alert is integration. |
 | R-5 | dwocPin's namespace annotation | **Untouched** — already the only selection channel and already admin-only. |
 | R-6 | The workspace token's `patch devworkspaces` | **Untouched** — DWO/Che's role; phase 3 KubeArmor `fromSource` narrows who uses the token. |
 | R-7 | Which annotation for endpoint-auth? | **`hardening.weebo.io/endpoint-access`** — `hardening.weebo.io/endpoint-auth` is taken (`managed`/`bypass` on the routing object [R9]). |
 | R-8 | Team entry vs cluster entry on `restricted` | **Cluster restriction wins** — by the existing merge rule, first definition stands [R4]. |
-| R-9 | endpoint-auth fallback target | **The endpoint's effective default (team default narrowed by overrides), not a hard-coded `private`** — it is `private` on the cluster [R23]; a restricted default is itself a violation and indexes closed. Reading of coordinator decision 2 against `compile` [R10]. |
+| R-9 | endpoint-auth fallback target | **The endpoint's effective default (team default narrowed by overrides), not a hard-coded `private`** — it is `private` on the cluster [R23]; a restricted default is itself a violation and indexes closed. Reading of the owner's decision R-2 (a statement, 2026-11-24) against `compile` [R10]. |
 | R-10 | (was Still open 1) One namespace annotation for selection and grant, or a grant-only one? | **A dedicated, grant-only `hardening.weebo.io/network-grants`, configurable as `namespaceGrant.annotation`; `""` disables restricted grants** — against the draft's recommendation: the shared annotation made a grant also replace the team default for attribute-less workspaces, a footgun on a security control; the cost is one more key and one more read. endpoint-auth's `hardening.weebo.io/endpoint-access` was already grant-only and keeps its shape. |
 | R-11 | (was Still open 2) Refuse an UPDATE adding a restricted ungranted key at admission? | **No** — as the draft recommended: the reconcile is the enforcement point and the Event is the explanation; `WorkspaceGate` stays CREATE-only. |
 | R-12 | (was Still open 3) Revocation latency for network grants | **Immediate in v1: a Namespace → DevWorkspace watch mapping re-queues the namespace's workspaces on an annotation change** — against the draft's recommendation: a security revocation must apply now, and the cost is one watch mapping; it lands in the same PR as the restricted check. |
+| R-13 | (from last review, stability) Default of `restricted` for anonymous entries | **`false` for every entry, anonymous included; values write `restricted: true` on `open` and `internet` explicitly** — against the earlier decision R-3: an operator upgrade must not change what a catalogue grants; the closed side is reached by a reviewed line in Git, and the default flip is a later release. |
+| R-14 | (from last review, code quality) How does the re-queued pass read a fresh grant? | **One `GET` of the Namespace in `reconcile_devworkspace`, not `namespace_view`** — `KubeNsStore::spawn` exposes no stream [R31], so the mapping's watch and the cache can disagree; a GET per pass is cheaper than reshaping the store. |
+| R-15 | (from last review, code quality and UX) Counting each pass or each change? | **Each change of an object's honoured/refused set, from an in-memory map; alerts on new (namespace, key) pairs** — per-pass counting made the rate a function of the requeue and the alert noisy. |
+| R-16 | (from last review, security) Grant annotation equal to the selection annotation | **Refused by CEL** — a grant that also selects is the footgun R-10 removed. |
 
 ### Still open
 
@@ -736,14 +783,18 @@ None: the draft's three open questions were decided on 2026-11-24 and are R-10 t
   ever becomes workspace-selectable.
 - A CLI `weebo-si-operator grants audit` listing namespaces whose annotation unlocks a restricted
   key, for the periodic review.
-- Admission warnings once the chassis has a `warnings` field [R15].
+- Flip the `restricted` default to `true` for `anonymous: true` entries, in a release after the
+  deployed values carry the field explicitly (R-13).
 
 ## Test plan
 
 - **Unit** (`resolve.rs`, `compile.rs`, `merge.rs`, CRD `validate`): one test per STRIDE row S1,
   S2, S4, S5, S8, plus: non-restricted keys behave exactly as before (the existing tables run
   unchanged); annotation parsed as a set; an annotation naming a key the team lacks unlocks
-  nothing; `anonymous: true` without `restricted` is restricted; `restricted: false` on it is not.
+  nothing; an `anonymous: true` entry without `restricted` is not restricted and logs the warning;
+  the reporter fires on a change and not on an unchanged second pass; the CEL rule refuses
+  `namespaceGrant.annotation` = `namespaceSelection.annotation`; a pass on a namespace the gate has
+  not observed writes nothing (`config_store.rs` [R32]).
 - **envtest**: `Degraded` condition text for `RestrictedKeyInDefault`; Event published with the
   two reasons.
 - **e2e kind** (`weebo-si-e2e`): `workspace.rs` new case for S1 and the honoured path, plus a
@@ -753,26 +804,32 @@ None: the draft's three open questions were decided on 2026-11-24 and are R-10 t
   well under 5 s; 30 s absorbs a loaded CI kind node, and it is ten times below the 300 s requeue,
   so a regression to resync-only revocation fails the test rather than passing slowly.
   `endpoint_auth.rs` new case for S2, honoured, and removal. Unit `a_grant_never_selects` (S11).
-- **Cluster**: §6.P on `dev-ws-batleforc-test`; **T-07**, **T-12**, **T-27** [R25] and T-12 re-run as
-  every service account of `eclipse-che` and `devworkspace-controller` after each Che or DWO
+- **Cluster**: §6.P on `dev-ws-batleforc-test`; **T-07**, **T-12**, **T-27** [R25] and T-12 re-run
+  as every service account of `eclipse-che` and `devworkspace-controller` after each Che or DWO
   upgrade, since `che-operator` already holds namespace `patch` (S3).
-- **Must stay green**: every existing `resolve.rs` and `compile.rs` table, `merge.rs` tests,
-  `an_open_rule_serves_one_path_to_anybody_and_nothing_else` (with the grant annotation added to
-  its namespace), `scripts/rfc-check.sh`.
+- **Must stay green, unchanged**: every existing `resolve.rs` and `compile.rs` table, `merge.rs`
+  tests, `scripts/rfc-check.sh`, and every suite whose fixture catalogues `open` — with the default
+  `false` they need no edit: gateway conformance (`bins/endpoint-gateway/tests/conformance.rs:156`,
+  `:647`), the `crates/weebo-si-e2e/tests/endpoint_auth.rs:65` team fixture and its `:609` case,
+  `an_open_rule_serves_one_path_to_anybody_and_nothing_else` [R34]. A fixture that later marks
+  `open` restricted must add `hardening.weebo.io/endpoint-access` to its namespace in the same
+  change.
 
 ## Implementation plan
 
-- [ ] **PR 1 — CRD**: `restricted` on `Profile` and `AccessEntry`, `is_restricted`,
-  `NamespaceGrant`, the endpoint-access annotation constant, `RestrictedKeyInDefault` in both `validate`s, CRD regen, merge test S4.
-  Nothing reads the flag yet: tree green, behaviour unchanged.
+- [ ] **PR 1 — CRD**: `restricted` on `Profile` and `AccessEntry`, `NamespaceGrant` and its CEL
+  rule, the endpoint-access annotation constant, `RestrictedKeyInDefault` in both `validate`s, CRD
+  regen, merge test S4. Nothing reads the flag yet: tree green, behaviour unchanged.
+- [ ] **Prerequisite — RFC 0019 PR 1** (chassis `warnings`) lands before PR 2.
 - [ ] **PR 2 — network-profiles**: `namespaceGrant.annotation`, `resolve` filter,
   `Provenance`/`DesiredState` lists, gate wording and `denied_restricted`, the Namespace →
-  DevWorkspace watch mapping, shared counter + Event reasons + reporter, unit + e2e including the
+  DevWorkspace watch mapping and the grant `GET`, the admission warning, shared counter + Event
+  reasons + change-only reporter, unit + e2e including the
   30 s revocation case. The control lands with its own audit and its own revocation path, before
   any value marks `internet` restricted.
 - [ ] **PR 3 — endpoint-auth**: `AccessProfile.restricted`, `RawEndpoint.namespace_grant`,
   `compile`/`compile_rule` fallback, gateway `owners_of`, webhook `compile_error`, controller
-  reporter, unit + e2e. The anonymous default flips here — release note.
+  reporter, unit + e2e. No default changes here.
 - [ ] **PR 4 — docs**: guide page, pointers in RFC 0004 / 0009.
 - [ ] RFC flipped to `Implemented`.
 
@@ -791,19 +848,21 @@ An analogy with comparable work in this repository [R30], not a measurement.
 
 ### Integration in weebo-si
 
-- `2.argo/helm/che/hardening/values.yaml` [R23]: step 1 adds `restricted: false` to team `weebo`'s
-  `open`; step 3 adds `restricted: true` to `internet` in the cluster catalogue **and** the
-  identical team entry (or the team copy conflicts), and removes `restricted: false` from `open`.
+- `2.argo/helm/che/hardening/values.yaml` [R23]: step 3 writes `restricted: true` on team
+  `weebo`'s `open`, and on `internet` in the cluster catalogue **and** the identical team entry
+  **in the same commit** — entries are compared whole (`merge.rs:53` [R4]), so a team copy left
+  behind is a `CatalogKeyConflict`.
 - `2.helm/user-app/templates/dev-ns.yaml` [R24]: render optional
   `cheUser.namespaceGrants.{networkProfiles,endpointAccess}` into
   `hardening.weebo.io/network-grants` and `hardening.weebo.io/endpoint-access` — e.g.
-  `network-grants: internet` — set per person by an admin in `WeeboSiUser` `che.values`, in Git:
-  the GitOps record of every grant. The existing `network-profiles` selection is not touched. A `kubectl annotate`
-  outside it is a temporary grant Argo CD does not own.
+  `network-grants: internet` — set per person by an admin in `WeeboSiUser` `che.values`, in Git: the
+  GitOps record of every grant. The existing `network-profiles` selection is not touched. A `kubectl
+  annotate` outside it is a temporary grant Argo CD does not own.
 - ClickStack: two alerts on the INFO line (`result=honoured` for `endpoint-auth`; any
   `result=refused`) — beside the existing monitoring alerts.
-- Runbook in `0.docs`: granting and revoking `internet`/`open` (revocation applies in seconds,
-  300 s only if the watch event is lost), the campaign page for T-07/T-12/T-27.
+- Runbook in `0.docs`: granting and revoking `internet`/`open` (revocation applies in seconds, 300 s
+  only if the watch event is lost; restart the workspace to cut established connections), the
+  campaign page for T-07/T-12/T-27.
 
 ## References
 
@@ -839,9 +898,14 @@ An analogy with comparable work in this repository [R30], not a measurement.
 | R28 | [RFC 0009](./0009-endpoint-auth.md) line 2394 | c412ee3 | endpoint-auth `DryRun` sees no traffic |
 | R29 | `crates/weebo-si-endpoint-auth/src/policy.rs:64-91` | c412ee3 | `AccessProfile`, `private()` |
 | R30 | `git show --shortstat` summed over `rfc-0013`, `rfc-0014`, `rfc-0017` commits | c412ee3 | estimate references |
+| R31 | `crates/weebo-si-runtime/src/ns_store.rs:35-53` — `KubeNsStore::spawn` drives its own `watcher`/`reflector` | c412ee3 | no shared Namespace stream |
+| R32 | `crates/weebo-si-runtime/src/config_store.rs:868-1013` — `resolve_mode`, `unobserved_is_off`, `mode()` | c412ee3 | controllers see `Off` for an unobserved namespace under a `namespaceSelector` |
+| R33 | `charts/weebo-si-operator/templates/mutatingwebhookconfiguration.yaml:30` | c412ee3 | webhook name `devworkspaces.hardening.weebo.io` |
+| R34 | `bins/endpoint-gateway/tests/conformance.rs:156,647`; `crates/weebo-si-e2e/tests/endpoint_auth.rs:65,293,609` | c412ee3 | suites whose fixtures use `open` |
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | Last review applied (6 lenses) |
