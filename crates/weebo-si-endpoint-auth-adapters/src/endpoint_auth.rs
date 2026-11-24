@@ -258,8 +258,9 @@ fn backend_of(object: Option<&DynamicObject>, kind: RoutingKind) -> Option<(Stri
     Some((service, port))
 }
 
-/// The hosts a routing object claims — `spec.rules[].host` on an `Ingress`, `spec.host` on a
-/// `Route`.
+/// The hosts a routing object claims — `spec.rules[].host` and `spec.tls[].hosts` on an
+/// `Ingress`, `spec.host` on a `Route`. The TLS hosts count although they route nothing:
+/// cert-manager's ingress-shim requests a certificate for exactly them.
 fn hosts_of(object: Option<&DynamicObject>, kind: RoutingKind) -> Vec<String> {
     let Some(object) = object else {
         return Vec::new();
@@ -271,18 +272,25 @@ fn hosts_of(object: Option<&DynamicObject>, kind: RoutingKind) -> Vec<String> {
             .and_then(|host| host.as_str())
             .map(|host| vec![host.to_owned()])
             .unwrap_or_default(),
-        RoutingKind::Ingress => object
-            .data
-            .pointer("/spec/rules")
-            .and_then(|rules| rules.as_array())
-            .map(|rules| {
-                rules
-                    .iter()
-                    .filter_map(|rule| rule.get("host").and_then(|host| host.as_str()))
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        RoutingKind::Ingress => {
+            let rule_hosts = object
+                .data
+                .pointer("/spec/rules")
+                .and_then(|rules| rules.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|rule| rule.get("host").and_then(|host| host.as_str()));
+            let tls_hosts = object
+                .data
+                .pointer("/spec/tls")
+                .and_then(|tls| tls.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get("hosts").and_then(|hosts| hosts.as_array()))
+                .flatten()
+                .filter_map(|host| host.as_str());
+            rule_hosts.chain(tls_hosts).map(ToOwned::to_owned).collect()
+        }
     }
 }
 
@@ -499,6 +507,14 @@ fn guard_subject(
     let introduces_bypass =
         says_bypass(&submitted_annotations) && !says_bypass(&previous_annotations);
 
+    let certificate_annotations = changed_annotations
+        .iter()
+        .filter(|key| {
+            key.starts_with("cert-manager.io/") && submitted_annotations.contains_key(*key)
+        })
+        .cloned()
+        .collect();
+
     EndpointRoutingWrite {
         namespace,
         actor,
@@ -512,6 +528,7 @@ fn guard_subject(
         carries_devworkspace_label,
         host_owned_by_namespace,
         introduces_bypass,
+        certificate_annotations,
     }
 }
 
@@ -992,6 +1009,37 @@ mod tests {
             |_: &str| true,
         );
         assert_eq!(write.host_owned_by_namespace, None);
+    }
+
+    #[test]
+    fn a_tls_host_counts_and_a_certificate_name_annotation_is_reported() {
+        // Seen on the cluster on 2026-11-24: a host only in `spec.tls` passed the guard, and
+        // ingress-shim had the CA sign it into a Secret the developer could read.
+        let config = config(Dialect::Traefik);
+        let object: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "Ingress",
+            "metadata": {
+                "name": "api",
+                "namespace": "user-alice",
+                "annotations": { "cert-manager.io/common-name": "argo.weebo.si" }
+            },
+            "spec": { "tls": [ { "hosts": ["bob-ws-api.weebo.si"], "secretName": "x" } ] }
+        }))
+        .unwrap();
+        let request = request_for(&object, Operation::Create, "alice");
+        let write = guard_subject(
+            &request,
+            RoutingKind::Ingress,
+            &config,
+            Some("alice".into()),
+            |_: &str| true,
+        );
+        assert_eq!(write.host_owned_by_namespace, Some(false));
+        assert_eq!(
+            write.certificate_annotations,
+            BTreeSet::from(["cert-manager.io/common-name".to_owned()])
+        );
     }
 
     #[test]
