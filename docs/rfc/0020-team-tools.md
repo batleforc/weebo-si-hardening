@@ -1,11 +1,11 @@
 ---
 rfc: 0020
 title: team tools
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-11-24
 updated: 2026-11-24
-decided:
+decided: 2026-11-24
 brick: crates/weebo-si-team-tools
 supersedes: []
 superseded-by: []
@@ -141,7 +141,7 @@ tool**:
 | Too heavy for one copy per developer, idle most of the time | emulator, 2 to 4 GiB each | One shared copy, started on demand. |
 | Its state only has value shared | BuildKit's layer cache | A per-user cache is a cold cache. |
 
-A sidecar runs under `restricted`, `hostUsers: false` and the namespace UID, holds state
+A sidecar runs under `restricted`, `hostUsers: false` and the workspace's fixed uid (RFC 0018), holds state
 the developer can throw away, and is reached on `localhost`.
 
 ### What the admin writes
@@ -1158,3 +1158,4 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | 2026-11-24 | Draft |
 | 2026-11-24 | Last review applied (6 lenses): Resolved 15–20, STRIDE S3 and T5, validation and RBAC tightened, adoption runbook, router fold. |
 | 2026-11-24 | Still-open 1–5 resolved by the owner as recommended (Resolved 10–14); BuildKit template keeps the process sandbox by default, mTLS mandatory for the BuildKit entry. |
+| 2026-11-24 | Accepted by the owner |

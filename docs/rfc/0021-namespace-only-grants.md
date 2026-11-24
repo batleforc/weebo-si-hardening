@@ -1,11 +1,11 @@
 ---
 rfc: 0021
 title: namespace-only grants
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-11-24
 updated: 2026-11-24
-decided:
+decided: 2026-11-24
 brick: crates/weebo-si-crd
 supersedes: []
 superseded-by: []
@@ -909,3 +909,4 @@ An analogy with comparable work in this repository [R30], not a measurement.
 | --- | --- |
 | 2026-11-24 | Draft |
 | 2026-11-24 | Last review applied (6 lenses) |
+| 2026-11-24 | Accepted by the owner |

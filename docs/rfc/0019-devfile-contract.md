@@ -1,11 +1,11 @@
 ---
 rfc: 0019
 title: devfile contract
-status: Draft
+status: Accepted
 authors: [batleforc]
 created: 2026-11-24
 updated: 2026-11-24
-decided:
+decided: 2026-11-24
 brick: crates/weebo-si-devfile-contract
 supersedes: []
 superseded-by: []
@@ -1010,3 +1010,4 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | 2026-11-24 | V-23 validated by the owner: top-level `attributes` reach `spec.template.attributes` (D-9) |
 | 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (D-10, R28) |
 | 2026-11-24 | Last review applied (6 lenses): kubectl-only scope (D-12), template change while running is a start (D-13), global registry order and bound-once (D-14), table tests instead of fuzzing (D-15), resolved ids renamed R-n → D-n |
+| 2026-11-24 | Accepted by the owner |
