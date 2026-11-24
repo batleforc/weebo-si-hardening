@@ -441,8 +441,19 @@ deletable through the group, since `fsGroup` re-groups the volume on mount. The 
 asserts that a cleanup Job completes (observation 6 below).
 
 **DWO's own override restrictions** refuse `runAsUser=0` in `pod-overrides` and
-`container-overrides` on Kubernetes [R19]. That is a layer in front of ours, not a substitute: it
-does not see 1234 or another namespace's block, and it does not see pods DWO did not build.
+`container-overrides` on Kubernetes [R19]. Confirmed live on 2026-11-24: the DWO controller logs
+the resolved configuration on every reconcile, and it carries
+`restrictedPodOverrideFields=[hostNetwork=true, hostPID=true, hostIPC=true,
+securityContext.runAsNonRoot=false, securityContext.runAsUser=0, volumes.hostPath]` and
+`restrictedContainerOverrideFields=[securityContext.privileged=true,
+securityContext.runAsNonRoot=false, securityContext.runAsUser=0,
+securityContext.allowPrivilegeEscalation=true, securityContext.procMount=Unmasked,
+securityContext.capabilities.add]` [R44]. That is a layer in front of ours, not a substitute: it
+does not see 1234 or another namespace's block, it does not see pods DWO did not build, and it is
+a DWO default that a DWOC or a DWO upgrade can change — which is why `/validate/v1/pods/identity`
+still refuses out-of-block ids itself. V-28 also showed that a non-zero uid such as 10100 passes
+these restrictions through `pod-overrides`, so the workspace's own token (which can patch its
+DevWorkspace) can pick any non-root uid today, until this RFC's Pod mutation rewrites it.
 
 ### Proof against a real client
 
@@ -817,6 +828,7 @@ An analogy with the measured RFCs, not a measurement.
 | R41 | Probe: pods `registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-browser:main` (`NO_START=false`) in a scratch namespace, PSA `restricted`, `hostUsers: false`, `runAsUser/runAsGroup` `1234:0` vs `54321:54321`; `ls -ld /home/user`, count of `chrome exited` in the log after 40 s (0 vs 39) | 2026-11-24 | §Unresolved 9: HOME needs gid 0 in today's images |
 | R42 | Probe: `task k -- -n eclipse-che get dwoc devworkspace-config` → `config.workspace.persistUserHome.enabled: true` | 2026-11-24 | §Unresolved 9: HOME is a PVC in a real workspace |
 | R43 | Probe V-28: DevWorkspace from `batlehub/batlehub` `devfile.yaml` at `main` `f4fdaf6053ea`, `pod-overrides` `runAsUser/runAsGroup/fsGroup: 10100`, in `dev-ws-batleforc-test`; per container `id`, `ls -ld $HOME`, `touch $HOME/.v28`, `/proc/mounts`; restart counts; `curl localhost:9222/json/version` | 2026-11-24 | §Resolved Q9 |
+| R44 | Probe: `task k -- -n devworkspace-controller logs deploy/devworkspace-controller-manager -c devworkspace-controller`, `resolvedConfig` of the `Reconciling Workspace` line for `dev-ws-batleforc-test/hv-test` (DWO `v1.1.1`) | 2026-11-24 | §Detailed design: DWO's restricted override fields, live |
 | R34 | <https://kubernetes.io/docs/tasks/configure-pod-container/security-context/> | read 2026-11-24 | `fsGroup` sets group, not owner; `runAsGroup` omitted = gid 0 |
 
 ## Changelog
@@ -824,6 +836,7 @@ An analogy with the measured RFCs, not a measurement.
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | DWO's restricted override fields confirmed live (R44); any non-root uid passes them today |
 | 2026-11-24 | Q9 resolved by V-28: persistUserHome makes HOME writable without gid 0 |
 | 2026-11-24 | Still open 9 added: HOME needs gid 0 in today's images (che-browser probe, V-28) |
 | 2026-11-24 | nss_wrapper checked: BSD-3-Clause, 1.1.16, no CVE, Ubuntu 26.04 universe (R40) |
