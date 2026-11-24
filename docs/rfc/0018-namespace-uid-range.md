@@ -565,7 +565,17 @@ the operator can write it [R22].
 
 No new dependency in this repo: both crates use `kube`, `serde_json` and the chassis already in
 `Cargo.lock`; the fuzz target uses the repo's existing `cargo-fuzz` setup. WeeboDevImage (outside this
-repo) gains the distribution's `nss_wrapper` package [R38], chosen by V-27 [R39]; its version, licence and CVE status are checked in that image's own build and audit.
+repo) gains the distribution's `nss_wrapper` package [R38], chosen by V-27 [R39], checked on
+2026-11-24 [R40]:
+
+| Dependency | Version | Why this one | Licence | Known CVEs | Maintenance |
+| --- | --- | --- | --- | --- | --- |
+| `libnss-wrapper` (Ubuntu package of `nss_wrapper`) | upstream 1.1.16; Ubuntu 26.04 `nss-wrapper 1.1.16-5`, `universe` | the only way to resolve an arbitrary uid without group 0 when the runtime adds no passwd entry (V-27); the alternative is writing our own `LD_PRELOAD` shim | BSD-3-Clause | none in NVD (keyword `nss_wrapper`, 0 results) | Samba's cwrap project; release 1.1.16 on 2024-07-05, last commit 2025-07-24, essentially one maintainer (Andreas Schneider) |
+
+The `universe` component means Canonical does not commit to security updates for it: the
+WeeboDevImage weekly rebuild and its `trivy` scan are what keep it current. One maintainer is the
+real supply-chain risk; it is accepted because the library is small, stable, and replaceable by a
+fallback the RFC already describes (opt-in gid 0).
 
 ## Data and privacy
 
@@ -802,6 +812,7 @@ An analogy with the measured RFCs, not a measurement.
 | R37 | `docs/bricks/passwd-append.md:98`–`99` | `c412ee3` | passwd-append's `WARN` and exit 0 when the entry resolves or the file is not writable |
 | R38 | <https://cwrap.org/nss_wrapper.html> | read 2026-11-24 | `LD_PRELOAD=libnss_wrapper.so`, `NSS_WRAPPER_PASSWD`, `NSS_WRAPPER_GROUP` |
 | R39 | probe `task hardening:validate -- V-27` (`0.task/scripts/hardening-validate.sh` in weebo-si): pod in `dev-ws-batleforc-test`, image `registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-min-mise:main`, `runAsUser/runAsGroup: 54321`, runc on containerd 2.3.7 | 2026-11-24 ~08:32 UTC+1 | containerd/runc add no passwd entry; `id`/`whoami` fail; youki not tested |
+| R40 | `git clone https://git.samba.org/nss_wrapper.git` (`LICENSE`: BSD 3-Clause; tag `nss_wrapper-1.1.16` 2024-07-05; HEAD `9415ad5` 2025-07-24); Launchpad `getPublishedSources` for `nss-wrapper` in `resolute` (`1.1.16-5`, `universe`, Release); NVD `keywordSearch=nss_wrapper` (0 results); WeeboDevImage `che-min-mise:main` `/etc/os-release` = Ubuntu 26.04.1 LTS, no `libnss_wrapper` installed | 2026-11-24 | §Supply chain: licence, version, CVE and maintenance of nss_wrapper |
 | R34 | <https://kubernetes.io/docs/tasks/configure-pod-container/security-context/> | read 2026-11-24 | `fsGroup` sets group, not owner; `runAsGroup` omitted = gid 0 |
 
 ## Changelog
@@ -809,3 +820,4 @@ An analogy with the measured RFCs, not a measurement.
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | nss_wrapper checked: BSD-3-Clause, 1.1.16, no CVE, Ubuntu 26.04 universe (R40) |
