@@ -20,8 +20,8 @@ superseded-by: []
 
 Two features let a workspace pick, by itself, a catalogue key that widens what it can do:
 `network-profiles` reads a DevWorkspace attribute naming egress profiles such as `internet`
-[R1][R2], and `endpoint-auth` reads an `Ingress` annotation naming an access profile such as the
-anonymous `open` [R9][R10] ([RFC 0004](./0004-network-profiles.md) [R26] and RFC 0009 [R27]
+[R1] [R2], and `endpoint-auth` reads an `Ingress` annotation naming an access profile such as the
+anonymous `open` [R9] [R10] ([RFC 0004](./0004-network-profiles.md) [R26] and RFC 0009 [R27]
 define both). Both values are written by the developer, and the workspace's own
 ServiceAccount token can patch the DevWorkspace they come from [R19]. This RFC adds one field to
 both catalogues, `restricted`, and one rule: a restricted key is honoured only if the workspace's
@@ -80,17 +80,17 @@ write.
 
 1. **A workspace can grant itself `internet`.** The DevWorkspace attribute
    `hardening.weebo.io/network-profiles` takes precedence over the namespace annotation of the same
-   name [R1][R2], and a team's reachable set is exactly its catalogue: `TeamNetworkProfiles` has no
+   name [R1] [R2], and a team's reachable set is exactly its catalogue: `TeamNetworkProfiles` has no
    `allowed` list and `resolve` derives `allowed` from the team's own entries plus the baseline
    [R3]. The cluster's team `weebo` catalogues `internet` [R23]. The workspace ServiceAccount's
-   Role grants `patch` on `devworkspaces` [R20][R19]. So any process in the workspace — an npm
+   Role grants `patch` on `devworkspaces` [R20] [R19]. So any process in the workspace — an npm
    `postinstall`, an AI agent — runs `kubectl patch devworkspace … internet` with the mounted
    token and the next reconcile writes `weebo-internet-<id>` [R6]. Falsifiable: test **T-07** of
    the cluster plan [R25] is expected to produce that CNP today — read from the code, not probed.
 2. **A workspace can publish an unauthenticated endpoint to the Internet.** The access key of an
    endpoint is the `hardening.weebo.io/access` annotation, which DevWorkspace Operator copies from
    the devfile endpoint onto the `Ingress` and which `policy-guard` lets the developer edit
-   directly [R9][R27]. Team `weebo` catalogues `open` with `anonymous: true` [R23], so `compile`
+   directly [R9] [R27]. Team `weebo` catalogues `open` with `anonymous: true` [R23], so `compile`
    accepts it for every namespace of the team [R10]. The DevWorkspace patch of (1) reaches it too:
    DWO regenerates the `Ingress` from the patched devfile. Falsifiable: test **T-27** [R25] is
    expected to get an anonymous `200` from outside today — read from the code, not probed.
@@ -332,7 +332,7 @@ not be the selection annotation, or a grant would select again.
 | Namespace | `hardening.weebo.io/network-profiles` (= `namespaceSelection.annotation`, existing [R1]) | admin | unchanged: selection when no attribute; grants nothing |
 | Namespace | `hardening.weebo.io/network-grants` (= `namespaceGrant.annotation`, new) | admin | comma list of restricted profile keys this namespace may use; selects nothing |
 | Namespace | `hardening.weebo.io/endpoint-access` (new constant `ENDPOINT_ACCESS_NAMESPACE_ANNOTATION`) | admin | comma list of access keys this namespace may use when restricted |
-| DevWorkspace attribute, Ingress `hardening.weebo.io/access` / `rules` | unchanged [R1][R9] | developer, workspace token | selection only |
+| DevWorkspace attribute, Ingress `hardening.weebo.io/access` / `rules` | unchanged [R1] [R9] | developer, workspace token | selection only |
 
 `hardening.weebo.io/endpoint-auth` stays what it is — `managed` / `bypass` on the routing object
 [R9] — and is not reused. Both new names say what they hold (`…-grants`, `…-access`) next to the
@@ -386,7 +386,7 @@ flowchart TB
 ```
 
 This proves the one-function rule both features already keep: the webhook and the reconcile
-reach the network-profiles verdict through the same `resolve` [R5][R6], and the webhook, the
+reach the network-profiles verdict through the same `resolve` [R5] [R6], and the webhook, the
 gateway and the controller reach the endpoint verdict through the same `compile` [R11]. Putting
 the restricted check *inside* those two functions is what makes admission, enforcement and audit
 unable to disagree.
@@ -422,7 +422,7 @@ Namespace [R19], nothing running in the workspace can make a restricted key hono
  *different* definition, reported as `CatalogKeyConflict`, and the cluster's restricted entry is the
  one that stands [R4]. A key defined only by a team is that team definition's call — and
  `WeeboSiTeam` is cluster-scoped and admin-owned, with no write verbs granted by the chart
- [R16][R17].
+ [R16] [R17].
 
 **Revocation is event-driven.** Today the Namespace loop reconciles only the baseline, and a
 workspace pass runs on a DevWorkspace event or the 300 s requeue [R7]. This RFC adds to the

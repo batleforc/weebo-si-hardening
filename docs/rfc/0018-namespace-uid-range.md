@@ -86,7 +86,7 @@ or that would run anything as uid, gid or group 0, is **refused**.
    [R46].) *Falsifiable*: a node-side record with uid 1234 cannot be attributed. This RFC solves
    it only while the pod runs (its `uid_map`); keeping the mapping afterwards is Q19's gap.
 4. **The fix cannot come from the DWOC alone.** A DWOC sets nominal values, but a devfile's
-   `pod-overrides` can change `runAsGroup` (DWO restricts only `runAsUser=0`, [R19][R44]), DWO's
+   `pod-overrides` can change `runAsGroup` (DWO restricts only `runAsUser=0`, [R19] [R44]), DWO's
    other pods and any pod created directly in the namespace never read it, and a che-operator or
    DWO upgrade can change what is merged [R17]. Only the Pod is crossed by every path.
 
@@ -125,7 +125,7 @@ created. Root reached *inside* a pod through a setuid binary is PSA `restricted`
 - **Runtime choice.** Workspaces stay on runc: youki cannot run user-namespaced pods (V-06,
   [R45]).
 - **Pods outside workspace namespaces.** The webhooks select on
-  `hardening.weebo.io/workspace-namespace`, like every Pod webhook of this repo [R6][R7].
+  `hardening.weebo.io/workspace-namespace`, like every Pod webhook of this repo [R6] [R7].
 - **OpenShift.** The restricted SCC assigns a uid range per namespace and handles user
   namespaces its own way; leave the feature `Off` there.
 
@@ -178,7 +178,7 @@ to 0.
 
 **Why 1234 everywhere is enough.** Inside the pod, 1234 is the user every WeeboDevImage declares
 [R60]; on the node, each pod is a different range picked by the kubelet, never shared on that
-node [R20][R58]; on volumes, inodes carry the in-pod id, so turning user namespaces on changes
+node [R20] [R58]; on volumes, inodes carry the in-pod id, so turning user namespaces on changes
 nothing for existing files [R20] (V-05: Longhorn RWO volume writable [R39]; ownership unchanged
 is observation 6). What 1234 does *not* give is a different owner on disk per user (*Drawbacks*,
 threats 7 and 8).
@@ -321,7 +321,7 @@ bound keeps the ids inside the 0–65535 a user-namespaced pod can map [R20].
 | `pod-identity-validate.hardening.weebo.io` | `/validate/v1/pods/identity` | `pods` CREATE; `pods/ephemeralcontainers` UPDATE | `Fail`, fixed | the gate (L21: no `pods` UPDATE) |
 
 Both: `namespaceSelector` `hardening.weebo.io/workspace-namespace Exists` and
-`{{ .Values.namespaceExclusionLabel }} DoesNotExist`, as the existing Pod webhooks [R6][R7]; no
+`{{ .Values.namespaceExclusionLabel }} DoesNotExist`, as the existing Pod webhooks [R6] [R7]; no
 `objectSelector` (a pod label is user-writable [R7]). Chart value
 `podIdentity.webhooks.enabled` (default **`false`**, L7) registers them; the paths answer in
 every mode, `Off` included, so it is turned on **before** `DryRun` (L22).
@@ -352,7 +352,7 @@ The crate pair follows RFC 0012: routes live in the feature's adapters crate [R3
   [R64]); `identity_rewrite(&PodSubject, &PodIdentityConfig) -> Vec<Rewrite>` and
   `identity_violations(&PodSubject, &PodIdentityConfig) -> Vec<Violation>`, the two pure
   functions both features share; `PodIdentityMutation` and `PodIdentityValidation`, each a
-  `Feature<PodSubject>` returning `Decision` [R2][R65]; the `PodIdentityObserver` port.
+  `Feature<PodSubject>` returning `Decision` [R2] [R65]; the `PodIdentityObserver` port.
 - `crates/weebo-si-pod-identity-adapters`: `admission_routes(&shared)` with the two handlers,
   and the Prometheus implementation of the port. No store, no controller loop.
 
@@ -366,7 +366,7 @@ gate exists for.
 
 **Why its own two paths, not the existing Pod routes.** `/mutate/v1/pods` is RFC 0017's image
 rewrite, which never denies, accepts `UPDATE` and takes its `failurePolicy` from the
-admin-chosen `imagePolicy.podWebhook.failurePolicy` [R5][R6][R8]; `/validate/v1/pods` takes the
+admin-chosen `imagePolicy.podWebhook.failurePolicy` [R5] [R6] [R8]; `/validate/v1/pods` takes the
 same value [R7]. A second registry on either would fail open the day an admin sets `Ignore` for
 images (Q2).
 
@@ -425,7 +425,7 @@ registered: they still answer at `Fail` (see *Rollback*).
 | File | Change |
 | --- | --- |
 | `crates/weebo-si-crd/src/spec.rs` | `Features::pod_identity` [R1]; new `crates/weebo-si-crd/src/pod_identity.rs`: `PodIdentityConfig` with CEL rules |
-| `crates/weebo-si-runtime/src/config_store.rs` | a `pod_identity` handle beside `pod_security`, and a `"pod-identity"` arm in `resolve_mode`, whose fallthrough is `Off` [R50][R74] |
+| `crates/weebo-si-runtime/src/config_store.rs` | a `pod_identity` handle beside `pod_security`, and a `"pod-identity"` arm in `resolve_mode`, whose fallthrough is `Off` [R50] [R74] |
 | `crates/weebo-si-controller/src/reconcile.rs` | a `pod_identity` status block beside `image_rewrite_status`: state from mode, `grantGroupZero` warning in `message` [R47] (L25) |
 | `crates/weebo-si-chassis/src/mutation.rs`, `crates/weebo-si-webhook/src/render.rs` | two `Mutation` variants, `SetInt { path, value: i64 }` and `SetBool { path, value: bool }` (Q18), and their `render_patch` arms; the missing-parent loop that only `SetString` has today becomes one helper all three arms share, with one `created` set per patch, so a mixed patch under a missing `/spec/securityContext` adds the parent once [R75] (L26). `supplementalGroupsPolicy` and `fsGroupChangePolicy` use `SetString`; ids use `SetInt`; `hostUsers` and `runAsNonRoot` use `SetBool` |
 | `crates/weebo-si-pod-identity/src/{subject,rewrite,violation,feature,port}.rs` | `PodSubject`, `identity_rewrite`, `identity_violations`, the two features, `PodIdentityObserver` |
@@ -453,7 +453,7 @@ cluster uses `pvcStrategy: per-workspace` [R76], so it never runs the cleanup Jo
 proved on kind only (observation 5).
 
 **DWO's own override restrictions** refuse `runAsUser=0` in `pod-overrides` and
-`container-overrides`, and `hostNetwork`, `hostPID`, `hostIPC` [R19][R44]. They do not refuse
+`container-overrides`, and `hostNetwork`, `hostPID`, `hostIPC` [R19] [R44]. They do not refuse
 `runAsGroup: 0`, `fsGroup: 0` or `hostUsers: true`, they do not see pods DWO did not build, and a
 DWOC or a DWO upgrade can change them — which is why `/validate/v1/pods/identity` checks itself.
 
@@ -546,7 +546,7 @@ and the namespace's dwoc annotation are admin-only [R22]; the node-side range is
 | 3 | E: ephemeral container as root, or on a pod still in the node's user namespace | `kubectl debug` | same fn on the new container; refused when `oldObject.spec.hostUsers != false` | `ephemeral_container_uid_zero_is_refused`, `ephemeral_on_host_userns_pod_is_refused` | none |
 | 4 | E: group 0 through `fsGroup`, `supplementalGroups` or the image's `/etc/group` | pod spec, image | validation refuses `fsGroup: 0` and `0` in `supplementalGroups` unless opted in; `supplementalGroupsPolicy: Strict` set and required (L14); measured [R58] | `fs_group_zero_is_refused`, `group_zero_refused_by_default`, `merge_policy_is_refused` | none by default |
 | 5 | E: root inside the pod through a setuid binary (che-min-mise ships `su`, `mount`, `newuidmap`…) | `allowPrivilegeEscalation` left true under `baseline` | PSA `restricted` (`allowPrivilegeEscalation: false`) is a precondition of `Enforce` (L20); with `no_new_privs` the setuid bit is ignored [R53] | V-10 | until `restricted` is enforced, this feature does not hold against it |
-| 6 | E: one workspace reaches another's node-side files after an escape | node | each pod maps to its own node range [R20][R58]; T-30 | T-30 | a kernel escape to node root is not addressed by any uid scheme |
+| 6 | E: one workspace reaches another's node-side files after an escape | node | each pod maps to its own node range [R20] [R58]; T-30 | T-30 | a kernel escape to node root is not addressed by any uid scheme |
 | 7 | E: a process still running as node uid 1234 owns every workspace's files on disk (inodes are 1234 under idmapped mounts) | pods in the node's user namespace at uid 1234: today DWO's two `devworkspace-webhook-server` pods [R77]; pre-`Enforce` pods | none in this RFC: an escape from such a pod lands as the owner of every workspace volume | T-30 from a pod at node uid 1234 | **accepted, named**: the same exposure exists today for every workspace; it shrinks to those pods, and closes only with per-user owners on disk (Q16) |
 | 8 | T/E: two users share files through one volume | a volume mounted by two namespaces | none today: Longhorn RWO, PVCs are namespaced; inodes carry the in-pod id [R20] | — | **accepted**: an RWX class or a restore into another namespace is shared by uid (Q16) |
 | 9 | R: a node uid cannot be tied to a workspace after the pod ended | node audit, files | per-pod range while it runs; KubeArmor carries the pod [R46] | V-07 | not kept after the pod ends (Q19) |
@@ -660,7 +660,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | Extend `podSecurity` | `podSecurity` only writes namespace labels from a reconcile [R13]; this needs a Pod mutation and a Pod validation with a mode of their own |
 | PSA `restricted` alone | it does not require `hostUsers: false`, does not look at `runAsGroup: 0`, `fsGroup: 0` or group 0, and relaxes its non-root checks for user-namespaced pods [R20] |
 | Kyverno mutate/validate policy | a second admission engine for one rule, already part of the reboot admission cycle [R28] |
-| A second registry on the existing Pod routes | the routes' `failurePolicy` is the admin's image choice [R7][R8]; see Q2 |
+| A second registry on the existing Pod routes | the routes' `failurePolicy` is the admin's image choice [R7] [R8]; see Q2 |
 | nss_wrapper or a mounted passwd file | only needed for uids the images do not declare; 1234 is declared [R60] |
 
 ## Drawbacks and risks
@@ -696,7 +696,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | D7 | Set `hostUsers: false` here? | *Superseded by Q15: yes, it is the separation.* ~~No: a DWOC field for phase 5.~~ |
 | D8 | The `/etc/passwd` entry? | *Superseded by Q3 and L12, then by Q15: 1234's entry is in the image [R60].* |
 | Q1 | Pod-level ids: rewrite or fill when absent? | **Rewrite pod-level ids.** ~~Refuse container-level ones (any id outside the block).~~ *Container part superseded by Q15 and L19: container-level ids are refused when 0 or unset, other non-zero ids allowed.* DWO always sends `runAsGroup: 0` [R16]; "fill when absent" would never fire. |
-| Q2 | Own paths, or registries on the existing Pod routes? | **Own paths `/mutate/v1/pods/identity` and `/validate/v1/pods/identity`, `Fail` fixed.** The existing routes take the admin's image `failurePolicy` [R7][R8] and would fail open under `Ignore`. |
+| Q2 | Own paths, or registries on the existing Pod routes? | **Own paths `/mutate/v1/pods/identity` and `/validate/v1/pods/identity`, `Fail` fixed.** The existing routes take the admin's image `failurePolicy` [R7] [R8] and would fail open under `Ignore`. |
 | Q3 | Primary group, and gid 0? | **No supplementary gid 0 by default; gid 0 only behind `grantGroupZero` (default `false`).** ~~`runAsGroup` = the block's first id; the passwd entry from nss_wrapper.~~ *Group value and passwd part superseded by Q15: `runAsGroup` = 1234, entry from the image.* Gid 0 grants write on every `g=u` file [R14]. |
 | Q4 | Reuse of a freed block? | *Superseded by Q15: no blocks.* |
 | Q5 | Which uid does KubeArmor report under user namespaces? | **The node-side one, per pod.** V-07 (2026-11-24, runc, `hostUsers: false`): the `net_raw` Block held, uid `1094909952` [R46]. ~~Ship regardless; V-07 settles the claim.~~ *Superseded in part by Q15: now part of the attribution story (Q19).* |
@@ -720,11 +720,11 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | L14 | Can the image's `/etc/group` add groups? | **Yes under `Merge`, so the mutation sets `supplementalGroupsPolicy: Strict` and validation requires it.** Measured: `Merge` gives `Groups: 0 1234` and a writable `/etc/passwd`; `Strict` gives `Groups: 1234` [R58]. |
 | L15 | Fuzz the parser? | *Superseded by Q15: no parser.* |
 | Q10–Q14 | The mounted identity ConfigMap (source, containers, refusal, protection, chassis) | *Superseded by Q15: not needed for 1234.* V-29 stays the evidence for that mechanism [R52]. |
-| Q15 | (owner, 2026-11-24) A uid block per namespace, or 1234 under user namespaces? | **1234:1234 for every DWO-built workspace pod, `hostUsers: false` required, group 0 removed; no allocator, no state, no passwd mechanism, no volume migration.** Goes against the first design: under `hostUsers: false` the kubelet already gives each pod its own node range [R20][R58]; what the block still bought is per-user ownership on disk (threats 7, 8; Q16). |
+| Q15 | (owner, 2026-11-24) A uid block per namespace, or 1234 under user namespaces? | **1234:1234 for every DWO-built workspace pod, `hostUsers: false` required, group 0 removed; no allocator, no state, no passwd mechanism, no volume migration.** Goes against the first design: under `hostUsers: false` the kubelet already gives each pod its own node range [R20] [R58]; what the block still bought is per-user ownership on disk (threats 7, 8; Q16). |
 | Q16 | What replaces per-user ownership on disk? | **Nothing for now: threat 7 is today's exposure narrowed to the pods still at node uid 1234, threat 8 has no volume yet; re-examine when an RWX class, a cross-namespace restore, or more host-userns pods at 1234 appear.** The first design (git `8228ec5`) is the starting point then. |
 | Q17 | Build teams (`build` DWOC, `runAsGroup: 0`)? | **Out of scope through `exemptDwocKeys: [build]` (L27) until che-min-mise ships `/etc/subuid` and `/etc/subgid` for 1234 at build time.** The entrypoint writes them through group 0 when `HOST_USERS=false` [R61]; with a fixed uid the range (`user:1235:64301`) is a constant. |
 | Q18 | Which chassis variants? | **`SetInt` and `SetBool`.** `supplementalGroups` is validated, never written; `hostUsers` and `runAsNonRoot` are booleans. |
-| Q22 | (owner, 2026-11-24) What if user namespaces become unusable tomorrow (a kernel or runtime regression, a filesystem without idmap mounts, Kata)? | **Fallback: static per-namespace UID/GID blocks (this RFC's first design, git `8228ec5`), with the passwd entry added at container creation by a containerd NRI plugin, as CRI-O does natively [R36][R54].** User namespaces stay the primary mechanism. The fallback is documented, not built: NRI is enabled on the node (socket present, no plugin) [R85], but a plugin is node-root-equivalent and sees no image rootfs [R54], so it is only worth its cost when user namespaces are gone. The mounted-ConfigMap answer (V-29 [R52]) is the lighter variant if NRI is refused. |
+| Q22 | (owner, 2026-11-24) What if user namespaces become unusable tomorrow (a kernel or runtime regression, a filesystem without idmap mounts, Kata)? | **Fallback: static per-namespace UID/GID blocks (this RFC's first design, git `8228ec5`), with the passwd entry added at container creation by a containerd NRI plugin, as CRI-O does natively [R36] [R54].** User namespaces stay the primary mechanism. The fallback is documented, not built: NRI is enabled on the node (socket present, no plugin) [R85], but a plugin is node-root-equivalent and sees no image rootfs [R54], so it is only worth its cost when user namespaces are gone. The mounted-ConfigMap answer (V-29 [R52]) is the lighter variant if NRI is refused. |
 | Q20 | (owner, 2026-11-24, was Still open) The images write group-0 directories at runtime (che-lgtm `/data`, `/etc/lgtm`, `/otel-lgtm`; che-android `$ANDROID_SDK_ROOT`, `$APPIUM_HOME`; che-min-mise `/home/tooling`, `/globals`, `.oh-my-zsh`, the `.config` files reached through stow) [R68] | **WeeboDevImage replaces `chgrp -R 0` by `chown -R 1234:0` and keeps `chmod -R g=u`, in the same `RUN` as each install; `COPY --chown=0:0` of user-edited config becomes `--chown=1234:0`. A prerequisite of `Enforce`.** Owner 1234 writes under this feature (fixed uid, no group 0) and group 0 still writes for an arbitrary uid on OpenShift, so the images serve both. A separate `RUN` would copy every file into a new layer (che-android warns about it for `chgrp`, `Containerfile:58`) [R68]. Rejected: `chown 1234:1234` (breaks arbitrary-uid use), `emptyDir` in every devfile, `grantGroupZero` per namespace (group 0 back). |
 | Q21 | (owner, 2026-11-24, was Still open) Pods the workspace creates itself, and uids other than 1234 | **Set 1234 only where a pod gives no uid, gid or `fsGroup`; rewrite gid/`fsGroup` 0 (DWO's default) to 1234; keep any other non-zero id; refuse `runAsUser: 0` and any effective uid 0.** No silent change of an id someone chose, still no uid 0 and no group 0; inside its own user namespace any non-zero id is unprivileged. kubedock is used by one project only; its root-only images need non-root variants or `--runas-user` [R86]. Rejected: forcing 1234 everywhere (rewrites explicit choices such as V-28's 10100) and allowing root in a user namespace for non-DWO pods (one more exception, a wider kernel surface). Revisit if kubedock use grows. |
 | Q23 | (owner, 2026-11-24) Must the webhook run 2 replicas before `Enforce` (D5)? | **No on the lab: it stays at 1 replica, single node accepted.** Two replicas on one node only cover a pod restart, not a node reboot [R79]; the image-policy Pod webhook already puts every workspace pod behind this single replica at `Fail` [R78], so this feature adds no new class of outage. Accepted residual: a webhook restart refuses workspace starts until it is Ready, and workspaces started meanwhile go `Failed` and are restarted by hand (reboot runbook). The chart keeps 2 replicas + PDB as its default for multi-node clusters. |
@@ -740,7 +740,7 @@ gains the two paths beside `/mutate/v1/pods`, measured with no budget like the e
 | L24 | (last review 2, security/UX) Silent `Off`: webhooks unregistered, or config absent | **Alert on admission requests flat while workspace pods start, and on the feature state leaving `Active`; the config-absent → `Off` rule stays house-wide.** Detecting registration from the controller would need new RBAC on webhook configurations. |
 | L25 | (last review 2, code) Who writes the feature status? | **The controller, in a `pod_identity` block of `reconcile.rs`, as `image_rewrite_status`.** [R47] |
 | L26 | (last review 2, code) Mixed variants under a missing parent | **One shared missing-parent helper for `SetString`, `SetInt`, `SetBool`.** Otherwise a later arm re-adds `{}` over a parent and wipes earlier fields [R75]. |
-| L27 | (last review 2, stability) How are build namespaces excluded? | **`exemptDwocKeys`, matched against the namespace's projected `hardening.weebo.io/dwoc` annotation from `Context`.** A `namespaceSelector` cannot read annotations, and the annotation is what pins a namespace to `build` [R67][R73]. |
+| L27 | (last review 2, stability) How are build namespaces excluded? | **`exemptDwocKeys`, matched against the namespace's projected `hardening.weebo.io/dwoc` annotation from `Context`.** A `namespaceSelector` cannot read annotations, and the annotation is what pins a namespace to `build` [R67] [R73]. |
 | L28 | (last review 2, UX) What do refusals say? | **One message per reason, each naming the field and what to change; the DWO-wrapped form is mocked; one unit test per message.** As image-policy's denials do. |
 | L29 | (last review 2, honesty) Motivation 3 premise | **Narrowed to node files and kernel audit; KubeArmor already carries the pod; half-solved until Q19.** |
 
@@ -827,7 +827,7 @@ An analogy with the measured RFCs, not a measurement.
   the chart's default of 2 with its PDB [R12] applies to a multi-node cluster.
 - Prerequisite: PSA `restricted` on the workspace namespaces in scope, after V-10's DWOC fixes
   (RFC 0013, L20).
-- Prerequisite: `persistUserHome` stays enabled in Che's DWOC (Q9, [R42][R43]).
+- Prerequisite: `persistUserHome` stays enabled in Che's DWOC (Q9, [R42] [R43]).
 - Prerequisite: the node runs user-namespaced pods on runc with Longhorn ext4 volumes (V-05
   PASS, [R39]); workspaces are not routed to the `youki` RuntimeClass (V-06, [R45]).
 - Prerequisite: the dev images modified (Q20, *Implementation plan*), rebuilt and re-pinned

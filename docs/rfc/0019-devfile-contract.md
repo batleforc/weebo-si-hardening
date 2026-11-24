@@ -13,13 +13,13 @@ superseded-by: []
 
 # RFC 0019 — devfile contract
 
-| Field     | Value                                                                                                                                                                  |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Short     | tell a developer their devfile is outdated before the workspace refuses to start                                                                                        |
-| Settles   | which platform rules a devfile was written for, whether its parent is pinned, and the only case where that refuses a workspace                                          |
-| Co-author | Claude Opus 5.5                                                                                                                                                        |
-| Touches   | `crates/weebo-si-chassis`, `crates/weebo-si-devfile-contract` (new), `crates/weebo-si-crd`, `crates/weebo-si-runtime`, `crates/weebo-si-webhook`, `crates/weebo-si-operator`, `crates/weebo-si-e2e`, every `*-adapters` crate that matches `AdmitOutcome`, docs |
-| Risk      | low (*Security considerations*); availability of the DevWorkspace route is the residual                                                                                |
+| Field | Value |
+| --- | --- |
+| Short | tell a developer their devfile is outdated before the workspace refuses to start |
+| Settles | which platform rules a devfile was written for, whether its parent is pinned, and the only case where that refuses a workspace |
+| Co-author | Claude Opus 5.5 |
+| Touches | `crates/weebo-si-chassis`, `crates/weebo-si-devfile-contract` (new), `crates/weebo-si-crd`, `crates/weebo-si-runtime`, `crates/weebo-si-webhook`, `crates/weebo-si-operator`, `crates/weebo-si-e2e`, every `*-adapters` crate that matches `AdmitOutcome`, docs |
+| Risk | low (*Security considerations*); availability of the DevWorkspace route is the residual |
 
 > Reference material (~10 000 words). A reviewer short on time reads *Summary*, *Guide-level
 > explanation → Mocks*, *Security considerations* and *Unresolved questions*.
@@ -267,7 +267,7 @@ considerations*).
 
 Every mock is `kubectl` v1.37.2 [R16] against the webhook in `Enforce`, `currentContract: 3`,
 `minimumContract: 2`, `minimumSchemaVersion: "2.2.0"`. kubectl prints each admission warning on
-stderr prefixed `Warning: ` (the webhook never writes that prefix itself [R10]).
+stderr prefixed `Warning:` and a space (the webhook never writes that prefix itself [R10]).
 
 **Current (the uninteresting case)** — nothing at all:
 
@@ -817,7 +817,7 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 | --- | --- |
 | Do nothing; rely on the User Guide | Motivations 1–3 stay true; the plan's "rules discovered by failure" is exactly what happens today |
 | The literal plan: a status condition on the DevWorkspace | DevWorkspace Operator owns `status` and rewrites it; a webhook cannot write status on the main resource, and a controller patching it would fight DWO every reconcile |
-| Register in dwoc-pin's `Workspace` registry (coordinator decision 1, literal) | makes a feature crate depend on another, against `AppState`'s and `operator-internals.md`'s rule [R3][R8]; rejected in D-8 |
+| Register in dwoc-pin's `Workspace` registry (coordinator decision 1, literal) | makes a feature crate depend on another, against `AppState`'s and `operator-internals.md`'s rule [R3] [R8]; rejected in D-8 |
 | A separate webhook entry on a new path (RFC 0017's shape [R22]) | a second network round-trip and a second `caBundle` window for an advisory feature; RFC 0017 needed it to keep dwoc-pin's route untouched, here the route already runs two registries |
 | A controller that labels outdated workspaces | needs write RBAC on every DevWorkspace, a watch, and still cannot speak at `kubectl apply` time |
 | Kyverno `validate` with `failureAction: Audit` + warnings | a second admission engine for one rule set, with its own failure policy and upgrade cycle on the same DevWorkspace requests; the parent classifier and the start-only denial are awkward to state in its policy language and untestable from this repo's table tests |
@@ -855,9 +855,9 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 | D-5 | When is a workspace refused? | **Only for an admin-curated `deniedContracts`/`deniedParents` list, default empty, `onDenied: Deny` default; outdated is never a refusal.** Safe side, harmless while empty. This RFC adds: only on a start transition (invariant). |
 | D-6 | Renovate and the generator | **Out of this RFC; follow-ups in weebo-si / weebo-che-project.** Different repos, different release cycles. |
 | D-7 | Generated vs hand-written | **Exactly the same checks.** The plan insists hand-writing neither exempts nor adds [R20]. |
-| D-8 | Registry placement (was Still open 1; deviates from D-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3][R8]; accepted by the RFC owner 2026-11-24. The fold itself moves to RFC 0020, the fourth registry (D-14). |
+| D-8 | Registry placement (was Still open 1; deviates from D-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3] [R8]; accepted by the RFC owner 2026-11-24. The fold itself moves to RFC 0020, the fourth registry (D-14). |
 | D-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **V-23 is validated (owner's statement, 2026-11-24 [R30]): top-level devfile `attributes` reach `spec.template.attributes`; the contract is read there, no fallback is built, and V-23 no longer gates `Enforce`.** Supersedes the earlier decision (block `Enforce` on V-23, fall back to a line scan of `metadata.attributes`); the probe [R15] alone did not prove the copy. |
-| D-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. **Narrowed by D-12.** **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
+| D-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10] [R11]. **Narrowed by D-12.** **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
 | D-11 | Contract number as a metric label (was Still open 4) | **The contract number goes in the log line only; a generic `detail: Option<&'static str>` on `FeatureOutcome` comes only if a second feature needs a bounded detail label.** `FeatureOutcome` carries `result` and `team` only [R1], and a field for one feature is the coupling `Decision`'s doc comment refuses. |
 | D-12 | Who sees the warnings? (from last review, UX) | **This RFC informs `kubectl` users and records the verdict in the annotation; on the dashboard path only the refusal is visible. The che-code extension (or a che-dashboard fork patch keeping the `Warning` header) is Future work with its own RFC.** The dashboard drops the headers [R28]; promising dashboard warnings here would be a claim no PR of this RFC delivers. Narrows D-10's "the extension is required". |
 | D-13 | Can a running workspace switch to a denied parent? (from last review, security) | **An `UPDATE` that changes `spec.template` while `spec.started` is `true` counts as a start, so the denied list applies; finalizer, stop, label and annotation updates stay always-allowed.** Otherwise the denied list is bypassed by a patch, without a stop. Extends D-5's "start transition". |
@@ -978,7 +978,7 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R7 | `crates/weebo-si-chassis/src/mutation.rs:17-25` | `c412ee3` | `Mutation::Annotate` exists |
 | R8 | `docs/architecture/operator-internals.md:103-109`, `:176-178`, `:233-245` | `c412ee3` | feature never learns its mode; DryRun runs Enforce's code; two subjects → two registries; adding a feature touches no shared crate's files |
 | R9 | kube-core 4.2.0 `src/admission.rs:307-314`, `:357-361` | crate 4.2.0 (`Cargo.lock:1620`) | `AdmissionResponse.warnings`; `deny` sets no code |
-| R10 | Kubernetes, *Dynamic Admission Control*, "Response" (warnings: 120 chars recommended, >256 may be truncated, >4096 total ignored, no `Warning:` prefix) and "Reinvocation policy" — https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/ | read 2026-11-24 | warning bounds; reinvocation; no dedup stated |
+| R10 | Kubernetes, *Dynamic Admission Control*, "Response" (warnings: 120 chars recommended, >256 may be truncated, >4096 total ignored, no `Warning:` prefix) and "Reinvocation policy" — <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> | read 2026-11-24 | warning bounds; reinvocation; no dedup stated |
 | R11 | `charts/weebo-si-operator/templates/mutatingwebhookconfiguration.yaml:30-55`, `:56-61` | `c412ee3` | CREATE/UPDATE, `Fail`, `IfNeeded`, exclusion label; RFC 0017's second webhook |
 | R12 | `crates/weebo-si-runtime/src/prometheus.rs:21-44`, `:56-75` | `c412ee3` | admission metric labels; `weebo_si_dwoc_pin_total` precedent |
 | R13 | `crates/weebo-si-crd/src/image_rewrite.rs:1-5`, `:19-20` | `c412ee3` | a feature with no team contribution; bounded list via CEL |
@@ -995,7 +995,7 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R24 | weebo-si `2.argo/helm/che/hardening/values.yaml:38-60` | read 2026-11-24 | where `devfileContract` goes, next to `dwocPin` |
 | R25 | `git show --shortstat` summed over `rfc-0014` and `rfc-0017` commits | `c412ee3` | the estimate's references |
 | R26 | `docs/architecture/hexagonal.md:19-31` | `c412ee3` | the three criteria for hexagonal |
-| R27 | Devfile 2.3.0, *Referring to a parent devfile* — https://devfile.io/docs/2.3.0/referring-to-a-parent-devfile | read 2026-11-24 | parent by `id`+`registryUrl`+`version`, `uri`, `kubernetes`; no version → "the default version for the stack" |
+| R27 | Devfile 2.3.0, *Referring to a parent devfile* — <https://devfile.io/docs/2.3.0/referring-to-a-parent-devfile> | read 2026-11-24 | parent by `id`+`registryUrl`+`version`, `uri`, `kubernetes`; no version → "the default version for the stack" |
 | R28 | `weebo-si/che-dashboard` (deployed fork) `packages/dashboard-backend/src/devworkspaceClient/services/devWorkspaceApi.ts:84` (`propagateHeaders` returns `{}`) and `packages/dashboard-frontend/src/store/Workspaces/devWorkspaces/actions/actionCreators/createWorkspaceFromResources.ts:76` (reads `headers.warning`); same code in `eclipse-che/che-dashboard` `main` | `develop` at `d09699f` (2026-11-21), read 2026-11-24 | §Unresolved D-10, D-12: the dashboard drops admission warnings |
 | R29 | probe `task hardening:validate -- V-14` (a test `ValidatingAdmissionPolicy` returning a warning on a DevWorkspace, applied with kubectl v1.37.2): output `Warning: Validation failed for ValidatingAdmissionPolicy 'hardening-validate-v14' …` | 2026-11-24 | kubectl prints admission warnings on this cluster |
 | R30 | V-23, validated by the RFC owner — a statement, not a probe recorded in this repo | 2026-11-24 | top-level devfile `attributes` reach `spec.template.attributes` |
