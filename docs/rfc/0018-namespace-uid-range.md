@@ -694,7 +694,19 @@ in-memory cache per pod, no apiserver call; `perf_envtest.rs` gains the two path
 
 ### Still open
 
-None: every question raised by this draft is decided above (Q1 to Q8).
+9. **Is `$HOME` writable without gid 0? (reopens Q3's consequences, not its decision)** Probe of
+   2026-11-24 [R41]: the `che-browser` sidecar image, under `restricted` and `hostUsers: false`,
+   runs Chrome steadily as `1234:0` but crash-loops as `54321:54321` (39 restarts in 40 s,
+   `chrome_crashpad_handler: --database is required`), because the image's `/home/user` is
+   `drwxrwx--- user:root`: only group 0 can write it. nss_wrapper fixes the name, not the
+   directory mode. In a real workspace `persistUserHome` is on in Che's DWOC [R42], so
+   `/home/user` should be a PVC whose group is the `fsGroup` (the block's gid) — **if** DWO
+   mounts it in every container, sidecars included. That is the new upstream test **V-28**.
+   Options if V-28 fails: (a) a writable `HOME` per sidecar (`emptyDir`, set in the devfile
+   component), (b) images whose `HOME` does not rely on group 0 (`chmod` at build to a mode
+   `fsGroup` can satisfy), (c) the `grantGroupZero` opt-in. **Recommendation: keep Q3 (no gid 0
+   by default); run V-28 before `Enforce`; prefer (a) for sidecars, (c) only per namespace as a
+   recorded exception.**
 
 ## Future work
 
@@ -813,6 +825,8 @@ An analogy with the measured RFCs, not a measurement.
 | R38 | <https://cwrap.org/nss_wrapper.html> | read 2026-11-24 | `LD_PRELOAD=libnss_wrapper.so`, `NSS_WRAPPER_PASSWD`, `NSS_WRAPPER_GROUP` |
 | R39 | probe `task hardening:validate -- V-27` (`0.task/scripts/hardening-validate.sh` in weebo-si): pod in `dev-ws-batleforc-test`, image `registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-min-mise:main`, `runAsUser/runAsGroup: 54321`, runc on containerd 2.3.7 | 2026-11-24 ~08:32 UTC+1 | containerd/runc add no passwd entry; `id`/`whoami` fail; youki not tested |
 | R40 | `git clone https://git.samba.org/nss_wrapper.git` (`LICENSE`: BSD 3-Clause; tag `nss_wrapper-1.1.16` 2024-07-05; HEAD `9415ad5` 2025-07-24); Launchpad `getPublishedSources` for `nss-wrapper` in `resolute` (`1.1.16-5`, `universe`, Release); NVD `keywordSearch=nss_wrapper` (0 results); WeeboDevImage `che-min-mise:main` `/etc/os-release` = Ubuntu 26.04.1 LTS, no `libnss_wrapper` installed | 2026-11-24 | §Supply chain: licence, version, CVE and maintenance of nss_wrapper |
+| R41 | Probe: pods `registry.pkg.weebo.poc/ghcr/batleforc/weebodevimage/che-browser:main` (`NO_START=false`) in a scratch namespace, PSA `restricted`, `hostUsers: false`, `runAsUser/runAsGroup` `1234:0` vs `54321:54321`; `ls -ld /home/user`, count of `chrome exited` in the log after 40 s (0 vs 39) | 2026-11-24 | §Unresolved 9: HOME needs gid 0 in today's images |
+| R42 | Probe: `task k -- -n eclipse-che get dwoc devworkspace-config` → `config.workspace.persistUserHome.enabled: true` | 2026-11-24 | §Unresolved 9: HOME is a PVC in a real workspace |
 | R34 | <https://kubernetes.io/docs/tasks/configure-pod-container/security-context/> | read 2026-11-24 | `fsGroup` sets group, not owner; `runAsGroup` omitted = gid 0 |
 
 ## Changelog
@@ -820,4 +834,5 @@ An analogy with the measured RFCs, not a measurement.
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | Still open 9 added: HOME needs gid 0 in today's images (che-browser probe, V-28) |
 | 2026-11-24 | nss_wrapper checked: BSD-3-Clause, 1.1.16, no CVE, Ubuntu 26.04 universe (R40) |
