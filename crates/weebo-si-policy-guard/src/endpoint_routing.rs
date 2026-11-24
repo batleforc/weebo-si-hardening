@@ -100,6 +100,10 @@ pub struct EndpointRoutingWrite {
     /// nothing to an object that says `bypass`, so anyone else writing it is opting their own
     /// endpoint out of the gate.
     pub introduces_bypass: bool,
+    /// The `cert-manager.io/` annotation keys this write adds or changes. cert-manager's
+    /// ingress-shim turns them into the Certificate it requests, so a name annotation is a
+    /// certificate for a host the namespace does not own.
+    pub certificate_annotations: BTreeSet<String>,
 }
 
 impl Subject for EndpointRoutingWrite {
@@ -123,6 +127,14 @@ impl EndpointRoutingWrite {
             .collect()
     }
 
+    /// The certificate annotations this write introduces that are not on the allow-list.
+    pub fn forbidden_certificate_annotations(&self) -> Vec<&String> {
+        self.certificate_annotations
+            .iter()
+            .filter(|key| !ALLOWED_CERTIFICATE_ANNOTATIONS.contains(&key.as_str()))
+            .collect()
+    }
+
     /// Annotation changes outside the four keys a developer owns.
     pub fn non_developer_annotation_changes(&self) -> Vec<&String> {
         self.changed_annotations
@@ -131,6 +143,29 @@ impl EndpointRoutingWrite {
             .collect()
     }
 }
+
+/// The `cert-manager.io/` annotations a routing object in a workspace namespace may carry: the
+/// ones Che sets on a workspace `Ingress`, and the ones that only tune the key and its lifetime.
+///
+/// **An allow-list, not a deny-list**, because cert-manager v1.21 reads 40 annotation keys and
+/// six of them put a name in the certificate (`common-name`, `alt-names`, `ip-sans`,
+/// `uri-sans`, `email-sans`, `subject-serialnumber`); the next release may add a seventh. The
+/// issuer is not pinned here: the PKI role signs only what `spec.tls[].hosts` names, and the
+/// host-ownership check covers those.
+pub const ALLOWED_CERTIFICATE_ANNOTATIONS: &[&str] = &[
+    "cert-manager.io/cluster-issuer",
+    "cert-manager.io/issuer",
+    "cert-manager.io/duration",
+    "cert-manager.io/renew-before",
+    "cert-manager.io/renew-before-percentage",
+    "cert-manager.io/revision-history-limit",
+    "cert-manager.io/private-key-algorithm",
+    "cert-manager.io/private-key-encoding",
+    "cert-manager.io/private-key-size",
+    "cert-manager.io/private-key-rotation-policy",
+    "cert-manager.io/subject-organizations",
+    "cert-manager.io/subject-organizationalunits",
+];
 
 /// The guard, holding the three identities that are exempt from it.
 pub struct EndpointRoutingGuard {
@@ -178,7 +213,12 @@ impl Feature<EndpointRoutingWrite> for EndpointRoutingGuard {
         // Except for `bypass`: DWO copies a devfile endpoint's annotations onto the object it
         // generates, so the actor being DWO says nothing about who wrote the annotation. Only
         // the operator and the break-glass identities (answered above) may introduce it.
-        if subject.actor == self.devworkspace_operator_identity && !subject.introduces_bypass {
+        // Same for a certificate name: DWO copies it from the devfile endpoint too.
+        let forbidden_certificate = subject.forbidden_certificate_annotations();
+        if subject.actor == self.devworkspace_operator_identity
+            && !subject.introduces_bypass
+            && forbidden_certificate.is_empty()
+        {
             return Ok(Decision::new(Vec::new(), None, None, "dwo_allowed"));
         }
 
@@ -203,6 +243,27 @@ impl Feature<EndpointRoutingWrite> for EndpointRoutingGuard {
                 None,
                 Some("bypass_not_permitted".to_string()),
                 "denied_bypass",
+            ));
+        }
+
+        // ingress-shim writes these into the Certificate it requests, and the CA signs every
+        // name under the platform's domain: a `common-name` is a certificate for a host this
+        // namespace does not own, with its key in a Secret the developer reads.
+        if !forbidden_certificate.is_empty() {
+            let named = forbidden_certificate
+                .iter()
+                .map(|key| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(Decision::deny(
+                format!(
+                    "{} may not set {named} on a {}; the certificate covers only the hosts of spec.tls",
+                    subject.actor,
+                    subject.kind.kind()
+                ),
+                None,
+                Some("certificate_annotation_not_permitted".to_string()),
+                "denied_certificate_annotation",
             ));
         }
 
@@ -353,6 +414,7 @@ mod tests {
             carries_devworkspace_label: provenance == Provenance::Devfile,
             host_owned_by_namespace: Some(true),
             introduces_bypass: false,
+            certificate_annotations: BTreeSet::new(),
         }
     }
 
@@ -420,6 +482,42 @@ mod tests {
             Provenance::Author,
         );
         subject.introduces_bypass = true;
+        assert!(verdict(&subject).denial.is_none());
+    }
+
+    #[test]
+    fn a_certificate_name_annotation_is_refused_even_through_dwo() {
+        // DWO copies a devfile endpoint's annotations, so DWO's name does not vouch for them.
+        for actor in ["alice", DWO] {
+            for operation in [WriteOperation::Create, WriteOperation::Update] {
+                let mut subject = write(actor, operation, Provenance::Author);
+                subject.carries_devworkspace_label = false;
+                subject.certificate_annotations =
+                    BTreeSet::from(["cert-manager.io/common-name".to_owned()]);
+                let decision = verdict(&subject);
+                assert!(decision.denial.is_some(), "{actor} {operation:?}");
+                assert_eq!(decision.result, "denied_certificate_annotation");
+            }
+        }
+        // What Che itself sets on a workspace Ingress stays allowed.
+        let mut subject = write(DWO, WriteOperation::Create, Provenance::Devfile);
+        subject.certificate_annotations = [
+            "cert-manager.io/cluster-issuer",
+            "cert-manager.io/private-key-size",
+            "cert-manager.io/subject-organizations",
+            "cert-manager.io/subject-organizationalunits",
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect();
+        assert!(verdict(&subject).denial.is_none());
+        // The break-glass identity is exempt, as it is from every row.
+        let mut subject = write(
+            "system:serviceaccount:platform:break-glass",
+            WriteOperation::Create,
+            Provenance::Author,
+        );
+        subject.certificate_annotations = BTreeSet::from(["cert-manager.io/alt-names".to_owned()]);
         assert!(verdict(&subject).denial.is_none());
     }
 
