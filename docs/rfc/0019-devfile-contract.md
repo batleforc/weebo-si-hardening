@@ -719,7 +719,7 @@ anywhere, responses byte-identical. (2) `DryRun` on `dev-ws-batleforc-test` only
 (`namespaceSelector` on its name), then all workspace namespaces, for at least 7 days, watching
 `weebo_si_devfile_contract_total` by `result` and the log reasons. (3) Fix the real devfiles that
 warn (weebo-che-project, weebo-dotfiles-che) — the point of the dry run. (4) After V-13 (pinned
-parents resolve), which gates `Enforce` (V-14 and V-23 are answered: R-10, R-9), `Enforce` on
+parents resolve), which gates `Enforce` and is deferred until WeeboDevImage is tagged (V-14 and V-23 are answered: R-10, R-9), `Enforce` on
 `dev-ws-batleforc-test`, then everywhere. The denied list
 stays empty until the first incident that needs it.
 
@@ -805,7 +805,11 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 ### Still open
 
 None: every question is resolved above. V-13 remains the gating test for `Enforce`
-(*Test plan*, *Operational considerations*); V-14 and V-23 are answered (R-10, R-9).
+(*Test plan*, *Operational considerations*), deferred on 2026-11-24: WeeboDevImage has no tag on
+purpose for now. Until it has one, every devfile on its parent follows `refs/heads/main` and is
+reported `outdated` ("follows branch") in `DryRun`; that is expected, not a fault. A 40-hex
+commit in the parent URI already counts as pinned and would let V-13 run without a tag.
+V-14 and V-23 are answered (R-10, R-9).
 
 ## Future work
 
@@ -838,7 +842,7 @@ None: every question is resolved above. V-13 remains the gating test for `Enforc
   `AdmissionReview` response, the patch merges dwoc-pin's `SetConfigRef` with this feature's
   annotations onto an object carrying no annotations, a network-profiles denial still wins.
 - **E2E (kind + Che):** observations 1–7 of *Proof*.
-- **Cluster:** V-13 gates `Enforce`; V-14 and V-23 answered on 2026-11-24 (R-10, R-9); T-47 after.
+- **Cluster:** V-13 gates `Enforce` (deferred until WeeboDevImage is tagged); V-14 and V-23 answered on 2026-11-24 (R-10, R-9); T-47 after.
 - **Must stay green:** every existing suite, in particular `workspace.rs` (dwoc-pin, image-policy
   rows), the endpoint-auth, policy-guard and image-policy envtests that match `AdmitOutcome`, and
   `perf_envtest`.
@@ -928,5 +932,6 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | V-13 deferred: WeeboDevImage is untagged on purpose; `Enforce` waits for it |
 | 2026-11-24 | V-23 validated by the owner: top-level `attributes` reach `spec.template.attributes` (R-9) |
 | 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (R-10, R28) |
