@@ -782,7 +782,7 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 - **Stale annotations under `Off`.** Nothing clears them; a reader must check the feature's mode.
 - **The contract number is only as good as the User Guide.** If the platform team forgets to bump
   it, every devfile stays `current` through a breaking rule change.
-- **Dashboard visibility unknown** until V-14: the most common creation path may show nothing.
+- **The dashboard shows no admission warning** (V-14, [R28]): on the most common creation path the warning reaches nobody until the che-code extension or a che-dashboard fork patch exists; the annotation still records the outcome.
 
 ## Unresolved questions
 
@@ -799,7 +799,7 @@ The `perf_envtest` suite measures it in PR 4 and records the p99 delta; the budg
 | R-7 | Generated vs hand-written | **Exactly the same checks.** The plan insists hand-writing neither exempts nor adds [R20]. |
 | R-8 | Registry placement (was Still open 1; deviates from R-1's wording) | **A third registry on the route with its own subject `DevfileWorkspace`; fold the registries of `mutate_devworkspaces` into one loop when a fourth arrives.** Keeps feature crates independent, as `AppState` and `operator-internals.md` require [R3][R8]; accepted by the RFC owner 2026-11-24. |
 | R-9 | Do top-level devfile `attributes` reach `spec.template.attributes`? (was Still open 2) | **`Enforce` is blocked on V-23; if only `metadata.attributes` survive, read them from the `che.eclipse.org/devfile` annotation with the same bounded line-scan discipline.** The probe [R15] does not prove the copy, and without it every dashboard workspace would be `unknown`. |
-| R-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. |
+| R-10 | Where does the Che dashboard show admission warnings? (was Still open 3) | **Run V-14 during the DryRun week; if the dashboard shows nothing, the che-code extension reading the annotation moves to the next RFC.** The annotation already gives that extension its input; V-14 also records whether a reinvocation prints a warning twice [R10][R11]. **V-14 answered on 2026-11-24 from source: the dashboard never shows them** — its frontend reads `headers.warning` on create, but its backend's `propagateHeaders` always returns `{}` since the move to `@kubernetes/client-node` 1.x [R28]. kubectl shows them (probe, same day). So the che-code extension is required for the dashboard path; a fork patch capturing the `Warning` header through a client-node middleware is the alternative. |
 | R-11 | Contract number as a metric label (was Still open 4) | **The contract number goes in the log line only; a generic `detail: Option<&'static str>` on `FeatureOutcome` comes only if a second feature needs a bounded detail label.** `FeatureOutcome` carries `result` and `team` only [R1], and a field for one feature is the coupling `Decision`'s doc comment refuses. |
 
 ### Still open
@@ -921,9 +921,11 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R25 | `git show --shortstat` summed over `rfc-0014` and `rfc-0017` commits | `c412ee3` | the estimate's references |
 | R26 | `docs/architecture/hexagonal.md:19-31` | `c412ee3` | the three criteria for hexagonal |
 | R27 | Devfile 2.3.0, *Referring to a parent devfile* — https://devfile.io/docs/2.3.0/referring-to-a-parent-devfile | read 2026-11-24 | parent by `id`+`registryUrl`+`version`, `uri`, `kubernetes`; no version → "the default version for the stack" |
+| R28 | `weebo-si/che-dashboard` (deployed fork) `packages/dashboard-backend/src/devworkspaceClient/services/devWorkspaceApi.ts:84` (`propagateHeaders` returns `{}`) and `packages/dashboard-frontend/src/store/Workspaces/devWorkspaces/actions/actionCreators/createWorkspaceFromResources.ts:76` (reads `headers.warning`); same code in `eclipse-che/che-dashboard` `main` | `develop` at `d09699f` (2026-11-21), read 2026-11-24 | §Unresolved R-10: the dashboard drops admission warnings |
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-11-24 | Draft |
+| 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (R-10, R28) |
