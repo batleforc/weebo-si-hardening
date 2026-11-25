@@ -195,10 +195,13 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
         .team_reconciled(!report.violations.is_empty());
 
     // The merge patch below replaces `conditions` whole: team-tools' own condition, written by
-    // its loop on the same status, is carried over as last listed (RFC 0020).
-    let carried = teams
+    // its loop on the same status, is carried over as last listed (RFC 0020), and the patch is
+    // pinned to that listing's `resourceVersion` so a newer team-tools write is never overwritten.
+    let listed = teams
         .iter()
-        .find(|listed| listed.name_any() == team.name_any())
+        .find(|listed| listed.name_any() == team.name_any());
+    let resource_version = listed.and_then(|listed| listed.metadata.resource_version.clone());
+    let carried = listed
         .and_then(|listed| listed.status.as_ref())
         .map(|status| {
             status
@@ -232,7 +235,7 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
     };
 
     let api: Api<WeeboSiTeam> = Api::all(ctx.client.clone());
-    patch_team_status(&api, &team.name_any(), &status).await?;
+    patch_team_status(&api, &team.name_any(), resource_version, &status).await?;
     Ok(Action::requeue(REQUEUE))
 }
 
@@ -569,12 +572,17 @@ fn condition(ready: bool, generation: i64, message: String) -> Condition {
 async fn patch_team_status(
     api: &Api<WeeboSiTeam>,
     name: &str,
+    resource_version: Option<String>,
     status: &WeeboSiTeamStatus,
 ) -> Result<(), Error> {
+    // A conflict (409) is a lost race with team-tools: the error requeues, the next pass re-lists.
     api.patch_status(
         name,
         &PatchParams::apply(FIELD_MANAGER),
-        &Patch::Merge(&json!({ "status": status })),
+        &Patch::Merge(&json!({
+            "metadata": {"resourceVersion": resource_version},
+            "status": status,
+        })),
     )
     .await
     .map(|_| ())
