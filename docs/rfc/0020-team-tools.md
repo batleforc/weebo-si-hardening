@@ -861,6 +861,11 @@ their cert can build as themselves, which they already may. Requesting a tool in
 outside the feature's `namespaceSelector`: not read, so not rendered. Pointing `BUILDKIT_HOST`
 elsewhere: the egress CNP allows only the tool; network-profiles governs the rest.
 
+*Note (2026-11-25).* The egress CNP sets `enableDefaultDeny: {egress: false, ingress: false}`
+(Cilium ≥ 1.15; the cluster runs 1.19): it only adds the path to the tool. Without it, its
+`egress` section would put the workspace into default-deny egress, cutting DNS and the kube-api
+in a namespace where network-profiles is not enforcing.
+
 **Blast radius.** A rendering bug starts a privileged daemon in a bound tools namespace, under
 its quota; never outside it (RoleBinding). A scale bug leaves a tool up (alerted) or down
 (builds fail until the next reconcile). A certificate bug issues a client cert with a wrong CN
@@ -1159,3 +1164,4 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | 2026-11-24 | Last review applied (6 lenses): Resolved 15–20, STRIDE S3 and T5, validation and RBAC tightened, adoption runbook, router fold. |
 | 2026-11-24 | Still-open 1–5 resolved by the owner as recommended (Resolved 10–14); BuildKit template keeps the process sandbox by default, mTLS mandatory for the BuildKit entry. |
 | 2026-11-24 | Accepted by the owner |
+| 2026-11-25 | Implementation review: the egress CNP is additive (`enableDefaultDeny` off). |

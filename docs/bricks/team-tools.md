@@ -164,7 +164,9 @@ read the annotation and the Events.
   `weebo-team-tool-<key>-server`. Each requesting namespace gets the endpoint `ConfigMap`
   `weebo-team-tool-<key>`, the requester templates, the client `Certificate`
   `weebo-team-tool-<key>-client` (its Secret mounted by DWO), and one egress CNP
-  `weebo-team-tool-<key>-<devworkspaceId>` per workspace, owned by the DevWorkspace. Rendering
+  `weebo-team-tool-<key>-<devworkspaceId>` per workspace, owned by the DevWorkspace. That CNP
+  sets `enableDefaultDeny: {egress: false, ingress: false}` (Cilium ≥ 1.15), so it only adds the
+  path to the tool and never puts the workspace into default-deny egress. Rendering
   early lets DWO mount the client side on the first start.
 - **Scale.** Desired replicas is 1 while a requesting DevWorkspace of the team has
   `spec.started: true` or phase `Starting`/`Running`; when that count reaches 0 it stays 1 for

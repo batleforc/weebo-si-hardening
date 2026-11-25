@@ -434,8 +434,10 @@ pub fn egress_policy(
         key,
         BTreeMap::new(),
         BTreeMap::new(),
+        // Additive: without it an `egress` section puts the workspace into default-deny egress.
         json!({"spec": {
             "endpointSelector": {"matchLabels": {DEVWORKSPACE_ID_LABEL: devworkspace_id}},
+            "enableDefaultDeny": {"egress": false, "ingress": false},
             "egress": [{"toEndpoints": [{"matchLabels": peer}], "toPorts": to_ports(entry)}],
         }}),
     );
@@ -678,5 +680,20 @@ mod tests {
             json!([{"matchLabels": {"app": "buildkitd", "k8s:io.kubernetes.pod.namespace": TOOLS_NS}}])
         );
         assert!(!policy.labels.contains_key(PROFILE_LABEL));
+    }
+
+    #[test]
+    fn the_egress_policy_never_switches_on_default_deny() {
+        let policy = egress_policy(
+            &NamespaceName::new("dev-ws-bob"),
+            "workspace1234",
+            &owner(),
+            &valid_entry(),
+            &NamespaceName::new(TOOLS_NS),
+        );
+        assert_eq!(
+            policy.body["spec"]["enableDefaultDeny"],
+            json!({"egress": false, "ingress": false})
+        );
     }
 }
