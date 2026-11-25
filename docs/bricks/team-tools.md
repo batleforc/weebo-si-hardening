@@ -320,9 +320,17 @@ For a tool already deployed by a per-team chart (weebo-si's `2.helm/team-tools`,
 
 ## Open points
 
-- **A hand edit of a rendered object is not reverted** until its template (or the render inputs)
-  changes: change detection compares the fingerprint annotation, not the live body. The tools
-  namespace is admin-only, so this is an admin's edit.
+- **A hand edit of a rendered object is not reverted** while its fingerprint annotation is
+  unchanged, that is until its template (or the render inputs) changes: change detection compares
+  the stored fingerprint, not the live body. The tools namespace is admin-only, so this is an
+  admin's edit.
+- **Tool pods are outside the workspace pod checks.** The tools namespace never carries
+  `hardening.weebo.io/workspace-namespace`, so the pod-identity webhooks skip it, and the
+  template pod-spec checks do not refuse `runAsUser: 0`, `allowPrivilegeEscalation`, `procMount`
+  or `hostUsers: true`. Accepted because templates are admin-written; the residual risk is a
+  template mistake running a tool as root with the host's user namespace, bounded only by the
+  tools namespace's quota and policies (its PSA level admits the BuildKit template, so it is
+  loose).
 - **Removing the `teamTools` block tears nothing down**; only `mode: Off` does (*Rollback*). RFC
   0020 suggests otherwise; the house behaviour is kept.
 - **`teamTools.allowedRuntimeClasses` is not plumbed**: the chart has no such value, so any
