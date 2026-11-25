@@ -203,8 +203,8 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
         .iter()
         .find(|listed| listed.name_any() == team.name_any());
     let resource_version = listed.and_then(|listed| listed.metadata.resource_version.clone());
-    let carried = listed
-        .and_then(|listed| listed.status.as_ref())
+    let listed_status = listed.and_then(|listed| listed.status.as_ref());
+    let carried = listed_status
         .map(|status| {
             status
                 .conditions
@@ -218,17 +218,20 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
         observed_generation: generation,
         namespaces: report.namespaces,
         members: report.members,
-        conditions: std::iter::once(condition(
-            report.violations.is_empty(),
-            generation,
-            if report.violations.is_empty() {
-                format!(
-                    "{} namespace(s), {} member(s)",
-                    report.namespaces, report.members
-                )
-            } else {
-                report.violations.join("; ")
-            },
+        conditions: std::iter::once(keep_transition_time(
+            condition(
+                report.violations.is_empty(),
+                generation,
+                if report.violations.is_empty() {
+                    format!(
+                        "{} namespace(s), {} member(s)",
+                        report.namespaces, report.members
+                    )
+                } else {
+                    report.violations.join("; ")
+                },
+            ),
+            listed_status.map_or(&[], |status| status.conditions.as_slice()),
         ))
         .chain(carried)
         .collect(),
@@ -236,6 +239,10 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
         team_tools: Vec::new(),
     };
 
+    // An unchanged status is not written: a write is a watch event, hence another pass.
+    if status_unchanged(listed_status, &status) {
+        return Ok(Action::requeue(REQUEUE));
+    }
     let api: Api<WeeboSiTeam> = Api::all(ctx.client.clone());
     let written = patch_team_status(&api, &team.name_any(), resource_version, &status).await?;
     Ok(Action::requeue(if written {
@@ -554,8 +561,8 @@ async fn list_namespaces(client: &Client) -> Result<Vec<ObservedNamespace>, Erro
 
 /// The one condition each object carries, `Ready` or `Degraded`.
 ///
-/// Same known simplification as [`weebo_si_controller::reconcile`]: `lastTransitionTime` is stamped on every
-/// pass rather than only when the condition actually changes.
+/// `lastTransitionTime` is stamped now; a team's is then kept by [`keep_transition_time`]. A user's
+/// is still stamped on every pass, the known simplification of [`weebo_si_controller::reconcile`].
 fn condition(ready: bool, generation: i64, message: String) -> Condition {
     Condition {
         type_: if ready { "Ready" } else { "Degraded" }.to_string(),
@@ -570,6 +577,33 @@ fn condition(ready: bool, generation: i64, message: String) -> Condition {
         observed_generation: Some(generation),
         last_transition_time: Time(k8s_openapi::jiff::Timestamp::now()),
     }
+}
+
+/// `fresh` with the `lastTransitionTime` of the same condition in `current`, when its status and
+/// reason did not change.
+fn keep_transition_time(fresh: Condition, current: &[Condition]) -> Condition {
+    let previous = current.iter().find(|previous| {
+        previous.type_ == fresh.type_
+            && previous.status == fresh.status
+            && previous.reason == fresh.reason
+    });
+    match previous {
+        Some(previous) => Condition {
+            last_transition_time: previous.last_transition_time.clone(),
+            ..fresh
+        },
+        None => fresh,
+    }
+}
+
+/// Whether `listed` already says `status`; `teamTools` is team-tools' field, never written here.
+fn status_unchanged(listed: Option<&WeeboSiTeamStatus>, status: &WeeboSiTeamStatus) -> bool {
+    listed.is_some_and(|listed| {
+        &WeeboSiTeamStatus {
+            team_tools: Vec::new(),
+            ..listed.clone()
+        } == status
+    })
 }
 
 /// `false` when the team changed since it was listed (409).
@@ -675,6 +709,54 @@ mod tests {
             .collect();
 
         assert_eq!(requeued, vec!["max".to_string(), "lea".to_string()]);
+    }
+
+    #[test]
+    fn an_unchanged_team_condition_keeps_its_time_and_skips_the_write() {
+        let at = |second| Time(k8s_openapi::jiff::Timestamp::from_second(second).unwrap());
+        let old = Condition {
+            last_transition_time: at(1_000),
+            ..condition(true, 1, "1 namespace(s), 0 member(s)".to_string())
+        };
+        let tools = Condition {
+            type_: TEAM_TOOLS_CONDITION.to_string(),
+            ..old.clone()
+        };
+        let listed = WeeboSiTeamStatus {
+            observed_generation: 1,
+            namespaces: 1,
+            members: 0,
+            conditions: vec![old.clone(), tools.clone()],
+            team_tools: vec![
+                serde_json::from_value(json!({
+                    "key": "db", "namespace": "tools", "replicas": 1, "requesters": 1,
+                    "state": "Running"
+                }))
+                .unwrap(),
+            ],
+        };
+        let fresh = keep_transition_time(
+            condition(true, 1, "1 namespace(s), 0 member(s)".to_string()),
+            &listed.conditions,
+        );
+        assert_eq!(fresh, old);
+        let status = WeeboSiTeamStatus {
+            conditions: vec![fresh, tools],
+            team_tools: Vec::new(),
+            ..listed.clone()
+        };
+        assert!(status_unchanged(Some(&listed), &status));
+
+        // Degraded is another condition: it gets a fresh time and is written.
+        let degraded =
+            keep_transition_time(condition(false, 1, "x".to_string()), &listed.conditions);
+        assert_ne!(degraded.last_transition_time, at(1_000));
+        let changed = WeeboSiTeamStatus {
+            conditions: vec![degraded],
+            ..status
+        };
+        assert!(!status_unchanged(Some(&listed), &changed));
+        assert!(!status_unchanged(None, &changed));
     }
 
     /// A status write pinned to a resourceVersion the team has moved past is a lost race (409):
