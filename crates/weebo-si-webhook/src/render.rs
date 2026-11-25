@@ -396,6 +396,20 @@ mod tests {
         );
     }
 
+    /// RFC 0018: a pod that asks for `hostUsers: true` leaves the mutation with `false`.
+    #[test]
+    fn host_users_true_replaced_by_false() {
+        let object = serde_json::json!({"spec": {"hostUsers": true}});
+        let mutations = vec![Mutation::SetBool {
+            path: path("spec/hostUsers"),
+            value: false,
+        }];
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &render_patch(&object, &mutations).0)
+            .expect("the patch must apply");
+        assert_eq!(patched, serde_json::json!({"spec": {"hostUsers": false}}));
+    }
+
     #[test]
     fn an_empty_path_writes_nothing() {
         let object = serde_json::json!({"spec": {}});

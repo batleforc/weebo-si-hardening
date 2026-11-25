@@ -4075,6 +4075,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-pod-identity"
+version = "0.1.0"
+dependencies = [
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-pod-security"
 version = "0.1.0"
 dependencies = [
