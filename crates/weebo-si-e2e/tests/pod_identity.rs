@@ -335,11 +335,12 @@ fn each_refusal_names_its_fix_and_leaves_no_pod() {
         "{failure}"
     );
 
-    // Denials carry no status code, so the apiserver answers 400, not the RFC mock's Forbidden.
+    // Denials carry no status reason, so kubectl prints a bare "Error from server:" (seen on kind
+    // 1.35), not the RFC mock's Forbidden.
     let err = try_apply(&probe_pod(&ns.name, &json!({ "hostUsers": true })).to_string())
         .expect_err("hostUsers: true must be refused");
     assert!(err.contains("exit status: 1"), "{err}");
-    assert!(err.contains("Error from server (BadRequest)"), "{err}");
+    assert!(err.contains("Error from server"), "{err}");
     assert!(err.contains(&denied), "{err}");
     assert!(
         err.contains(

@@ -1254,7 +1254,8 @@ fn an_open_endpoint_needs_the_namespace_grant() {
         },
     );
     // The controller re-reads the namespace on its next pass of the `Ingress`; an edit of the
-    // object brings that pass forward from the 300 s requeue.
+    // object brings that pass forward from the 300 s requeue. Made as che-operator, the only
+    // identity the guard lets write a DevWorkspace-generated Ingress (the admin is refused).
     must(&[
         "annotate",
         "--overwrite",
@@ -1263,6 +1264,7 @@ fn an_open_endpoint_needs_the_namespace_grant() {
         "-n",
         &ns.name,
         "e2e.weebo.io/touched=granted",
+        "--as=system:serviceaccount:eclipse-che:che-operator",
     ]);
     wait_until("the honoured count and Event", RECONCILE, || {
         let now = restricted_open_total("honoured");

@@ -680,7 +680,14 @@ impl Workspace {
                 "--field-selector=status.phase=Running",
             ])
             .ok_or("no pod list")?;
-            list.pointer("/items/0/metadata/name")
+            // A terminating pod still reports Running: after a restart it is the old one.
+            list.pointer("/items")
+                .and_then(Value::as_array)
+                .and_then(|pods| {
+                    pods.iter()
+                        .find(|pod| pod.pointer("/metadata/deletionTimestamp").is_none())
+                })
+                .and_then(|pod| pod.pointer("/metadata/name"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .ok_or_else(|| "no running pod yet".to_string())
