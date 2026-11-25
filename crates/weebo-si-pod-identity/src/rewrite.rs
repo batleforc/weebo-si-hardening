@@ -168,7 +168,7 @@ impl PodSubject {
 /// pod already in shape — so a reinvocation on a rewritten pod patches nothing.
 ///
 /// Pod-level `runAsUser`, `runAsGroup`, `fsGroup` absent → the configured ids; `runAsGroup: 0`
-/// or `fsGroup: 0` → the configured gid; any other non-zero id kept; `runAsUser: 0` kept for
+/// or `fsGroup: 0` (unless `grantGroupZero`) → the configured gid; any other non-zero id kept; `runAsUser: 0` kept for
 /// validation to refuse. `hostUsers` → `false`, `supplementalGroupsPolicy` → `Strict`,
 /// `runAsNonRoot` → `true`, and `fsGroupChangePolicy: OnRootMismatch` when an id is rewritten.
 pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rewrite> {
@@ -200,7 +200,8 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
         (
             Field::FsGroup,
             context.fs_group,
-            Some(0),
+            // grantGroupZero lets `fsGroup: 0` through validation, so it is kept as asked.
+            (!config.grant_group_zero).then_some(0),
             config.run_as_group,
         ),
     ];
@@ -413,6 +414,20 @@ pub(crate) mod tests {
         pod.security_context.run_as_group = Some(0);
         pod.security_context.fs_group = Some(0);
         assert_eq!(rendered(&pod), ["runAsGroup=0->1234", "fsGroup=0->1234"]);
+    }
+
+    #[test]
+    fn granted_group_zero_keeps_fs_group_zero() {
+        let mut pod = fixed_pod();
+        pod.security_context.run_as_group = Some(0);
+        pod.security_context.fs_group = Some(0);
+        let config = PodIdentityConfig {
+            grant_group_zero: true,
+            ..config()
+        };
+        let rewrites = identity_rewrite(&pod, &config);
+        let got: Vec<String> = rewrites.iter().map(ToString::to_string).collect();
+        assert_eq!(got, ["runAsGroup=0->1234"]);
     }
 
     #[test]
