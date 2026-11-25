@@ -40,6 +40,8 @@ use weebo_si_identity::{Claimant, reconcile_target, username_holder};
 /// here: the interesting changes arrive as watch events, and this is the backstop for the ones
 /// that do not — a `WeeboSiConfig` edit, a namespace relabelled, a restart.
 const REQUEUE: Duration = Duration::from_secs(300);
+/// The retry after a team status write lost to team-tools: soon, and not as a failure.
+const LOST_RACE_REQUEUE: Duration = Duration::from_secs(2);
 
 /// The field manager both loops patch `status` as.
 const FIELD_MANAGER: &str = "weebo-si-operator";
@@ -235,8 +237,12 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
     };
 
     let api: Api<WeeboSiTeam> = Api::all(ctx.client.clone());
-    patch_team_status(&api, &team.name_any(), resource_version, &status).await?;
-    Ok(Action::requeue(REQUEUE))
+    let written = patch_team_status(&api, &team.name_any(), resource_version, &status).await?;
+    Ok(Action::requeue(if written {
+        REQUEUE
+    } else {
+        LOST_RACE_REQUEUE
+    }))
 }
 
 /// One pass over one person: plan, provision what the mode allows, write `status`.
@@ -566,6 +572,8 @@ fn condition(ready: bool, generation: i64, message: String) -> Condition {
     }
 }
 
+/// `false` when the team changed since it was listed (409).
+///
 /// Two concrete writers rather than one generic one: `patch_status` needs `DeserializeOwned`,
 /// and taking a `serde` dependency into this crate to spell that bound once is a worse trade than
 /// two four-line functions.
@@ -574,19 +582,24 @@ async fn patch_team_status(
     name: &str,
     resource_version: Option<String>,
     status: &WeeboSiTeamStatus,
-) -> Result<(), Error> {
-    // A conflict (409) is a lost race with team-tools: the error requeues, the next pass re-lists.
-    api.patch_status(
-        name,
-        &PatchParams::apply(FIELD_MANAGER),
-        &Patch::Merge(&json!({
-            "metadata": {"resourceVersion": resource_version},
-            "status": status,
-        })),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|err| Error(format!("patching the status of team {name}: {err}")))
+) -> Result<bool, Error> {
+    let patch = json!({
+        "metadata": {"resourceVersion": resource_version},
+        "status": status,
+    });
+    match api
+        .patch_status(
+            name,
+            &PatchParams::apply(FIELD_MANAGER),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        // A lost race with team-tools, not a failure: the caller requeues and re-lists.
+        Err(kube::Error::Api(status)) if status.code == 409 => Ok(false),
+        Err(err) => Err(Error(format!("patching the status of team {name}: {err}"))),
+    }
 }
 
 async fn patch_user_status(
@@ -662,5 +675,51 @@ mod tests {
             .collect();
 
         assert_eq!(requeued, vec!["max".to_string(), "lea".to_string()]);
+    }
+
+    /// A status write pinned to a resourceVersion the team has moved past is a lost race (409):
+    /// reported as not written, not as an error that would raise `IdentityFailed`.
+    #[cfg(feature = "envtest")]
+    #[tokio::test]
+    async fn a_stale_team_status_write_is_a_lost_race_not_an_error() {
+        use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+        use kube::CustomResourceExt;
+        use kube::api::PostParams;
+        let Some(env) = weebo_si_envtest_support::EnvTest::try_start().await else {
+            return;
+        };
+        let client = env.client().unwrap();
+        let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
+        crds.patch(
+            "weebositeams.hardening.weebo.io",
+            &PatchParams::apply("envtest").force(),
+            &Patch::Apply(&WeeboSiTeam::crd()),
+        )
+        .await
+        .unwrap();
+        let api: Api<WeeboSiTeam> = Api::all(client);
+        let mut created = None;
+        for _ in 0..50 {
+            match api.create(&PostParams::default(), &team("race")).await {
+                Ok(team) => {
+                    created = Some(team);
+                    break;
+                }
+                // The CRD is not served yet.
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        let stale = created.unwrap().metadata.resource_version;
+        let status = WeeboSiTeamStatus::default();
+        assert!(
+            patch_team_status(&api, "race", stale.clone(), &status)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !patch_team_status(&api, "race", stale, &status)
+                .await
+                .unwrap()
+        );
     }
 }
