@@ -59,6 +59,10 @@ impl Findings {
     }
 }
 
+/// `Decision.result` when the block vanished mid-request; not a verdict, so never counted in
+/// `weebo_si_devfile_contract_total` (`weebo-si-runtime`'s `prometheus.rs` matches the literal).
+pub const NO_CONFIG_RESULT: &str = "no_config";
+
 /// The `devfile-contract` feature, reading the config store's live handle.
 pub struct DevfileContract {
     config: Arc<RwLock<Option<DevfileContractConfig>>>,
@@ -85,10 +89,16 @@ impl Feature<DevfileWorkspace> for DevfileContract {
             .config
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The block removed between the registry's mode read and this one: the feature is `Off`
+        // now, and refusing every DevWorkspace write for that race would be worse than admitting.
         let Some(config) = guard.as_ref() else {
-            return Err(DomainError::InvalidConfiguration(
-                "devfile-contract evaluated with no spec.features.devfileContract configured"
-                    .to_string(),
+            // The note tells this allow apart from a judged one in the route's log line.
+            let note = format!("devfile={NO_CONFIG_RESULT}");
+            return Ok(Decision::new(
+                Vec::new(),
+                None,
+                Some(note),
+                NO_CONFIG_RESULT,
             ));
         };
         Ok(decide(subject, config))

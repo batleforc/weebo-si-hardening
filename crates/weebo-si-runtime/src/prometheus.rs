@@ -113,8 +113,9 @@ impl Observer for PrometheusObserver {
                 .inc();
         }
 
-        // `result` ∈ current|outdated|unknown|denied, all compile-time constants (RFC 0019).
-        if feature.kebab() == "devfile-contract" {
+        // `result` ∈ current|outdated|unknown|denied, all compile-time constants (RFC 0019);
+        // `no_config` (the block removed mid-request) judged nothing, so it is not counted.
+        if feature.kebab() == "devfile-contract" && outcome.result != "no_config" {
             self.devfile_contract_total
                 .with_label_values(&[outcome.result, mode_label(mode)])
                 .inc();
@@ -312,6 +313,7 @@ mod tests {
         decided("outdated", FeatureMode::DryRun);
         decided("denied", FeatureMode::Enforce);
         decided("denied", FeatureMode::Enforce);
+        decided("no_config", FeatureMode::Enforce);
         observer.decided(
             FeatureId::new("dwoc-pin"),
             FeatureMode::Enforce,

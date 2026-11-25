@@ -13,7 +13,7 @@ pub mod feature;
 pub mod parse;
 pub mod subject;
 
-pub use feature::{DevfileContract, FEATURE_ID, Verdict, denied_match};
+pub use feature::{DevfileContract, FEATURE_ID, NO_CONFIG_RESULT, Verdict, denied_match};
 pub use parse::{
     Contract, SchemaVersion, UriPin, classify_parent_uri, excerpt, normalise_uri, parse_contract,
     scan_schema_version,

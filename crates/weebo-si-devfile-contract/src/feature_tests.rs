@@ -655,18 +655,21 @@ fn only_its_own_annotations_are_emitted() {
 }
 
 #[test]
-fn no_config_is_an_error_not_an_allow() {
+fn a_block_removed_mid_request_admits_untouched() {
     let feature = DevfileContract::new(Arc::new(RwLock::new(None)));
     let namespace = NamespaceFacts {
         labels: BTreeMap::new(),
         selection_annotation: None,
     };
     let catalog = FakeDwocCatalog::new(std::iter::empty());
-    assert!(
-        feature
-            .evaluate(&workspace(), &Context::new(&[], &namespace, &catalog))
-            .is_err()
-    );
+    let decision = feature
+        .evaluate(&workspace(), &Context::new(&[], &namespace, &catalog))
+        .unwrap();
+    assert!(decision.denial.is_none() && decision.mutations.is_empty());
+    assert!(decision.warnings.is_empty());
+    // The literal `weebo-si-runtime`'s `prometheus.rs` filters on: renaming one breaks this.
+    assert_eq!(decision.result, "no_config");
+    assert_eq!(decision.note.as_deref(), Some("devfile=no_config"));
     assert_eq!(feature.id().kebab(), FEATURE_ID);
 }
 
