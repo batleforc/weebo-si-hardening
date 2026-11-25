@@ -189,10 +189,17 @@ impl Feature<WorkspaceAdmission> for WorkspaceGate {
                     "denied_restricted",
                 ));
             }
+            // Only the keys outside the team grant: the restricted ones get their own clause.
+            let outside_team: Vec<ProfileKey> = not_granted
+                .requested
+                .iter()
+                .filter(|key| !not_granted.restricted_refused.contains(key))
+                .cloned()
+                .collect();
             let mut reason = format!(
                 "workspace {} requests network profile(s) [{}], which team {team} is not granted",
                 subject.name,
-                join(&not_granted.requested)
+                join(&outside_team)
             );
             if !not_granted.restricted_refused.is_empty() {
                 reason.push_str(&format!(
@@ -509,6 +516,21 @@ mod tests {
             )
         );
         assert_eq!(decision.result, "denied_restricted");
+    }
+
+    /// A refusal mixing both kinds blames the team only for the keys outside its grant.
+    #[test]
+    fn a_mixed_refusal_names_the_restricted_key_only_in_the_restricted_clause() {
+        let decision = evaluate(
+            &gate(OnNotGranted::Deny, &[WORKSPACE_NS]),
+            &workspace(WORKSPACE_NS, Some("internet,nope")),
+        );
+        let denial = decision.denial.unwrap_or_default();
+        assert!(
+            denial.contains("[nope], which team") && denial.contains("; [internet] are restricted"),
+            "{denial}"
+        );
+        assert_eq!(decision.result, "denied_not_granted");
     }
 
     #[test]
