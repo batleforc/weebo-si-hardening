@@ -170,6 +170,10 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
         devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
             config_store.devfile_contract_config(),
         )),
+        // Inert until a scenario writes `spec.features.teamTools`.
+        team_tools: Some(weebo_si_webhook::team_tools_route(
+            config_store.team_tools_config(),
+        )),
         gate: Arc::new(config_store),
         namespace_view: ns_store,
         dwoc_catalog: dwoc_store,
@@ -566,6 +570,180 @@ async fn devfile_contract_warns_and_annotates_beside_the_pin_live() {
             .as_str()
             .unwrap_or_default()
             .contains("devfile parent is denied by the platform (deniedParents entry 1: https://example.com/denied/)"),
+        "{body}"
+    );
+}
+
+/// `PATCH` (merge) a DevWorkspace and return the status, the `Warning` headers and the body.
+async fn patch_reading_warnings(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+    patch: serde_json::Value,
+) -> (u16, Vec<String>, serde_json::Value) {
+    let request = kube::core::Request::new(format!(
+        "/apis/workspace.devfile.io/v1alpha2/namespaces/{namespace}/devworkspaces"
+    ))
+    .patch(name, &PatchParams::default(), &Patch::Merge(patch))
+    .unwrap();
+    let response = client
+        .send(request.map(kube::client::Body::from))
+        .await
+        .expect("the apiserver should answer");
+    let status = response.status().as_u16();
+    let warnings =
+        weebo_si_pod_security_adapters::namespace_label_store::warnings(response.headers());
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect_bytes().await.unwrap()).unwrap();
+    (status, warnings, body)
+}
+
+/// RFC 0020 PR 5 over a real apiserver, `onNotGranted: Deny` (Resolved 15): a granted key is
+/// annotated; a `CREATE` naming an ungranted key is refused; once the grant is revoked, an
+/// `UPDATE` that does not start the workspace is admitted with the key dropped and a warning,
+/// and the `UPDATE` that starts it is refused.
+#[tokio::test]
+async fn team_tools_refuses_only_a_create_or_a_start_under_deny_live() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    start_webhook(&env_test, cert_dir.path()).await;
+
+    create_config(
+        client.clone(),
+        serde_json::json!({"features": {"teamTools": {
+            "mode": "Enforce",
+            "onNotGranted": "Deny",
+            "catalog": [{
+                "key": "buildkit",
+                "workload": {"kind": "StatefulSet", "name": "buildkitd"},
+                "service": {"name": "buildkitd", "port": 1234},
+                "toolTemplates": [
+                    {"kind": "StatefulSet", "name": "buildkitd", "namespace": "weebo-si-hardening-templates"},
+                ],
+            }],
+        }}}),
+    )
+    .await;
+    let team_spec = |allowed: serde_json::Value| {
+        serde_json::json!({
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "weebo"}},
+            "features": {"teamTools": {"namespace": "team-weebo-tools", "allowed": allowed}},
+        })
+    };
+    create_team(
+        client.clone(),
+        "weebo",
+        team_spec(serde_json::json!(["buildkit"])),
+    )
+    .await;
+    let labels = BTreeMap::from([("weebo.io/team".to_string(), "weebo".to_string())]);
+    create_namespace(client.clone(), "user-alice", labels, BTreeMap::new()).await;
+
+    let requesting = |name: &str, keys: &str| {
+        let mut obj = devworkspace("user-alice", name);
+        obj.data["spec"]["started"] = serde_json::json!(false);
+        obj.data["spec"]["template"]["attributes"] =
+            serde_json::json!({"hardening.weebo.io/team-tools": keys});
+        obj
+    };
+    let verdict = |obj: &serde_json::Value| {
+        obj["metadata"]["annotations"]["hardening.weebo.io/team-tools"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Probe workspaces until the config and team watches have reached the webhook.
+    for attempt in 0..40 {
+        let (_, _, probe) = create_reading_warnings(
+            &client,
+            &requesting(&format!("probe-{attempt}"), "buildkit"),
+        )
+        .await;
+        if verdict(&probe) == "granted=buildkit;dropped=" {
+            break;
+        }
+        assert!(
+            attempt < 39,
+            "the team-tools config never reached the webhook: {probe}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let (status, warnings, created) =
+        create_reading_warnings(&client, &requesting("python-web", "buildkit")).await;
+    assert_eq!(status, 201, "{created}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(verdict(&created), "granted=buildkit;dropped=");
+
+    // A non-starting UPDATE while granted keeps the verdict and warns nothing.
+    let (status, warnings, body) = patch_reading_warnings(
+        &client,
+        "user-alice",
+        "python-web",
+        serde_json::json!({"metadata": {"labels": {"touch": "granted"}}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(verdict(&body), "granted=buildkit;dropped=");
+
+    let (status, _, body) =
+        create_reading_warnings(&client, &requesting("android-ws", "android")).await;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("team tool \"android\" is not granted to team weebo"),
+        "{body}"
+    );
+
+    // Revoke the grant, then touch a label (not a start) until the webhook sees the revocation.
+    let teams: Api<WeeboSiTeam> = Api::all(client.clone());
+    teams
+        .patch(
+            "weebo",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"spec": team_spec(serde_json::json!([]))})),
+        )
+        .await
+        .expect("the team should be patched");
+    let mut last = None;
+    for attempt in 0..40 {
+        let touch = serde_json::json!({"metadata": {"labels": {"touch": attempt.to_string()}}});
+        let (status, warnings, body) =
+            patch_reading_warnings(&client, "user-alice", "python-web", touch).await;
+        assert_eq!(
+            status, 200,
+            "a non-starting UPDATE is never refused: {body}"
+        );
+        if verdict(&body) == "granted=;dropped=buildkit" {
+            last = Some(warnings);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        last.expect("the revocation never reached the webhook"),
+        vec!["team tool \"buildkit\" is no longer granted to team weebo; dropped".to_string()]
+    );
+
+    let (status, _, body) = patch_reading_warnings(
+        &client,
+        "user-alice",
+        "python-web",
+        serde_json::json!({"spec": {"started": true}}),
+    )
+    .await;
+    assert_eq!(status, 400, "the start is refused: {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("team tool \"buildkit\" is not granted to team weebo"),
         "{body}"
     );
 }
@@ -2168,6 +2346,9 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
         }),
         devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
             stack.config_store.devfile_contract_config(),
+        )),
+        team_tools: Some(weebo_si_webhook::team_tools_route(
+            stack.config_store.team_tools_config(),
         )),
         gate: Arc::clone(&stack.config_store) as _,
         namespace_view: Arc::clone(&stack.ns_store) as _,

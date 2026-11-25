@@ -16,15 +16,22 @@ use weebo_si_chassis::port::observer::Observer;
 use weebo_si_chassis::{
     AdmitOutcome, Context, Decision, DomainError, Feature, FeatureId, Mutation, Registry, Subject,
 };
-use weebo_si_crd::{DevfileContractConfig, DwocRef, NamespaceName, ResolvedNetworkProfilesConfig};
+use weebo_si_crd::{
+    DevfileContractConfig, DwocRef, NamespaceName, ResolvedNetworkProfilesConfig,
+    ResolvedTeamToolsConfig,
+};
 use weebo_si_devfile_contract::{
     DevfileContract, DevfileWorkspace, FEATURE_ID as DEVFILE_CONTRACT_ID,
 };
 use weebo_si_dwoc_pin::Workspace;
 use weebo_si_network_profiles::WorkspaceAdmission;
+use weebo_si_team_tools::{
+    FEATURE_ID as TEAM_TOOLS_ID, TeamToolsAdmission, ToolsWorkspaceAdmission,
+};
 
 use crate::extract::{
-    devfile_workspace_from_object, workspace_admission_from_object, workspace_from_object,
+    devfile_workspace_from_object, tools_workspace_from_object, workspace_admission_from_object,
+    workspace_from_object,
 };
 use crate::metrics::WebhookMetrics;
 use crate::render::{render_patch, with_warnings};
@@ -89,6 +96,9 @@ pub struct AppState {
     /// third registry for the same reason as the second: its subject is `DevfileWorkspace`
     /// (resolved D-8). `None` when not wired.
     pub devfile_contract: Option<DevfileContractAdmission>,
+    /// `team-tools`' admission gate (RFC 0020), the fourth and last registry on the route: its
+    /// subject is `ToolsWorkspaceAdmission`. `None` when not wired.
+    pub team_tools: Option<TeamToolsRoute>,
     /// Which features are active, in which mode, for which namespace.
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The labels and selection annotation of a namespace.
@@ -113,6 +123,24 @@ pub struct NetworkProfilesAdmission {
     /// `spec.features.networkProfiles`, hot-reloaded — read fresh per request for
     /// `workspaceSelection.attribute` and `namespaceSelection.annotation`.
     pub config: Arc<RwLock<Option<ResolvedNetworkProfilesConfig>>>,
+}
+
+/// `team-tools`' half of the DevWorkspace admission path, from [`team_tools_route`]: the
+/// registry holding [`TeamToolsAdmission`], plus the live configuration
+/// `workspaceSelection.attribute` is read from per request.
+pub struct TeamToolsRoute {
+    /// The gate, registered.
+    pub registry: Registry<ToolsWorkspaceAdmission>,
+    /// `spec.features.teamTools`, hot-reloaded.
+    pub config: Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
+}
+
+/// The `team-tools` gate of [`AppState::team_tools`], over the config store's live handle — one
+/// builder for the composition root and the envtest suite.
+pub fn team_tools_route(config: Arc<RwLock<Option<ResolvedTeamToolsConfig>>>) -> TeamToolsRoute {
+    let mut registry = Registry::new();
+    registry.register(TeamToolsAdmission::new(Arc::clone(&config)));
+    TeamToolsRoute { registry, config }
 }
 
 /// The webhook's router. Also built by the envtest suite, pointed at real
@@ -144,10 +172,6 @@ async fn mutate_devworkspaces(
 
     let namespace = NamespaceName::new(request.namespace.clone().unwrap_or_default());
     let workspace = workspace_from_object(&namespace, object);
-    // Every registry's payload, in the global order (RFC 0019, D-14): one patch, and the warnings
-    // bounded once, after the merge.
-    let mut mutations = Vec::new();
-    let mut warnings = Vec::new();
     let refuse = |reason: String| {
         log_admission(
             &namespace,
@@ -159,131 +183,97 @@ async fn mutate_devworkspaces(
         Json(AdmissionResponse::from(&request).deny(reason).into_review())
     };
 
-    // The order is global on this route (RFC 0019, D-14): `network-profiles` gate →
-    // `devfile-contract` → `dwoc-pin` → (`team-tools`, RFC 0020). A denial short-circuits: the
-    // gate refuses a workspace that must not start, and its message explains the more
-    // fundamental problem; a denied parent is refused before a pin is computed for it.
-    if let Some(np) = &state.network_profiles {
-        let (attribute_key, annotation_key, grant_key) = {
-            let guard = np
-                .config
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match guard.as_ref() {
-                Some(config) => (
-                    config.workspace_selection.attribute.clone(),
-                    config.namespace_selection.annotation.clone(),
-                    config.namespace_grant.annotation.clone(),
-                ),
-                // No `networkProfiles` block at all. `FeatureGate::mode` already reports `Off`
-                // for it, so `admit` would skip the gate anyway — returning early just avoids
-                // reading the object for keys nobody configured.
-                None => (String::new(), String::new(), String::new()),
-            }
-        };
-        // From the cache: admission already refuses a namespace it has not observed, and an
-        // empty key (`""` disables restricted grants) reads as no grant.
-        let read = |key: &str| {
-            (!key.is_empty())
-                .then(|| state.namespace_view.annotation(&namespace, key))
-                .flatten()
-        };
-        let namespace_annotation = read(&annotation_key);
-        let namespace_grant = read(&grant_key);
-        let subject = workspace_admission_from_object(
-            &namespace,
-            object,
-            request.operation.clone(),
-            &attribute_key,
-            namespace_annotation,
-            namespace_grant,
-        );
-
-        let gate_timer = state
-            .metrics
-            // Both admission metrics read the label off the subject, so `resource` on the
-            // histogram and on `weebo_si_admission_requests_total` are the same value by
-            // construction rather than by two matching literals.
-            .timer("network-profiles", subject.resource())
-            .start_timer();
-        let outcome = weebo_si_chassis::admit(
-            &np.registry,
-            &subject,
-            state.gate.as_ref(),
-            state.namespace_view.as_ref(),
-            state.dwoc_catalog.as_ref(),
-            state.observer.as_ref(),
-        );
-        gate_timer.observe_duration();
-        match outcome {
+    // The order is global on this route (RFC 0019 D-14, RFC 0020 *Admission*): `network-profiles`
+    // gate → `devfile-contract` → `dwoc-pin` → `team-tools`. The first denial wins and stops the
+    // loop: the gate refuses a workspace that must not start, and its message explains the more
+    // fundamental problem; a denied parent is refused before a pin is computed for it. Each step
+    // builds its subject only when it runs; an unwired registry is skipped.
+    let steps: [Option<Step<'_>>; 4] = [
+        state.network_profiles.as_ref().map(|np| {
+            Box::new(|| {
+                let (attribute_key, annotation_key, grant_key) = {
+                    let guard = np
+                        .config
+                        .read()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match guard.as_ref() {
+                        Some(config) => (
+                            config.workspace_selection.attribute.clone(),
+                            config.namespace_selection.annotation.clone(),
+                            config.namespace_grant.annotation.clone(),
+                        ),
+                        // No `networkProfiles` block at all. `FeatureGate::mode` already
+                        // reports `Off` for it, so `admit` skips the gate anyway — empty keys
+                        // just avoid reading the object for keys nobody configured.
+                        None => (String::new(), String::new(), String::new()),
+                    }
+                };
+                // From the cache: admission already refuses a namespace it has not observed,
+                // and an empty key (`""` disables restricted grants) reads as no grant.
+                let read = |key: &str| {
+                    (!key.is_empty())
+                        .then(|| state.namespace_view.annotation(&namespace, key))
+                        .flatten()
+                };
+                let subject = workspace_admission_from_object(
+                    &namespace,
+                    object,
+                    request.operation.clone(),
+                    &attribute_key,
+                    read(&annotation_key),
+                    read(&grant_key),
+                );
+                run(&state, "network-profiles", &np.registry, &subject)
+            }) as Step<'_>
+        }),
+        state.devfile_contract.as_ref().map(|registry| {
+            Box::new(|| {
+                let subject = devfile_workspace_from_object(
+                    &namespace,
+                    object,
+                    request.old_object.as_ref(),
+                    &request.operation,
+                );
+                run(&state, DEVFILE_CONTRACT_ID, registry, &subject)
+            }) as Step<'_>
+        }),
+        Some(Box::new(|| run(&state, "dwoc-pin", &state.registry, &workspace)) as Step<'_>),
+        state.team_tools.as_ref().map(|tools| {
+            Box::new(|| {
+                let attribute_key = tools
+                    .config
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .map(|config| config.workspace_selection.attribute.clone())
+                    .unwrap_or_default();
+                let subject = tools_workspace_from_object(
+                    &namespace,
+                    object,
+                    request.old_object.as_ref(),
+                    &request.operation,
+                    &attribute_key,
+                );
+                run(&state, TEAM_TOOLS_ID, &tools.registry, &subject)
+            }) as Step<'_>
+        }),
+    ];
+    // Every registry's payload is kept, in that order: one patch, and the warnings bounded once,
+    // after the merge (`with_warnings`), never per registry.
+    let mut mutations = Vec::new();
+    let mut warnings = Vec::new();
+    for step in steps.into_iter().flatten() {
+        match step() {
             Ok(AdmitOutcome::Allow {
-                mutations: gate_mutations,
-                warnings: gate_warnings,
+                mutations: step_mutations,
+                warnings: step_warnings,
             }) => {
-                mutations.extend(gate_mutations);
-                warnings.extend(gate_warnings);
+                mutations.extend(step_mutations);
+                warnings.extend(step_warnings);
             }
             Ok(AdmitOutcome::Deny(reason)) => return refuse(reason),
             Err(err) => return refuse(err.to_string()),
         }
-    }
-
-    if let Some(registry) = &state.devfile_contract {
-        let subject = devfile_workspace_from_object(
-            &namespace,
-            object,
-            request.old_object.as_ref(),
-            &request.operation,
-        );
-        let timer = state
-            .metrics
-            .timer(DEVFILE_CONTRACT_ID, subject.resource())
-            .start_timer();
-        let outcome = weebo_si_chassis::admit(
-            registry,
-            &subject,
-            state.gate.as_ref(),
-            state.namespace_view.as_ref(),
-            state.dwoc_catalog.as_ref(),
-            state.observer.as_ref(),
-        );
-        timer.observe_duration();
-        match outcome {
-            Ok(AdmitOutcome::Allow {
-                mutations: contract_mutations,
-                warnings: contract_warnings,
-            }) => {
-                mutations.extend(contract_mutations);
-                warnings.extend(contract_warnings);
-            }
-            Ok(AdmitOutcome::Deny(reason)) => return refuse(reason),
-            Err(err) => return refuse(err.to_string()),
-        }
-    }
-
-    // Named (not `let _ = ...`, which would drop immediately): the histogram observation
-    // happens on drop, at the end of this function's scope.
-    let _timer = state
-        .metrics
-        .timer("dwoc-pin", workspace.resource())
-        .start_timer();
-    match weebo_si_chassis::admit(
-        &state.registry,
-        &workspace,
-        state.gate.as_ref(),
-        state.namespace_view.as_ref(),
-        state.dwoc_catalog.as_ref(),
-        state.observer.as_ref(),
-    ) {
-        Ok(AdmitOutcome::Allow {
-            mutations: pin_mutations,
-            warnings: pin_warnings,
-        }) => {
-            mutations.extend(pin_mutations);
-            warnings.extend(pin_warnings);
-        }
-        Ok(AdmitOutcome::Deny(reason)) => return refuse(reason),
-        Err(err) => return refuse(err.to_string()),
     }
 
     log_admission(
@@ -307,6 +297,32 @@ async fn mutate_devworkspaces(
         Err(err) => return refuse(format!("failed to render patch: {err}")),
     };
     Json(response.into_review())
+}
+
+/// One registry of the DevWorkspace route, its subject built and admitted only when called.
+type Step<'a> = Box<dyn FnOnce() -> Result<AdmitOutcome, DomainError> + 'a>;
+
+/// `admit` one registry over its subject, timed under `feature` in
+/// `weebo_si_admission_duration_seconds`. Both admission metrics read the `resource` label off
+/// the subject, so the histogram and `weebo_si_admission_requests_total` agree by construction.
+fn run<S: Subject>(
+    state: &AppState,
+    feature: &str,
+    registry: &Registry<S>,
+    subject: &S,
+) -> Result<AdmitOutcome, DomainError> {
+    let _timer = state
+        .metrics
+        .timer(feature, subject.resource())
+        .start_timer();
+    weebo_si_chassis::admit(
+        registry,
+        subject,
+        state.gate.as_ref(),
+        state.namespace_view.as_ref(),
+        state.dwoc_catalog.as_ref(),
+        state.observer.as_ref(),
+    )
 }
 
 /// `devfile-contract` with its log line (RFC 0019, *Log line*): the decision's note carries the
@@ -450,7 +466,12 @@ mod tests {
         }
     }
 
-    fn state(gate_warnings: usize, gate_denies: bool, denied_contracts: Vec<u32>) -> Arc<AppState> {
+    fn state(
+        gate_warnings: usize,
+        gate_denies: bool,
+        denied_contracts: Vec<u32>,
+        tools_denies: bool,
+    ) -> Arc<AppState> {
         let mut gate = Registry::new();
         gate.register(Canned {
             id: "network-profiles",
@@ -462,6 +483,12 @@ mod tests {
             id: "dwoc-pin",
             warnings: 2,
             deny: false,
+        });
+        let mut tools = Registry::new();
+        tools.register(Canned {
+            id: "team-tools",
+            warnings: 1,
+            deny: tools_denies,
         });
         let namespace = NamespaceFacts {
             labels: BTreeMap::new(),
@@ -476,6 +503,10 @@ mod tests {
             devfile_contract: Some(devfile_contract_registry(Arc::new(RwLock::new(Some(
                 config(denied_contracts),
             ))))),
+            team_tools: Some(TeamToolsRoute {
+                registry: tools,
+                config: Arc::new(RwLock::new(None)),
+            }),
             gate: Arc::new(FakeFeatureGate::new(FeatureMode::Enforce, Vec::new())),
             namespace_view: Arc::new(FakeNamespaceView::new([(
                 NamespaceName::new("user-alice"),
@@ -516,11 +547,11 @@ mod tests {
         review.response.unwrap()
     }
 
-    /// D-14: every registry's payload is kept, in the global order, and the warnings are bounded
-    /// once over the merged list — per-registry bounding would let 4 + 2 + 2 through.
+    /// D-14: the warnings are bounded once over the merged list — per-registry bounding would
+    /// let 4 + 2 + 2 + 1 through.
     #[tokio::test]
-    async fn the_bound_runs_once_after_the_merge() {
-        let response = respond(state(4, false, Vec::new())).await;
+    async fn warnings_are_bounded_once_after_the_merge() {
+        let response = respond(state(4, false, Vec::new(), false)).await;
         assert!(response.allowed, "{:?}", response.result);
         let warnings = response.warnings.unwrap();
         assert_eq!(warnings.len(), MAX_WARNINGS);
@@ -543,14 +574,70 @@ mod tests {
             "test~1network-profiles",
             "hardening.weebo.io~1devfile-contract",
             "test~1dwoc-pin",
+            "test~1team-tools",
         ] {
             assert!(patch.contains(key), "{key} missing from {patch}");
         }
     }
 
+    /// RFC 0020, *Admission*: the four registries' mutations and warnings all survive the fold,
+    /// in the global order — 1 + 2 + 2 + 1 warnings fit under the bound.
+    #[tokio::test]
+    async fn every_registry_allow_payload_is_kept() {
+        let response = respond(state(1, false, Vec::new(), false)).await;
+        assert!(response.allowed, "{:?}", response.result);
+        let warnings = response.warnings.unwrap();
+        assert_eq!(warnings.len(), 6, "{warnings:?}");
+        assert_eq!(warnings[0], "network-profiles warning 0");
+        assert!(warnings[1].contains("platform-contract"), "{warnings:?}");
+        assert!(warnings[2].contains("follows branch"), "{warnings:?}");
+        assert_eq!(
+            warnings[3..],
+            [
+                "dwoc-pin warning 0",
+                "dwoc-pin warning 1",
+                "team-tools warning 0"
+            ]
+        );
+        let patch = String::from_utf8(response.patch.unwrap()).unwrap();
+        let at = |key: &str| {
+            patch
+                .find(key)
+                .unwrap_or_else(|| panic!("{key} missing from {patch}"))
+        };
+        let order = [
+            at("test~1network-profiles"),
+            at("hardening.weebo.io~1devfile-contract"),
+            at("test~1dwoc-pin"),
+            at("test~1team-tools"),
+        ];
+        assert!(order.is_sorted(), "registries out of order: {patch}");
+    }
+
+    /// The first refusal wins: `team-tools` runs last, so any earlier denial is the message.
+    #[tokio::test]
+    async fn a_team_tools_denial_comes_last_in_the_order() {
+        let response = respond(state(0, false, Vec::new(), true)).await;
+        assert!(!response.allowed);
+        assert_eq!(response.result.message, "team-tools says no");
+
+        let response = respond(state(0, false, vec![1], true)).await;
+        assert!(
+            response
+                .result
+                .message
+                .contains("platform contract 1 is denied"),
+            "{}",
+            response.result.message
+        );
+
+        let response = respond(state(0, true, vec![1], true)).await;
+        assert_eq!(response.result.message, "network-profiles says no");
+    }
+
     #[tokio::test]
     async fn a_devfile_contract_denial_stops_before_dwoc_pin_and_the_gate_denial_wins() {
-        let response = respond(state(0, false, vec![1])).await;
+        let response = respond(state(0, false, vec![1], false)).await;
         assert!(!response.allowed);
         assert!(
             response
@@ -559,7 +646,7 @@ mod tests {
                 .contains("platform contract 1 is denied")
         );
 
-        let response = respond(state(0, true, vec![1])).await;
+        let response = respond(state(0, true, vec![1], false)).await;
         assert!(!response.allowed);
         assert_eq!(response.result.message, "network-profiles says no");
     }

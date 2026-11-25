@@ -1,6 +1,6 @@
 //! The admission side's shared half (RFC 0012): the `DevWorkspace` mutation route, where the
-//! `network-profiles` workspace gate, `devfile-contract` and `dwoc-pin` run over the same request
-//! (RFC 0002, RFC 0004, RFC 0019); `AdmissionReview` extraction and JSON Patch rendering; the admission metrics; and
+//! `network-profiles` workspace gate, `devfile-contract`, `dwoc-pin` and `team-tools` run over the
+//! same request (RFC 0002, RFC 0004, RFC 0019, RFC 0020); `AdmissionReview` extraction and JSON Patch rendering; the admission metrics; and
 //! [`AdmissionShared`], what the composition root hands every feature's adapters crate. The
 //! other features' routes live in their adapters crates.
 
@@ -13,7 +13,7 @@ pub mod shared;
 pub use metrics::WebhookMetrics;
 pub use router::{
     AppState, DevfileContractAdmission, MUTATE_DEVWORKSPACES_PATH, NetworkProfilesAdmission,
-    devfile_contract_registry, router,
+    TeamToolsRoute, devfile_contract_registry, router, team_tools_route,
 };
 pub use shared::AdmissionShared;
 

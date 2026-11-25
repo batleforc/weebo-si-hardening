@@ -8,12 +8,13 @@ use kube::core::admission::Operation;
 use serde_json::Value;
 use weebo_si_crd::{
     DEVFILE_CONTRACT_ANNOTATION, DEVFILE_CONTRACT_REASON_ANNOTATION, DwocRef, GENERATOR_ATTRIBUTE,
-    NamespaceName, PLATFORM_CONTRACT_ATTRIBUTE,
+    NamespaceName, PLATFORM_CONTRACT_ATTRIBUTE, TEAM_TOOLS_ATTRIBUTE,
 };
 use weebo_si_devfile_contract::parse::SCHEMA_SCAN_BYTES;
 use weebo_si_devfile_contract::{DevfileWorkspace, Parent, is_start};
 use weebo_si_dwoc_pin::Workspace;
 use weebo_si_network_profiles::{WorkspaceAdmission, WorkspaceOperation};
+use weebo_si_team_tools::{ToolsOperation, ToolsWorkspaceAdmission};
 
 /// The attribute this feature reads and writes.
 pub const CONFIG_REF_ATTRIBUTE: &str = "controller.devfile.io/devworkspace-config";
@@ -140,6 +141,48 @@ pub fn devfile_workspace_from_object(
             started(&obj.data),
             old_data.is_none_or(|old| old.pointer("/spec/template") != template),
         ),
+    }
+}
+
+/// Build a [`ToolsWorkspaceAdmission`] — `team-tools`' admission subject (RFC 0020) — from the
+/// admitted object and, on an `UPDATE`, the stored one. A start is `spec.started` going from
+/// false to true (Resolved 15), not RFC 0019's D-13: a template change of a running workspace is
+/// not refused here. An `UPDATE` without an `oldObject` of a started workspace reads as a start,
+/// the side the refusal applies to. `attribute_key` is `workspaceSelection.attribute`; `""`
+/// disables the request channel.
+pub fn tools_workspace_from_object(
+    namespace: &NamespaceName,
+    obj: &DynamicObject,
+    old_obj: Option<&DynamicObject>,
+    operation: &Operation,
+    attribute_key: &str,
+) -> ToolsWorkspaceAdmission {
+    let started = |data: &Value| data.pointer("/spec/started") == Some(&Value::Bool(true));
+    let attribute = (!attribute_key.is_empty())
+        .then(|| {
+            obj.data
+                .pointer("/spec/template/attributes")
+                .and_then(|attributes| attributes.get(attribute_key))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten();
+    ToolsWorkspaceAdmission {
+        name: obj.metadata.name.clone().unwrap_or_default(),
+        namespace: namespace.clone(),
+        operation: match operation {
+            Operation::Create => ToolsOperation::Create,
+            _ => ToolsOperation::Update {
+                starts: started(&obj.data) && !old_obj.is_some_and(|old| started(&old.data)),
+            },
+        },
+        attribute,
+        stored_verdict: obj
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(TEAM_TOOLS_ATTRIBUTE))
+            .cloned(),
     }
 }
 
@@ -353,6 +396,56 @@ mod tests {
         assert!(
             extract(&running, None, Operation::Update).starting,
             "an UPDATE without oldObject reads as a start"
+        );
+    }
+
+    /// RFC 0020, Resolved 15: only `spec.started` false to true is a start; a template change
+    /// of a running workspace is not.
+    #[test]
+    fn the_team_tools_subject_reads_the_attribute_the_verdict_and_the_start() {
+        let mut running = devworkspace(
+            true,
+            serde_json::json!({"attributes": {(TEAM_TOOLS_ATTRIBUTE): "buildkit"}}),
+        );
+        running.metadata.annotations = Some(
+            [(
+                TEAM_TOOLS_ATTRIBUTE.to_string(),
+                "granted=buildkit;dropped=".to_string(),
+            )]
+            .into(),
+        );
+        let stopped = devworkspace(false, serde_json::json!({}));
+        let other = devworkspace(true, serde_json::json!({"parent": {"uri": "https://a/"}}));
+        let ns = NamespaceName::new("user-alice");
+        let tools = |new: &DynamicObject, old: Option<&DynamicObject>, op: Operation| {
+            tools_workspace_from_object(&ns, new, old, &op, TEAM_TOOLS_ATTRIBUTE)
+        };
+
+        let subject = tools(&running, None, Operation::Create);
+        assert_eq!(subject.operation, ToolsOperation::Create);
+        assert_eq!(subject.attribute.as_deref(), Some("buildkit"));
+        assert_eq!(
+            subject.stored_verdict.as_deref(),
+            Some("granted=buildkit;dropped=")
+        );
+        let starts = |new, old, op| match tools(new, old, op).operation {
+            ToolsOperation::Update { starts } => starts,
+            ToolsOperation::Create => panic!("not an update"),
+        };
+        assert!(starts(&running, Some(&stopped), Operation::Update));
+        assert!(
+            !starts(&running, Some(&other), Operation::Update),
+            "template change"
+        );
+        assert!(
+            !starts(&stopped, Some(&running), Operation::Update),
+            "a stop"
+        );
+        assert!(starts(&running, None, Operation::Update), "no oldObject");
+        assert_eq!(
+            tools_workspace_from_object(&ns, &running, None, &Operation::Create, "").attribute,
+            None,
+            "an empty attribute key disables requests"
         );
     }
 }

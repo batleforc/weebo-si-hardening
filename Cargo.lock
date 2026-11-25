@@ -4317,6 +4317,7 @@ dependencies = [
  "weebo-si-envtest-support",
  "weebo-si-network-profiles",
  "weebo-si-runtime",
+ "weebo-si-team-tools",
 ]
 
 [[package]]

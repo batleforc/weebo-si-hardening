@@ -52,7 +52,7 @@ an admin tool run from a workstation with the admin's own kubeconfig.
 | `weebo-si-<feature>` | domain + application | one feature each: its subject, its decision, its ports, and (for reconcile features) its `application::reconcile` |
 | `weebo-si-<feature>-adapters` | adapters | one feature each: the kube stores behind its ports, its Prometheus metrics, its admission routes, its reconcile loops, and the composition functions below |
 | `weebo-si-runtime` | shared adapters | `KubeConfigStore`, `KubeNsStore`, `KubeDwocStore`, `PrometheusObserver`, `watch` (driving a watch, feeding liveness), `access` (an access review before a watch), `delete` (uid-pinned deletes) |
-| `weebo-si-webhook` | shared admission | the `DevWorkspace` mutation route (the `network-profiles` gate, `devfile-contract` and `dwoc-pin`), `AdmissionReview` extraction, JSON Patch rendering, the admission metrics, `AdmissionShared` |
+| `weebo-si-webhook` | shared admission | the `DevWorkspace` mutation route (the `network-profiles` gate, `devfile-contract`, `dwoc-pin` and `team-tools`), `AdmissionReview` extraction, JSON Patch rendering, the admission metrics, `AdmissionShared` |
 | `weebo-si-controller` | shared reconcile | the `WeeboSiConfig` status loop, `events` (reason codes, Events, retry), `workspace` (DevWorkspace id/owner, `held` warnings), `ControllerShared` |
 | `weebo-si-operator` | composition root | CLI parsing, the shared caches, one call per feature, TLS, health, leader election, shutdown |
 | `weebo-si-envtest-support` | test | a real etcd + kube-apiserver for the envtest tier, and the CRD fixtures every suite installs |
@@ -159,7 +159,7 @@ The routes and the webhook configurations that point at them
 
 | Path | Kind | Configuration | Feature |
 | --- | --- | --- | --- |
-| `/mutate/v1alpha1/devworkspaces` | mutating | `…-devworkspaces` | the `network-profiles` workspace gate, then `devfile-contract`, then `dwoc-pin` |
+| `/mutate/v1alpha1/devworkspaces` | mutating | `…-devworkspaces` | the `network-profiles` workspace gate, then `devfile-contract`, then `dwoc-pin`, then `team-tools` |
 | `/validate/v1alpha1/devworkspaces` | validating | `…-devworkspaces-validate` | `image-policy` (workspace layer) |
 | `/validate/v1/pods` | validating | `…-pods` | `image-policy` (pod floor) |
 | `/validate/v1/networkpolicies` | validating | `…-policies` | `policy-guard` |
@@ -175,16 +175,16 @@ value (`imagePolicy.podWebhook.failurePolicy`, `policyGuard.failurePolicy`,
 `registryConfig.failurePolicy`, `endpointAuth.failurePolicy`). Deleting a configuration is the
 break-glass for its feature.
 
-Three features take different subjects on the same request — the network gate's
-`WorkspaceAdmission`, `devfile-contract`'s `DevfileWorkspace` and `dwoc-pin`'s `Workspace` — so
-`/mutate/v1alpha1/devworkspaces` runs three registries one after the other rather than one
-(`webhook/src/router.rs`, `AppState`). The order is global and fixed (RFC 0019, D-14):
-**network-profiles gate → devfile-contract → dwoc-pin** (→ team-tools, RFC 0020). A denial stops
+Four features take different subjects on the same request — the network gate's
+`WorkspaceAdmission`, `devfile-contract`'s `DevfileWorkspace`, `dwoc-pin`'s `Workspace` and
+`team-tools`' `ToolsWorkspaceAdmission` — so `/mutate/v1alpha1/devworkspaces` runs four registries,
+one loop over an ordered list of steps, rather than one (`webhook/src/router.rs`, `AppState`). The
+order is global and fixed (RFC 0019 D-14, RFC 0020): **network-profiles gate → devfile-contract →
+dwoc-pin → team-tools**. A denial stops
 the request at the first registry that refuses, so the gate's message wins and a denied parent is
 refused before a pin is computed. Every registry's mutations go into one JSON Patch, and every
 registry's warnings into one list, bounded once (6 × 120 characters, control characters
-removed) by `render::with_warnings` after the merge. RFC 0020, the fourth registry, folds the
-three into one loop.
+removed) by `render::with_warnings` after the merge.
 
 ## A reconcile, end to end
 

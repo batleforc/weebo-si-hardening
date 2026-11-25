@@ -90,10 +90,10 @@ impl Feature<ToolsWorkspaceAdmission> for TeamToolsAdmission {
             .config
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The block removed between the gate's mode read and this one: the feature is `Off` now,
+        // and refusing every DevWorkspace write for that race would be worse than admitting.
         let Some(config) = guard.as_ref() else {
-            return Err(DomainError::InvalidConfiguration(
-                "team-tools evaluated with no spec.features.teamTools configured".to_string(),
-            ));
+            return Ok(Decision::new(Vec::new(), None, None, "no_request"));
         };
         let request = resolve(
             ctx.teams(),
@@ -349,6 +349,27 @@ mod tests {
             decision.denial.as_deref(),
             Some("team tool \"<invalid>\" is not granted to team weebo")
         );
+    }
+
+    #[test]
+    fn a_block_removed_mid_request_admits_untouched() {
+        let gate = TeamToolsAdmission::new(Arc::new(RwLock::new(None)));
+        let facts = NamespaceFacts {
+            labels: weebo_labels(),
+            selection_annotation: None,
+        };
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let subject = ToolsWorkspaceAdmission {
+            name: "w".to_string(),
+            namespace: NamespaceName::new("dev-ws-batleforc-test"),
+            operation: ToolsOperation::Create,
+            attribute: Some("buildkit".to_string()),
+            stored_verdict: None,
+        };
+        let decision = gate
+            .evaluate(&subject, &Context::new(&[], &facts, &catalog))
+            .unwrap();
+        assert!(decision.denial.is_none() && decision.mutations.is_empty());
     }
 
     #[test]
