@@ -19,7 +19,7 @@
 # deletes it. Everything else a run writes (the realm, the Corefile, packaged charts, image
 # archives) goes into a fresh `mktemp -d` that is removed when the script exits.
 #
-# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas. `task e2e SUITE=<suite>` runs the
+# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas | pod-identity. `task e2e SUITE=<suite>` runs the
 # whole sequence plus the Rust suite of the same name (crates/weebo-si-e2e/tests/<suite>.rs).
 #
 # **Every upstream is pinned**, unlike the spike rig this grew out of (scripts/spike-0009-che.sh):
@@ -695,9 +695,21 @@ addons() {
     # A build workspace runs with `hostUsers: false`, which a kind node refuses until its /sys
     # overmounts and product-files hook are lifted (e2e/runtime-matrix/kind-userns.sh says why).
     pod-security) ENGINE="$E2E_RUNTIME" "$REPO_ROOT/e2e/runtime-matrix/kind-userns.sh" "$CLUSTER-control-plane" ;;
+    # Every workspace pod of this suite runs with `hostUsers: false` (RFC 0018). Rootless podman
+    # gives the node 65536 ids, all of which one user-namespaced pod needs: no pod can start.
+    pod-identity)
+      if [ "$E2E_RUNTIME" = podman ]; then
+        rootless=$(podman info --format '{{.Host.Security.Rootless}}') || rootless=""
+        case "$rootless" in
+          false) ;;
+          true) die "addons: pod-identity cannot run under rootless podman (a user-namespaced pod needs 65536 ids beyond the node's own); run it with docker or rootful podman (E2E_RUNTIME)" ;;
+          *) die "addons: pod-identity: 'podman info' did not say whether podman is rootless" ;;
+        esac
+      fi
+      ENGINE="$E2E_RUNTIME" "$REPO_ROOT/e2e/runtime-matrix/kind-userns.sh" "$CLUSTER-control-plane" ;;
     kubearmor) addon_kubearmor ;;
     identity) addon_authentik; addon_argocd ;;
-    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas)" ;;
+    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas|pod-identity)" ;;
   esac
 }
 
@@ -747,6 +759,7 @@ deploy_operator() {
     workspace) set -- "$@" --set registryConfig.rbac.enabled=true ;;
     kubearmor) set -- "$@" --set kubearmorPolicy.rbac.enabled=true ;;
     pod-security) set -- "$@" --set podSecurity.rbac.enabled=true ;;
+    pod-identity) set -- "$@" --set podIdentity.webhooks.enabled=true ;;
     resource-quotas) set -- "$@" --set resourceQuotas.rbac.enabled=true ;;
     endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Traefik ;;
     identity) set -- "$@" --set identity.rbac.enabled=true --set identity.argoNamespace=argocd ;;
@@ -800,7 +813,7 @@ deploy_gateway() {
 deploy() {
   suite=${1:-}
   case "$suite" in
-    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas) ;;
+    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas | pod-identity) ;;
     *) die "deploy: unknown suite '$suite'" ;;
   esac
   kubectl config use-context "kind-$CLUSTER" >/dev/null

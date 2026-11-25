@@ -189,6 +189,12 @@ And two more, specific to the `WeeboSiTeam` objects and
   `Namespace` object, so this is already admin-only. Where that is not true,
   `namespaceSelection.annotation: ""` removes this step of the resolution chain entirely.
 
+And before `podIdentity` reaches `Enforce` (its own
+[install checklist](./pod-identity.md#install-checklist)): nodes that run user-namespaced pods,
+PSA `restricted` on the namespaces in scope, and the chart's two webhook replicas with their
+`PodDisruptionBudget` on a multi-node cluster (a single-node cluster runs one and restarts the
+workspaces a webhook outage failed).
+
 ## Usage
 
 ```text

@@ -1005,8 +1005,9 @@ namespace's level would refuse.
 ### `features.podIdentity`
 
 Makes every pod in a workspace namespace run as one fixed, non-root identity in its own user
-namespace (`hostUsers: false`), with no group 0. **Not evaluated by this build yet:** the block is
-accepted, validated and reported in `status`, and does nothing until RFC 0018's webhooks land.
+namespace (`hostUsers: false`), with no group 0. The two webhooks that apply it are registered
+only with `podIdentity.webhooks.enabled=true`. Operating it (install checklist, refusals, rollout,
+rollback): [`bricks/pod-identity.md`](./bricks/pod-identity.md).
 
 ```yaml
 podIdentity:
