@@ -32,6 +32,11 @@
 //! — extraction, evaluation over 64 `deniedParents` and a 4 KiB `che.eclipse.org/devfile`, the
 //! patch of its two annotations. The budget is the RFC's: p99 grows by under 1 ms.
 //!
+//! A fourth, RFC 0018's *Capacity*: one walk of a DWO workspace pod (one init container, four
+//! containers) on `/mutate/v1/pods/identity` (extraction, rewrite, patch) and on
+//! `/validate/v1/pods/identity` (the rewritten pod judged). Measured, no budget, like the
+//! `/mutate/v1/pods` rows.
+//!
 //! Run with `task envtest:operator-perf`; the `Operator perf` workflow runs it nightly. It is in
 //! the `envtest` feature, but in no suite list: a debug build measures the wrong binary.
 
@@ -893,6 +898,155 @@ fn devfile_contract_adds_under_a_millisecond_to_a_devworkspace_admission() {
                 budget: micros(budget_p99),
                 within: p99 <= budget_p99,
             },
+        ],
+    );
+}
+
+impl weebo_si_pod_identity::PodIdentityObserver for SilentObserver {
+    fn rewrites(
+        &self,
+        _pod: &weebo_si_pod_identity::PodSubject,
+        _r: &[weebo_si_pod_identity::Rewrite],
+    ) {
+    }
+    fn violations(
+        &self,
+        _pod: &weebo_si_pod_identity::PodSubject,
+        _v: &[weebo_si_pod_identity::Judged],
+    ) {
+    }
+}
+
+#[test]
+fn pod_identity_admission_cost_is_measured() {
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: the rows describe the release build (task envtest:operator-perf)");
+        return;
+    }
+    let admissions: usize = env_or("PERF_IDENTITY_ADMISSIONS", 5000);
+    let config: weebo_si_crd::PodIdentityConfig =
+        serde_json::from_value(serde_json::json!({"mode": "Enforce"})).unwrap();
+    let (mutation, validation) = weebo_si_pod_identity_adapters::registries(
+        Arc::new(RwLock::new(Some(config))),
+        Arc::new(SilentObserver),
+    );
+
+    let namespace = NamespaceName::new("dev-ws-perf");
+    let request = |security_context: serde_json::Value, host_users: Option<bool>| {
+        let containers: Vec<serde_json::Value> = (0..4)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "image": "x"}))
+            .collect();
+        let review: kube::core::admission::AdmissionReview<DynamicObject> =
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "admission.k8s.io/v1",
+                "kind": "AdmissionReview",
+                "request": {
+                    "uid": "perf",
+                    "kind": {"group": "", "version": "v1", "kind": "Pod"},
+                    "resource": {"group": "", "version": "v1", "resource": "pods"},
+                    "operation": "CREATE",
+                    "userInfo": {},
+                    "namespace": namespace.as_str(),
+                    "object": {
+                        "apiVersion": "v1", "kind": "Pod",
+                        "metadata": {"generateName": "workspace-perf-", "namespace": namespace.as_str()},
+                        "spec": {
+                            "hostUsers": host_users,
+                            "securityContext": security_context,
+                            "initContainers": [{"name": "project-clone", "image": "x"}],
+                            "containers": containers,
+                        },
+                    },
+                    "dryRun": false,
+                },
+            }))
+            .unwrap();
+        let request: kube::core::admission::AdmissionRequest<DynamicObject> =
+            review.try_into().unwrap();
+        request
+    };
+    // DWO v1.1.1's pod, then the same pod as the apiserver sends it to validation once patched.
+    let raw = request(
+        serde_json::json!({"runAsUser": 1234, "runAsGroup": 0, "fsGroup": 1234}),
+        None,
+    );
+    let body = serde_json::to_value(raw.object.as_ref().unwrap()).unwrap();
+    let patched = request(
+        serde_json::json!({
+            "runAsUser": 1234, "runAsGroup": 1234, "fsGroup": 1234,
+            "fsGroupChangePolicy": "OnRootMismatch", "supplementalGroupsPolicy": "Strict",
+            "runAsNonRoot": true,
+        }),
+        Some(false),
+    );
+
+    let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+    let namespaces = FakeNamespaceView::new([(
+        namespace.clone(),
+        NamespaceFacts {
+            labels: BTreeMap::new(),
+            selection_annotation: None,
+        },
+    )]);
+    let catalog = FakeDwocCatalog::new(std::iter::empty());
+    let observer = SilentObserver;
+
+    let (mut mutate, mut validate) = (
+        Vec::with_capacity(admissions),
+        Vec::with_capacity(admissions),
+    );
+    for _ in 0..admissions {
+        let started = Instant::now();
+        let subject = weebo_si_pod_identity_adapters::pod_subject_from_request(&raw).unwrap();
+        let Ok(AdmitOutcome::Allow { mutations, .. }) =
+            admit(&mutation, &subject, &gate, &namespaces, &catalog, &observer)
+        else {
+            panic!("the mutation must allow");
+        };
+        let patch = render_patch(&body, &mutations);
+        mutate.push(started.elapsed());
+        assert_eq!(mutations.len(), 5, "{mutations:?}");
+        std::hint::black_box(patch);
+
+        let started = Instant::now();
+        let subject = weebo_si_pod_identity_adapters::pod_subject_from_request(&patched).unwrap();
+        let outcome = admit(
+            &validation,
+            &subject,
+            &gate,
+            &namespaces,
+            &catalog,
+            &observer,
+        );
+        validate.push(started.elapsed());
+        assert!(
+            matches!(outcome, Ok(AdmitOutcome::Allow { .. })),
+            "the patched pod must be admitted: {outcome:?}"
+        );
+    }
+    mutate.sort();
+    validate.sort();
+
+    let micros = |d: Duration| format!("{:.0} µs", d.as_secs_f64() * 1e6);
+    let row = |what: &'static str, measured: Duration| Row {
+        what,
+        measured: micros(measured),
+        budget: "—".into(),
+        within: true,
+    };
+    report(
+        &format!("pod-identity — one DWO pod, 5 containers, {admissions} runs"),
+        &[
+            row("/mutate/v1/pods/identity p50", percentile(&mutate, 50.0)),
+            row("/mutate/v1/pods/identity p99", percentile(&mutate, 99.0)),
+            row(
+                "/validate/v1/pods/identity p50",
+                percentile(&validate, 50.0),
+            ),
+            row(
+                "/validate/v1/pods/identity p99",
+                percentile(&validate, 99.0),
+            ),
         ],
     );
 }

@@ -528,7 +528,7 @@ fn pod_identity_status(pod_identity: &weebo_si_crd::PodIdentityConfig) -> (Featu
         FeatureMode::Enforce => FeatureState::Active,
     };
     let message = if pod_identity.grant_group_zero {
-        "grantGroupZero is on: group 0 is added to every pod in scope"
+        "grantGroupZero is on: pods in scope may run with group 0"
     } else {
         "configuration valid"
     };
@@ -644,7 +644,7 @@ mod tests {
             identity("Enforce", true),
             (
                 FeatureState::Active,
-                "grantGroupZero is on: group 0 is added to every pod in scope".to_string()
+                "grantGroupZero is on: pods in scope may run with group 0".to_string()
             )
         );
     }

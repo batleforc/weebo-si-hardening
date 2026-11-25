@@ -77,6 +77,13 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0013",
         resource: "Namespace",
     },
+    // One entry, two Pod paths (`/mutate/v1/pods/identity`, `/validate/v1/pods/identity`): both
+    // halves report the same `FeatureId`, so one `mode` governs them.
+    FeatureDescriptor {
+        id: "pod-identity",
+        rfc: "RFC 0018",
+        resource: "Pod",
+    },
     FeatureDescriptor {
         id: "resource-quotas",
         rfc: "RFC 0014",

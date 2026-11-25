@@ -25,6 +25,11 @@ extraction, evaluation of a devfile outdated on every check against 64 `deniedPa
 `devfile_contract_registry()` the webhook role builds (`PERF_DEVFILE_ADMISSIONS` runs, 5 000 by
 default). The route's other registries are unchanged, so this is the p99 delta.
 
+A fourth, RFC 0018's, walks one DWO workspace pod (one init container, four containers) through
+`/mutate/v1/pods/identity` (extraction, rewrite, patch) and `/validate/v1/pods/identity` (the
+patched pod judged), through the same `registries()` the webhook role builds
+(`PERF_IDENTITY_ADMISSIONS` runs, 5 000 by default). Measured, no budget.
+
 What it does **not** measure: the rest of the webhook role (its cost per admission request is
 RFC 0009's territory for endpoint-auth, and has no budget of its own yet), the apiserver's side of the load,
 and a real cluster's network round trip — envtest is loopback, so latencies here are a floor.
@@ -86,6 +91,13 @@ own, left for when the nightly figures confirm it.
 | Measure | Measured |
 | --- | --- |
 | `devfile-contract` p50 / p99 (added to the route) | 20 µs / 49 µs |
+
+### 2026-11-25, release build, laptop, pod-identity (RFC 0018)
+
+| Measure | Measured |
+| --- | --- |
+| `/mutate/v1/pods/identity` p50 / p99 | 5 µs / 9 µs |
+| `/validate/v1/pods/identity` p50 / p99 | 3 µs / 7 µs |
 
 Add the first nightly run's table here, with its date and run link, once it has run.
 

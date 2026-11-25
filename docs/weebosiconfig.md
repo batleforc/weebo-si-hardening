@@ -1024,7 +1024,7 @@ podIdentity:
 | `runAsUser` | integer, 1–65535 | no | `1234` | The pod-level uid set when a pod gives none. A pod's own non-zero uid is kept; `runAsUser: 0` is refused. |
 | `runAsGroup` | integer, 1–65535 | no | `1234` | The pod-level gid and `fsGroup` set when a pod gives none, or gives 0 (DWO's default). A pod's own non-zero gid is kept. |
 | `exemptDwocKeys` | list of strings | no | `[]` | `dwocPin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left untouched, e.g. `[build]`. |
-| `grantGroupZero` | boolean | no | `false` | **Last resort.** `true` adds group 0 to every pod in scope, which grants write on every group-0-writable (`g=u`) file of the image. The status `message` says so for as long as it is on. |
+| `grantGroupZero` | boolean | no | `false` | **Last resort.** `true` lets pods in scope run with group 0 (`fsGroup: 0` or a `0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on every group-0-writable (`g=u`) file of the image. The status `message` says so for as long as it is on. |
 
 **The apiserver refuses**, at `kubectl apply`, a `runAsUser` or `runAsGroup` outside 1–65535
 (`runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)`), and more

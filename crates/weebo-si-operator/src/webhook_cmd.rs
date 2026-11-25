@@ -186,6 +186,7 @@ async fn serve(args: &[String]) -> Result<(), String> {
         .merge(weebo_si_policy_guard_adapters::admission_routes(&shared))
         .merge(weebo_si_image_policy_adapters::admission_routes(&shared)?)
         .merge(weebo_si_endpoint_auth_adapters::admission_routes(&shared))
+        .merge(weebo_si_pod_identity_adapters::admission_routes(&shared)?)
         // An UPDATE review carries the object twice (`object` and `oldObject`), and the
         // apiserver accepts objects up to ~1.5 MiB — axum's 2 MiB default would answer a large
         // DevWorkspace update with a 413, which a `Fail` webhook turns into a refused write.

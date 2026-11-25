@@ -4072,6 +4072,8 @@ dependencies = [
  "weebo-si-kubearmor-policy-adapters",
  "weebo-si-network-profiles",
  "weebo-si-network-profiles-adapters",
+ "weebo-si-pod-identity",
+ "weebo-si-pod-identity-adapters",
  "weebo-si-pod-security",
  "weebo-si-pod-security-adapters",
  "weebo-si-policy-guard-adapters",
@@ -4089,6 +4091,21 @@ version = "0.1.0"
 dependencies = [
  "weebo-si-chassis",
  "weebo-si-crd",
+]
+
+[[package]]
+name = "weebo-si-pod-identity-adapters"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "kube",
+ "prometheus",
+ "serde_json",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+ "weebo-si-pod-identity",
+ "weebo-si-webhook",
 ]
 
 [[package]]

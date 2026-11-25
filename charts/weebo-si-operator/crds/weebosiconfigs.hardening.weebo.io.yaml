@@ -1356,9 +1356,10 @@ spec:
                       grantGroupZero:
                         default: false
                         description: |-
-                          Last resort, off by default. `true` adds group 0 to every pod in scope, which grants write
-                          on every group-0-writable (`g=u`) file of the image; the feature's status says so for as
-                          long as it is on.
+                          Last resort, off by default. `true` lets pods in scope run with group 0 (`fsGroup: 0` or a
+                          `0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on
+                          every group-0-writable (`g=u`) file of the image; the feature's status says so for as long
+                          as it is on.
                         type: boolean
                       mode:
                         description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'

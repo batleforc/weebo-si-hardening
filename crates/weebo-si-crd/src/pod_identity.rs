@@ -51,9 +51,10 @@ pub struct PodIdentityConfig {
     #[serde(default)]
     #[schemars(length(max = MAX_EXEMPT_DWOC_KEYS), inner(length(min = 1, max = 253)))]
     pub exempt_dwoc_keys: Vec<String>,
-    /// Last resort, off by default. `true` adds group 0 to every pod in scope, which grants write
-    /// on every group-0-writable (`g=u`) file of the image; the feature's status says so for as
-    /// long as it is on.
+    /// Last resort, off by default. `true` lets pods in scope run with group 0 (`fsGroup: 0` or a
+    /// `0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on
+    /// every group-0-writable (`g=u`) file of the image; the feature's status says so for as long
+    /// as it is on.
     #[serde(default)]
     pub grant_group_zero: bool,
 }
