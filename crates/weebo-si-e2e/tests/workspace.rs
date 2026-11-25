@@ -1779,12 +1779,14 @@ fn the_webhook_fails_closed_when_it_is_down() {
     impl Drop for Restore {
         fn drop(&mut self) {
             let _ = kubectl(&["scale", "-n", OPERATOR_NAMESPACE, &self.0, "--replicas=2"]);
+            // `rollout status` returns at once after a scale (the generation did not move): wait
+            // for both replicas to be ready, or the next test meets "connection refused".
             let _ = kubectl(&[
-                "rollout",
-                "status",
+                "wait",
                 "-n",
                 OPERATOR_NAMESPACE,
                 &self.0,
+                "--for=jsonpath={.status.readyReplicas}=2",
                 "--timeout=300s",
             ]);
         }
