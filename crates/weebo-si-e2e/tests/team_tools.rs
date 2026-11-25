@@ -292,8 +292,15 @@ impl ToolTeam {
         format!("tcp://buildkitd.{}.svc:1234", self.tools)
     }
 
+    /// With its `managedFields`, which `kubectl get` drops unless asked.
     fn statefulset(&self) -> Option<Value> {
-        get(&["statefulset", "-n", &self.tools, "buildkitd"])
+        get(&[
+            "statefulset",
+            "-n",
+            &self.tools,
+            "buildkitd",
+            "--show-managed-fields",
+        ])
     }
 
     fn scaled_up(&self) -> f64 {
@@ -507,6 +514,7 @@ fn a_requested_tool_renders_at_zero_scales_with_its_workspace_and_idles_after_gr
     workspace.wait_running();
     wait_until("the scale manager to own replicas at 1", RECONCILE, || {
         let sts = weebo.statefulset().ok_or("no StatefulSet")?;
+        // A set: the scale manager may hold replicas through its apply and its /scale write.
         let owners: Vec<String> = sts
             .pointer("/metadata/managedFields")
             .and_then(Value::as_array)
@@ -514,6 +522,8 @@ fn a_requested_tool_renders_at_zero_scales_with_its_workspace_and_idles_after_gr
             .flatten()
             .filter(|entry| entry.pointer("/fieldsV1/f:spec/f:replicas").is_some())
             .map(|entry| text(entry, "/manager"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect();
         let now = sts.pointer("/spec/replicas").and_then(Value::as_i64);
         if now == Some(1) && owners == ["weebo-si-team-tools-scale"] {
