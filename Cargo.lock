@@ -4272,6 +4272,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-team-tools-adapters"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "rustls",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+ "weebo-si-envtest-support",
+ "weebo-si-runtime",
+ "weebo-si-team-tools",
+]
+
+[[package]]
 name = "weebo-si-webhook"
 version = "0.1.0"
 dependencies = [

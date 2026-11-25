@@ -517,4 +517,37 @@ mod tests {
             Err(DomainError::PortFailed(_))
         ));
     }
+
+    /// RFC 0020's invariant (T2): a team-tools policy carries `managed-by` and `team-tool` but
+    /// never `profile`, so network-profiles cannot see it — neither as a stale profile object to
+    /// delete (its egress policy selects a `devworkspace_id`, exactly what a workspace pass owns)
+    /// nor as the namespace baseline.
+    #[test]
+    fn a_team_tools_policy_is_invisible_to_network_profiles() {
+        let mut egress = DynamicObject::new(
+            "weebo-team-tool-buildkit-workspacede4f56",
+            &cilium_network_policy_resource(),
+        )
+        .within("user-alice");
+        egress.metadata.labels = Some(
+            [
+                (MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string()),
+                (
+                    weebo_si_crd::TEAM_TOOL_LABEL.to_string(),
+                    "buildkit".to_string(),
+                ),
+            ]
+            .into(),
+        );
+        egress.data = json!({"spec": {
+            "endpointSelector": {"matchLabels": {DEVWORKSPACE_ID_LABEL: "workspacede4f56"}},
+            "egress": [{"toPorts": [{"ports": [{"port": "1234", "protocol": "TCP"}]}]}],
+        }});
+        assert!(KubePolicyStore::from_cilium(&egress).is_none());
+
+        let mut ingress = egress.clone();
+        ingress.metadata.name = Some("weebo-team-tool-buildkit-ingress".to_string());
+        ingress.data = json!({"spec": {"endpointSelector": {}}});
+        assert!(KubePolicyStore::from_cilium(&ingress).is_none());
+    }
 }

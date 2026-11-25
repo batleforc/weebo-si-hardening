@@ -103,7 +103,7 @@ jobs:
       # memory footprint for no wall-clock gain.
       - name: Run the envtest suites
         run: |
-          for suite in envtest admission_envtest controller_envtest kubearmor_envtest registry_envtest endpoint_auth_envtest openshift_envtest pod_security_envtest resource_quotas_envtest openshift_pod_security_envtest deploy_weebo_si; do
+          for suite in envtest admission_envtest controller_envtest kubearmor_envtest registry_envtest endpoint_auth_envtest openshift_envtest pod_security_envtest resource_quotas_envtest team_tools_envtest openshift_pod_security_envtest deploy_weebo_si; do
             echo "::group::$suite"
             cargo test --workspace --features envtest --test "$suite" --locked -- --test-threads=1
             echo "::endgroup::"
