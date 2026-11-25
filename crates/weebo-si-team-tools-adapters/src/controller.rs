@@ -166,7 +166,9 @@ fn tool_result(outcome: &ToolOutcome) -> &'static str {
     }
 }
 
-/// The DevWorkspace attribute, `None` when absent or when requests are off (`""`).
+/// The DevWorkspace attribute, `None` when absent or when requests are off (`""`). A value that
+/// is not a string (a YAML list, say) is a request nobody can read: it resolves as an invalid key,
+/// never as the team default.
 fn attribute_of(object: &DynamicObject, key: &str) -> Option<String> {
     if key.is_empty() {
         return None;
@@ -175,8 +177,12 @@ fn attribute_of(object: &DynamicObject, key: &str) -> Option<String> {
         .data
         .pointer("/spec/template/attributes")
         .and_then(|attributes| attributes.get(key))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+        .map(|value| {
+            value.as_str().map_or_else(
+                || weebo_si_team_tools::INVALID_KEY.to_string(),
+                str::to_string,
+            )
+        })
 }
 
 fn phase(object: &DynamicObject) -> Option<&str> {
@@ -1210,6 +1216,14 @@ mod tests {
                 ""
             ),
             None
+        );
+        assert_eq!(
+            attribute_of(
+                &dw(json!({"spec": {"template": {"attributes": {"k": ["android"]}}}})),
+                "k"
+            )
+            .as_deref(),
+            Some(weebo_si_team_tools::INVALID_KEY)
         );
     }
 }

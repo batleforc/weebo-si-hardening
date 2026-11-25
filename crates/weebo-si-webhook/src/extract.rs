@@ -163,8 +163,13 @@ pub fn tools_workspace_from_object(
             obj.data
                 .pointer("/spec/template/attributes")
                 .and_then(|attributes| attributes.get(attribute_key))
-                .and_then(Value::as_str)
-                .map(str::to_string)
+                // Not a string (a YAML list, say): an invalid request, never the team default.
+                .map(|value| {
+                    value.as_str().map_or_else(
+                        || weebo_si_team_tools::INVALID_KEY.to_string(),
+                        str::to_string,
+                    )
+                })
         })
         .flatten();
     ToolsWorkspaceAdmission {
@@ -446,6 +451,15 @@ mod tests {
             tools_workspace_from_object(&ns, &running, None, &Operation::Create, "").attribute,
             None,
             "an empty attribute key disables requests"
+        );
+        let listed = devworkspace(
+            false,
+            serde_json::json!({"attributes": {(TEAM_TOOLS_ATTRIBUTE): ["android"]}}),
+        );
+        assert_eq!(
+            tools(&listed, None, Operation::Create).attribute.as_deref(),
+            Some(weebo_si_team_tools::INVALID_KEY),
+            "a list is an invalid request, not an absent one"
         );
     }
 }

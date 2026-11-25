@@ -37,7 +37,7 @@ pub use feature::{
 };
 pub use port::{Clock, ToolTemplate, ToolTemplateStore};
 pub use render::{FIELD_MANAGER, SCALE_FIELD_MANAGER, ToolObject, ToolObjectKind};
-pub use resolve::{Request, parse_keys, resolve, team_for};
+pub use resolve::{INVALID_KEY, Request, parse_keys, resolve, team_for};
 pub use scale::{Phase, ScaleDecision, decide};
 pub use validate::{
     EntryViolation, PodSpecViolation, TeamViolation, ValidEntry, parse_duration, validate_entry,
