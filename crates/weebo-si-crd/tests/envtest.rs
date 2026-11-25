@@ -532,3 +532,173 @@ async fn network_profiles_grant_annotation_may_not_be_the_selection_annotation()
         );
     }
 }
+
+/// RFC 0020's CRD bounds on `teamTools`, against a real apiserver: the RFC's entry is accepted,
+/// and each structural mistake is refused at write.
+#[tokio::test]
+async fn team_tools_bounds_accept_the_example_and_refuse_each_mistake() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |block: serde_json::Value| {
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"teamTools": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+    let entry = |key: &str| {
+        serde_json::json!({
+            "key": key,
+            "workload": {"kind": "StatefulSet", "name": "buildkitd"},
+            "service": {"name": "buildkitd", "port": 1234},
+            "clientEnv": "BUILDKIT_HOST",
+            "tls": {
+                "serverSecretName": "buildkitd-tls",
+                "clientDuration": "24h",
+                "clientMountPath": "/home/user/.config/weebo/buildkit",
+            },
+            "toolTemplates": [
+                {"kind": "StatefulSet", "name": "buildkitd", "namespace": "weebo-si-hardening-templates"},
+            ],
+        })
+    };
+
+    for block in [
+        serde_json::json!({"mode": "Off", "catalog": []}),
+        serde_json::json!({"mode": "DryRun", "catalog": [entry("buildkit"), entry("android")]}),
+    ] {
+        api.create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{block} should be accepted: {error}"));
+        let _ = api.delete("cluster", &DeleteParams::default()).await;
+    }
+
+    let with = |pointer: &str, value: serde_json::Value| {
+        let mut entry = entry("buildkit");
+        match entry.pointer_mut(pointer) {
+            Some(field) => *field = value,
+            None => {
+                entry[pointer.trim_start_matches('/')] = value;
+            }
+        }
+        serde_json::json!({"mode": "DryRun", "catalog": [entry]})
+    };
+    for (block, expected) in [
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": [entry("buildkit"), entry("buildkit")]}),
+            "two catalog entries share the same key",
+        ),
+        (with("/key", serde_json::json!("BuildKit")), "should match"),
+        (with("/key", serde_json::json!("a".repeat(41))), "Too long"),
+        (
+            with("/service/port", serde_json::json!(0)),
+            "should be greater than or equal to 1",
+        ),
+        (
+            with("/workload/kind", serde_json::json!("DaemonSet")),
+            "Unsupported value",
+        ),
+        (
+            with("/clientEnv", serde_json::json!("1BAD")),
+            "should match",
+        ),
+        (
+            with("/tls/clientMountPath", serde_json::json!("relative")),
+            "should match",
+        ),
+        (
+            with(
+                "/toolTemplates",
+                serde_json::json!(vec![
+                    serde_json::json!({"kind": "ConfigMap", "name": "c", "namespace": "t"});
+                    17
+                ]),
+            ),
+            "Too many",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": (0..33).map(|i| entry(&format!("t{i}"))).collect::<Vec<_>>()}),
+            "Too many",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": [], "idleGraceSeconds": 4_294_967_296_u64}),
+            "should be less than or equal to 4294967295",
+        ),
+        (
+            with("/idleGraceSeconds", serde_json::json!(4_294_967_296_u64)),
+            "should be less than or equal to 4294967295",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{block}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0020, Resolved 18: a team's `issuerRef.kind` is `ClusterIssuer` only, refused at write.
+#[tokio::test]
+async fn a_team_tools_issuer_must_be_a_cluster_issuer() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    apply_crd(client.clone(), WeeboSiTeam::crd())
+        .await
+        .expect("the generated team CRD should be accepted");
+    wait_for_named_crd(client.clone(), "weebositeams.hardening.weebo.io").await;
+    let api = teams(client);
+    let team = |kind: &str, default: serde_json::Value| {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "hardening.weebo.io/v1alpha1",
+            "kind": "WeeboSiTeam",
+            "metadata": {"name": "weebo"},
+            "spec": {
+                "namespaceSelector": {"matchLabels": {"weebo.io/team": "weebo"}},
+                "features": {"teamTools": {
+                    "namespace": "team-weebo-tools",
+                    "issuerRef": {"kind": kind, "name": "team-weebo-tools-ca"},
+                    "allowed": ["buildkit"],
+                    "default": default,
+                }},
+            },
+        }))
+        .expect("resource should deserialize")
+    };
+
+    api.create(
+        &PostParams::default(),
+        &team("ClusterIssuer", serde_json::json!([])),
+    )
+    .await
+    .expect("a ClusterIssuer should be accepted");
+    let _ = api.delete("weebo", &DeleteParams::default()).await;
+
+    for (object, expected) in [
+        (
+            team("Issuer", serde_json::json!([])),
+            "issuerRef.kind must be ClusterIssuer",
+        ),
+        (
+            team(
+                "ClusterIssuer",
+                serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+            ),
+            "Too many",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &object)
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}

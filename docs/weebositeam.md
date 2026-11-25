@@ -191,6 +191,7 @@ delegation means. What this page adds is how a team's block combines with the cl
 | [`endpointAuth`](#featuresendpointauth) | `{key, anonymous, delegation[]}` | **one** key, **required** | its own keys, plus the cluster `default` |
 | [`podSecurity`](#featurespodsecurity) | — no catalogue | `level`, `warnLevel` | its `level`, never looser than the cluster `ceiling` |
 | [`resourceQuotas`](#featuresresourcequotas) | `{key, quotaRef?, limitRangeRef?}` | **one** key, **required** | its own profiles, plus the cluster `default` |
+| [`teamTools`](#featuresteamtools) | — no catalogue | list of keys, `[]` | the keys in its `allowed` |
 
 Four rules hold for every block:
 
@@ -319,6 +320,29 @@ that builds images needs `baseline` plus the build seccomp profile, set through 
 
 One profile per namespace, never a set: the team reaches its own profiles plus the cluster
 `default`, and a namespace picks one of them with `hardening.weebo.io/resource-quota`.
+
+### `features.teamTools`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `namespace` | namespace name | **yes** | — | The tools namespace. It must carry `hardening.weebo.io/team-tools=<this team>` and a quota, and not be a workspace namespace; otherwise nothing is written there. |
+| `issuerRef` | `{kind: ClusterIssuer, name}` | when an allowed entry has `tls` | — | This team's CA. `kind` must be `ClusterIssuer` (refused at apply otherwise): a namespaced `Issuer` cannot serve workspace namespaces. |
+| `allowed` | list of keys, at most 32 | no | `[]` | The cluster catalogue keys this team may request. |
+| `default` | list of keys, at most 8 | no | `[]` | What a workspace with no attribute gets; within `allowed`. |
+
+```yaml
+features:
+  teamTools:
+    namespace: team-weebo-tools
+    issuerRef: {kind: ClusterIssuer, name: team-weebo-tools-ca}
+    allowed: [buildkit]
+    default: []              # nobody gets a tool without asking
+```
+
+**The exception to "a team never writes an `allowed` list"**: a team declares no tool, only
+which cluster tools it may request. `status.teamTools[]` lists each tool with its namespace,
+`replicas`, `requesters` (a count, never who) and `state` (`Running`, `Grace`, `Idle`, `Held`,
+`Unbound`, `Invalid`), once RFC 0020's controller lands.
 
 ## `spec.identity`
 

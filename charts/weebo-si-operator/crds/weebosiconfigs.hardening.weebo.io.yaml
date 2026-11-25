@@ -1824,6 +1824,235 @@ spec:
                     - default
                     - mode
                     type: object
+                  teamTools:
+                    description: '`spec.features.teamTools`, per RFC 0020.'
+                    nullable: true
+                    properties:
+                      catalog:
+                        description: Every tool a team may be granted. Required, may be empty.
+                        items:
+                          description: One entry of `spec.features.teamTools.catalog`.
+                          properties:
+                            clientEnv:
+                              description: The key of the generated endpoint `ConfigMap`, an environment variable name.
+                              maxLength: 128
+                              minLength: 1
+                              nullable: true
+                              pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                              type: string
+                            idleGraceSeconds:
+                              description: Overrides the block's `idleGraceSeconds` for this tool.
+                              format: uint32
+                              maximum: 4294967295.0
+                              minimum: 0.0
+                              nullable: true
+                              type: integer
+                            key:
+                              description: The key a devfile attribute or a team grant names.
+                              maxLength: 40
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                              type: string
+                            requesterTemplates:
+                              default: []
+                              description: '`ConfigMap`s rendered into each requesting namespace.'
+                              items:
+                                description: A template object, in the template namespace (checked by `validate()`).
+                                properties:
+                                  kind:
+                                    description: The object's kind; the allowed kinds are checked by `validate()`.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    description: The object's name.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: The namespace it lives in.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - kind
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 16
+                              type: array
+                            service:
+                              description: The port the network policies open.
+                              properties:
+                                name:
+                                  description: The `Service` template's name.
+                                  maxLength: 63
+                                  minLength: 1
+                                  type: string
+                                port:
+                                  description: One of its ports.
+                                  format: uint16
+                                  maximum: 65535.0
+                                  minimum: 1.0
+                                  type: integer
+                              required:
+                              - name
+                              - port
+                              type: object
+                            tls:
+                              description: 'Absent means no mTLS: allowed, and logged (RFC 0020, Resolved 14).'
+                              nullable: true
+                              properties:
+                                clientDuration:
+                                  description: The client certificate's lifetime, a Go duration (`24h`).
+                                  maxLength: 32
+                                  minLength: 1
+                                  type: string
+                                clientMountPath:
+                                  description: Where DWO mounts the client certificate in the workspace.
+                                  maxLength: 1024
+                                  minLength: 2
+                                  pattern: ^/
+                                  type: string
+                                serverSecretName:
+                                  description: The `Secret` the server `Certificate` writes, mounted by the tool template.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - clientDuration
+                              - clientMountPath
+                              - serverSecretName
+                              type: object
+                            toolTemplates:
+                              description: Rendered into the team's tools namespace.
+                              items:
+                                description: A template object, in the template namespace (checked by `validate()`).
+                                properties:
+                                  kind:
+                                    description: The object's kind; the allowed kinds are checked by `validate()`.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    description: The object's name.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: The namespace it lives in.
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - kind
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 16
+                              type: array
+                            workload:
+                              description: The tool template scaled on demand.
+                              properties:
+                                kind:
+                                  description: '`Deployment` or `StatefulSet`.'
+                                  enum:
+                                  - Deployment
+                                  - StatefulSet
+                                  type: string
+                                name:
+                                  description: Its name among the tool templates.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - kind
+                              - name
+                              type: object
+                          required:
+                          - key
+                          - service
+                          - toolTemplates
+                          - workload
+                          type: object
+                        maxItems: 32
+                        type: array
+                        x-kubernetes-validations:
+                        - message: two catalog entries share the same key
+                          rule: self.all(e, self.exists_one(f, f.key == e.key))
+                      idleGraceSeconds:
+                        default: 600
+                        description: Time a tool stays up after its last requester stops.
+                        format: uint32
+                        maximum: 4294967295.0
+                        minimum: 0.0
+                        type: integer
+                      mode:
+                        description: 'Required, per the chassis: `Off` | `DryRun` | `Enforce`.'
+                        enum:
+                        - 'Off'
+                        - DryRun
+                        - Enforce
+                        type: string
+                      namespaceSelector:
+                        description: 'Optional, per the chassis: narrows which requesting namespaces are read.'
+                        nullable: true
+                        properties:
+                          matchExpressions:
+                            description: Every expression must hold.
+                            items:
+                              description: One `matchExpressions` entry.
+                              properties:
+                                key:
+                                  description: The label key this expression tests.
+                                  type: string
+                                operator:
+                                  description: How `values` is compared against the label's value, if any.
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                  type: string
+                                values:
+                                  default: []
+                                  description: The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            description: Every key must be present with exactly this value.
+                            type: object
+                        type: object
+                      onNotGranted:
+                        default: Default
+                        description: 'What a requested key the team is not granted gets: dropped, or the request refused.'
+                        enum:
+                        - Default
+                        - Deny
+                        type: string
+                      workspaceSelection:
+                        default:
+                          attribute: hardening.weebo.io/team-tools
+                        description: The DevWorkspace attribute naming the requested keys.
+                        properties:
+                          attribute:
+                            default: hardening.weebo.io/team-tools
+                            description: DevWorkspace attribute naming a comma-separated key list. `""` disables requests.
+                            maxLength: 317
+                            type: string
+                        type: object
+                    required:
+                    - catalog
+                    - mode
+                    type: object
                 type: object
             type: object
           status:

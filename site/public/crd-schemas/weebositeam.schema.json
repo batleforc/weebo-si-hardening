@@ -489,6 +489,76 @@
             "default"
           ],
           "type": "object"
+        },
+        "teamTools": {
+          "description": "This team's `team-tools` namespace and grant, per RFC 0020.",
+          "nullable": true,
+          "properties": {
+            "allowed": {
+              "default": [],
+              "description": "The keys this team may request.",
+              "items": {
+                "description": "A catalogue key: the attribute's vocabulary. A DNS label of at most 40 characters, so\n`weebo-team-tool-<key>-client` and the other generated names stay valid object names.",
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "default": {
+              "default": [],
+              "description": "The keys a workspace with no attribute gets; within `allowed` (checked by `validate()`).",
+              "items": {
+                "description": "A catalogue key: the attribute's vocabulary. A DNS label of at most 40 characters, so\n`weebo-team-tool-<key>-client` and the other generated names stay valid object names.",
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            "issuerRef": {
+              "description": "This team's CA; required by `validate()` when an allowed entry has `tls`.",
+              "nullable": true,
+              "properties": {
+                "kind": {
+                  "description": "`ClusterIssuer` only: a namespaced `Issuer` cannot serve workspace namespaces (RFC 0020,\nResolved 18).",
+                  "maxLength": 32,
+                  "type": "string",
+                  "x-kubernetes-validations": [
+                    {
+                      "message": "issuerRef.kind must be ClusterIssuer: a namespaced Issuer cannot serve workspace namespaces",
+                      "rule": "self == 'ClusterIssuer'"
+                    }
+                  ]
+                },
+                "name": {
+                  "description": "The `ClusterIssuer`'s name.",
+                  "maxLength": 253,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "name"
+              ],
+              "type": "object"
+            },
+            "namespace": {
+              "description": "The tools namespace; it must carry `hardening.weebo.io/team-tools=<team name>`.",
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "namespace"
+          ],
+          "type": "object"
         }
       },
       "type": "object"

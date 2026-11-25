@@ -27,3 +27,8 @@ pub const CANARY_LABEL: &str = "hardening.weebo.io/canary";
 /// *Security considerations → Bypass*. Never written — a node's enforcement capability is
 /// KubeArmor's observation to report, not ours to claim.
 pub const KUBEARMOR_ENFORCER_LABEL: &str = "kubearmor.io/enforcer";
+/// Every object `team-tools` renders carries this label, set to the catalogue key it came from
+/// (RFC 0020). Never [`PROFILE_LABEL`]: network-profiles must not see a team-tools policy.
+pub const TEAM_TOOL_LABEL: &str = "hardening.weebo.io/team-tool";
+/// On a tools Namespace, set by the admin to the team it serves: proof of intent, read only.
+pub const TEAM_TOOLS_NAMESPACE_LABEL: &str = "hardening.weebo.io/team-tools";

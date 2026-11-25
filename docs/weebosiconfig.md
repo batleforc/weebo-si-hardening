@@ -363,6 +363,7 @@ rather than ignored at runtime.
 | [`podSecurity`](#featurespodsecurity) | [0013](./rfc/0013-pod-security.md) | `Namespace` labels (reconcile) |
 | [`podIdentity`](#featurespodidentity) | [0018](./rfc/0018-namespace-uid-range.md) | `Pod` (mutating + validating admission) |
 | [`resourceQuotas`](#featuresresourcequotas) | [0014](./rfc/0014-resource-quotas.md) | `ResourceQuota`, `LimitRange` (reconcile) |
+| [`teamTools`](#featuresteamtools) | [0020](./rfc/0020-team-tools.md) | tools namespace workloads, `DevWorkspace` (reconcile, mutating admission) |
 
 ### `features.dwocPin`
 
@@ -1067,6 +1068,58 @@ container default, defaults out of order, an unparseable quantity, a scoped quot
 outside the template namespace makes it invalid. An invalid profile is applied nowhere, and
 namespaces keep what they have. The rules are in the brick page.
 
+### `features.teamTools`
+
+Moves tools a hardened workspace cannot run (BuildKit, an emulator) into a tools namespace per
+team, started on demand when a DevWorkspace asks for them with a devfile attribute. **Not
+evaluated by this build yet:** the block is accepted and its bounds are checked by the apiserver;
+it does nothing until RFC 0020's controller lands.
+
+```yaml
+teamTools:
+  mode: DryRun
+  idleGraceSeconds: 600
+  onNotGranted: Default
+  catalog:
+    - key: buildkit
+      workload: {kind: StatefulSet, name: buildkitd}
+      service: {name: buildkitd, port: 1234}
+      clientEnv: BUILDKIT_HOST
+      tls:
+        serverSecretName: buildkitd-tls
+        clientDuration: 24h
+        clientMountPath: /home/user/.config/weebo/buildkit
+      toolTemplates:
+        - {kind: StatefulSet, name: buildkitd, namespace: weebo-si-hardening-templates}
+        - {kind: Service, name: buildkitd, namespace: weebo-si-hardening-templates}
+      requesterTemplates:
+        - {kind: ConfigMap, name: buildx-client, namespace: weebo-si-hardening-templates}
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | |
+| `namespaceSelector` | Selector | no | matches all | Narrows which *requesting* namespaces are read. |
+| `catalog` | list, at most 32 | yes | — | May be empty. |
+| `catalog[].key` | DNS label, 1–40 characters | yes | — | What the devfile attribute and a team's `allowed` name. Unique in the catalogue. |
+| `catalog[].workload` | `{kind: Deployment\|StatefulSet, name}` | yes | — | The tool template scaled to 1 and back to 0 through `/scale`. |
+| `catalog[].service` | `{name, port}` | yes | — | The port the generated network policies open; `port` 1–65535. |
+| `catalog[].clientEnv` | environment variable name | no | — | Key of the endpoint `ConfigMap` written in the workspace namespace. |
+| `catalog[].tls` | `{serverSecretName, clientDuration, clientMountPath}` | no | — | Server and per-user client certificates from the team's `issuerRef`. Absent means no mTLS (allowed, logged). |
+| `catalog[].toolTemplates` | list of `{kind, name, namespace}`, at most 16 | yes | — | Rendered into the team's tools namespace. |
+| `catalog[].requesterTemplates` | same, at most 16 | no | `[]` | `ConfigMap`s rendered into each requesting namespace. |
+| `catalog[].idleGraceSeconds` | integer | no | the block's | Per-tool override. |
+| `workspaceSelection.attribute` | string | no | `hardening.weebo.io/team-tools` | DevWorkspace attribute naming a comma-separated key list. `""` disables requests. |
+| `onNotGranted` | `Default`/`Deny` | no | `Default` | An ungranted key: dropped, or the workspace's create or start refused. |
+| `idleGraceSeconds` | integer | no | `600` | How long a tool stays up after its last requester stops. |
+| per-team namespace and grant | on [`WeeboSiTeam`](./weebositeam.md#featuresteamtools) | no | — | A namespace of no team never gets a tool. |
+
+**The apiserver refuses**, at `kubectl apply`, a key that is not a DNS label of at most 40
+characters, two entries with the same key, more than 32 entries or 16 templates per list, a
+`service.port` of 0, an `idleGraceSeconds` above 4294967295, a `clientEnv` that is not an environment variable name, and a relative
+`clientMountPath`. What needs the templates (kinds, the workload at `replicas: 0`, the pod spec
+rules) is checked by the controller and reported as `Degraded`.
+
 ## `status`
 
 Written by the controller, derived entirely from `spec` — deleting it costs one reconcile.
@@ -1103,8 +1156,8 @@ rather than one per edit round-trip.
 Validation is **mostly reconcile-time**: the apiserver accepts a structurally valid object, and
 the controller reports what is semantically wrong as `Degraded` conditions. The exception is
 CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
-above), `devfileContract` (*devfileContract* above) and `podIdentity`'s ids (*podIdentity*
-above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+above), `devfileContract` (*devfileContract* above), `podIdentity`'s ids (*podIdentity*
+above) and `teamTools`' bounds (*teamTools* above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 
@@ -1140,6 +1193,9 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `hardening.weebo.io/resource-quota` | Namespace | admin / namespace user | Picks a quota profile among the team's granted ones. |
 | `hardening.weebo.io/pod-security-previous` | Namespace | **operator** | The Pod Security labels as found before the first write; what `mode: Off` restores. Never edit it. |
 | `kubearmor.io/enforcer` | Node | **KubeArmor** | Which LSM that node can enforce with. Read-only for us. |
+| `hardening.weebo.io/team-tools` | tools Namespace label | admin | Binds the namespace to the team it serves (`=<team>`). Read only. |
+| `hardening.weebo.io/team-tools` | DevWorkspace attribute; DevWorkspace annotation | workspace author; **operator** | The attribute requests team tools; the annotation is the verdict, `granted=<keys>;dropped=<keys>`. |
+| `hardening.weebo.io/team-tool` | objects `teamTools` writes | **operator** | Which catalogue key the object came from. |
 
 A selection key naming something the team was not granted is not an escalation: it is a
 *request*, bounded by what the team reaches, resolved by `onNotGranted`. The boundary is the

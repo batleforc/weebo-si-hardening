@@ -47,6 +47,7 @@ spec:
 | [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | This team's `pod-security` levels, per RFC 0013. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | This team's `registry-config` catalogue and defaults, per RFC 0007. |
 | [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | This team's `resource-quotas` profiles and default, per RFC 0014. |
+| [`teamTools`](#spec.features.teamTools) | `object` | no |  | This team's `team-tools` namespace and grant, per RFC 0020. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
 
@@ -207,6 +208,26 @@ spec:
 | --- | --- | --- | --- | --- |
 | `name` | `string` | yes |  | The template object's name. |
 | `namespace` | `string` | yes |  | The namespace it lives in. |
+
+### `spec.features.teamTools` [#spec.features.teamTools]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowed` | `string[]` | no | `[]` | The keys this team may request.<br /><br />Constraints: `maxItems: 32` |
+| `default` | `string[]` | no | `[]` | The keys a workspace with no attribute gets; within `allowed` (checked by `validate()`).<br /><br />Constraints: `maxItems: 8` |
+| [`issuerRef`](#spec.features.teamTools.issuerRef) | `object` | no |  | This team's CA; required by `validate()` when an allowed entry has `tls`. |
+| `namespace` | `string` | yes |  | The tools namespace; it must carry `hardening.weebo.io/team-tools=<team name>`.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+
+### `spec.features.teamTools.issuerRef` [#spec.features.teamTools.issuerRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | `ClusterIssuer` only: a namespaced `Issuer` cannot serve workspace namespaces (RFC 0020, Resolved 18).<br /><br />Constraints: `maxLength: 32` |
+| `name` | `string` | yes |  | The `ClusterIssuer`'s name.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+
+**Rules**
+
+- `kind`: issuerRef.kind must be ClusterIssuer: a namespaced Issuer cannot serve workspace namespaces — `self == 'ClusterIssuer'`
 
 ### `spec.identity` [#spec.identity]
 

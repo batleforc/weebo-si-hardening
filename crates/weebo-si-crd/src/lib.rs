@@ -30,6 +30,7 @@ pub mod resource_quotas;
 pub mod selector;
 pub mod spec;
 pub mod team;
+pub mod team_tools;
 pub mod template;
 pub mod user;
 
@@ -78,7 +79,7 @@ pub use kubearmor_policy::{
 };
 pub use labels::{
     BACKEND_LABEL, CANARY_LABEL, DEVWORKSPACE_ID_LABEL, KUBEARMOR_ENFORCER_LABEL, MANAGED_BY_LABEL,
-    MANAGED_BY_VALUE, PROFILE_LABEL,
+    MANAGED_BY_VALUE, PROFILE_LABEL, TEAM_TOOL_LABEL, TEAM_TOOLS_NAMESPACE_LABEL,
 };
 pub use namespace::NamespaceName;
 pub use network_profiles::{
@@ -112,6 +113,12 @@ pub use spec::{
 pub use team::{
     DEFAULT_PRIORITY, Team, TeamAuthentik, TeamFeatures, TeamIdentity, TeamName, TeamWorkspace,
     WeeboSiTeam, WeeboSiTeamSpec, WeeboSiTeamStatus, resolution_order, team_views,
+};
+pub use team_tools::{
+    DEFAULT_IDLE_GRACE_SECONDS, MAX_REQUESTED_TOOLS, MAX_TOOL_ENTRIES, MAX_TOOL_TEMPLATES,
+    ResolvedTeamToolsConfig, TEAM_TOOLS_ATTRIBUTE, TeamTeamTools, TeamToolState, TeamToolStatus,
+    TeamToolsConfig, ToolEntry, ToolGrant, ToolIssuerRef, ToolKey, ToolService, ToolTemplateRef,
+    ToolTls, ToolWorkload, ToolWorkspaceSelection, WorkloadKind,
 };
 pub use template::{
     Bindings, DISPLAY_NAME, EMAIL, OBJECT_NAME, TEAM_NAME as TEMPLATE_TEAM_NAME,

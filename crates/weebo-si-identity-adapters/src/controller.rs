@@ -207,6 +207,8 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
                 report.violations.join("; ")
             },
         )],
+        // Empty is omitted from the merge patch, so this loop never clears team-tools' entries.
+        team_tools: Vec::new(),
     };
 
     let api: Api<WeeboSiTeam> = Api::all(ctx.client.clone());

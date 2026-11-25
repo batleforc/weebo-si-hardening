@@ -31,6 +31,7 @@ use crate::pod_security::TeamPodSecurity;
 use crate::registry_config::TeamRegistryConfig;
 use crate::resource_quotas::TeamResourceQuotas;
 use crate::selector::Selector;
+use crate::team_tools::{TeamTeamTools, TeamToolStatus};
 
 /// The priority a team gets when it does not say. High on purpose: a team that has an opinion
 /// about precedence states it, and lands ahead of every team that does not.
@@ -109,6 +110,9 @@ pub struct TeamFeatures {
     /// This team's `resource-quotas` profiles and default, per RFC 0014.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quotas: Option<TeamResourceQuotas>,
+    /// This team's `team-tools` namespace and grant, per RFC 0020.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_tools: Option<TeamTeamTools>,
 }
 
 /// `spec.identity` — what this team's members are, outside Kubernetes.
@@ -208,6 +212,9 @@ pub struct WeeboSiTeamStatus {
     /// Standard `metav1.Condition` list: `Ready`, `Degraded`.
     #[serde(default)]
     pub conditions: Vec<Condition>,
+    /// One entry per tool of this team, per RFC 0020: counts, never who requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_tools: Vec<TeamToolStatus>,
 }
 
 impl WeeboSiTeam {
@@ -278,6 +285,7 @@ mod tests {
             endpoint_auth: _,
             pod_security: _,
             resource_quotas: _,
+            team_tools: _,
         } = TeamFeatures::default();
         let features: TeamFeatures = serde_json::from_value(serde_json::json!({
             "imageRewrite": {"mode": "Enforce", "rules": [{"from": "quay.io", "to": "evil.io/x"}]}

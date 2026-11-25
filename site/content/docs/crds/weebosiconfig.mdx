@@ -52,6 +52,7 @@ spec:
 | [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
 | [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | `spec.features.resourceQuotas`, per RFC 0014. |
+| [`teamTools`](#spec.features.teamTools) | `object` | no |  | `spec.features.teamTools`, per RFC 0020. |
 
 ### `spec.features.devfileContract` [#spec.features.devfileContract]
 
@@ -747,6 +748,93 @@ spec:
 | `key` | `string` | yes |  | The label key this expression tests. |
 | `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
 | `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.teamTools` [#spec.features.teamTools]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.teamTools.catalog) | `object[]` | yes |  | Every tool a team may be granted. Required, may be empty.<br /><br />Constraints: `maxItems: 32` |
+| `idleGraceSeconds` | `integer` | no | `600` | Time a tool stays up after its last requester stops.<br /><br />Constraints: `minimum: 0`, `maximum: 4294967295` |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.teamTools.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows which requesting namespaces are read. |
+| `onNotGranted` | `string` | no | `"Default"` | What a requested key the team is not granted gets: dropped, or the request refused.<br /><br />Values: `"Default"`, `"Deny"` |
+| [`workspaceSelection`](#spec.features.teamTools.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/team-tools"}` | The DevWorkspace attribute naming the requested keys. |
+
+**Rules**
+
+- `catalog`: two catalog entries share the same key — `self.all(e, self.exists_one(f, f.key == e.key))`
+
+### `spec.features.teamTools.catalog[]` [#spec.features.teamTools.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clientEnv` | `string` | no |  | The key of the generated endpoint `ConfigMap`, an environment variable name.<br /><br />Constraints: `pattern: ^[A-Za-z_][A-Za-z0-9_]*$`, `minLength: 1`, `maxLength: 128` |
+| `idleGraceSeconds` | `integer` | no |  | Overrides the block's `idleGraceSeconds` for this tool.<br /><br />Constraints: `minimum: 0`, `maximum: 4294967295` |
+| `key` | `string` | yes |  | The key a devfile attribute or a team grant names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 40` |
+| [`requesterTemplates`](#spec.features.teamTools.catalog.requesterTemplates) | `object[]` | no | `[]` | `ConfigMap`s rendered into each requesting namespace.<br /><br />Constraints: `maxItems: 16` |
+| [`service`](#spec.features.teamTools.catalog.service) | `object` | yes |  | The port the network policies open. |
+| [`tls`](#spec.features.teamTools.catalog.tls) | `object` | no |  | Absent means no mTLS: allowed, and logged (RFC 0020, Resolved 14). |
+| [`toolTemplates`](#spec.features.teamTools.catalog.toolTemplates) | `object[]` | yes |  | Rendered into the team's tools namespace.<br /><br />Constraints: `maxItems: 16` |
+| [`workload`](#spec.features.teamTools.catalog.workload) | `object` | yes |  | The tool template scaled on demand. |
+
+### `spec.features.teamTools.catalog[].requesterTemplates[]` [#spec.features.teamTools.catalog.requesterTemplates]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | The object's kind; the allowed kinds are checked by `validate()`.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `name` | `string` | yes |  | The object's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `namespace` | `string` | yes |  | The namespace it lives in.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+
+### `spec.features.teamTools.catalog[].service` [#spec.features.teamTools.catalog.service]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The `Service` template's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `port` | `integer` | yes |  | One of its ports.<br /><br />Constraints: `minimum: 1`, `maximum: 65535` |
+
+### `spec.features.teamTools.catalog[].tls` [#spec.features.teamTools.catalog.tls]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clientDuration` | `string` | yes |  | The client certificate's lifetime, a Go duration (`24h`).<br /><br />Constraints: `minLength: 1`, `maxLength: 32` |
+| `clientMountPath` | `string` | yes |  | Where DWO mounts the client certificate in the workspace.<br /><br />Constraints: `pattern: ^/`, `minLength: 2`, `maxLength: 1024` |
+| `serverSecretName` | `string` | yes |  | The `Secret` the server `Certificate` writes, mounted by the tool template.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+
+### `spec.features.teamTools.catalog[].toolTemplates[]` [#spec.features.teamTools.catalog.toolTemplates]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | The object's kind; the allowed kinds are checked by `validate()`.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `name` | `string` | yes |  | The object's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `namespace` | `string` | yes |  | The namespace it lives in.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+
+### `spec.features.teamTools.catalog[].workload` [#spec.features.teamTools.catalog.workload]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | `Deployment` or `StatefulSet`.<br /><br />Values: `"Deployment"`, `"StatefulSet"` |
+| `name` | `string` | yes |  | Its name among the tool templates.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+
+### `spec.features.teamTools.namespaceSelector` [#spec.features.teamTools.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.teamTools.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.teamTools.namespaceSelector.matchExpressions[]` [#spec.features.teamTools.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.teamTools.workspaceSelection` [#spec.features.teamTools.workspaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `attribute` | `string` | no | `"hardening.weebo.io/team-tools"` | DevWorkspace attribute naming a comma-separated key list. `""` disables requests.<br /><br />Constraints: `maxLength: 317` |
 
 ## Build a manifest
 
