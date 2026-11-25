@@ -402,6 +402,14 @@ fn a_volume_from_before_enforce_keeps_its_owner_and_the_cleanup_job_is_rewritten
     assert_eq!(sh(&workspace, "stat -c %u /projects/before"), before);
     sh(&workspace, "touch /projects/after && cat /projects/before");
 
+    // With no other workspace on the common PVC, DWO deletes the PVC instead of running its
+    // cleanup Job: a stopped second workspace keeps the claim, so the Job runs.
+    let mut keeper = Workspace::manifest(&ns.name, "keeper", &WorkspaceSpec::default());
+    keeper["spec"]["started"] = json!(false);
+    keeper["spec"]["template"]["attributes"]["controller.devfile.io/storage-type"] =
+        json!("common");
+    apply(&keeper.to_string());
+    let _keeper = Cleanup::new(&["devworkspace", "-n", &ns.name, "keeper"]);
     let id = workspace.id();
     must(&[
         "delete",
