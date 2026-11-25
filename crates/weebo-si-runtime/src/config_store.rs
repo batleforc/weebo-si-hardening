@@ -20,7 +20,8 @@ use weebo_si_crd::{
     PolicyGuardConfig, ResolvedDwocPinConfig, ResolvedEndpointAuthConfig, ResolvedFeatures,
     ResolvedImagePolicyConfig, ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig,
     ResolvedPodSecurityConfig, ResolvedRegistryConfig, ResolvedResourceQuotasConfig,
-    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiTeam, team_views,
+    ResolvedTeamToolsConfig, RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiTeam,
+    team_views,
 };
 use weebo_si_image_policy::LoadedRewrite;
 
@@ -82,6 +83,7 @@ pub struct KubeConfigStore {
     image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
     pod_identity: Arc<RwLock<Option<PodIdentityConfig>>>,
+    team_tools: Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
     /// Ticks once each time a sync leaves `identity` different from before, sent after the
     /// handle is written: a loop woken by it reads the new value, never the old one.
     identity_changes: tokio::sync::watch::Sender<()>,
@@ -138,6 +140,7 @@ impl KubeConfigStore {
         let image_rewrite = Arc::new(RwLock::new(None));
         let devfile_contract = Arc::new(RwLock::new(None));
         let pod_identity = Arc::new(RwLock::new(None));
+        let team_tools = Arc::new(RwLock::new(None));
         let (identity_changes, _) = tokio::sync::watch::channel(());
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
@@ -179,6 +182,7 @@ impl KubeConfigStore {
         let image_rewrite_for_task = Arc::clone(&image_rewrite);
         let devfile_contract_for_task = Arc::clone(&devfile_contract);
         let pod_identity_for_task = Arc::clone(&pod_identity);
+        let team_tools_for_task = Arc::clone(&team_tools);
         let identity_changes_for_task = identity_changes.clone();
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
@@ -210,6 +214,7 @@ impl KubeConfigStore {
                             &image_rewrite_for_task,
                             &devfile_contract_for_task,
                             &pod_identity_for_task,
+                            &team_tools_for_task,
                             &resolved_backend_for_task,
                             &resolved_runtime_backend_for_task,
                             &annotation_key_for_task,
@@ -259,6 +264,7 @@ impl KubeConfigStore {
             &image_rewrite,
             &devfile_contract,
             &pod_identity,
+            &team_tools,
             &resolved_backend,
             &resolved_runtime_backend,
             &annotation_key,
@@ -281,6 +287,7 @@ impl KubeConfigStore {
             image_rewrite,
             devfile_contract,
             pod_identity,
+            team_tools,
             identity_changes,
             resolved_backend,
             resolved_runtime_backend,
@@ -385,6 +392,12 @@ impl KubeConfigStore {
     /// `spec.features.podIdentity` is present on the singleton.
     pub fn pod_identity_config(&self) -> Arc<RwLock<Option<PodIdentityConfig>>> {
         Arc::clone(&self.pod_identity)
+    }
+
+    /// The `Arc` RFC 0020's `team-tools` reads, its loop and (RFC 0020 PR 5) its admission gate.
+    /// `None` until (and unless) `spec.features.teamTools` is present on the singleton.
+    pub fn team_tools_config(&self) -> Arc<RwLock<Option<ResolvedTeamToolsConfig>>> {
+        Arc::clone(&self.team_tools)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -495,6 +508,7 @@ fn sync_from_store_initial(
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
+    team_tools: &Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -519,6 +533,7 @@ fn sync_from_store_initial(
         image_rewrite,
         devfile_contract,
         pod_identity,
+        team_tools,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -548,6 +563,7 @@ fn sync_from_store(
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
+    team_tools: &Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -574,6 +590,7 @@ fn sync_from_store(
         image_rewrite,
         devfile_contract,
         pod_identity,
+        team_tools,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -726,6 +743,14 @@ fn sync_from_store(
                 .unwrap_or(0),
         );
 
+    metrics.feature_mode.with_label_values(&["team-tools"]).set(
+        features
+            .team_tools
+            .as_ref()
+            .map(|c| mode_value(c.mode))
+            .unwrap_or(0),
+    );
+
     metrics
         .feature_mode
         .with_label_values(&["pod-security"])
@@ -837,6 +862,7 @@ fn apply_config(
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
+    team_tools: &Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -888,6 +914,9 @@ fn apply_config(
     }
     if let Ok(mut guard) = pod_identity.write() {
         *guard = features.pod_identity.clone();
+    }
+    if let Ok(mut guard) = team_tools.write() {
+        *guard = features.team_tools.clone();
     }
     if let Ok(mut guard) = resolved_runtime_backend.write() {
         let preference = features
@@ -1046,6 +1075,17 @@ impl KubeConfigStore {
                     None => return FeatureMode::Off,
                 }
             }
+            // `namespaceSelector` narrows the *requesting* namespaces (RFC 0020, *Contract*).
+            "team-tools" => {
+                let guard = self
+                    .team_tools
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
             "pod-identity" => {
                 let guard = self
                     .pod_identity
@@ -1172,6 +1212,7 @@ mod tests {
         image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
         devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
         pod_identity: Arc<RwLock<Option<PodIdentityConfig>>>,
+        team_tools: Arc<RwLock<Option<ResolvedTeamToolsConfig>>>,
         resolved_backend: Arc<RwLock<Backend>>,
         resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
         annotation_key: Arc<RwLock<String>>,
@@ -1194,6 +1235,7 @@ mod tests {
                 image_rewrite: Arc::default(),
                 devfile_contract: Arc::default(),
                 pod_identity: Arc::default(),
+                team_tools: Arc::default(),
                 resolved_backend: Arc::new(RwLock::new(Backend::NetworkPolicy)),
                 resolved_runtime_backend: Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
                 annotation_key: Arc::new(RwLock::new(DEFAULT_ANNOTATION.to_string())),
@@ -1219,6 +1261,7 @@ mod tests {
                 &self.image_rewrite,
                 &self.devfile_contract,
                 &self.pod_identity,
+                &self.team_tools,
                 &self.resolved_backend,
                 &self.resolved_runtime_backend,
                 &self.annotation_key,

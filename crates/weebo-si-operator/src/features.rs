@@ -89,4 +89,9 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0014",
         resource: "Namespace",
     },
+    FeatureDescriptor {
+        id: "team-tools",
+        rfc: "RFC 0020",
+        resource: "DevWorkspace, Namespace, WeeboSiTeam",
+    },
 ];

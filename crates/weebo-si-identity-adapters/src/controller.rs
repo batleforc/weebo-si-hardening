@@ -158,6 +158,9 @@ fn error_policy<K: Regarding>(object: Arc<K>, err: &Error, ctx: Arc<Ctx>) -> Act
     )
 }
 
+/// The condition team-tools owns on a `WeeboSiTeam` (`weebo_si_team_tools_adapters::status`).
+const TEAM_TOOLS_CONDITION: &str = "TeamToolsReady";
+
 /// One pass over one team: count what it owns, collect what is wrong with it, write `status`.
 ///
 /// It writes **nothing else**. A team object is a declaration, and the only thing this operator
@@ -191,11 +194,26 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
         .observer
         .team_reconciled(!report.violations.is_empty());
 
+    // The merge patch below replaces `conditions` whole: team-tools' own condition, written by
+    // its loop on the same status, is carried over as last listed (RFC 0020).
+    let carried = teams
+        .iter()
+        .find(|listed| listed.name_any() == team.name_any())
+        .and_then(|listed| listed.status.as_ref())
+        .map(|status| {
+            status
+                .conditions
+                .iter()
+                .filter(|condition| condition.type_ == TEAM_TOOLS_CONDITION)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let status = WeeboSiTeamStatus {
         observed_generation: generation,
         namespaces: report.namespaces,
         members: report.members,
-        conditions: vec![condition(
+        conditions: std::iter::once(condition(
             report.violations.is_empty(),
             generation,
             if report.violations.is_empty() {
@@ -206,7 +224,9 @@ pub async fn reconcile_team(team: Arc<WeeboSiTeam>, ctx: Arc<Ctx>) -> Result<Act
             } else {
                 report.violations.join("; ")
             },
-        )],
+        ))
+        .chain(carried)
+        .collect(),
         // Empty is omitted from the merge patch, so this loop never clears team-tools' entries.
         team_tools: Vec::new(),
     };

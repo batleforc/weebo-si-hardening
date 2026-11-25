@@ -119,8 +119,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let quota_template_namespace = flag(args, "--quota-template-namespace")
         .unwrap_or(weebo_si_resource_quotas_adapters::DEFAULT_TEMPLATE_NAMESPACE)
         .to_string();
-    // RFC 0020's templates share RFC 0014's pod-less namespace unless told otherwise. Read but
-    // not used yet: the team-tools controller (RFC 0020 PR 4) is its first reader.
+    // RFC 0020's templates share RFC 0014's pod-less namespace unless told otherwise.
     let team_tools_template_namespace = flag(args, "--team-tools-template-namespace")
         .map_or_else(|| quota_template_namespace.clone(), str::to_string);
     let restricted_grants =
@@ -140,6 +139,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
         quota_template_namespace,
         team_tools_template_namespace,
         restricted_grants,
+        team_tools_report: Arc::default(),
     };
 
     // Every feature's watches start here, before the lease, so a standby replica's caches are
@@ -150,6 +150,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let endpoint_auth = weebo_si_endpoint_auth_adapters::controller_deps(&shared).await?;
     let pod_security = weebo_si_pod_security_adapters::controller_deps(&shared).await?;
     let resource_quotas = weebo_si_resource_quotas_adapters::controller_deps(&shared).await?;
+    let team_tools = weebo_si_team_tools_adapters::controller_deps(&shared).await?;
     let identity = weebo_si_identity_adapters::controller_deps(&shared)?;
 
     // `--metrics-addr` is parsed for the CLI contract's sake: metrics and probes share
@@ -206,6 +207,10 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
             recorder.clone(),
         )
         .await;
+    }
+    if let Some(deps) = team_tools {
+        weebo_si_team_tools_adapters::controller::spawn(client.clone(), deps, recorder.clone())
+            .await;
     }
     if let Some(deps) = pod_security {
         weebo_si_pod_security_adapters::controller::spawn(client.clone(), deps, recorder.clone())

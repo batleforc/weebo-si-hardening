@@ -13,10 +13,12 @@ weebo-si-team-tools = { version = "0.1.0", path = "../weebo-si-team-tools" }
 weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 weebo-si-runtime = { version = "0.1.0", path = "../weebo-si-runtime" }
+weebo-si-controller = { version = "0.1.0", path = "../weebo-si-controller" }
 kube = { workspace = true, features = ["client", "runtime"] }
 k8s-openapi = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
+prometheus = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }

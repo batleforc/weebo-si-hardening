@@ -4082,6 +4082,7 @@ dependencies = [
  "weebo-si-resource-quotas",
  "weebo-si-resource-quotas-adapters",
  "weebo-si-runtime",
+ "weebo-si-team-tools-adapters",
  "weebo-si-webhook",
 ]
 
@@ -4278,12 +4279,14 @@ dependencies = [
  "futures-util",
  "k8s-openapi",
  "kube",
+ "prometheus",
  "rustls",
  "serde_json",
  "sha2 0.11.0",
  "tokio",
  "tracing",
  "weebo-si-chassis",
+ "weebo-si-controller",
  "weebo-si-crd",
  "weebo-si-envtest-support",
  "weebo-si-runtime",

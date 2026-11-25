@@ -29,6 +29,8 @@ pub struct Ctx {
     /// Whether this replica currently holds the leader lease. `true` unconditionally when
     /// leader election is disabled (the single-replica default) — see [`crate::run`].
     pub recorder: Recorder,
+    /// What the team-tools loop found (RFC 0020).
+    pub team_tools: Arc<std::sync::RwLock<Option<crate::TeamToolsReport>>>,
 }
 
 /// Something that stopped a reconcile from completing. Never panics the loop — `kube-runtime`
@@ -298,6 +300,26 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0020's `teamTools`. Entry validation needs the templates, which only the team-tools
+    // loop watches: it hands its findings over (`TeamToolsReport`), so this lags it by up to one
+    // status pass. Overlapping team selectors are a warning in the message, never `Degraded`.
+    if let Some(team_tools) = &resolved.team_tools {
+        let report = ctx
+            .team_tools
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_default();
+        let (state, message) = team_tools_status(team_tools, &report);
+        violation_messages.extend(report.invalid.iter().cloned());
+        features.push(FeatureStatus {
+            name: "team-tools".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
     // configuration this repo already knew how to reject was reported nowhere — including the one
     // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the
@@ -533,6 +555,32 @@ fn pod_identity_status(pod_identity: &weebo_si_crd::PodIdentityConfig) -> (Featu
         "configuration valid"
     };
     (state, message.to_string())
+}
+
+fn team_tools_status(
+    team_tools: &weebo_si_crd::ResolvedTeamToolsConfig,
+    report: &crate::TeamToolsReport,
+) -> (FeatureState, String) {
+    let state = if !report.invalid.is_empty() {
+        FeatureState::Degraded
+    } else {
+        match team_tools.config.mode {
+            FeatureMode::Off => return (FeatureState::Disabled, "mode Off".to_string()),
+            FeatureMode::DryRun => FeatureState::DryRun,
+            FeatureMode::Enforce => FeatureState::Active,
+        }
+    };
+    let mut parts = if report.invalid.is_empty() {
+        vec![format!(
+            "{} catalogue entries, {} grants",
+            team_tools.config.catalog.len(),
+            team_tools.grants.len()
+        )]
+    } else {
+        report.invalid.clone()
+    };
+    parts.extend(report.warnings.iter().cloned());
+    (state, parts.join("; "))
 }
 
 fn degraded_status(generation: i64, message: String) -> WeeboSiConfigStatus {

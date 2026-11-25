@@ -26,6 +26,7 @@ weebo-si-pod-security = { version = "0.1.0", path = "../weebo-si-pod-security" }
 weebo-si-pod-security-adapters = { version = "0.1.0", path = "../weebo-si-pod-security-adapters" }
 weebo-si-resource-quotas = { version = "0.1.0", path = "../weebo-si-resource-quotas" }
 weebo-si-resource-quotas-adapters = { version = "0.1.0", path = "../weebo-si-resource-quotas-adapters" }
+weebo-si-team-tools-adapters = { version = "0.1.0", path = "../weebo-si-team-tools-adapters" }
 weebo-si-image-policy-adapters = { version = "0.1.0", path = "../weebo-si-image-policy-adapters" }
 weebo-si-policy-guard-adapters = { version = "0.1.0", path = "../weebo-si-policy-guard-adapters" }
 weebo-si-endpoint-auth-adapters = { version = "0.1.0", path = "../weebo-si-endpoint-auth-adapters" }

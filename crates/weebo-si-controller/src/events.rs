@@ -57,6 +57,14 @@ mod reason {
             RestrictedGrantHonoured,
             /// A restricted catalogue key was refused: the namespace does not grant it.
             RestrictedGrantRefused,
+            /// A DevWorkspace requests a team tool its team is not granted (RFC 0020).
+            TeamToolNotGranted,
+            /// A requesting namespace gets no client certificate: no identity to put in it.
+            TeamToolNoIdentity,
+            /// A team tool was added to a running workspace: one restart mounts its client side.
+            TeamToolRestartNeeded,
+            /// A namespace matches the selectors of two teams that both have team tools.
+            TeamToolsSelectorOverlap,
         }
     }
 }
@@ -155,6 +163,31 @@ pub async fn restricted_grant<K: Regarding>(
     };
     let event = Event {
         type_,
+        reason: reason.as_str().to_string(),
+        note: Some(note),
+        action: weebo_kit_runtime::events::RECONCILE.to_string(),
+        secondary: None,
+    };
+    if let Err(err) = recorder.publish(&event, &object.regarding()).await {
+        tracing::warn!("could not publish the {reason} Event: {err}");
+    }
+}
+
+/// Publish one Event on `object`, `Warning` or `Normal`. A failed publish is logged and dropped:
+/// the caller logs the same fact.
+pub async fn publish<K: Regarding>(
+    recorder: &Recorder,
+    object: &K,
+    warning: bool,
+    reason: ReasonCode,
+    note: String,
+) {
+    let event = Event {
+        type_: if warning {
+            EventType::Warning
+        } else {
+            EventType::Normal
+        },
         reason: reason.as_str().to_string(),
         note: Some(note),
         action: weebo_kit_runtime::events::RECONCILE.to_string(),
