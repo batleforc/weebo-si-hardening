@@ -32,19 +32,19 @@ use weebo_si_chassis::{Context, NamespaceFacts};
 use weebo_si_crd::{
     FeatureMode, MANAGED_BY_LABEL, NamespaceName, ResolvedTeamToolsConfig, Selector,
     TEAM_TOOLS_NAMESPACE_LABEL, Team, TeamName, TeamTeamTools, TeamToolState, TeamToolStatus,
-    TeamToolsConfig, ToolKey, WeeboSiTeam,
+    TeamToolsConfig, ToolKey, ToolTemplateRef, WeeboSiTeam,
 };
 use weebo_si_envtest_support::EnvTest;
 use weebo_si_team_tools::port::testing::{FakeClock, FakeTemplateStore};
 use weebo_si_team_tools::render::from_template;
 use weebo_si_team_tools::{
     SCALE_FIELD_MANAGER, TeamTool, TeamToolsFeature, ToolObject, ToolObjectKind, ToolTemplate,
-    ToolsNamespace,
+    ToolTemplateStore, ToolsNamespace,
 };
 use weebo_si_team_tools_adapters::controller::teardown;
 use weebo_si_team_tools_adapters::status::{self, TeamReport};
 use weebo_si_team_tools_adapters::{
-    Adoption, KubeToolStore, ToolObjectStore, ToolOutcome, reconcile_tool,
+    Adoption, KubeToolStore, KubeToolTemplateStore, ToolObjectStore, ToolOutcome, reconcile_tool,
 };
 
 const TOOLS: &str = "team-weebo-tools";
@@ -252,6 +252,55 @@ async fn a_phase_zero_object_is_adopted_in_place() {
             .unwrap()
             .contains_key(MANAGED_BY_LABEL)
     );
+}
+
+#[tokio::test]
+async fn a_cluster_ip_service_template_applies_into_the_tools_namespace() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().unwrap();
+    namespace(&client, TEMPLATES).await;
+    namespace(&client, TOOLS).await;
+    let template: Service = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"name": "buildkitd", "namespace": TEMPLATES},
+        "spec": {"selector": {"app": "buildkitd"},
+                 "ports": [{"name": "grpc", "port": 1234, "targetPort": 1234}]},
+    }))
+    .unwrap();
+    let created = Api::<Service>::namespaced(client.clone(), TEMPLATES)
+        .create(&PostParams::default(), &template)
+        .await
+        .unwrap();
+    assert!(
+        created.spec.unwrap().cluster_ip.is_some(),
+        "the apiserver allocates an IP"
+    );
+
+    let templates =
+        KubeToolTemplateStore::spawn(client.clone(), &NamespaceName::new(TEMPLATES), false)
+            .await
+            .unwrap();
+    let read = templates
+        .template(&ToolTemplateRef {
+            kind: "Service".to_string(),
+            name: "buildkitd".to_string(),
+            namespace: NamespaceName::new(TEMPLATES),
+        })
+        .unwrap();
+    let desired =
+        from_template(&read, &NamespaceName::new(TOOLS), &ToolKey::new("buildkit")).unwrap();
+    let store = KubeToolStore::spawn(client.clone(), false, false)
+        .await
+        .unwrap();
+    store
+        .apply(&[Diff::Create(desired)], Adoption::Adopt)
+        .await
+        .unwrap();
+    let copy = Api::<Service>::namespaced(client.clone(), TOOLS)
+        .get("buildkitd")
+        .await
+        .unwrap();
+    assert!(copy.spec.unwrap().cluster_ip.is_some());
 }
 
 #[tokio::test]

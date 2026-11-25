@@ -238,6 +238,19 @@ pub fn from_template(
     {
         spec.remove("replicas");
     }
+    // The apiserver allocated these to the template; copied, they collide (422 "already allocated").
+    if kind == ToolObjectKind::Service
+        && let Some(spec) = body.get_mut("spec").and_then(Value::as_object_mut)
+    {
+        for field in ["clusterIP", "clusterIPs", "healthCheckNodePort"] {
+            spec.remove(field);
+        }
+        if let Some(ports) = spec.get_mut("ports").and_then(Value::as_array_mut) {
+            for port in ports.iter_mut().filter_map(Value::as_object_mut) {
+                port.remove("nodePort");
+            }
+        }
+    }
     Some(object(
         namespace,
         template.name.clone(),
@@ -524,6 +537,27 @@ mod tests {
         assert!(rendered.body["spec"].get("template").is_some());
         assert_eq!(rendered.labels, managed_labels(&entry.entry.key));
         assert!(rendered.annotations.is_empty());
+    }
+
+    #[test]
+    fn a_rendered_service_drops_the_template_allocations() {
+        let entry = valid_entry();
+        let mut template = entry.tools[1].clone();
+        assert_eq!(template.kind, "Service");
+        template.body["spec"]["clusterIP"] = json!("10.96.0.42");
+        template.body["spec"]["clusterIPs"] = json!(["10.96.0.42"]);
+        template.body["spec"]["healthCheckNodePort"] = json!(31000);
+        template.body["spec"]["ports"][0]["nodePort"] = json!(30123);
+        let rendered =
+            from_template(&template, &NamespaceName::new(TOOLS_NS), &entry.entry.key).unwrap();
+        let spec = &rendered.body["spec"];
+        for field in ["clusterIP", "clusterIPs", "healthCheckNodePort"] {
+            assert!(spec.get(field).is_none(), "{field}");
+        }
+        assert_eq!(
+            spec["ports"],
+            json!([{"name": "grpc", "port": 1234, "targetPort": 1234, "protocol": "TCP"}])
+        );
     }
 
     #[test]
