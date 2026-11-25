@@ -838,6 +838,11 @@ fn a_denied_prefix_is_not_bypassed_by_another_spelling() {
         "https://github.com/org/%6Fld-stack/raw/v1/devfile.yaml",
         "https://github.com/org/x/../old-stack/raw/v1/devfile.yaml",
         "https://github.com/org/./old-stack/devfile.yaml",
+        "http://github.com/org/old-stack/devfile.yaml",
+        "https://github.com./org/old-stack/devfile.yaml",
+        "https://github.com/org/old-stack",
+        // Decoded, this resolves to `/x`; a server that keeps `%2e%2e` literal serves old-stack.
+        "https://github.com/org/old-stack/raw/%2e%2e/%2e%2e/%2e%2e/x",
     ] {
         assert!(
             denied_match(&Parent::Uri(uri.to_string()), &denied).is_some(),
@@ -846,4 +851,6 @@ fn a_denied_prefix_is_not_bypassed_by_another_spelling() {
     }
     let other = Parent::Uri("https://github.com/org/old-stack-2/devfile.yaml".to_string());
     assert!(denied_match(&other, &[prefix("https://github.com/org/new-stack")]).is_none());
+    // A prefix stops at a segment boundary: old-stack does not deny old-stack-2.
+    assert!(denied_match(&other, &denied).is_none());
 }

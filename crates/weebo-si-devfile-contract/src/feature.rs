@@ -14,8 +14,8 @@ use weebo_si_crd::{
 };
 
 use crate::parse::{
-    Contract, UriPin, classify_parent_uri, excerpt, normalise_uri, parse_contract,
-    parse_schema_version, scan_schema_version,
+    Contract, UriPin, classify_parent_uri, excerpt, normalise_authority, normalise_uri,
+    parse_contract, parse_schema_version, scan_schema_version,
 };
 use crate::subject::{DevfileWorkspace, Parent};
 
@@ -308,21 +308,32 @@ enum Denied<'a> {
 /// The first `deniedParents` entry the parent matches, numbered from 1. A `uriPrefix` matches a
 /// `parent.uri` after both are normalised (T3: scheme and host lowercased, userinfo, query and
 /// fragment dropped, unreserved escapes decoded, dot segments resolved) and compared without case,
-/// since forges such as GitHub serve `Org/Repo` and `org/repo` alike; an `id` matches `parent.id` with one of `versions`, or any version (an
-/// absent one included) when `versions` is empty.
+/// since forges such as GitHub serve `Org/Repo` and `org/repo` alike, with `http` read as `https`.
+/// The URI is also compared with only its scheme and host normalised, since a server may not
+/// collapse an encoded `%2e%2e`. A prefix not ending in `/` stops at a path segment boundary. An
+/// `id` matches `parent.id` with one of `versions`, or any version (an absent one included) when
+/// `versions` is empty.
 pub fn denied_match<'a>(
     parent: &Parent,
     denied: &'a [DeniedParent],
 ) -> Option<(usize, &'a DeniedParent)> {
-    let uri = match parent {
-        Parent::Uri(uri) => Some(normalise_uri(uri).to_lowercase()),
-        Parent::Id { .. } | Parent::Kubernetes => None,
+    let uris = match parent {
+        Parent::Uri(uri) => vec![
+            deny_key(&normalise_uri(uri)),
+            deny_key(&normalise_authority(uri)),
+        ],
+        Parent::Id { .. } | Parent::Kubernetes => Vec::new(),
     };
     denied.iter().enumerate().find_map(|(index, entry)| {
         let matched = match (parent, &entry.uri_prefix, &entry.id) {
-            (Parent::Uri(_), Some(prefix), _) => uri
-                .as_deref()
-                .is_some_and(|uri| uri.starts_with(&normalise_uri(prefix).to_lowercase())),
+            (Parent::Uri(_), Some(prefix), _) => {
+                let prefix = deny_key(&normalise_uri(prefix));
+                uris.iter().any(|uri| {
+                    uri.strip_prefix(&prefix).is_some_and(|rest| {
+                        prefix.ends_with('/') || rest.is_empty() || rest.starts_with('/')
+                    })
+                })
+            }
             (Parent::Id { id, version }, None, Some(denied_id)) => {
                 id == denied_id
                     && (entry.versions.is_empty()
@@ -332,6 +343,15 @@ pub fn denied_match<'a>(
         };
         matched.then_some((index.saturating_add(1), entry))
     })
+}
+
+/// A normalised URI as compared against a `uriPrefix`: lowercased, `http` read as `https`.
+fn deny_key(normalised: &str) -> String {
+    let lower = normalised.to_lowercase();
+    match lower.strip_prefix("http://") {
+        Some(rest) => format!("https://{rest}"),
+        None => lower,
+    }
 }
 
 /// The refusal text: stands alone (the dashboard shows only this), quotes the admin's entry.

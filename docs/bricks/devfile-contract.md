@@ -89,9 +89,12 @@ not the RFC mock's `Forbidden`: the route's denials carry no HTTP code.
 
 Writing a `uriPrefix`:
 
-- **End it with `/`.** It is a plain prefix after normalisation (scheme and host lowercased,
-  userinfo, query and fragment dropped, unreserved escapes decoded, `.` and `..` resolved),
-  compared without case, so `…/v1.2.0` also denies `…/v1.2.01/…`.
+- **It stops at a path segment.** It is a prefix after normalisation (scheme and host
+  lowercased, `http` read as `https`, a trailing `.` on the host, userinfo, query and fragment
+  dropped, unreserved escapes decoded, `.` and `..` resolved), compared without case. Without a
+  trailing `/` it matches only whole segments: `…/v1.2.0` denies `…/v1.2.0` and `…/v1.2.0/…`,
+  not `…/v1.2.01/…`. The URI is also compared with its path left as written, so an encoded
+  `%2e%2e` cannot step out of a denied prefix.
 - **Never a scheme alone.** `uriPrefix: "https://"` passes the CRD's validation and denies every
   `https` parent of every workspace start under `Enforce`.
 - `deniedContracts: [1]` makes the attribute mandatory: a devfile without it counts as `1`.

@@ -92,14 +92,11 @@ pub enum UriPin {
     Unpinned,
 }
 
-/// A URI with its scheme and host lowercased, its userinfo, default port, query and fragment
-/// removed, unreserved escapes decoded, and `.`, `..` and repeated `/` resolved (T3). A string without `://` is kept whole, minus query
-/// and fragment.
-pub fn normalise_uri(uri: &str) -> String {
+/// A URI's lowercased scheme and host (userinfo, default port and a trailing `.` dropped) and its
+/// raw path, query and fragment removed; `None` without `://`.
+fn split_uri(uri: &str) -> Option<(String, String, &str)> {
     let without_query = uri.split(['?', '#']).next().unwrap_or_default();
-    let Some((scheme, rest)) = without_query.split_once("://") else {
-        return without_query.to_string();
-    };
+    let (scheme, rest) = without_query.split_once("://")?;
     let scheme = scheme.to_lowercase();
     let (authority, path) = rest.find('/').map_or((rest, ""), |i| rest.split_at(i));
     let host = authority
@@ -113,8 +110,28 @@ pub fn normalise_uri(uri: &str) -> String {
         _ => "",
     };
     let host = match host.strip_suffix(default_port) {
-        Some(bare) if !default_port.is_empty() => bare.to_string(),
-        _ => host,
+        Some(bare) if !default_port.is_empty() => bare,
+        _ => host.as_str(),
+    };
+    // `github.com.` is the same fully-qualified host as `github.com`.
+    let host = host.strip_suffix('.').unwrap_or(host).to_string();
+    Some((scheme, host, path))
+}
+
+/// [`normalise_uri`] without touching the path: no escape decoded, no dot segment resolved.
+pub fn normalise_authority(uri: &str) -> String {
+    match split_uri(uri) {
+        Some((scheme, host, path)) => format!("{scheme}://{host}{path}"),
+        None => uri.split(['?', '#']).next().unwrap_or_default().to_string(),
+    }
+}
+
+/// A URI with its scheme and host lowercased, its userinfo, default port, trailing host `.`,
+/// query and fragment removed, unreserved escapes decoded, and `.`, `..` and repeated `/`
+/// resolved (T3). A string without `://` is kept whole, minus query and fragment.
+pub fn normalise_uri(uri: &str) -> String {
+    let Some((scheme, host, path)) = split_uri(uri) else {
+        return uri.split(['?', '#']).next().unwrap_or_default().to_string();
     };
     let decoded = decode_unreserved(path);
     let mut segments: Vec<&str> = Vec::new();
@@ -416,6 +433,7 @@ mod tests {
             ("https://host/a/b/..", "https://host/a/"),
             ("https://host/../..", "https://host"),
             ("https://host/a%zz%4", "https://host/a%zz%4"),
+            ("https://GitHub.com.:443/a", "https://github.com/a"),
         ];
         for (uri, expected) in rows {
             assert_eq!(normalise_uri(uri), expected, "{uri}");
