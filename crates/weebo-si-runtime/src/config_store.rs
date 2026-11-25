@@ -16,11 +16,11 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, DevfileContractConfig, FeatureMode, IdentityConfig, NamespaceName, PolicyGuardConfig,
-    ResolvedDwocPinConfig, ResolvedEndpointAuthConfig, ResolvedFeatures, ResolvedImagePolicyConfig,
-    ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig, ResolvedPodSecurityConfig,
-    ResolvedRegistryConfig, ResolvedResourceQuotasConfig, RuntimeBackend, SINGLETON_NAME, Team,
-    WeeboSiConfig, WeeboSiTeam, team_views,
+    Backend, DevfileContractConfig, FeatureMode, IdentityConfig, NamespaceName, PodIdentityConfig,
+    PolicyGuardConfig, ResolvedDwocPinConfig, ResolvedEndpointAuthConfig, ResolvedFeatures,
+    ResolvedImagePolicyConfig, ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig,
+    ResolvedPodSecurityConfig, ResolvedRegistryConfig, ResolvedResourceQuotasConfig,
+    RuntimeBackend, SINGLETON_NAME, Team, WeeboSiConfig, WeeboSiTeam, team_views,
 };
 use weebo_si_image_policy::LoadedRewrite;
 
@@ -81,6 +81,7 @@ pub struct KubeConfigStore {
     identity: Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
+    pod_identity: Arc<RwLock<Option<PodIdentityConfig>>>,
     /// Ticks once each time a sync leaves `identity` different from before, sent after the
     /// handle is written: a loop woken by it reads the new value, never the old one.
     identity_changes: tokio::sync::watch::Sender<()>,
@@ -136,6 +137,7 @@ impl KubeConfigStore {
         let identity = Arc::new(RwLock::new(None));
         let image_rewrite = Arc::new(RwLock::new(None));
         let devfile_contract = Arc::new(RwLock::new(None));
+        let pod_identity = Arc::new(RwLock::new(None));
         let (identity_changes, _) = tokio::sync::watch::channel(());
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
@@ -176,6 +178,7 @@ impl KubeConfigStore {
         let identity_for_task = Arc::clone(&identity);
         let image_rewrite_for_task = Arc::clone(&image_rewrite);
         let devfile_contract_for_task = Arc::clone(&devfile_contract);
+        let pod_identity_for_task = Arc::clone(&pod_identity);
         let identity_changes_for_task = identity_changes.clone();
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
@@ -206,6 +209,7 @@ impl KubeConfigStore {
                             &identity_for_task,
                             &image_rewrite_for_task,
                             &devfile_contract_for_task,
+                            &pod_identity_for_task,
                             &resolved_backend_for_task,
                             &resolved_runtime_backend_for_task,
                             &annotation_key_for_task,
@@ -254,6 +258,7 @@ impl KubeConfigStore {
             &identity,
             &image_rewrite,
             &devfile_contract,
+            &pod_identity,
             &resolved_backend,
             &resolved_runtime_backend,
             &annotation_key,
@@ -275,6 +280,7 @@ impl KubeConfigStore {
             identity,
             image_rewrite,
             devfile_contract,
+            pod_identity,
             identity_changes,
             resolved_backend,
             resolved_runtime_backend,
@@ -373,6 +379,12 @@ impl KubeConfigStore {
     /// until (and unless) `spec.features.devfileContract` is present on the singleton.
     pub fn devfile_contract_config(&self) -> Arc<RwLock<Option<DevfileContractConfig>>> {
         Arc::clone(&self.devfile_contract)
+    }
+
+    /// The `Arc` RFC 0018's `pod-identity` reads on its two Pod routes. `None` until (and unless)
+    /// `spec.features.podIdentity` is present on the singleton.
+    pub fn pod_identity_config(&self) -> Arc<RwLock<Option<PodIdentityConfig>>> {
+        Arc::clone(&self.pod_identity)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -482,6 +494,7 @@ fn sync_from_store_initial(
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
+    pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -505,6 +518,7 @@ fn sync_from_store_initial(
         identity,
         image_rewrite,
         devfile_contract,
+        pod_identity,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -533,6 +547,7 @@ fn sync_from_store(
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
+    pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -558,6 +573,7 @@ fn sync_from_store(
         identity,
         image_rewrite,
         devfile_contract,
+        pod_identity,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -701,6 +717,17 @@ fn sync_from_store(
 
     metrics
         .feature_mode
+        .with_label_values(&["pod-identity"])
+        .set(
+            features
+                .pod_identity
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
+    metrics
+        .feature_mode
         .with_label_values(&["pod-security"])
         .set(
             features
@@ -809,6 +836,7 @@ fn apply_config(
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
     devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
+    pod_identity: &Arc<RwLock<Option<PodIdentityConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -857,6 +885,9 @@ fn apply_config(
     }
     if let Ok(mut guard) = devfile_contract.write() {
         *guard = features.devfile_contract.clone();
+    }
+    if let Ok(mut guard) = pod_identity.write() {
+        *guard = features.pod_identity.clone();
     }
     if let Ok(mut guard) = resolved_runtime_backend.write() {
         let preference = features
@@ -1015,6 +1046,16 @@ impl KubeConfigStore {
                     None => return FeatureMode::Off,
                 }
             }
+            "pod-identity" => {
+                let guard = self
+                    .pod_identity
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
             "pod-security" => {
                 let guard = self
                     .pod_security
@@ -1106,6 +1147,7 @@ mod tests {
                     "currentContract": 1,
                     "minimumContract": 1,
                 },
+                "podIdentity": {"mode": "DryRun"},
             },
         }))
         .unwrap();
@@ -1129,6 +1171,7 @@ mod tests {
         identity: Arc<RwLock<Option<IdentityConfig>>>,
         image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
         devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
+        pod_identity: Arc<RwLock<Option<PodIdentityConfig>>>,
         resolved_backend: Arc<RwLock<Backend>>,
         resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
         annotation_key: Arc<RwLock<String>>,
@@ -1150,6 +1193,7 @@ mod tests {
                 identity: Arc::default(),
                 image_rewrite: Arc::default(),
                 devfile_contract: Arc::default(),
+                pod_identity: Arc::default(),
                 resolved_backend: Arc::new(RwLock::new(Backend::NetworkPolicy)),
                 resolved_runtime_backend: Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
                 annotation_key: Arc::new(RwLock::new(DEFAULT_ANNOTATION.to_string())),
@@ -1174,6 +1218,7 @@ mod tests {
                 &self.identity,
                 &self.image_rewrite,
                 &self.devfile_contract,
+                &self.pod_identity,
                 &self.resolved_backend,
                 &self.resolved_runtime_backend,
                 &self.annotation_key,
@@ -1251,6 +1296,10 @@ mod tests {
                 .mode,
             FeatureMode::DryRun
         );
+        assert_eq!(
+            handles.pod_identity.read().unwrap().as_ref().unwrap().mode,
+            FeatureMode::DryRun
+        );
 
         // Stand-ins for blocks a richer singleton would have carried: whatever was last applied,
         // the delete must clear it, not only the one block this fixture happens to set.
@@ -1268,6 +1317,7 @@ mod tests {
         assert!(handles.endpoint_auth.read().unwrap().is_none());
         assert!(handles.identity.read().unwrap().is_none());
         assert!(handles.devfile_contract.read().unwrap().is_none());
+        assert!(handles.pod_identity.read().unwrap().is_none());
         assert!(
             handles
                 .image_rewrite

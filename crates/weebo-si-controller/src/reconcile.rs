@@ -286,6 +286,18 @@ pub async fn reconcile(config: Arc<WeeboSiConfig>, ctx: Arc<Ctx>) -> Result<Acti
         });
     }
 
+    // RFC 0018's `podIdentity`. CEL refuses every invalid id at write, so the state is the mode;
+    // `grantGroupZero` is a warning in the message, never `Degraded` (RFC 0018, L4, L25).
+    if let Some(pod_identity) = &resolved.pod_identity {
+        let (state, message) = pod_identity_status(pod_identity);
+        features.push(FeatureStatus {
+            name: "pod-identity".to_string(),
+            state,
+            message,
+            observed_generation: generation,
+        });
+    }
+
     // RFC 0009's `endpointAuth`. Until now its `validate()` existed and nothing called it, so a
     // configuration this repo already knew how to reject was reported nowhere — including the one
     // violation that cannot be caught anywhere else. `HaproxyIngress` is safe only when the
@@ -508,6 +520,21 @@ fn image_rewrite_status(
     }
 }
 
+/// `pod-identity`'s entry in `status.features[]`: RFC 0018's *Mocks* wording.
+fn pod_identity_status(pod_identity: &weebo_si_crd::PodIdentityConfig) -> (FeatureState, String) {
+    let state = match pod_identity.mode {
+        FeatureMode::Off => return (FeatureState::Disabled, "mode Off".to_string()),
+        FeatureMode::DryRun => FeatureState::DryRun,
+        FeatureMode::Enforce => FeatureState::Active,
+    };
+    let message = if pod_identity.grant_group_zero {
+        "grantGroupZero is on: group 0 is added to every pod in scope"
+    } else {
+        "configuration valid"
+    };
+    (state, message.to_string())
+}
+
 fn degraded_status(generation: i64, message: String) -> WeeboSiConfigStatus {
     let now =
         k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now());
@@ -592,6 +619,33 @@ mod tests {
         assert_eq!(
             image_rewrite_status(&rewrite("Off", quay), None).0,
             FeatureState::Disabled
+        );
+    }
+
+    #[test]
+    fn the_pod_identity_status_follows_the_rfc_wording() {
+        let identity = |mode: &str, grant_group_zero: bool| {
+            pod_identity_status(
+                &serde_json::from_value(serde_json::json!({
+                    "mode": mode, "grantGroupZero": grant_group_zero,
+                }))
+                .unwrap(),
+            )
+        };
+        assert_eq!(
+            identity("Off", true),
+            (FeatureState::Disabled, "mode Off".to_string())
+        );
+        assert_eq!(
+            identity("DryRun", false),
+            (FeatureState::DryRun, "configuration valid".to_string())
+        );
+        assert_eq!(
+            identity("Enforce", true),
+            (
+                FeatureState::Active,
+                "grantGroupZero is on: group 0 is added to every pod in scope".to_string()
+            )
         );
     }
 

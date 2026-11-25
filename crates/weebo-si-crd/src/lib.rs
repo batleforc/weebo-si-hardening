@@ -21,6 +21,7 @@ pub mod labels;
 mod merge;
 pub mod namespace;
 pub mod network_profiles;
+pub mod pod_identity;
 pub mod pod_security;
 pub mod policy_guard;
 pub mod registry_config;
@@ -86,6 +87,7 @@ pub use network_profiles::{
     ProfileKey, ProfileNamespaceSelection, ResolvedNetworkProfilesConfig, TeamNetworkProfiles,
     TemplateRef, Variant, WorkspaceSelection,
 };
+pub use pod_identity::{DEFAULT_POD_ID, MAX_EXEMPT_DWOC_KEYS, PodIdentityConfig};
 pub use pod_security::{
     PodSecurityBackend, PodSecurityConfig, PodSecurityConfigViolation, PodSecurityLevel,
     PodSecurityNamespaceSelection, PodSecurityVersion, ResolvedPodSecurityConfig, TeamPodSecurity,

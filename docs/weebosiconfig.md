@@ -361,6 +361,7 @@ rather than ignored at runtime.
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
 | [`podSecurity`](#featurespodsecurity) | [0013](./rfc/0013-pod-security.md) | `Namespace` labels (reconcile) |
+| [`podIdentity`](#featurespodidentity) | [0018](./rfc/0018-namespace-uid-range.md) | `Pod` (mutating + validating admission) |
 | [`resourceQuotas`](#featuresresourcequotas) | [0014](./rfc/0014-resource-quotas.md) | `ResourceQuota`, `LimitRange` (reconcile) |
 
 ### `features.dwocPin`
@@ -999,6 +1000,38 @@ asking for more than the `ceiling`, which is reported on that team's status.
 Before `Enforce`, `weebo-si-operator pods audit --all-namespaces` lists the existing pods each
 namespace's level would refuse.
 
+### `features.podIdentity`
+
+Makes every pod in a workspace namespace run as one fixed, non-root identity in its own user
+namespace (`hostUsers: false`), with no group 0. **Not evaluated by this build yet:** the block is
+accepted, validated and reported in `status`, and does nothing until RFC 0018's webhooks land.
+
+```yaml
+podIdentity:
+  mode: DryRun
+  namespaceSelector:
+    matchLabels: { kubernetes.io/metadata.name: dev-ws-batleforc-test }
+  runAsUser: 1234
+  runAsGroup: 1234
+  exemptDwocKeys: [build]
+  grantGroupZero: false
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | |
+| `namespaceSelector` | Selector | no | matches all | The rollout knob: the test namespace first. |
+| `runAsUser` | integer, 1–65535 | no | `1234` | The pod-level uid set when a pod gives none. A pod's own non-zero uid is kept; `runAsUser: 0` is refused. |
+| `runAsGroup` | integer, 1–65535 | no | `1234` | The pod-level gid and `fsGroup` set when a pod gives none, or gives 0 (DWO's default). A pod's own non-zero gid is kept. |
+| `exemptDwocKeys` | list of strings | no | `[]` | `dwocPin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left untouched, e.g. `[build]`. |
+| `grantGroupZero` | boolean | no | `false` | **Last resort.** `true` adds group 0 to every pod in scope, which grants write on every group-0-writable (`g=u`) file of the image. The status `message` says so for as long as it is on. |
+
+**The apiserver refuses**, at `kubectl apply`, a `runAsUser` or `runAsGroup` outside 1–65535
+(`runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)`), and more
+than 64 `exemptDwocKeys` (each 1 to 253 characters). Everything
+it accepts is meaningful, so this block never makes the status `Degraded`. Shared by every team:
+there is no `podIdentity` on `WeeboSiTeam`.
+
 ### `features.resourceQuotas`
 
 One quota profile per workspace namespace, per team: a `ResourceQuota` and a `LimitRange` copied
@@ -1070,7 +1103,8 @@ rather than one per edit round-trip.
 Validation is **mostly reconcile-time**: the apiserver accepts a structurally valid object, and
 the controller reports what is semantically wrong as `Degraded` conditions. The exception is
 CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
-above) and `devfileContract` (*devfileContract* above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+above), `devfileContract` (*devfileContract* above) and `podIdentity`'s ids (*podIdentity*
+above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 

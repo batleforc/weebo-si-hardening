@@ -1599,6 +1599,115 @@
             }
           ]
         },
+        "podIdentity": {
+          "description": "`spec.features.podIdentity`, per RFC 0018.",
+          "nullable": true,
+          "properties": {
+            "exemptDwocKeys": {
+              "default": [],
+              "description": "`dwoc-pin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left\nuntouched, e.g. `[build]` (RFC 0018, L27).",
+              "items": {
+                "maxLength": 253,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "grantGroupZero": {
+              "default": false,
+              "description": "Last resort, off by default. `true` adds group 0 to every pod in scope, which grants write\non every group-0-writable (`g=u`) file of the image; the feature's status says so for as\nlong as it is on.",
+              "type": "boolean"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the webhook's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "runAsGroup": {
+              "default": 1234,
+              "description": "The pod-level gid and `fsGroup` set when a pod gives none or gives 0; a pod's own non-zero\ngid is kept. Never 0.",
+              "format": "int64",
+              "type": "integer",
+              "x-kubernetes-validations": [
+                {
+                  "message": "runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)",
+                  "rule": "1 <= self && self <= 65535"
+                }
+              ]
+            },
+            "runAsUser": {
+              "default": 1234,
+              "description": "The pod-level uid set when a pod gives none; a pod's own non-zero uid is kept. Never 0.",
+              "format": "int64",
+              "type": "integer",
+              "x-kubernetes-validations": [
+                {
+                  "message": "runAsUser must be between 1 and 65535 (uid 0 is root in the image)",
+                  "rule": "1 <= self && self <= 65535"
+                }
+              ]
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
         "podSecurity": {
           "description": "`spec.features.podSecurity`, per RFC 0013.",
           "nullable": true,

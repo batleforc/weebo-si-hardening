@@ -413,6 +413,68 @@ async fn devfile_contract_cel_rules_accept_the_example_and_refuse_each_mistake()
     }
 }
 
+/// RFC 0018's CEL rules, against a real apiserver: the defaults and the RFC's example are
+/// accepted, and an id outside 1..=65535 is refused at write with the RFC's message.
+#[tokio::test]
+async fn pod_identity_cel_rules_accept_the_example_and_refuse_ids_out_of_range() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |block: serde_json::Value| {
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"podIdentity": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    for block in [
+        serde_json::json!({"mode": "Off"}),
+        serde_json::json!({
+            "mode": "DryRun",
+            "runAsUser": 1234,
+            "runAsGroup": 65535,
+            "exemptDwocKeys": ["build"],
+            "grantGroupZero": true,
+        }),
+    ] {
+        api.create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{block} should be accepted: {error}"));
+        let _ = api.delete("cluster", &DeleteParams::default()).await;
+    }
+
+    for (block, expected) in [
+        (
+            serde_json::json!({"mode": "DryRun", "runAsGroup": 0}),
+            "runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsGroup": 65536}),
+            "runAsGroup must be between 1 and 65535",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsUser": 0}),
+            "runAsUser must be between 1 and 65535",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsUser": -1}),
+            "runAsUser must be between 1 and 65535",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{block}: unexpected error: {error}"
+        );
+    }
+}
+
 /// RFC 0021's CEL rule, against a real apiserver: a grant annotation equal to the selection one is
 /// refused at write (a grant must never select), and the defaults, an explicit distinct grant and
 /// the empty (disabled) grant are accepted.

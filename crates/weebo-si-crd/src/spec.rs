@@ -14,6 +14,7 @@ use crate::image_policy::{ImagePolicyConfig, ResolvedImagePolicyConfig};
 use crate::image_rewrite::ImageRewriteConfig;
 use crate::kubearmor_policy::{KubeArmorPolicyConfig, ResolvedKubeArmorPolicyConfig};
 use crate::network_profiles::{NetworkProfilesConfig, ResolvedNetworkProfilesConfig};
+use crate::pod_identity::PodIdentityConfig;
 use crate::pod_security::{PodSecurityConfig, ResolvedPodSecurityConfig};
 use crate::policy_guard::PolicyGuardConfig;
 use crate::registry_config::{RegistryConfig, ResolvedRegistryConfig};
@@ -53,6 +54,9 @@ pub struct Features {
     /// `spec.features.podSecurity`, per RFC 0013.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_security: Option<PodSecurityConfig>,
+    /// `spec.features.podIdentity`, per RFC 0018.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_identity: Option<PodIdentityConfig>,
     /// `spec.features.resourceQuotas`, per RFC 0014.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quotas: Option<ResourceQuotasConfig>,
@@ -131,6 +135,8 @@ pub struct ResolvedFeatures {
     pub identity: Option<IdentityConfig>,
     /// `spec.features.podSecurity`, resolved.
     pub pod_security: Option<ResolvedPodSecurityConfig>,
+    /// `spec.features.podIdentity`, unchanged: not team-overridable (RFC 0018).
+    pub pod_identity: Option<PodIdentityConfig>,
     /// `spec.features.resourceQuotas`, resolved.
     pub resource_quotas: Option<ResolvedResourceQuotasConfig>,
     /// `spec.features.imageRewrite`, unchanged: not team-overridable (RFC 0017, resolved 7).
@@ -285,6 +291,7 @@ impl WeeboSiConfigSpec {
             endpoint_auth,
             identity: self.features.identity.clone(),
             pod_security,
+            pod_identity: self.features.pod_identity.clone(),
             resource_quotas,
             image_rewrite: self.features.image_rewrite.clone(),
             devfile_contract: self.features.devfile_contract.clone(),
