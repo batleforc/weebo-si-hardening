@@ -8,7 +8,8 @@
 //! It grows additively as features are added: `dwoc-pin`'s two, plus [`Mutation::SetString`],
 //! which RFC 0009's `ReverseProxy` dialect needs — on OpenShift the gate *is* the route's
 //! backend, so attaching it means writing `spec.to.name`, which no annotation variant can
-//! express.
+//! express. RFC 0018 adds [`Mutation::SetInt`] and [`Mutation::SetBool`] for the ids and flags of
+//! a pod's `securityContext`; still scalars only, for the same reason.
 
 use weebo_si_crd::DwocRef;
 
@@ -36,5 +37,21 @@ pub enum Mutation {
         path: Vec<String>,
         /// The value to set.
         value: String,
+    },
+    /// Set one integer-valued field, named like [`Mutation::SetString`] — a user or group id
+    /// under `securityContext` (RFC 0018).
+    SetInt {
+        /// The path to the field, from the object's root.
+        path: Vec<String>,
+        /// The value to set.
+        value: i64,
+    },
+    /// Set one boolean-valued field, named like [`Mutation::SetString`] — `hostUsers`,
+    /// `runAsNonRoot` (RFC 0018).
+    SetBool {
+        /// The path to the field, from the object's root.
+        path: Vec<String>,
+        /// The value to set.
+        value: bool,
     },
 }
