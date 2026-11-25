@@ -47,6 +47,9 @@ pub struct ControllerShared {
     /// Where `resource-quotas`' templates live (`--quota-template-namespace`): a namespace that
     /// runs no pods, because a `ResourceQuota` or `LimitRange` is enforced where it lives.
     pub quota_template_namespace: String,
+    /// Where `team-tools`' templates live (`--team-tools-template-namespace`, RFC 0020); defaults
+    /// to `quota_template_namespace`. No reader yet.
+    pub team_tools_template_namespace: String,
     /// `weebo_si_restricted_grant_total`, registered once and shared by every feature that
     /// reports restricted keys (RFC 0021).
     pub restricted_grants: restricted::RestrictedGrantCounter,

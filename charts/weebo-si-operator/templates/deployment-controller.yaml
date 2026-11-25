@@ -64,6 +64,7 @@ spec:
             - --health-addr=0.0.0.0:{{ .Values.metrics.service.port }}
             - --canary-image={{ .Values.networkProfiles.canary.image }}
             - --quota-template-namespace={{ .Values.resourceQuotas.templateNamespace.name }}
+            - --team-tools-template-namespace={{ include "weebo-si-operator.teamToolsTemplateNamespace" . }}
             {{- if .Values.controller.leaderElection }}
             - --leader-election
             {{- end }}

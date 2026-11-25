@@ -320,6 +320,34 @@
         }
       }
     },
+    "teamTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rbac": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "templateNamespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "create": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
     "registryConfig": {
       "type": "object",
       "additionalProperties": false,

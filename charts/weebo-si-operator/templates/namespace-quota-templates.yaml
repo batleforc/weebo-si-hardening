@@ -1,13 +1,23 @@
+{{- /* One Namespace per distinct name: resource-quotas and team-tools share it by default. */}}
+{{- $names := dict }}
 {{- if and .Values.resourceQuotas.rbac.enabled .Values.resourceQuotas.templateNamespace.create }}
-# RFC 0014's template namespace. A `ResourceQuota` or `LimitRange` is enforced in the namespace
-# that holds it, so the quota profiles live here, where nothing runs: in the operator's own
-# namespace they would cap and default the operator's pods. Excluded from every feature's scope,
-# and nothing should ever be deployed into it.
+{{- $_ := set $names .Values.resourceQuotas.templateNamespace.name true }}
+{{- end }}
+{{- if and .Values.teamTools.rbac.enabled .Values.teamTools.templateNamespace.create }}
+{{- $_ := set $names (include "weebo-si-operator.teamToolsTemplateNamespace" .) true }}
+{{- end }}
+{{- range $name, $_ := $names }}
+---
+# The template namespace (RFC 0014, shared by RFC 0020). A `ResourceQuota` or `LimitRange` is
+# enforced in the namespace that holds it, and a tool template is a live workload object, so the
+# templates live here, where nothing runs: in the operator's own namespace they would cap and
+# default the operator's pods. Excluded from every feature's scope, and nothing should ever be
+# deployed into it.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.resourceQuotas.templateNamespace.name }}
+  name: {{ $name }}
   labels:
-    {{- include "weebo-si-operator.labels" . | nindent 4 }}
-    {{ .Values.namespaceExclusionLabel }}: "true"
+    {{- include "weebo-si-operator.labels" $ | nindent 4 }}
+    {{ $.Values.namespaceExclusionLabel }}: "true"
 {{- end }}

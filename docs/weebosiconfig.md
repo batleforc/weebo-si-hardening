@@ -1121,6 +1121,32 @@ characters, two entries with the same key, more than 32 entries or 16 templates 
 `clientMountPath`. What needs the templates (kinds, the workload at `replicas: 0`, the pod spec
 rules) is checked by the controller and reported as `Degraded`.
 
+**Chart RBAC** (`teamTools.rbac.enabled`, default `false`; RFC 0020 Resolved 9 and 19). The switch
+renders two ClusterRoles that **nothing in the chart binds**, a cluster-wide read on `configmaps`
+and `certificates.cert-manager.io`, and a Role reading the five template kinds in
+`teamTools.templateNamespace.name` (empty by default: the resource-quotas one,
+`weebo-si-hardening-templates`; passed as `--team-tools-template-namespace`). A quota profile
+template in a shared namespace is a live `ResourceQuota` there: one capping object counts
+(`services: 0`, `count/configmaps`) refuses the tool templates, so keep it elsewhere or give team
+tools its own namespace. Every write needs a RoleBinding in the target namespace:
+
+| ClusterRole | Bound by | Grants there |
+| --- | --- | --- |
+| `weebo-si-team-tools` | the admin, one RoleBinding per tools namespace, in Git next to the Namespace, its label and quota | Deployments, StatefulSets, Services, ConfigMaps, CNPs, Certificates; `/scale`; read `resourcequotas` |
+| `weebo-si-team-tools-requester` | weebo-si's `2.helm/user-app`, one per workspace namespace | create, update, patch, delete ConfigMaps and Certificates |
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: weebo-si-team-tools, namespace: team-weebo-tools}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: weebo-si-team-tools}
+subjects:
+  - {kind: ServiceAccount, name: weebo-si-operator-controller, namespace: weebo-si-hardening}
+```
+
+A namespace without its RoleBinding gets a 403 and nothing else breaks: the apiserver, not the
+label check, is the boundary.
+
 ## `status`
 
 Written by the controller, derived entirely from `spec` — deleting it costs one reconcile.

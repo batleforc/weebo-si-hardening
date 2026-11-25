@@ -212,6 +212,31 @@ resourceQuotas:
     # Render the Namespace. Off when it is created some other way (GitOps, a pre-existing one).
     create: true
 
+# RFC 0020's `team-tools`. Off by default; this flag governs *RBAC and the template namespace*,
+# not the feature, whose switch is `spec.features.teamTools.mode`. It renders:
+#
+# - two **unbound** ClusterRoles with fixed names. `weebo-si-team-tools` (write on the tool
+#   workloads, `/scale`, Services, ConfigMaps, CNPs, Certificates) takes effect only in a tools
+#   namespace where the admin writes a RoleBinding to it, next to the Namespace, its
+#   `hardening.weebo.io/team-tools` label and its quota. `weebo-si-team-tools-requester` (write
+#   on ConfigMaps and Certificates) takes effect only in a workspace namespace holding a
+#   RoleBinding to it (weebo-si's `2.helm/user-app` renders one per user namespace). The
+#   apiserver is the boundary: a mistyped `namespace: kube-system` gets a 403, not a StatefulSet.
+# - cluster-wide read (`get`/`list`/`watch`) on `configmaps` and
+#   `certificates.cert-manager.io`, for the label-filtered watches;
+# - a Role reading the five template kinds in `templateNamespace`, a namespace that runs no pods.
+#   Empty `name` means the resource-quotas one. A quota profile template there is a live
+#   `ResourceQuota` enforced on the tool templates too: one capping object counts (`services: 0`,
+#   `count/configmaps`) refuses them, so keep such profiles elsewhere or set a separate name.
+teamTools:
+  rbac:
+    enabled: false
+  templateNamespace:
+    name: ""
+    # Render the Namespace. Off when it is created some other way (GitOps, a pre-existing one);
+    # it must then exist before the install, since the template Role is rendered into it.
+    create: true
+
 # RFC 0007's `registry-config`. Off by default, and this flag governs *RBAC and the guard rule*,
 # not the feature: whether the feature runs at all is `spec.features.registryConfig.mode` on the
 # WeeboSiConfig.

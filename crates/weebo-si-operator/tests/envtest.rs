@@ -182,7 +182,10 @@ async fn apply_document(admin: kube::Client, doc: &str) {
         "Role" => {
             let object: Role = serde_yaml_bw::from_str(doc).expect("should parse as a Role");
             let name = object.name_any();
-            let api: Api<Role> = Api::namespaced(admin, RELEASE_NAMESPACE);
+            let namespace = object
+                .namespace()
+                .unwrap_or_else(|| RELEASE_NAMESPACE.to_string());
+            let api: Api<Role> = Api::namespaced(admin, &namespace);
             api.create(&PostParams::default(), &object)
                 .await
                 .unwrap_or_else(|err| panic!("{name} should be accepted: {err}"));
@@ -191,7 +194,10 @@ async fn apply_document(admin: kube::Client, doc: &str) {
             let object: RoleBinding =
                 serde_yaml_bw::from_str(doc).expect("should parse as a RoleBinding");
             let name = object.name_any();
-            let api: Api<RoleBinding> = Api::namespaced(admin, RELEASE_NAMESPACE);
+            let namespace = object
+                .namespace()
+                .unwrap_or_else(|| RELEASE_NAMESPACE.to_string());
+            let api: Api<RoleBinding> = Api::namespaced(admin, &namespace);
             api.create(&PostParams::default(), &object)
                 .await
                 .unwrap_or_else(|err| panic!("{name} should be accepted: {err}"));
@@ -880,5 +886,315 @@ async fn the_webhook_role_can_read_kubearmor_policies_and_write_nothing() {
             .list(&ListParams::default())
             .await,
         "the enforcement join's node read belongs to the controller role alone",
+    );
+}
+
+const TEAM_TOOLS_TEMPLATES: &str = "weebo-si-hardening-templates";
+const TOOLS_NAMESPACE: &str = "team-weebo-tools";
+const WORKSPACE_NAMESPACE: &str = "dev-ws-alice";
+const CERTIFICATES: (&str, &str) = ("cert-manager.io", "certificates");
+
+async fn create_namespace(admin: kube::Client, name: &str) {
+    let namespace = Namespace {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    Api::<Namespace>::all(admin)
+        .create(&PostParams::default(), &namespace)
+        .await
+        .unwrap_or_else(|err| panic!("namespace {name} should be created: {err}"));
+}
+
+/// What an admin (tools namespace) or `2.helm/user-app` (workspace namespace) writes: a
+/// RoleBinding of the controller account to one of the chart's unbound ClusterRoles.
+async fn bind_cluster_role(admin: kube::Client, namespace: &str, role: &str, identity: &str) {
+    // `system:serviceaccount:<namespace>:<name>`
+    let mut parts = identity.rsplitn(3, ':');
+    let name = parts.next().expect("an identity has a name");
+    let sa_namespace = parts.next().expect("an identity has a namespace");
+    let binding: RoleBinding = serde_json::from_value(serde_json::json!({
+        "metadata": {"name": role, "namespace": namespace},
+        "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role},
+        "subjects": [{"kind": "ServiceAccount", "name": name, "namespace": sa_namespace}],
+    }))
+    .expect("the binding should deserialize");
+    Api::<RoleBinding>::namespaced(admin, namespace)
+        .create(&PostParams::default(), &binding)
+        .await
+        .unwrap_or_else(|err| panic!("binding {role} in {namespace} should succeed: {err}"));
+}
+
+/// Asks the authorizer whether `identity` may `verb` `group`/`resource` in `namespace` (`None` =
+/// cluster-wide). A SubjectAccessReview rather than a request: envtest has no cert-manager CRD,
+/// no Cilium CRD, and RBAC does not need either to answer.
+async fn may(
+    admin: kube::Client,
+    identity: &str,
+    (group, resource): (&str, &str),
+    verb: &str,
+    namespace: Option<&str>,
+) -> bool {
+    use k8s_openapi::api::authorization::v1::SubjectAccessReview;
+    let review: SubjectAccessReview = serde_json::from_value(serde_json::json!({
+        "spec": {
+            "user": identity,
+            "groups": ["system:serviceaccounts", "system:authenticated"],
+            "resourceAttributes": {
+                "group": group,
+                "resource": resource,
+                "verb": verb,
+                "namespace": namespace.unwrap_or(""),
+            },
+        },
+    }))
+    .expect("the review should deserialize");
+    let answer = Api::<SubjectAccessReview>::all(admin)
+        .create(&PostParams::default(), &review)
+        .await
+        .expect("a SubjectAccessReview should be answered");
+    answer.status.is_some_and(|status| status.allowed)
+}
+
+fn test_deployment(name: &str) -> k8s_openapi::api::apps::v1::Deployment {
+    serde_json::from_value(serde_json::json!({
+        "metadata": {"name": name},
+        "spec": {
+            "replicas": 0,
+            "selector": {"matchLabels": {"app": name}},
+            "template": {
+                "metadata": {"labels": {"app": name}},
+                "spec": {"containers": [{"name": "c", "image": "registry.invalid/c:1"}]},
+            },
+        },
+    }))
+    .expect("the deployment should deserialize")
+}
+
+fn test_config_map(name: &str) -> k8s_openapi::api::core::v1::ConfigMap {
+    k8s_openapi::api::core::v1::ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// RFC 0020, threat E2 (`the_controller_cannot_write_outside_a_bound_namespace`, envtest form of
+/// the kind check): with `teamTools.rbac.enabled` the chart grants **no** write on workloads,
+/// ConfigMaps or Certificates anywhere; each one appears only in a namespace holding a
+/// RoleBinding to `weebo-si-team-tools` (tools) or `weebo-si-team-tools-requester` (workspace).
+/// The cluster-wide half is read-only, and templates are readable in the template namespace only.
+#[tokio::test]
+async fn the_controller_cannot_write_outside_a_bound_namespace() {
+    use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
+    use k8s_openapi::api::core::v1::ConfigMap;
+
+    let rendered = helm_show_with("templates/rbac.yaml", &["teamTools.rbac.enabled=true"]);
+    let documents = split_documents(&rendered);
+    let webhook_identity = service_account_identity(&documents, "-webhook-watch");
+    let controller_identity = service_account_identity(&documents, "-controller-watch");
+    let Some(env_test) = EnvTest::try_start_rbac(&[
+        (WEBHOOK_TOKEN, webhook_identity.as_str()),
+        (CONTROLLER_TOKEN, controller_identity.as_str()),
+    ])
+    .await
+    else {
+        return;
+    };
+    let admin = env_test.client().expect("client should build");
+    install_crds(admin.clone()).await;
+    create_release_namespace(admin.clone()).await;
+    for namespace in [TEAM_TOOLS_TEMPLATES, TOOLS_NAMESPACE, WORKSPACE_NAMESPACE] {
+        create_namespace(admin.clone(), namespace).await;
+    }
+    for doc in &documents {
+        apply_document(admin.clone(), doc).await;
+    }
+    let controller = env_test
+        .client_as(CONTROLLER_TOKEN)
+        .expect("client should build");
+    let webhook = env_test
+        .client_as(WEBHOOK_TOKEN)
+        .expect("client should build");
+
+    // Unbound: the switch alone writes nothing, anywhere.
+    for namespace in ["kube-system", TOOLS_NAMESPACE] {
+        assert_forbidden(
+            Api::<Deployment>::namespaced(controller.clone(), namespace)
+                .create(&PostParams::default(), &test_deployment("buildkitd"))
+                .await,
+            "no Deployment may be created without the tools RoleBinding",
+        );
+        assert!(
+            !may(
+                admin.clone(),
+                &controller_identity,
+                CERTIFICATES,
+                "create",
+                Some(namespace)
+            )
+            .await,
+            "no Certificate may be created in {namespace} without a RoleBinding"
+        );
+    }
+    assert_forbidden(
+        Api::<ConfigMap>::namespaced(controller.clone(), WORKSPACE_NAMESPACE)
+            .create(
+                &PostParams::default(),
+                &test_config_map("weebo-team-tool-buildkit"),
+            )
+            .await,
+        "no ConfigMap may be created in a workspace namespace without the requester RoleBinding",
+    );
+
+    // The cluster-wide half is the read for the label-filtered watches, and only that.
+    assert!(
+        Api::<ConfigMap>::all(controller.clone())
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the controller role should list configmaps cluster-wide"
+    );
+    assert!(
+        may(
+            admin.clone(),
+            &controller_identity,
+            CERTIFICATES,
+            "watch",
+            None
+        )
+        .await,
+        "the controller role should watch certificates cluster-wide"
+    );
+    assert!(
+        !may(admin.clone(), &webhook_identity, CERTIFICATES, "list", None).await,
+        "the webhook role gains nothing from team-tools"
+    );
+    assert_forbidden(
+        Api::<ConfigMap>::all(webhook)
+            .list(&ListParams::default())
+            .await,
+        "the webhook role gains nothing from team-tools",
+    );
+
+    // Templates: readable in the template namespace, not elsewhere.
+    assert!(
+        Api::<StatefulSet>::namespaced(controller.clone(), TEAM_TOOLS_TEMPLATES)
+            .list(&ListParams::default())
+            .await
+            .is_ok(),
+        "the controller role should read templates in the template namespace"
+    );
+    assert_forbidden(
+        Api::<StatefulSet>::namespaced(controller.clone(), "kube-system")
+            .list(&ListParams::default())
+            .await,
+        "the template Role must not read workloads outside the template namespace",
+    );
+    assert_forbidden(
+        Api::<ConfigMap>::namespaced(controller.clone(), TEAM_TOOLS_TEMPLATES)
+            .create(&PostParams::default(), &test_config_map("planted"))
+            .await,
+        "the template Role is read-only: nothing is written where nothing runs",
+    );
+
+    // Bound by the admin: the tools namespace, and only it, opens.
+    bind_cluster_role(
+        admin.clone(),
+        TOOLS_NAMESPACE,
+        "weebo-si-team-tools",
+        &controller_identity,
+    )
+    .await;
+    let tools: Api<Deployment> = Api::namespaced(controller.clone(), TOOLS_NAMESPACE);
+    tools
+        .create(&PostParams::default(), &test_deployment("buildkitd"))
+        .await
+        .expect("the bound tools namespace should accept the workload");
+    tools
+        .patch_scale(
+            "buildkitd",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"spec": {"replicas": 1}})),
+        )
+        .await
+        .expect("the bound tools namespace should accept a /scale patch");
+    assert!(
+        may(
+            admin.clone(),
+            &controller_identity,
+            CERTIFICATES,
+            "create",
+            Some(TOOLS_NAMESPACE)
+        )
+        .await,
+        "the bound tools namespace should accept the server Certificate"
+    );
+    for (resource, verb) in [
+        (("", "resourcequotas"), "list"),
+        (("apps", "statefulsets/scale"), "patch"),
+        (("", "services"), "create"),
+        (("cilium.io", "ciliumnetworkpolicies"), "delete"),
+    ] {
+        assert!(
+            may(
+                admin.clone(),
+                &controller_identity,
+                resource,
+                verb,
+                Some(TOOLS_NAMESPACE)
+            )
+            .await,
+            "the bound tools namespace should allow {verb} on {resource:?}"
+        );
+    }
+    assert_forbidden(
+        Api::<Deployment>::namespaced(controller.clone(), "kube-system")
+            .create(&PostParams::default(), &test_deployment("buildkitd"))
+            .await,
+        "binding one tools namespace must not open kube-system",
+    );
+
+    // Bound by `2.helm/user-app`: the workspace namespace gets ConfigMap and Certificate writes,
+    // and still no workload.
+    bind_cluster_role(
+        admin.clone(),
+        WORKSPACE_NAMESPACE,
+        "weebo-si-team-tools-requester",
+        &controller_identity,
+    )
+    .await;
+    let requester: Api<ConfigMap> = Api::namespaced(controller.clone(), WORKSPACE_NAMESPACE);
+    requester
+        .create(
+            &PostParams::default(),
+            &test_config_map("weebo-team-tool-buildkit"),
+        )
+        .await
+        .expect("the bound workspace namespace should accept the endpoint ConfigMap");
+    requester
+        .delete("weebo-team-tool-buildkit", &DeleteParams::default())
+        .await
+        .expect("the bound workspace namespace should allow deleting it");
+    assert!(
+        may(
+            admin.clone(),
+            &controller_identity,
+            CERTIFICATES,
+            "create",
+            Some(WORKSPACE_NAMESPACE)
+        )
+        .await,
+        "the bound workspace namespace should accept the client Certificate"
+    );
+    assert_forbidden(
+        Api::<Deployment>::namespaced(controller, WORKSPACE_NAMESPACE)
+            .create(&PostParams::default(), &test_deployment("buildkitd"))
+            .await,
+        "the requester role must not grant workloads",
     );
 }

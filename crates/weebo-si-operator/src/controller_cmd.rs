@@ -119,6 +119,10 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let quota_template_namespace = flag(args, "--quota-template-namespace")
         .unwrap_or(weebo_si_resource_quotas_adapters::DEFAULT_TEMPLATE_NAMESPACE)
         .to_string();
+    // RFC 0020's templates share RFC 0014's pod-less namespace unless told otherwise. Read but
+    // not used yet: the team-tools controller (RFC 0020 PR 4) is its first reader.
+    let team_tools_template_namespace = flag(args, "--team-tools-template-namespace")
+        .map_or_else(|| quota_template_namespace.clone(), str::to_string);
     let restricted_grants =
         weebo_si_controller::restricted::RestrictedGrantCounter::register(&prometheus_registry)
             .map_err(|err| format!("could not register the restricted-grant counter: {err}"))?;
@@ -134,6 +138,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
         kubearmor_enabled,
         canary_image,
         quota_template_namespace,
+        team_tools_template_namespace,
         restricted_grants,
     };
 

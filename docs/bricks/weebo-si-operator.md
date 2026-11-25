@@ -197,6 +197,7 @@ weebo-si-operator webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/cer
                                --operator-identity <system:serviceaccount:ns:name>
 weebo-si-operator controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
                                [--canary-image <ref>] [--quota-template-namespace <ns>]
+                               [--team-tools-template-namespace <ns>]
 weebo-si-operator crd         [weebosiconfigs|weebositeams|weebosiusers]
                                # print the generated CRD YAML — what `task recu` writes
 weebo-si-operator features    # print the registry: id, originating RFC, target resource
