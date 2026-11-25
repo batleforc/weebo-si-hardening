@@ -42,7 +42,7 @@ use weebo_si_policy_guard::{
 };
 
 use weebo_si_webhook::metrics::WebhookMetrics;
-use weebo_si_webhook::render::render_patch;
+use weebo_si_webhook::render::{render_patch, with_warnings};
 
 /// Path the mutating rule on `networking.k8s.io/v1` `ingresses` points at.
 pub const MUTATE_INGRESSES_PATH: &str = "/mutate/v1/ingresses";
@@ -340,8 +340,14 @@ async fn mutate(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(mutations)) if mutations.is_empty() => response,
-        Ok(AdmitOutcome::Allow(mutations)) => {
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) if mutations.is_empty() => with_warnings(response, warnings),
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) => {
             let body = object
                 .map(|object| serde_json::to_value(object).unwrap_or_default())
                 .unwrap_or_default();
@@ -353,7 +359,7 @@ async fn mutate(
                 patch.0.len()
             );
             match response.with_patch(patch) {
-                Ok(response) => response,
+                Ok(response) => with_warnings(response, warnings),
                 // A patch that cannot be serialised is a bug in this crate, never a reason to
                 // let an ungated endpoint through: refusing is the fail-closed answer, and it
                 // names itself so the bug is findable.
@@ -679,7 +685,7 @@ async fn validate(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             // The guard said yes; the developer's own annotations still have to mean something.
             // Only on a write that is not a delete, and only in `Enforce` — a `DryRun` must not
             // refuse anything, which is the chassis's rule rather than this feature's.
@@ -711,7 +717,7 @@ async fn validate(
                         kind.kind()
                     ))
                 }
-                None => response,
+                None => with_warnings(response, warnings),
             }
         }
         Ok(AdmitOutcome::Deny(reason)) => {

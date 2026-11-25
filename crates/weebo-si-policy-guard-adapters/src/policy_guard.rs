@@ -26,6 +26,7 @@ use weebo_si_crd::{MANAGED_BY_LABEL, MANAGED_BY_VALUE, NamespaceName, PolicyGuar
 use weebo_si_policy_guard::{GuardedResource, GuardedWrite, PolicyGuard, WriteOperation};
 
 use weebo_si_webhook::metrics::WebhookMetrics;
+use weebo_si_webhook::render::with_warnings;
 
 /// Path both `networkpolicies` and (where the backend is enabled) `ciliumnetworkpolicies` rules
 /// point at — one handler, resource-agnostic, per RFC 0004's *Design → Contract*: "the webhook
@@ -248,9 +249,9 @@ async fn validate_policies(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             log_decision(&write, None);
-            response
+            with_warnings(response, warnings)
         }
         Ok(AdmitOutcome::Deny(reason)) => {
             log_decision(&write, Some(&reason));

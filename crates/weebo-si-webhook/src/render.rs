@@ -7,8 +7,10 @@ use std::collections::BTreeSet;
 
 use json_patch::{AddOperation, Patch, PatchOperation};
 use jsonptr::PointerBuf;
+use kube::core::admission::AdmissionResponse;
 use serde_json::Value;
 use weebo_si_chassis::Mutation;
+use weebo_si_chassis::admit::bound_warnings;
 
 use crate::extract::CONFIG_REF_ATTRIBUTE;
 
@@ -90,6 +92,15 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
         }
     }
     Patch(ops)
+}
+
+/// Put the merged warnings of every registry a route ran on `response`, bounded once
+/// ([`bound_warnings`], RFC 0019 D-14). No warning leaves `warnings` at `None`, so a response
+/// without one is byte-identical to what it was before warnings existed.
+pub fn with_warnings(mut response: AdmissionResponse, warnings: Vec<String>) -> AdmissionResponse {
+    let warnings = bound_warnings(warnings);
+    response.warnings = (!warnings.is_empty()).then_some(warnings);
+    response
 }
 
 /// Whether `pointer` names something other than nothing inside `object` — absent and `null` both
@@ -311,6 +322,35 @@ mod tests {
         assert_eq!(
             paths,
             vec!["/spec/to/name", "/spec/port", "/spec/port/targetPort"]
+        );
+    }
+
+    #[test]
+    fn no_warning_leaves_the_response_unchanged() {
+        let response = with_warnings(AdmissionResponse::invalid("x"), Vec::new());
+        assert_eq!(response.warnings, None);
+    }
+
+    /// Two registries of four warnings each: one bound over the merged list keeps six, where a
+    /// bound per registry would have let eight through (RFC 0019 D-14).
+    #[test]
+    fn the_bound_runs_once_after_the_merge() {
+        let first = (0..4).map(|i| format!("first {i}"));
+        let second = (0..4).map(|i| format!("second {i}\n"));
+        let response = with_warnings(
+            AdmissionResponse::invalid("x"),
+            first.chain(second).collect(),
+        );
+        assert_eq!(
+            response.warnings.unwrap(),
+            [
+                "first 0",
+                "first 1",
+                "first 2",
+                "first 3",
+                "second 0 ",
+                "second 1 "
+            ]
         );
     }
 

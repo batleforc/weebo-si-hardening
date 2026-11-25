@@ -725,7 +725,7 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
     for _ in 0..admissions {
         let started = Instant::now();
         let subject = rewrite_images_from_object(&namespace, Resource::Pod, &upstream, None, false);
-        let Ok(AdmitOutcome::Allow(mutations)) = admit(
+        let Ok(AdmitOutcome::Allow { mutations, .. }) = admit(
             &rewrite_registry,
             &subject,
             &gate,
@@ -752,7 +752,7 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
         );
         let validated = started.elapsed();
         assert!(
-            matches!(outcome, Ok(AdmitOutcome::Allow(_))),
+            matches!(outcome, Ok(AdmitOutcome::Allow { .. })),
             "the rewritten pod must be admitted: {outcome:?}"
         );
 

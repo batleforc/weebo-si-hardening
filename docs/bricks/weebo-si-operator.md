@@ -394,6 +394,7 @@ render call, never a log line.
 | `weebo_si_admission_requests_total` | counter | `feature`, `resource`, `mode`, `outcome` — `resource` is the subject's Kubernetes kind |
 | `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` — the same pair the counter carries |
 | `weebo_si_admission_unguarded_total` | counter | `feature`, `path` — requests a guard allowed **without checking**, because it does not know the resource |
+| `weebo_si_admission_warnings_total` | counter | `feature`, `mode` — admission warnings features decided, counted before `DryRun` drops them (RFC 0019): not what reached the client, since a denial carries none and each response keeps at most 6 of 120 characters |
 | `weebo_si_feature_mode` | gauge | `feature` |
 | `weebo_si_dwoc_pin_total` | counter | `result`, `team` |
 | `weebo_si_dwoc_pin_catalog_entries` | gauge | `state` ∈ `resolvable`/`missing` |

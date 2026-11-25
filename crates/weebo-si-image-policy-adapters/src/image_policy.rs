@@ -31,6 +31,7 @@ use weebo_si_image_policy::{
 };
 
 use weebo_si_webhook::metrics::WebhookMetrics;
+use weebo_si_webhook::render::with_warnings;
 
 /// Path the `DevWorkspace` rule points at.
 pub const VALIDATE_DEVWORKSPACES_PATH: &str = "/validate/v1alpha1/devworkspaces";
@@ -410,7 +411,7 @@ async fn validate_devworkspaces(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             log_decision(
                 Resource::DevWorkspace,
                 &namespace,
@@ -418,7 +419,7 @@ async fn validate_devworkspaces(
                 subject.images.len(),
                 None,
             );
-            response
+            with_warnings(response, warnings)
         }
         Ok(AdmitOutcome::Deny(reason)) => {
             log_decision(
@@ -481,7 +482,7 @@ async fn validate_pods(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             log_decision(
                 Resource::Pod,
                 &namespace,
@@ -489,7 +490,7 @@ async fn validate_pods(
                 subject.images.len(),
                 None,
             );
-            response
+            with_warnings(response, warnings)
         }
         Ok(AdmitOutcome::Deny(reason)) => {
             log_decision(
@@ -587,8 +588,14 @@ fn mutate(
         );
     };
     match outcome {
-        Ok(AdmitOutcome::Allow(mutations)) if mutations.is_empty() => response.into_review(),
-        Ok(AdmitOutcome::Allow(mutations)) => {
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) if mutations.is_empty() => with_warnings(response, warnings).into_review(),
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) => {
             // A `Null` body would make `render_patch` re-create every parent over the object.
             let body = match serde_json::to_value(object) {
                 Ok(body) => body,
@@ -599,7 +606,7 @@ fn mutate(
             };
             let patch = weebo_si_webhook::render::render_patch(&body, &mutations);
             match response.with_patch(patch) {
-                Ok(response) => response.into_review(),
+                Ok(response) => with_warnings(response, warnings).into_review(),
                 Err(err) => {
                     error(&err.to_string());
                     AdmissionResponse::from(&request).into_review()

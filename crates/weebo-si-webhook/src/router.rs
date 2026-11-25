@@ -20,7 +20,7 @@ use weebo_si_network_profiles::WorkspaceAdmission;
 
 use crate::extract::{workspace_admission_from_object, workspace_from_object};
 use crate::metrics::WebhookMetrics;
-use crate::render::render_patch;
+use crate::render::{render_patch, with_warnings};
 
 /// Logs one admission decision — namespace, workspace name, the current and target references,
 /// and the decision — per RFC 0002's *Security considerations*: "Logs carry the namespace, the
@@ -180,7 +180,8 @@ async fn mutate_devworkspaces(
 
         let denial = match outcome {
             Ok(AdmitOutcome::Deny(reason)) => Some(reason),
-            Ok(AdmitOutcome::Allow(_)) => None,
+            // The gate's payload is still discarded; RFC 0019 PR 4 merges it (D-14).
+            Ok(AdmitOutcome::Allow { .. }) => None,
             Err(err) => Some(err.to_string()),
         };
         if let Some(reason) = denial {
@@ -211,7 +212,10 @@ async fn mutate_devworkspaces(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(mutations)) if mutations.is_empty() => {
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) if mutations.is_empty() => {
             log_admission(
                 &namespace,
                 &workspace.name,
@@ -219,9 +223,12 @@ async fn mutate_devworkspaces(
                 &mutations,
                 None,
             );
-            response
+            with_warnings(response, warnings)
         }
-        Ok(AdmitOutcome::Allow(mutations)) => {
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) => {
             log_admission(
                 &namespace,
                 &workspace.name,
@@ -231,7 +238,7 @@ async fn mutate_devworkspaces(
             );
             let patch = render_patch(&object.data, &mutations);
             match response.with_patch(patch) {
-                Ok(response) => response,
+                Ok(response) => with_warnings(response, warnings),
                 Err(err) => {
                     AdmissionResponse::from(&request).deny(format!("failed to render patch: {err}"))
                 }
