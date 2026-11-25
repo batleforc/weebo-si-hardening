@@ -1412,8 +1412,11 @@ fn parent_server() -> Cleanup {
                 "containers": [{
                     "name": "http",
                     "image": weebo_si_e2e::WORKSPACE_IMAGE,
-                    "command": ["python3", "-m", "http.server", "8080", "--directory", "/srv"],
+                    "command": ["python3", "-m", "http.server", "8080", "--bind", "0.0.0.0", "--directory", "/srv"],
                     "ports": [{ "containerPort": 8080 }],
+                    // Ready only once the server listens: without a probe the endpoint is ready
+                    // before Python binds, and DWO's single fetch meets "connection refused".
+                    "readinessProbe": { "tcpSocket": { "port": 8080 }, "periodSeconds": 1 },
                     "securityContext": {
                         "allowPrivilegeEscalation": false,
                         "capabilities": { "drop": ["ALL"] },
