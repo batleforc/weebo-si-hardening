@@ -136,14 +136,19 @@ impl Feature<WorkspaceAdmission> for WorkspaceGate {
         } else {
             // Under `Deny` the reconcile writes nothing beyond the baseline for a refused request.
             let effect = if matches!(resolved, Some(Err(_))) {
-                "onNotGranted=Deny: no profile beyond the baseline is applied"
+                "Deny: baseline only"
             } else {
-                "the workspace does not get them"
+                "not applied"
+            };
+            // Terser than the denial: the chassis cuts a warning at MAX_WARNING_CHARS.
+            let clause = if grant_annotation.is_empty() {
+                "grants disabled (namespaceGrant.annotation empty)".to_string()
+            } else {
+                format!("no namespace grant ({grant_annotation})")
             };
             vec![format!(
-                "network profile(s) [{}] {}; {effect}",
-                join(refused),
-                restricted_clause(&subject.namespace, grant_annotation)
+                "network profile(s) [{}]: restricted, {clause}; {effect}",
+                join(refused)
             )]
         };
 
@@ -549,22 +554,39 @@ mod tests {
         subject.operation = WorkspaceOperation::Update;
         let decision = evaluate(&gate(OnNotGranted::Deny, &[WORKSPACE_NS]), &subject);
         assert_eq!(decision.denial, None);
-        assert!(
-            decision.warnings[0].ends_with("no profile beyond the baseline is applied"),
-            "{:?}",
-            decision.warnings
+        assert_eq!(
+            decision.warnings,
+            vec![
+                "network profile(s) [internet]: restricted, no namespace grant \
+                 (hardening.weebo.io/network-grants); Deny: baseline only"
+                    .to_string()
+            ]
         );
         let decision = evaluate(&gate(OnNotGranted::Default, &[WORKSPACE_NS]), &subject);
         assert_eq!(decision.denial, None);
         assert_eq!(
             decision.warnings,
             vec![
-                "network profile(s) [internet] are restricted: namespace user-alice does not \
-                 grant them (annotation hardening.weebo.io/network-grants); the workspace does \
-                 not get them"
+                "network profile(s) [internet]: restricted, no namespace grant \
+                 (hardening.weebo.io/network-grants); not applied"
                     .to_string()
             ]
         );
+    }
+
+    /// The realistic warning fits the chassis bound, so neither the annotation nor the effect is cut.
+    #[test]
+    fn a_restricted_key_warning_fits_the_chassis_bound() {
+        for on_not_granted in [OnNotGranted::Deny, OnNotGranted::Default] {
+            let mut subject = workspace("dev-ws-batleforc-test", Some("internet"));
+            subject.operation = WorkspaceOperation::Update;
+            let decision = evaluate(&gate(on_not_granted, &["dev-ws-batleforc-test"]), &subject);
+            let warning = decision.warnings.first().unwrap();
+            assert!(
+                warning.chars().count() <= weebo_si_chassis::admit::MAX_WARNING_CHARS,
+                "{warning}"
+            );
+        }
     }
 
     #[test]
