@@ -735,6 +735,7 @@ mod tests {
                 key: AccessKey::new("private"),
                 anonymous: false,
                 delegation: Vec::new(),
+                restricted: false,
             }],
             default: AccessKey::new("private"),
             overrides: Vec::new(),

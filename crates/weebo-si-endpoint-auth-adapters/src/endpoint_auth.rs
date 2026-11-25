@@ -792,11 +792,13 @@ mod tests {
                     key: AccessKey::new("private"),
                     anonymous: false,
                     delegation: Vec::new(),
+                    restricted: false,
                 },
                 AccessEntry {
                     key: AccessKey::new("shared"),
                     anonymous: false,
                     delegation: vec![DelegationKind::Team, DelegationKind::UsersAndGroups],
+                    restricted: false,
                 },
             ],
             default: AccessKey::new("private"),

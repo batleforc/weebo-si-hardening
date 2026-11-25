@@ -184,6 +184,11 @@
                   "key": {
                     "description": "The key a grant, an annotation or a path rule names.",
                     "type": "string"
+                  },
+                  "restricted": {
+                    "default": false,
+                    "description": "Honoured only if the endpoint's Namespace names this key in\n`hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries\nincluded, so an upgrade changes nothing a catalogue grants.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -1194,6 +1199,11 @@
                     "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                     "type": "string"
                   },
+                  "restricted": {
+                    "default": false,
+                    "description": "Honoured only if the workspace's Namespace also names this key in\n`namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue\nis the grant.",
+                    "type": "boolean"
+                  },
                   "variants": {
                     "description": "This profile's variants, at most one per [`Backend`].",
                     "items": {
@@ -1299,6 +1309,21 @@
               ],
               "type": "string"
             },
+            "namespaceGrant": {
+              "default": {
+                "annotation": "hardening.weebo.io/network-grants"
+              },
+              "description": "The namespace annotation granting restricted profile keys.",
+              "properties": {
+                "annotation": {
+                  "default": "hardening.weebo.io/network-grants",
+                  "description": "Namespace annotation naming a comma-separated list of restricted profile keys this\nnamespace may use. The empty string disables restricted grants: every restricted key is\nrefused.",
+                  "maxLength": 317,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
             "namespaceSelection": {
               "default": {
                 "annotation": "hardening.weebo.io/network-profiles"
@@ -1308,6 +1333,7 @@
                 "annotation": {
                   "default": "hardening.weebo.io/network-profiles",
                   "description": "Namespace annotation naming a comma-separated profile key list. The empty string disables\nthis selection step entirely.",
+                  "maxLength": 317,
                   "type": "string"
                 }
               },
@@ -1392,7 +1418,13 @@
             "catalog",
             "mode"
           ],
-          "type": "object"
+          "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select",
+              "rule": "!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation"
+            }
+          ]
         },
         "podSecurity": {
           "description": "`spec.features.podSecurity`, per RFC 0013.",

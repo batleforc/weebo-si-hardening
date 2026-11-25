@@ -115,6 +115,7 @@ spec:
 | `anonymous` | `boolean` | no | `false` | No authentication at all. `delegation` is rejected on an anonymous entry. |
 | `delegation` | `string[]` | no | `[]` | Who else, besides the owner, this profile lets in.<br /><br />Values: `"Team"`, `"UsersAndGroups"` |
 | `key` | `string` | yes |  | The key a grant, an annotation or a path rule names. |
+| `restricted` | `boolean` | no | `false` | Honoured only if the endpoint's Namespace names this key in `hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries included, so an upgrade changes nothing a catalogue grants. |
 
 ### `spec.features.endpointAuth.endpointSelection` [#spec.features.endpointAuth.endpointSelection]
 
@@ -424,16 +425,22 @@ spec:
 | [`catalog`](#spec.features.networkProfiles.catalog) | `object[]` | yes |  | Every profile a workspace may be granted. |
 | [`enforcement`](#spec.features.networkProfiles.enforcement) | `object` | no | `{"backend":"Auto","canary":{"enabled":true,"intervalSeconds":300}}` | The enforcement backend and its canary. |
 | `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceGrant`](#spec.features.networkProfiles.namespaceGrant) | `object` | no | `{"annotation":"hardening.weebo.io/network-grants"}` | The namespace annotation granting restricted profile keys. |
 | [`namespaceSelection`](#spec.features.networkProfiles.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/network-profiles"}` | The namespace annotation naming a profile key list. |
 | [`namespaceSelector`](#spec.features.networkProfiles.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
 | `onNotGranted` | `string` | no | `"Default"` | What to do when a workspace names a profile key its team's grant does not allow.<br /><br />Values: `"Default"`, `"Deny"` |
 | [`workspaceSelection`](#spec.features.networkProfiles.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/network-profiles"}` | The devfile attribute naming a profile key list. |
+
+**Rules**
+
+- namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select — `!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation`
 
 ### `spec.features.networkProfiles.catalog[]` [#spec.features.networkProfiles.catalog]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| `restricted` | `boolean` | no | `false` | Honoured only if the workspace's Namespace also names this key in `namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue is the grant. |
 | [`variants`](#spec.features.networkProfiles.catalog.variants) | `object[]` | yes |  | This profile's variants, at most one per [`Backend`]. |
 
 ### `spec.features.networkProfiles.catalog[].variants[]` [#spec.features.networkProfiles.catalog.variants]
@@ -464,11 +471,17 @@ spec:
 | `enabled` | `boolean` | yes |  | Whether the canary probe runs. |
 | `intervalSeconds` | `integer` | yes |  | How often the probe runs.<br /><br />Constraints: `minimum: 0` |
 
+### `spec.features.networkProfiles.namespaceGrant` [#spec.features.networkProfiles.namespaceGrant]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/network-grants"` | Namespace annotation naming a comma-separated list of restricted profile keys this namespace may use. The empty string disables restricted grants: every restricted key is refused.<br /><br />Constraints: `maxLength: 317` |
+
 ### `spec.features.networkProfiles.namespaceSelection` [#spec.features.networkProfiles.namespaceSelection]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `annotation` | `string` | no | `"hardening.weebo.io/network-profiles"` | Namespace annotation naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+| `annotation` | `string` | no | `"hardening.weebo.io/network-profiles"` | Namespace annotation naming a comma-separated profile key list. The empty string disables this selection step entirely.<br /><br />Constraints: `maxLength: 317` |
 
 ### `spec.features.networkProfiles.namespaceSelector` [#spec.features.networkProfiles.namespaceSelector]
 

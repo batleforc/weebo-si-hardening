@@ -316,3 +316,61 @@ async fn image_rewrite_cel_rules_accept_the_standard_and_refuse_each_mistake() {
         );
     }
 }
+
+/// RFC 0021's CEL rule, against a real apiserver: a grant annotation equal to the selection one is
+/// refused at write (a grant must never select), and the defaults, an explicit distinct grant and
+/// the empty (disabled) grant are accepted.
+#[tokio::test]
+async fn network_profiles_grant_annotation_may_not_be_the_selection_annotation() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |extra: serde_json::Value| {
+        let mut block = serde_json::json!({
+            "mode": "DryRun",
+            "catalog": [{"key": "base", "variants": [], "restricted": false}],
+            "baseline": "base",
+        });
+        block
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"networkProfiles": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    for accepted in [
+        serde_json::json!({}),
+        serde_json::json!({"namespaceGrant": {"annotation": "example.com/grants"}}),
+        serde_json::json!({"namespaceGrant": {"annotation": ""}, "namespaceSelection": {"annotation": ""}}),
+    ] {
+        api.create(&PostParams::default(), &spec(accepted.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{accepted} should be accepted: {error}"));
+        api.delete("cluster", &DeleteParams::default())
+            .await
+            .expect("the accepted object should be deleted before the next case");
+    }
+
+    for refused in [
+        serde_json::json!({"namespaceGrant": {"annotation": "hardening.weebo.io/network-profiles"}}),
+        serde_json::json!({
+            "namespaceGrant": {"annotation": "example.com/x"},
+            "namespaceSelection": {"annotation": "example.com/x"},
+        }),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(refused.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains("a grant must never select"),
+            "{refused}: unexpected error: {error}"
+        );
+    }
+}

@@ -1596,12 +1596,14 @@ fn rfc4_config(mode: FeatureMode) -> ResolvedNetworkProfilesConfig {
                     namespace: NamespaceName::new(OPERATOR_NAMESPACE),
                 },
             }],
+            restricted: false,
         }]),
         baseline: ProfileKey::new("base"),
         namespace_selection: ProfileNamespaceSelection::default(),
         workspace_selection: WorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: Enforcement::default(),
+        namespace_grant: Default::default(),
     })
 }
 

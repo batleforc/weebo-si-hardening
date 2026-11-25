@@ -131,6 +131,11 @@ pub struct Profile {
     pub key: ProfileKey,
     /// This profile's variants, at most one per [`Backend`].
     pub variants: Vec<Variant>,
+    /// Honoured only if the workspace's Namespace also names this key in
+    /// `namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue
+    /// is the grant.
+    #[serde(default)]
+    pub restricted: bool,
 }
 
 impl Profile {
@@ -217,6 +222,7 @@ pub struct ProfileNamespaceSelection {
     /// Namespace annotation naming a comma-separated profile key list. The empty string disables
     /// this selection step entirely.
     #[serde(default = "default_profile_annotation")]
+    #[schemars(length(max = ANNOTATION_KEY_MAX_LEN))]
     pub annotation: String,
 }
 
@@ -228,6 +234,35 @@ impl Default for ProfileNamespaceSelection {
     fn default() -> Self {
         Self {
             annotation: default_profile_annotation(),
+        }
+    }
+}
+
+/// `spec.features.networkProfiles.namespaceGrant` — the namespace annotation granting restricted
+/// profile keys, per RFC 0021. It grants and never selects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceGrant {
+    /// Namespace annotation naming a comma-separated list of restricted profile keys this
+    /// namespace may use. The empty string disables restricted grants: every restricted key is
+    /// refused.
+    #[serde(default = "default_grant_annotation")]
+    #[schemars(length(max = ANNOTATION_KEY_MAX_LEN))]
+    pub annotation: String,
+}
+
+/// The longest annotation key Kubernetes accepts: a 253-character DNS prefix, `/`, a 63-character
+/// name. Bounds the cost of the CEL rule comparing the grant and selection annotations.
+const ANNOTATION_KEY_MAX_LEN: usize = 317;
+
+fn default_grant_annotation() -> String {
+    "hardening.weebo.io/network-grants".to_string()
+}
+
+impl Default for NamespaceGrant {
+    fn default() -> Self {
+        Self {
+            annotation: default_grant_annotation(),
         }
     }
 }
@@ -288,6 +323,12 @@ pub struct Enforcement {
 /// `spec.features.networkProfiles` in full.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[schemars(extend("x-kubernetes-validations" = [
+    {
+        "rule": "!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation",
+        "message": "namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select"
+    }
+]))]
 pub struct NetworkProfilesConfig {
     /// Required, per the chassis: `Off` | `DryRun` | `Enforce`.
     pub mode: FeatureMode,
@@ -301,6 +342,9 @@ pub struct NetworkProfilesConfig {
     /// The namespace annotation naming a profile key list.
     #[serde(default)]
     pub namespace_selection: ProfileNamespaceSelection,
+    /// The namespace annotation granting restricted profile keys.
+    #[serde(default)]
+    pub namespace_grant: NamespaceGrant,
     /// The devfile attribute naming a profile key list.
     #[serde(default)]
     pub workspace_selection: WorkspaceSelection,
@@ -428,6 +472,13 @@ pub enum NetworkProfilesConfigViolation {
         /// The contested key.
         key: ProfileKey,
     },
+    /// A team `default` (`Some`) or the cluster `baseline` (`None`) names a restricted profile.
+    RestrictedKeyInDefault {
+        /// The team whose default names it; `None` for the baseline.
+        team: Option<TeamName>,
+        /// The restricted key.
+        key: ProfileKey,
+    },
 }
 
 impl fmt::Display for NetworkProfilesConfigViolation {
@@ -463,6 +514,13 @@ impl fmt::Display for NetworkProfilesConfigViolation {
                 f,
                 "team {team} redefines catalogue key {key}, which is already defined differently"
             ),
+            Self::RestrictedKeyInDefault {
+                team: Some(team),
+                key,
+            } => write!(f, "team {team}'s default names restricted profile {key}"),
+            Self::RestrictedKeyInDefault { team: None, key } => {
+                write!(f, "baseline {key} is restricted")
+            }
         }
     }
 }
@@ -508,10 +566,17 @@ impl ResolvedNetworkProfilesConfig {
             }
         }
 
-        if !self.catalog.contains(&self.baseline) {
-            violations.push(NetworkProfilesConfigViolation::BaselineNotInCatalog(
+        match self.catalog.profile(&self.baseline) {
+            None => violations.push(NetworkProfilesConfigViolation::BaselineNotInCatalog(
                 self.baseline.clone(),
-            ));
+            )),
+            Some(profile) if profile.restricted => {
+                violations.push(NetworkProfilesConfigViolation::RestrictedKeyInDefault {
+                    team: None,
+                    key: self.baseline.clone(),
+                });
+            }
+            Some(_) => {}
         }
 
         let declared_teams: std::collections::HashSet<&str> =
@@ -536,6 +601,16 @@ impl ResolvedNetworkProfilesConfig {
                 if !grant.allowed.contains(key) {
                     violations.push(NetworkProfilesConfigViolation::GrantDefaultOutsideAllowed {
                         team: team.clone(),
+                        key: key.clone(),
+                    });
+                }
+                if self
+                    .catalog
+                    .profile(key)
+                    .is_some_and(|profile| profile.restricted)
+                {
+                    violations.push(NetworkProfilesConfigViolation::RestrictedKeyInDefault {
+                        team: Some(team.clone()),
                         key: key.clone(),
                     });
                 }
@@ -576,14 +651,17 @@ mod tests {
             Profile {
                 key: ProfileKey::new("base"),
                 variants: vec![np_variant("weebo-base")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("git"),
                 variants: vec![np_variant("weebo-git")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("vault"),
                 variants: vec![np_variant("weebo-vault")],
+                restricted: false,
             },
         ])
     }
@@ -602,6 +680,7 @@ mod tests {
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
         .with_grants(grants)
     }
@@ -663,10 +742,12 @@ mod tests {
             Profile {
                 key: ProfileKey::new("base"),
                 variants: vec![np_variant("weebo-base")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("Git_Write"),
                 variants: vec![np_variant("weebo-git")],
+                restricted: false,
             },
         ]);
         let cfg = config(catalog, "base", BTreeMap::new());
@@ -675,6 +756,75 @@ mod tests {
             vec![NetworkProfilesConfigViolation::InvalidProfileKey(
                 ProfileKey::new("Git_Write")
             )]
+        );
+    }
+
+    /// RFC 0021 S5, configuration side: a restricted baseline and a team default naming a
+    /// restricted profile are both reported.
+    #[test]
+    fn a_restricted_default_is_a_violation() {
+        let mut catalog = clean_catalog();
+        let mut entries = catalog.entries().to_vec();
+        for entry in &mut entries {
+            entry.restricted = entry.key != ProfileKey::new("git");
+        }
+        catalog = ProfileCatalog::new(entries);
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            "team-1".to_string(),
+            ProfileGrant {
+                allowed: vec![
+                    ProfileKey::new("base"),
+                    ProfileKey::new("git"),
+                    ProfileKey::new("vault"),
+                ],
+                default: vec![ProfileKey::new("git"), ProfileKey::new("vault")],
+            },
+        );
+        let cfg = config(catalog, "base", grants);
+        let baseline = NetworkProfilesConfigViolation::RestrictedKeyInDefault {
+            team: None,
+            key: ProfileKey::new("base"),
+        };
+        let team_default = NetworkProfilesConfigViolation::RestrictedKeyInDefault {
+            team: Some(TeamName::new("team-1")),
+            key: ProfileKey::new("vault"),
+        };
+        assert_eq!(
+            cfg.validate(&[team("team-1")]),
+            vec![baseline.clone(), team_default.clone()]
+        );
+        assert_eq!(baseline.to_string(), "baseline base is restricted");
+        assert_eq!(
+            team_default.to_string(),
+            "team team-1's default names restricted profile vault"
+        );
+    }
+
+    #[test]
+    fn restricted_and_the_grant_annotation_default_when_absent() {
+        let profile: Profile = serde_json::from_value(serde_json::json!({
+            "key": "internet",
+            "variants": [],
+        }))
+        .unwrap();
+        assert!(!profile.restricted);
+        assert_eq!(
+            NamespaceGrant::default().annotation,
+            "hardening.weebo.io/network-grants"
+        );
+    }
+
+    #[test]
+    fn the_schema_refuses_a_grant_annotation_equal_to_the_selection_one() {
+        let schema = serde_json::to_value(schemars::schema_for!(NetworkProfilesConfig)).unwrap();
+        let rules = schema["x-kubernetes-validations"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(
+            rules[0]["rule"]
+                .as_str()
+                .unwrap()
+                .contains("self.namespaceGrant.annotation != self.namespaceSelection.annotation")
         );
     }
 
@@ -692,10 +842,12 @@ mod tests {
             Profile {
                 key: ProfileKey::new("base"),
                 variants: vec![np_variant("weebo-base")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("base"),
                 variants: vec![np_variant("other-base")],
+                restricted: false,
             },
         ]);
         let cfg = config(catalog, "base", BTreeMap::new());
@@ -723,6 +875,7 @@ mod tests {
         let catalog = ProfileCatalog::new(vec![Profile {
             key: ProfileKey::new("base"),
             variants: Vec::new(),
+            restricted: false,
         }]);
         let cfg = config(catalog, "base", BTreeMap::new());
         assert!(
@@ -738,6 +891,7 @@ mod tests {
         let catalog = ProfileCatalog::new(vec![Profile {
             key: ProfileKey::new("base"),
             variants: vec![np_variant("weebo-base"), np_variant("weebo-base-2")],
+            restricted: false,
         }]);
         let cfg = config(catalog, "base", BTreeMap::new());
         assert!(cfg.validate(&[]).contains(

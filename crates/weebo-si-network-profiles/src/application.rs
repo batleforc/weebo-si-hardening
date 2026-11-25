@@ -174,12 +174,14 @@ mod tests {
                     backend: Backend::NetworkPolicy,
                     template_ref: template_ref("weebo-base"),
                 }],
+                restricted: false,
             }]),
             baseline: ProfileKey::new("base"),
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
     }
 
@@ -386,14 +388,17 @@ mod tests {
             Profile {
                 key: ProfileKey::new("base"),
                 variants: vec![variant("weebo-base")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("git"),
                 variants: vec![variant("weebo-git")],
+                restricted: false,
             },
             Profile {
                 key: ProfileKey::new("vault"),
                 variants: vec![variant("weebo-vault")],
+                restricted: false,
             },
         ]);
         cfg.grants.insert(

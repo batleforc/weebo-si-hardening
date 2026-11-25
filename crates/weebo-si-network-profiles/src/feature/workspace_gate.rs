@@ -207,6 +207,7 @@ mod tests {
                     namespace: NamespaceName::new("weebo-si-hardening"),
                 },
             }],
+            restricted: false,
         }
     }
 
@@ -228,6 +229,7 @@ mod tests {
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted,
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
         .with_grants(grants)
     }

@@ -91,6 +91,7 @@ fn config(
                         namespace: NamespaceName::new(TEMPLATES_NAMESPACE),
                     },
                 }],
+                restricted: false,
             })
             .collect(),
     );
@@ -103,6 +104,7 @@ fn config(
         workspace_selection: WorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: Enforcement::default(),
+        namespace_grant: Default::default(),
     })
     .with_grants(grants)
 }

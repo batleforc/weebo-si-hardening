@@ -173,6 +173,7 @@ mod tests {
                     namespace: weebo_si_crd::NamespaceName::new("weebo-si-hardening"),
                 },
             }],
+            restricted: false,
         }
     }
 
@@ -193,6 +194,7 @@ mod tests {
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
         .with_grants(grants)
     }

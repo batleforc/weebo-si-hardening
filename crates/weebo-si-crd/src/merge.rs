@@ -149,4 +149,39 @@ mod tests {
         assert_eq!(merged, vec![entry("baseline", 1)]);
         assert_eq!(conflicts.len(), 1);
     }
+
+    /// RFC 0021 S4: `restricted` is part of the entry compared whole, so a team re-declaring a
+    /// cluster-restricted key as unrestricted loses, in both features.
+    #[test]
+    fn a_team_cannot_unrestrict_a_cluster_entry() {
+        use crate::endpoint_auth::{AccessEntry, AccessKey};
+        use crate::network_profiles::{Profile, ProfileKey};
+
+        let profile = |restricted| Profile {
+            key: ProfileKey::new("internet"),
+            variants: Vec::new(),
+            restricted,
+        };
+        let (merged, conflicts) = merge_catalogs(
+            &[profile(true)],
+            &[(TeamName::new("weebo"), vec![profile(false)])],
+            |e| e.key.clone(),
+        );
+        assert_eq!(merged, vec![profile(true)]);
+        assert_eq!(conflicts.len(), 1);
+
+        let access = |restricted| AccessEntry {
+            key: AccessKey::new("open"),
+            anonymous: true,
+            delegation: Vec::new(),
+            restricted,
+        };
+        let (merged, conflicts) = merge_catalogs(
+            &[access(true)],
+            &[(TeamName::new("weebo"), vec![access(false)])],
+            |e| e.key.clone(),
+        );
+        assert_eq!(merged, vec![access(true)]);
+        assert_eq!(conflicts.len(), 1);
+    }
 }

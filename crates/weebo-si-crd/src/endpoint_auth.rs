@@ -46,6 +46,10 @@ pub const ENDPOINT_AUTH_BYPASS: &str = "bypass";
 /// `hardening.weebo.io/upstream` — where a `ReverseProxy` dialect records the backend it
 /// repointed away from.
 pub const UPSTREAM_ANNOTATION: &str = "hardening.weebo.io/upstream";
+/// `hardening.weebo.io/endpoint-access` — on a Namespace, written by an admin only: the
+/// comma-separated access keys this namespace may use when their entry is `restricted` (RFC 0021).
+/// It grants and never selects.
+pub const ENDPOINT_ACCESS_NAMESPACE_ANNOTATION: &str = "hardening.weebo.io/endpoint-access";
 
 /// The annotations a developer may edit on a gated object, and the only ones the guard lets
 /// through on a DWO-generated object. Everything else there is a projection of the devfile.
@@ -107,6 +111,11 @@ pub struct AccessEntry {
     /// Who else, besides the owner, this profile lets in.
     #[serde(default)]
     pub delegation: Vec<DelegationKind>,
+    /// Honoured only if the endpoint's Namespace names this key in
+    /// `hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries
+    /// included, so an upgrade changes nothing a catalogue grants.
+    #[serde(default)]
+    pub restricted: bool,
 }
 
 /// What a team may reach, and what it gets by default.
@@ -978,6 +987,13 @@ pub enum EndpointAuthConfigViolation {
     /// `gateway.errorPageMiddleware` is set on a dialect other than Traefik, or does not name a
     /// middleware in the gateway's namespace: it is not attached.
     BadErrorPageMiddleware(String),
+    /// A team `default` (`Some`) or the cluster `default` (`None`) names a restricted entry.
+    RestrictedKeyInDefault {
+        /// The team whose default names it; `None` for the cluster default.
+        team: Option<TeamName>,
+        /// The restricted key.
+        key: AccessKey,
+    },
 }
 
 impl fmt::Display for EndpointAuthConfigViolation {
@@ -1022,6 +1038,13 @@ impl fmt::Display for EndpointAuthConfigViolation {
                 "gateway.errorPageMiddleware {entry:?} is not attached: it must be \
                  <gateway.service.namespace>-<name>@kubernetescrd on dialect Traefik"
             ),
+            Self::RestrictedKeyInDefault {
+                team: Some(team),
+                key,
+            } => write!(f, "team {team}'s default names restricted access key {key}"),
+            Self::RestrictedKeyInDefault { team: None, key } => {
+                write!(f, "default access key {key} is restricted")
+            }
         }
     }
 }
@@ -1161,6 +1184,13 @@ impl ResolvedEndpointAuthConfig {
             }
         };
         known(&self.default, &mut violations);
+        let restricted = |key: &AccessKey| self.entry(key).is_some_and(|entry| entry.restricted);
+        if restricted(&self.default) {
+            violations.push(EndpointAuthConfigViolation::RestrictedKeyInDefault {
+                team: None,
+                key: self.default.clone(),
+            });
+        }
 
         let team_names: BTreeSet<&TeamName> = teams.iter().map(|team| &team.name).collect();
         for (team, grant) in &self.grants {
@@ -1171,6 +1201,12 @@ impl ResolvedEndpointAuthConfig {
                 known(key, &mut violations);
             }
             known(&grant.default, &mut violations);
+            if restricted(&grant.default) {
+                violations.push(EndpointAuthConfigViolation::RestrictedKeyInDefault {
+                    team: Some(team.clone()),
+                    key: grant.default.clone(),
+                });
+            }
             if !grant.allowed.contains(&grant.default) {
                 violations.push(EndpointAuthConfigViolation::DefaultNotAllowed {
                     team: team.clone(),
@@ -1334,16 +1370,19 @@ mod tests {
                     key: AccessKey::new("private"),
                     anonymous: false,
                     delegation: Vec::new(),
+                    restricted: false,
                 },
                 AccessEntry {
                     key: AccessKey::new("team"),
                     anonymous: false,
                     delegation: vec![DelegationKind::Team],
+                    restricted: false,
                 },
                 AccessEntry {
                     key: AccessKey::new("open"),
                     anonymous: true,
                     delegation: Vec::new(),
+                    restricted: false,
                 },
             ],
             default: AccessKey::new("private"),
@@ -1479,6 +1518,67 @@ mod tests {
         assert!(hosts.governs("alice-ws-api.weebo.si"));
         assert!(!hosts.governs("che.weebo.si"));
         assert!(!hosts.governs("notweebo.si"));
+    }
+
+    /// RFC 0021 S5, configuration side: a restricted key in the cluster or a team `default` is
+    /// reported; an unrestricted one, anonymous included, is not.
+    #[test]
+    fn a_restricted_default_is_a_violation() {
+        let restricted_in = |config: &ResolvedEndpointAuthConfig| -> Vec<Option<TeamName>> {
+            config
+                .validate(&[])
+                .into_iter()
+                .filter_map(|v| match v {
+                    EndpointAuthConfigViolation::RestrictedKeyInDefault { team, key } => {
+                        assert_eq!(key, AccessKey::new("open"));
+                        Some(team)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let mut config = config(Dialect::Traefik);
+        config.default = AccessKey::new("open");
+        assert!(restricted_in(&config).is_empty(), "open is not restricted");
+
+        for entry in &mut config.catalog {
+            entry.restricted = entry.key == AccessKey::new("open");
+        }
+        assert_eq!(restricted_in(&config), vec![None]);
+        assert_eq!(
+            EndpointAuthConfigViolation::RestrictedKeyInDefault {
+                team: None,
+                key: AccessKey::new("open"),
+            }
+            .to_string(),
+            "default access key open is restricted"
+        );
+
+        config.default = AccessKey::new("private");
+        config.grants.insert(
+            TeamName::new("weebo"),
+            AccessGrant {
+                allowed: vec![AccessKey::new("private"), AccessKey::new("open")],
+                default: AccessKey::new("open"),
+            },
+        );
+        assert_eq!(restricted_in(&config), vec![Some(TeamName::new("weebo"))]);
+        assert_eq!(
+            EndpointAuthConfigViolation::RestrictedKeyInDefault {
+                team: Some(TeamName::new("weebo")),
+                key: AccessKey::new("open"),
+            }
+            .to_string(),
+            "team weebo's default names restricted access key open"
+        );
+    }
+
+    #[test]
+    fn restricted_defaults_to_false_on_an_anonymous_entry() {
+        let entry: AccessEntry =
+            serde_json::from_value(serde_json::json!({"key": "open", "anonymous": true})).unwrap();
+        assert!(!entry.restricted);
     }
 
     #[test]
@@ -1671,6 +1771,7 @@ mod tests {
             key: AccessKey::new("open-ish"),
             anonymous: true,
             delegation: vec![DelegationKind::Team],
+            restricted: false,
         });
         assert!(config.validate(&[]).contains(
             &EndpointAuthConfigViolation::AnonymousEntryDelegates(AccessKey::new("open-ish"))

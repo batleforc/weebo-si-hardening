@@ -331,6 +331,7 @@ mod tests {
                 backend: Backend::NetworkPolicy,
                 template_ref: template_ref(&format!("weebo-{key}")),
             }],
+            restricted: false,
         }
     }
 
@@ -344,6 +345,7 @@ mod tests {
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted: OnNotGranted::default(),
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
         .with_grants(grants)
     }
@@ -407,6 +409,7 @@ mod tests {
                 backend: Backend::Cilium,
                 template_ref: template_ref("weebo-base-cilium"),
             }],
+            restricted: false,
         }]);
         let feature = feature(cfg);
         let catalog = FakeDwocCatalog::new(std::iter::empty());
