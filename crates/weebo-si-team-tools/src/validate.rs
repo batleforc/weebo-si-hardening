@@ -114,6 +114,11 @@ pub enum EntryViolation {
     ServicePortMissing(u16),
     /// `tls.clientDuration` is not a duration of at least one hour.
     ClientDuration(String),
+    /// The template sets `immutable: true`: every later template update would fail.
+    TemplateImmutable(ToolTemplateRef),
+    /// The workload's `persistentVolumeClaimRetentionPolicy.whenDeleted` is `Delete`: the cache
+    /// PVC must outlive the StatefulSet.
+    WorkloadDeletesClaims,
 }
 
 fn template(r: &ToolTemplateRef) -> String {
@@ -170,6 +175,12 @@ impl fmt::Display for EntryViolation {
             Self::ClientDuration(raw) => write!(
                 f,
                 "tls.clientDuration {raw:?} is not a duration of at least 1h (h, m, s, ms units)"
+            ),
+            Self::TemplateImmutable(r) => {
+                write!(f, "template {} must not be immutable", template(r))
+            }
+            Self::WorkloadDeletesClaims => f.write_str(
+                "the workload template's persistentVolumeClaimRetentionPolicy.whenDeleted must not be Delete",
             ),
         }
     }
@@ -395,6 +406,9 @@ fn fetch(
         } else if !allowed.contains(&r.kind.as_str()) {
             violations.push(wrong_kind(r.clone()));
         } else if let Some(template) = store.template(r) {
+            if bool_at(&template.body, "immutable") {
+                violations.push(EntryViolation::TemplateImmutable(r.clone()));
+            }
             found.push(template);
         } else {
             violations.push(EntryViolation::TemplateMissing(r.clone()));
@@ -454,6 +468,14 @@ pub fn validate_entry(
             != Some(0)
         {
             violations.push(EntryViolation::WorkloadReplicasNotZero);
+        }
+        if workload
+            .body
+            .pointer("/spec/persistentVolumeClaimRetentionPolicy/whenDeleted")
+            .and_then(Value::as_str)
+            == Some("Delete")
+        {
+            violations.push(EntryViolation::WorkloadDeletesClaims);
         }
         pod_labels = workload
             .body
@@ -722,6 +744,43 @@ mod tests {
                 .iter()
                 .all(|v| matches!(v, EntryViolation::TemplateShared(_)))
         );
+    }
+
+    #[test]
+    fn an_immutable_template_is_invalid() {
+        let store = store_with(|kind, body| {
+            if kind == "ConfigMap" {
+                body["immutable"] = true.into();
+            }
+        });
+        let violations = check(&buildkit_entry(), &store).unwrap_err();
+        assert_eq!(violations.len(), 2);
+        assert!(
+            violations
+                .iter()
+                .all(|v| matches!(v, EntryViolation::TemplateImmutable(_)))
+        );
+    }
+
+    #[test]
+    fn a_workload_deleting_its_claims_is_invalid() {
+        let store = store_with(|kind, body| {
+            if kind == "StatefulSet" {
+                body["spec"]["persistentVolumeClaimRetentionPolicy"] =
+                    serde_json::json!({"whenDeleted": "Delete", "whenScaled": "Retain"});
+            }
+        });
+        assert_eq!(
+            check(&buildkit_entry(), &store).unwrap_err(),
+            vec![EntryViolation::WorkloadDeletesClaims]
+        );
+        let retain = store_with(|kind, body| {
+            if kind == "StatefulSet" {
+                body["spec"]["persistentVolumeClaimRetentionPolicy"] =
+                    serde_json::json!({"whenDeleted": "Retain", "whenScaled": "Delete"});
+            }
+        });
+        assert!(check(&buildkit_entry(), &retain).is_ok());
     }
 
     #[test]

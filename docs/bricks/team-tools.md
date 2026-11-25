@@ -94,9 +94,11 @@ spec:
 The templates are real objects in the template namespace, which runs no pod. The workload
 template is written at `replicas: 0`, with `automountServiceAccountToken: false`, no
 `privileged`, no added capability, no host namespace, port or path, and no `runtimeClassName`
-(*Open points*). The controller checks every template ref, kind and pod-spec rule and reports a
-broken entry `Invalid` (the `WeeboSiConfig` goes `Degraded`); **an invalid entry keeps what is
-already rendered**. RFC 0020's *What the admin writes* has the reference BuildKit StatefulSet.
+(*Open points*). No template sets `immutable: true` (every later template update would fail), and
+the workload never sets `persistentVolumeClaimRetentionPolicy.whenDeleted: Delete` (the cache PVC
+outlives the StatefulSet). The controller checks every template ref, kind and pod-spec rule and
+reports a broken entry `Invalid` (the `WeeboSiConfig` goes `Degraded`); **an invalid entry keeps
+what is already rendered**. RFC 0020's *What the admin writes* has the reference BuildKit StatefulSet.
 
 ## What a developer sees
 
