@@ -112,6 +112,23 @@ struct Memory {
     overlaps: BTreeSet<String>,
 }
 
+/// The running workspaces of `namespace` requesting `key` when this requester pass created its
+/// client objects: DWO mounts them only when it builds the pod (RFC 0020, Resolved 11).
+fn restart_needed<'a>(
+    converged: &Converged,
+    requesters: &'a [Requester],
+    namespace: &NamespaceName,
+    key: &ToolKey,
+) -> Vec<&'a Requester> {
+    if !converged.applied.is_some_and(|applied| applied.created > 0) {
+        return Vec::new();
+    }
+    requesters
+        .iter()
+        .filter(|r| r.running && &r.namespace == namespace && r.granted.contains(key))
+        .collect()
+}
+
 struct Loop {
     deps: TeamToolsDeps,
     client: Client,
@@ -867,6 +884,10 @@ impl Loop {
             if let Some(err) = &outcome.converged.error {
                 tracing::warn!("feature={FEATURE_ID} ns={namespace} tool={key} result=error {err}");
             }
+            for requester in restart_needed(&outcome.converged, requesters, &namespace, &key) {
+                publish(&self.recorder, requester.object.as_ref(), true, ReasonCode::TeamToolRestartNeeded,
+                    format!("team tool {:?} was added to a running workspace: restart it once to mount its client side", key.as_str())).await;
+            }
             if outcome.desired.no_identity {
                 no_identity.insert((namespace.clone(), key.clone()));
                 if !self
@@ -991,15 +1012,6 @@ impl Loop {
                         requester.namespace,
                         object.name_any()
                     );
-                }
-                let created = outcome
-                    .converged
-                    .applied
-                    .is_some_and(|applied| applied.created > 0);
-                // DWO mounts the client objects only when it builds the pod (RFC 0020, Resolved 11).
-                if created && requester.running {
-                    publish(&self.recorder, object, true, ReasonCode::TeamToolRestartNeeded,
-                        format!("team tool {:?} was added to a running workspace: restart it once to mount its client side", key.as_str())).await;
                 }
             }
         }
@@ -1152,6 +1164,55 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn requester(name: &str, namespace: &str, running: bool) -> Requester {
+        let object: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": "workspace.devfile.io/v1alpha2", "kind": "DevWorkspace",
+            "metadata": {"name": name, "namespace": namespace},
+        }))
+        .unwrap();
+        Requester {
+            object: Arc::new(object),
+            namespace: NamespaceName::new(namespace),
+            attribute: None,
+            team: None,
+            granted: vec![ToolKey::new("buildkit")],
+            dropped: Vec::new(),
+            active: running,
+            running,
+        }
+    }
+
+    fn converged(created: u32) -> Converged {
+        Converged {
+            diffs: Vec::new(),
+            applied: Some(Applied {
+                created,
+                ..Applied::default()
+            }),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_restart_follows_the_client_objects_creation_in_running_workspaces_only() {
+        let requesters = [
+            requester("running", "dev-ws-bob", true),
+            requester("starting", "dev-ws-bob", false),
+            requester("elsewhere", "dev-ws-alice", true),
+        ];
+        let ns = NamespaceName::new("dev-ws-bob");
+        let key = ToolKey::new("buildkit");
+        let names = |found: Vec<&Requester>| -> Vec<String> {
+            found.iter().map(|r| r.object.name_any()).collect()
+        };
+        assert_eq!(
+            names(restart_needed(&converged(2), &requesters, &ns, &key)),
+            vec!["running".to_string()]
+        );
+        assert!(restart_needed(&converged(0), &requesters, &ns, &key).is_empty());
+        assert!(restart_needed(&converged(2), &requesters, &ns, &ToolKey::new("other")).is_empty());
     }
 
     #[test]
