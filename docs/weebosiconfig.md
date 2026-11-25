@@ -1073,9 +1073,8 @@ namespaces keep what they have. The rules are in the brick page.
 ### `features.teamTools`
 
 Moves tools a hardened workspace cannot run (BuildKit, an emulator) into a tools namespace per
-team, started on demand when a DevWorkspace asks for them with a devfile attribute. **Not
-evaluated by this build yet:** the block is accepted and its bounds are checked by the apiserver;
-it does nothing until RFC 0020's controller lands.
+team, started on demand when a DevWorkspace asks for them with a devfile attribute. Install,
+runbook and what a developer sees: [`bricks/team-tools.md`](./bricks/team-tools.md).
 
 ```yaml
 teamTools:
@@ -1111,7 +1110,7 @@ teamTools:
 | `catalog[].toolTemplates` | list of `{kind, name, namespace}`, at most 16 | yes | — | Rendered into the team's tools namespace. |
 | `catalog[].requesterTemplates` | same, at most 16 | no | `[]` | `ConfigMap`s rendered into each requesting namespace. |
 | `catalog[].idleGraceSeconds` | integer | no | the block's | Per-tool override. |
-| `workspaceSelection.attribute` | string | no | `hardening.weebo.io/team-tools` | DevWorkspace attribute naming a comma-separated key list. `""` disables requests. |
+| `workspaceSelection.attribute` | string | no | `hardening.weebo.io/team-tools` | DevWorkspace attribute naming a comma-separated key list. `""` turns the request step off: the team `default` still applies, as in `networkProfiles`. |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | An ungranted key: dropped, or the workspace's create or start refused. |
 | `idleGraceSeconds` | integer | no | `600` | How long a tool stays up after its last requester stops. |
 | per-team namespace and grant | on [`WeeboSiTeam`](./weebositeam.md#featuresteamtools) | no | — | A namespace of no team never gets a tool. |

@@ -342,7 +342,10 @@ features:
 **The exception to "a team never writes an `allowed` list"**: a team declares no tool, only
 which cluster tools it may request. `status.teamTools[]` lists each tool with its namespace,
 `replicas`, `requesters` (a count, never who) and `state` (`Running`, `Grace`, `Idle`, `Held`,
-`Unbound`, `Invalid`), once RFC 0020's controller lands.
+`Unbound`, `Invalid`), and the condition `TeamToolsReady` says whether the tools namespace is
+bound (`Bound`, `NamespaceNotBound`, `NoQuota`, `Forbidden`) or the team block ignored
+(`Invalid`); a block with `allowed: []` reads `Bound` without a namespace check. See
+[`bricks/team-tools.md`](./bricks/team-tools.md).
 
 ## `spec.identity`
 

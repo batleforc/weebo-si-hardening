@@ -16,6 +16,7 @@ Operator-facing documentation for what is built. Each page is the *how*; the mat
 | ↳ `registry-config` | [`registry-config.md`](./registry-config.md) | [0007](../rfc/0007-registry-config.md) | `crates/weebo-si-registry-config`, `crates/weebo-si-registry-config-adapters` |
 | ↳ `pod-security` | [`pod-security.md`](./pod-security.md) | [0013](../rfc/0013-pod-security.md) | `crates/weebo-si-pod-security`, `crates/weebo-si-pod-security-adapters` |
 | ↳ `pod-identity` | [`pod-identity.md`](./pod-identity.md) | [0018](../rfc/0018-namespace-uid-range.md) | `crates/weebo-si-pod-identity`, `crates/weebo-si-pod-identity-adapters` |
+| ↳ `team-tools` | [`team-tools.md`](./team-tools.md) | [0020](../rfc/0020-team-tools.md) | `crates/weebo-si-team-tools`, `crates/weebo-si-team-tools-adapters` |
 | ↳ `resource-quotas` | [`resource-quotas.md`](./resource-quotas.md) | [0014](../rfc/0014-resource-quotas.md) | `crates/weebo-si-resource-quotas`, `crates/weebo-si-resource-quotas-adapters` |
 | `endpoint-gateway` | [`endpoint-gateway.md`](./endpoint-gateway.md) | [0009](../rfc/0009-endpoint-auth.md) | `bins/` + `crates/weebo-si-endpoint-auth`, hexagonal |
 | `WeeboSiTeam` / `WeeboSiUser` | [`teams-and-users.md`](./teams-and-users.md) | [0011](../rfc/0011-teams-and-users.md) | `crates/weebo-si-crd` + `crates/weebo-si-identity`, hexagonal |
