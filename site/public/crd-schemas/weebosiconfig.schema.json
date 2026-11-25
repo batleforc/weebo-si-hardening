@@ -11,6 +11,179 @@
       "default": {},
       "description": "One optional field per registered feature.\n\n`spec.teams` used to sit beside this and does not any more: RFC 0011 moved teams to their\nown `WeeboSiTeam` objects, and removed the field rather than deprecating it. A manifest\nstill carrying it is pruned by the API server, which reads as \"my teams vanished\" — the\nloud failure a hard cut should have.",
       "properties": {
+        "devfileContract": {
+          "description": "`spec.features.devfileContract`, per RFC 0019.",
+          "nullable": true,
+          "properties": {
+            "currentContract": {
+              "description": "The newest contract the User Guide publishes.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "deniedContracts": {
+              "default": [],
+              "description": "Contracts refused at a start; empty refuses nothing.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "deniedParents": {
+              "default": [],
+              "description": "Parents refused at a start; empty refuses nothing.",
+              "items": {
+                "description": "One `deniedParents` entry: a URI prefix, or a registry stack id and its denied versions.",
+                "properties": {
+                  "id": {
+                    "description": "A registry stack id (`parent.id`).",
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "uriPrefix": {
+                    "description": "A `parent.uri` prefix, matched after normalisation.",
+                    "maxLength": 2048,
+                    "minLength": 8,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "versions": {
+                    "description": "The denied versions of `id`; empty denies every version, an absent one included.",
+                    "items": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
+                },
+                "type": "object",
+                "x-kubernetes-validations": [
+                  {
+                    "message": "a denied parent names a uriPrefix or an id, not both",
+                    "rule": "has(self.uriPrefix) != has(self.id)"
+                  },
+                  {
+                    "message": "uriPrefix must be an http(s) URL prefix",
+                    "rule": "!has(self.uriPrefix) || self.uriPrefix.startsWith('https://') || self.uriPrefix.startsWith('http://')"
+                  },
+                  {
+                    "message": "versions apply to a registry id only",
+                    "rule": "!has(self.versions) || size(self.versions) == 0 || has(self.id)"
+                  }
+                ]
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "minimumContract": {
+              "description": "Below this a devfile is `outdated` (a warning, never a refusal).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minimumSchemaVersion": {
+              "description": "The lowest `schemaVersion` accepted without a warning, checked only when the Che\ndashboard kept it.",
+              "maxLength": 32,
+              "nullable": true,
+              "type": "string"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the webhook's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "onDenied": {
+              "default": "Deny",
+              "description": "What a denied-list match does on a start.",
+              "enum": [
+                "Deny",
+                "Warn"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "currentContract",
+            "minimumContract",
+            "mode"
+          ],
+          "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "contracts start at 1 and minimumContract cannot exceed currentContract",
+              "rule": "1 <= self.minimumContract && self.minimumContract <= self.currentContract && self.currentContract <= 1000"
+            },
+            {
+              "message": "a denied contract must be a published one",
+              "rule": "!has(self.deniedContracts) || self.deniedContracts.all(c, 1 <= c && c <= self.currentContract)"
+            },
+            {
+              "message": "minimumSchemaVersion is MAJOR.MINOR.PATCH",
+              "rule": "!has(self.minimumSchemaVersion) || self.minimumSchemaVersion.matches('^[0-9]+\\\\.[0-9]+\\\\.[0-9]+$')"
+            }
+          ]
+        },
         "dwocPin": {
           "description": "`spec.features.dwocPin`.",
           "nullable": true,

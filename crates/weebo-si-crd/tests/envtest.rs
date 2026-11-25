@@ -317,6 +317,102 @@ async fn image_rewrite_cel_rules_accept_the_standard_and_refuse_each_mistake() {
     }
 }
 
+/// RFC 0019's CEL rules, against a real apiserver: the RFC's own example is accepted, and each
+/// row of its *Validation* table is refused at write with the rule's own message.
+#[tokio::test]
+async fn devfile_contract_cel_rules_accept_the_example_and_refuse_each_mistake() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |extra: serde_json::Value| {
+        let mut block = serde_json::json!({
+            "mode": "DryRun",
+            "currentContract": 3,
+            "minimumContract": 2,
+        });
+        block
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"devfileContract": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    api.create(
+        &PostParams::default(),
+        &spec(serde_json::json!({
+            "minimumSchemaVersion": "2.2.0",
+            "deniedContracts": [1, 3],
+            "deniedParents": [
+                {"uriPrefix": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/"},
+                {"id": "che-min-mise", "versions": ["1.2.0"]},
+                {"id": "go"},
+            ],
+            "onDenied": "Warn",
+        })),
+    )
+    .await
+    .expect("the RFC's example should be accepted");
+    let _ = api.delete("cluster", &DeleteParams::default()).await;
+
+    for (extra, expected) in [
+        (
+            serde_json::json!({"minimumContract": 0}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"minimumContract": 4}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"currentContract": 1001, "minimumContract": 1}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"deniedContracts": [4]}),
+            "a denied contract must be a published one",
+        ),
+        (
+            serde_json::json!({"deniedContracts": [0]}),
+            "a denied contract must be a published one",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "https://a.example/", "id": "go"}]}),
+            "names a uriPrefix or an id, not both",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"versions": ["1.0.0"]}]}),
+            "names a uriPrefix or an id, not both",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "ftp://a.example/devfile"}]}),
+            "uriPrefix must be an http(s) URL prefix",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "https://a.example/", "versions": ["1"]}]}),
+            "versions apply to a registry id only",
+        ),
+        (
+            serde_json::json!({"minimumSchemaVersion": "2.2"}),
+            "minimumSchemaVersion is MAJOR.MINOR.PATCH",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(extra.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{extra}: unexpected error: {error}"
+        );
+    }
+}
+
 /// RFC 0021's CEL rule, against a real apiserver: a grant annotation equal to the selection one is
 /// refused at write (a grant must never select), and the defaults, an explicit distinct grant and
 /// the empty (disabled) grant are accepted.

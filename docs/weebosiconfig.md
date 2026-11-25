@@ -356,6 +356,7 @@ rather than ignored at runtime.
 | [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy`, `KubeArmorPolicy`, catalogued `ConfigMap`/`Secret` copies (validating admission) |
 | [`imagePolicy`](#featuresimagepolicy) | [0005](./rfc/0005-image-policy.md) | `DevWorkspace`, `Pod` (validating admission) |
 | [`imageRewrite`](#featuresimagerewrite) | [0017](./rfc/0017-image-rewrite.md) | `DevWorkspace`, `Pod` (mutating admission) |
+| [`devfileContract`](#featuresdevfilecontract) | [0019](./rfc/0019-devfile-contract.md) | `DevWorkspace` (mutating admission) |
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
@@ -579,6 +580,50 @@ with no `.` or `:` other than `localhost` (an image reads it as a Docker Hub nam
 cannot judge — a host or path the reference parser refuses — makes the feature `Degraded`, and
 then no rule applies at all. Shared by every team: there is no `imageRewrite` on
 `WeeboSiTeam`.
+
+### `features.devfileContract`
+
+Tells a developer, through admission warnings on `kubectl apply`, that their devfile was written
+for older platform rules or follows a parent that can change under it; refuses a workspace start
+only when the devfile names a contract or a parent listed below as denied. **Not evaluated by
+this build yet:** the block is accepted and validated, and does nothing until RFC 0019's wiring
+lands.
+
+```yaml
+devfileContract:
+  mode: DryRun
+  namespaceSelector:
+    matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+  currentContract: 1
+  minimumContract: 1
+  minimumSchemaVersion: "2.2.0"
+  deniedContracts: []
+  deniedParents:
+    - { uriPrefix: "https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/" }
+    - { id: che-min-mise, versions: ["1.2.0"] }
+  onDenied: Deny
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `DryRun` counts and logs; no warning, no annotation, no denial. |
+| `namespaceSelector` | Selector | no | matches all | |
+| `currentContract` | integer | yes | — | The newest contract the User Guide publishes. A devfile declaring more gets a warning. |
+| `minimumContract` | integer | yes | — | Below it a devfile is `outdated`: a warning, never a refusal. |
+| `minimumSchemaVersion` | `MAJOR.MINOR.PATCH` | no | — | Checked only when the Che dashboard kept the devfile's `schemaVersion`; a warning only. |
+| `deniedContracts` | list of integers | no | `[]` | Refused at a workspace start. A devfile without `weebo.io/platform-contract` counts as `1`. |
+| `deniedParents[].uriPrefix` | string | one of the two | — | A `parent.uri` prefix, `http://` or `https://`. |
+| `deniedParents[].id` | string | one of the two | — | A registry stack id (`parent.id`). |
+| `deniedParents[].versions` | list of strings | no | `[]` | With `id` only. Empty denies every version of the stack, an unversioned parent included. |
+| `onDenied` | `Deny`/`Warn` | no | `Deny` | What a denied-list match does on a start. Any other update only warns. |
+
+**The apiserver refuses**, at `kubectl apply`: contracts outside `1 <= minimumContract <=
+currentContract <= 1000`, a denied contract above `currentContract`, a `deniedParents` entry
+naming both or neither of `uriPrefix` and `id`, a `uriPrefix` that is not an `http(s)` prefix of
+8 to 2048 characters, `versions` without `id`, and a `minimumSchemaVersion` that is not
+`MAJOR.MINOR.PATCH`. Each list holds at most 64 entries (`versions`: 32, of 1 to 64 characters).
+Everything it accepts is meaningful, so this block never makes the status `Degraded`. Shared by
+every team: there is no `devfileContract` on `WeeboSiTeam`.
 
 ### `features.kubearmorPolicy`
 
@@ -1025,7 +1070,7 @@ rather than one per edit round-trip.
 Validation is **mostly reconcile-time**: the apiserver accepts a structurally valid object, and
 the controller reports what is semantically wrong as `Degraded` conditions. The exception is
 CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
-above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+above) and `devfileContract` (*devfileContract* above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 

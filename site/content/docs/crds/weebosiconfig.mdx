@@ -39,6 +39,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| [`devfileContract`](#spec.features.devfileContract) | `object` | no |  | `spec.features.devfileContract`, per RFC 0019. |
 | [`dwocPin`](#spec.features.dwocPin) | `object` | no |  | `spec.features.dwocPin`. |
 | [`endpointAuth`](#spec.features.endpointAuth) | `object` | no |  | `spec.features.endpointAuth`, per RFC 0009. |
 | [`identity`](#spec.features.identity) | `object` | no |  | `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems other than this cluster's own, and the only one with allow-lists of its own. |
@@ -50,6 +51,54 @@ spec:
 | [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
 | [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | `spec.features.resourceQuotas`, per RFC 0014. |
+
+### `spec.features.devfileContract` [#spec.features.devfileContract]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `currentContract` | `integer` | yes |  | The newest contract the User Guide publishes.<br /><br />Constraints: `minimum: 0` |
+| `deniedContracts` | `integer[]` | no | `[]` | Contracts refused at a start; empty refuses nothing.<br /><br />Constraints: `maxItems: 64` |
+| [`deniedParents`](#spec.features.devfileContract.deniedParents) | `object[]` | no | `[]` | Parents refused at a start; empty refuses nothing.<br /><br />Constraints: `maxItems: 64` |
+| `minimumContract` | `integer` | yes |  | Below this a devfile is `outdated` (a warning, never a refusal).<br /><br />Constraints: `minimum: 0` |
+| `minimumSchemaVersion` | `string` | no |  | The lowest `schemaVersion` accepted without a warning, checked only when the Che dashboard kept it.<br /><br />Constraints: `maxLength: 32` |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.devfileContract.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| `onDenied` | `string` | no | `"Deny"` | What a denied-list match does on a start.<br /><br />Values: `"Deny"`, `"Warn"` |
+
+**Rules**
+
+- contracts start at 1 and minimumContract cannot exceed currentContract — `1 <= self.minimumContract && self.minimumContract <= self.currentContract && self.currentContract <= 1000`
+- a denied contract must be a published one — `!has(self.deniedContracts) || self.deniedContracts.all(c, 1 <= c && c <= self.currentContract)`
+- minimumSchemaVersion is MAJOR.MINOR.PATCH — `!has(self.minimumSchemaVersion) || self.minimumSchemaVersion.matches('^[0-9]+\\.[0-9]+\\.[0-9]+$')`
+
+### `spec.features.devfileContract.deniedParents[]` [#spec.features.devfileContract.deniedParents]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `id` | `string` | no |  | A registry stack id (`parent.id`).<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `uriPrefix` | `string` | no |  | A `parent.uri` prefix, matched after normalisation.<br /><br />Constraints: `minLength: 8`, `maxLength: 2048` |
+| `versions` | `string[]` | no |  | The denied versions of `id`; empty denies every version, an absent one included.<br /><br />Constraints: `maxItems: 32` |
+
+**Rules**
+
+- a denied parent names a uriPrefix or an id, not both — `has(self.uriPrefix) != has(self.id)`
+- uriPrefix must be an http(s) URL prefix — `!has(self.uriPrefix) || self.uriPrefix.startsWith('https://') || self.uriPrefix.startsWith('http://')`
+- versions apply to a registry id only — `!has(self.versions) || size(self.versions) == 0 || has(self.id)`
+
+### `spec.features.devfileContract.namespaceSelector` [#spec.features.devfileContract.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.devfileContract.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.devfileContract.namespaceSelector.matchExpressions[]` [#spec.features.devfileContract.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
 

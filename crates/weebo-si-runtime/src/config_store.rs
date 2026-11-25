@@ -16,8 +16,8 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 use prometheus::{IntGauge, IntGaugeVec, Opts, Registry};
 use weebo_si_crd::{
-    Backend, FeatureMode, IdentityConfig, NamespaceName, PolicyGuardConfig, ResolvedDwocPinConfig,
-    ResolvedEndpointAuthConfig, ResolvedFeatures, ResolvedImagePolicyConfig,
+    Backend, DevfileContractConfig, FeatureMode, IdentityConfig, NamespaceName, PolicyGuardConfig,
+    ResolvedDwocPinConfig, ResolvedEndpointAuthConfig, ResolvedFeatures, ResolvedImagePolicyConfig,
     ResolvedKubeArmorPolicyConfig, ResolvedNetworkProfilesConfig, ResolvedPodSecurityConfig,
     ResolvedRegistryConfig, ResolvedResourceQuotasConfig, RuntimeBackend, SINGLETON_NAME, Team,
     WeeboSiConfig, WeeboSiTeam, team_views,
@@ -80,6 +80,7 @@ pub struct KubeConfigStore {
     resource_quotas: Arc<RwLock<Option<ResolvedResourceQuotasConfig>>>,
     identity: Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
+    devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
     /// Ticks once each time a sync leaves `identity` different from before, sent after the
     /// handle is written: a loop woken by it reads the new value, never the old one.
     identity_changes: tokio::sync::watch::Sender<()>,
@@ -134,6 +135,7 @@ impl KubeConfigStore {
         let resource_quotas = Arc::new(RwLock::new(None));
         let identity = Arc::new(RwLock::new(None));
         let image_rewrite = Arc::new(RwLock::new(None));
+        let devfile_contract = Arc::new(RwLock::new(None));
         let (identity_changes, _) = tokio::sync::watch::channel(());
         let resolved_backend = Arc::new(RwLock::new(Backend::NetworkPolicy));
         let resolved_runtime_backend = Arc::new(RwLock::new(RuntimeBackend::KubeArmor));
@@ -173,6 +175,7 @@ impl KubeConfigStore {
         let resource_quotas_for_task = Arc::clone(&resource_quotas);
         let identity_for_task = Arc::clone(&identity);
         let image_rewrite_for_task = Arc::clone(&image_rewrite);
+        let devfile_contract_for_task = Arc::clone(&devfile_contract);
         let identity_changes_for_task = identity_changes.clone();
         let resolved_backend_for_task = Arc::clone(&resolved_backend);
         let resolved_runtime_backend_for_task = Arc::clone(&resolved_runtime_backend);
@@ -202,6 +205,7 @@ impl KubeConfigStore {
                             &resource_quotas_for_task,
                             &identity_for_task,
                             &image_rewrite_for_task,
+                            &devfile_contract_for_task,
                             &resolved_backend_for_task,
                             &resolved_runtime_backend_for_task,
                             &annotation_key_for_task,
@@ -249,6 +253,7 @@ impl KubeConfigStore {
             &resource_quotas,
             &identity,
             &image_rewrite,
+            &devfile_contract,
             &resolved_backend,
             &resolved_runtime_backend,
             &annotation_key,
@@ -269,6 +274,7 @@ impl KubeConfigStore {
             resource_quotas,
             identity,
             image_rewrite,
+            devfile_contract,
             identity_changes,
             resolved_backend,
             resolved_runtime_backend,
@@ -361,6 +367,12 @@ impl KubeConfigStore {
     /// before the first sync; its `config` is `None` while `spec.features.imageRewrite` is absent.
     pub fn image_rewrite_config(&self) -> Arc<RwLock<Option<LoadedRewrite>>> {
         Arc::clone(&self.image_rewrite)
+    }
+
+    /// The `Arc` RFC 0019's `devfile-contract` reads on the `DevWorkspace` mutating route. `None`
+    /// until (and unless) `spec.features.devfileContract` is present on the singleton.
+    pub fn devfile_contract_config(&self) -> Arc<RwLock<Option<DevfileContractConfig>>> {
+        Arc::clone(&self.devfile_contract)
     }
 
     /// The `Arc` both `weebo-si-image-policy` features are constructed with, per RFC 0005.
@@ -469,6 +481,7 @@ fn sync_from_store_initial(
     resource_quotas: &Arc<RwLock<Option<ResolvedResourceQuotasConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
+    devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -491,6 +504,7 @@ fn sync_from_store_initial(
         resource_quotas,
         identity,
         image_rewrite,
+        devfile_contract,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -518,6 +532,7 @@ fn sync_from_store(
     resource_quotas: &Arc<RwLock<Option<ResolvedResourceQuotasConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
+    devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -542,6 +557,7 @@ fn sync_from_store(
         resource_quotas,
         identity,
         image_rewrite,
+        devfile_contract,
         resolved_backend,
         resolved_runtime_backend,
         annotation_key,
@@ -674,6 +690,17 @@ fn sync_from_store(
 
     metrics
         .feature_mode
+        .with_label_values(&["devfile-contract"])
+        .set(
+            features
+                .devfile_contract
+                .as_ref()
+                .map(|c| mode_value(c.mode))
+                .unwrap_or(0),
+        );
+
+    metrics
+        .feature_mode
         .with_label_values(&["pod-security"])
         .set(
             features
@@ -781,6 +808,7 @@ fn apply_config(
     resource_quotas: &Arc<RwLock<Option<ResolvedResourceQuotasConfig>>>,
     identity: &Arc<RwLock<Option<IdentityConfig>>>,
     image_rewrite: &Arc<RwLock<Option<LoadedRewrite>>>,
+    devfile_contract: &Arc<RwLock<Option<DevfileContractConfig>>>,
     resolved_backend: &Arc<RwLock<Backend>>,
     resolved_runtime_backend: &Arc<RwLock<RuntimeBackend>>,
     annotation_key: &Arc<RwLock<String>>,
@@ -826,6 +854,9 @@ fn apply_config(
             features.image_policy.as_ref(),
             features.image_rewrite.as_ref(),
         ));
+    }
+    if let Ok(mut guard) = devfile_contract.write() {
+        *guard = features.devfile_contract.clone();
     }
     if let Ok(mut guard) = resolved_runtime_backend.write() {
         let preference = features
@@ -974,6 +1005,16 @@ impl KubeConfigStore {
                     None => return FeatureMode::Off,
                 }
             }
+            "devfile-contract" => {
+                let guard = self
+                    .devfile_contract
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match guard.as_ref() {
+                    Some(config) => (config.mode, config.namespace_selector.clone()),
+                    None => return FeatureMode::Off,
+                }
+            }
             "pod-security" => {
                 let guard = self
                     .pod_security
@@ -1060,6 +1101,11 @@ mod tests {
                     "mode": "DryRun",
                     "rules": [{"from": "quay.io", "to": "registry.pkg.weebo.poc/quay"}],
                 },
+                "devfileContract": {
+                    "mode": "DryRun",
+                    "currentContract": 1,
+                    "minimumContract": 1,
+                },
             },
         }))
         .unwrap();
@@ -1082,6 +1128,7 @@ mod tests {
         resource_quotas: Arc<RwLock<Option<ResolvedResourceQuotasConfig>>>,
         identity: Arc<RwLock<Option<IdentityConfig>>>,
         image_rewrite: Arc<RwLock<Option<LoadedRewrite>>>,
+        devfile_contract: Arc<RwLock<Option<DevfileContractConfig>>>,
         resolved_backend: Arc<RwLock<Backend>>,
         resolved_runtime_backend: Arc<RwLock<RuntimeBackend>>,
         annotation_key: Arc<RwLock<String>>,
@@ -1102,6 +1149,7 @@ mod tests {
                 resource_quotas: Arc::default(),
                 identity: Arc::default(),
                 image_rewrite: Arc::default(),
+                devfile_contract: Arc::default(),
                 resolved_backend: Arc::new(RwLock::new(Backend::NetworkPolicy)),
                 resolved_runtime_backend: Arc::new(RwLock::new(RuntimeBackend::KubeArmor)),
                 annotation_key: Arc::new(RwLock::new(DEFAULT_ANNOTATION.to_string())),
@@ -1125,6 +1173,7 @@ mod tests {
                 &self.resource_quotas,
                 &self.identity,
                 &self.image_rewrite,
+                &self.devfile_contract,
                 &self.resolved_backend,
                 &self.resolved_runtime_backend,
                 &self.annotation_key,
@@ -1192,6 +1241,16 @@ mod tests {
                 .mode,
             FeatureMode::DryRun
         );
+        assert_eq!(
+            handles
+                .devfile_contract
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .mode,
+            FeatureMode::DryRun
+        );
 
         // Stand-ins for blocks a richer singleton would have carried: whatever was last applied,
         // the delete must clear it, not only the one block this fixture happens to set.
@@ -1208,6 +1267,7 @@ mod tests {
         assert!(handles.registry_config.read().unwrap().is_none());
         assert!(handles.endpoint_auth.read().unwrap().is_none());
         assert!(handles.identity.read().unwrap().is_none());
+        assert!(handles.devfile_contract.read().unwrap().is_none());
         assert!(
             handles
                 .image_rewrite

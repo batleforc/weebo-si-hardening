@@ -7,6 +7,7 @@
 //! doing any I/O.
 
 pub mod argo;
+pub mod devfile_contract;
 pub mod dwoc;
 pub mod dwoc_pin;
 pub mod endpoint_auth;
@@ -34,6 +35,11 @@ pub mod user;
 pub use argo::{
     ApplicationDestination, ApplicationSource, ApplicationTemplate, ApplicationTemplateViolation,
     RenderedApplication, SyncAutomated, SyncPolicy,
+};
+pub use devfile_contract::{
+    DEVFILE_CONTRACT_ANNOTATION, DEVFILE_CONTRACT_REASON_ANNOTATION, DEVFILE_PARENT_ATTRIBUTE,
+    DeniedParent, DevfileContractConfig, GENERATOR_ATTRIBUTE, MAX_CONTRACT, MAX_DENIED_ENTRIES,
+    MAX_DENIED_VERSIONS, OnDenied, PLATFORM_CONTRACT_ATTRIBUTE,
 };
 pub use dwoc::DwocRef;
 pub use dwoc_pin::{

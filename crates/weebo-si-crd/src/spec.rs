@@ -6,6 +6,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::devfile_contract::DevfileContractConfig;
 use crate::dwoc_pin::{DwocPinConfig, ResolvedDwocPinConfig};
 use crate::endpoint_auth::{EndpointAuthConfig, ResolvedEndpointAuthConfig};
 use crate::identity::IdentityConfig;
@@ -58,6 +59,9 @@ pub struct Features {
     /// `spec.features.imageRewrite`, per RFC 0017.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_rewrite: Option<ImageRewriteConfig>,
+    /// `spec.features.devfileContract`, per RFC 0019.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devfile_contract: Option<DevfileContractConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -131,6 +135,8 @@ pub struct ResolvedFeatures {
     pub resource_quotas: Option<ResolvedResourceQuotasConfig>,
     /// `spec.features.imageRewrite`, unchanged: not team-overridable (RFC 0017, resolved 7).
     pub image_rewrite: Option<ImageRewriteConfig>,
+    /// `spec.features.devfileContract`, unchanged: not team-overridable (RFC 0019, *Teams*).
+    pub devfile_contract: Option<DevfileContractConfig>,
 }
 
 impl WeeboSiConfigSpec {
@@ -281,6 +287,7 @@ impl WeeboSiConfigSpec {
             pod_security,
             resource_quotas,
             image_rewrite: self.features.image_rewrite.clone(),
+            devfile_contract: self.features.devfile_contract.clone(),
         };
         (resolved, conflicts)
     }
