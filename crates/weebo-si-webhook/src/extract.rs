@@ -55,8 +55,13 @@ pub fn workspace_admission_from_object(
         obj.data
             .pointer("/spec/template/attributes")
             .and_then(|attributes| attributes.get(attribute_key))
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
+            // Not a string (a YAML list, say): an invalid request, never the team default.
+            .map(|value| {
+                value.as_str().map_or_else(
+                    || weebo_si_network_profiles::INVALID_KEY.to_string(),
+                    str::to_string,
+                )
+            })
     };
     WorkspaceAdmission {
         name: obj.metadata.name.clone().unwrap_or_default(),
@@ -254,6 +259,23 @@ mod tests {
         );
         assert_eq!(subject.attribute.as_deref(), Some("git,vault"));
         assert_eq!(subject.operation, WorkspaceOperation::Create);
+
+        let listed = object(serde_json::json!({
+            "template": {"attributes": {(PROFILES_ATTRIBUTE): ["git"]}}
+        }));
+        let subject = workspace_admission_from_object(
+            &NamespaceName::new("user-alice"),
+            &listed,
+            Operation::Create,
+            PROFILES_ATTRIBUTE,
+            None,
+            None,
+        );
+        assert_eq!(
+            subject.attribute.as_deref(),
+            Some(weebo_si_network_profiles::INVALID_KEY),
+            "a list is an invalid request, not an absent one"
+        );
     }
 
     #[test]

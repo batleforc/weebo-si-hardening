@@ -75,6 +75,11 @@ impl NotGranted {
     }
 }
 
+/// What a present attribute that is not a string (a YAML list, say) is read as: never a valid
+/// [`ProfileKey`], so it is outside every grant (refused under `Deny`, dropped and reported under
+/// `Default`), never the team default.
+pub const INVALID_KEY: &str = "<invalid>";
+
 /// Parse a comma-separated profile key list, trimming whitespace, dropping empty segments, and
 /// deduplicating while preserving first-seen order.
 fn parse_keys(raw: &str) -> Vec<ProfileKey> {
@@ -483,6 +488,21 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.team, Some(TeamName::new("team-2")));
         assert_eq!(err.requested, vec![ProfileKey::new("vault")]);
+    }
+
+    #[test]
+    fn the_invalid_key_is_refused_under_deny_and_flagged_under_default() {
+        let teams = [team("team-1", "team-1")];
+        let mut grants = BTreeMap::new();
+        grants.insert("team-1".to_string(), team1_grant());
+        let mut cfg = config("base", grants);
+        let ns = labels(&[("weebo.io/team", "team-1")]);
+        let invalid = vec![ProfileKey::new(INVALID_KEY)];
+        let provenance = resolve(&teams, &cfg, &ns, None, None, Some(INVALID_KEY)).unwrap();
+        assert_eq!(provenance.dropped_not_granted, invalid);
+        cfg.on_not_granted = OnNotGranted::Deny;
+        let err = resolve(&teams, &cfg, &ns, None, None, Some(INVALID_KEY)).unwrap_err();
+        assert_eq!(err.requested, invalid);
     }
 
     #[test]

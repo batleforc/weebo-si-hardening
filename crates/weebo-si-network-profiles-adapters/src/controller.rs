@@ -385,15 +385,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         }
     };
 
-    let attribute = if attribute_key.is_empty() {
-        None
-    } else {
-        obj.data
-            .pointer("/spec/template/attributes")
-            .and_then(|attributes| attributes.get(&attribute_key))
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-    };
+    let attribute = attribute_of(&obj, &attribute_key);
     let namespace_annotation = ctx
         .deps
         .namespace_view
@@ -596,6 +588,24 @@ pub async fn spawn(client: Client, deps: NetworkProfilesDeps, recorder: Recorder
     tokio::spawn(canary_loop(ctx));
 }
 
+/// The DevWorkspace attribute, `None` when absent or when requests are off (`""`). A value that
+/// is not a string (a YAML list, say) is an invalid key, never the team default.
+fn attribute_of(object: &DynamicObject, key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    object
+        .data
+        .pointer("/spec/template/attributes")
+        .and_then(|attributes| attributes.get(key))
+        .map(|value| {
+            value.as_str().map_or_else(
+                || weebo_si_network_profiles::INVALID_KEY.to_string(),
+                str::to_string,
+            )
+        })
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -661,6 +671,18 @@ mod tests {
         let mut not_yet = devworkspace(Some("ws"), Some("uid-1"));
         not_yet.data = serde_json::json!({"status": {"devworkspaceId": ""}});
         assert_eq!(devworkspace_id(&not_yet), None);
+    }
+
+    #[test]
+    fn a_non_string_attribute_is_an_invalid_key_not_an_absent_one() {
+        let mut listed = devworkspace(Some("ws"), Some("uid-1"));
+        listed.data = serde_json::json!({"spec": {"template": {"attributes": {"k": ["git"]}}}});
+        assert_eq!(
+            attribute_of(&listed, "k").as_deref(),
+            Some(weebo_si_network_profiles::INVALID_KEY)
+        );
+        assert_eq!(attribute_of(&listed, "other"), None);
+        assert_eq!(attribute_of(&listed, ""), None);
     }
 
     #[test]
