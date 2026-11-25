@@ -1453,15 +1453,16 @@ fn parent_server() -> Cleanup {
         .ok_or("no endpointslice list")?;
         let ready = slices
             .pointer("/items")
-            .and_then(Value::as_array)
+            .and_then(serde_json::Value::as_array)
             .is_some_and(|items| {
                 items.iter().any(|slice| {
                     slice
                         .pointer("/endpoints")
-                        .and_then(Value::as_array)
+                        .and_then(serde_json::Value::as_array)
                         .is_some_and(|endpoints| {
                             endpoints.iter().any(|endpoint| {
-                                endpoint.pointer("/conditions/ready") == Some(&Value::Bool(true))
+                                endpoint.pointer("/conditions/ready")
+                                    == Some(&serde_json::Value::Bool(true))
                             })
                         })
                 })
