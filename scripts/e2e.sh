@@ -701,8 +701,9 @@ addon_team_tools() {
   kubectl apply --server-side -f "https://raw.githubusercontent.com/cilium/cilium/$CILIUM_VERSION/pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml" >/dev/null
   kubectl wait --for=condition=Established crd/ciliumnetworkpolicies.cilium.io --timeout=60s >/dev/null
   say "BuildKit ($BUILDKIT_IMAGE), preloaded"
-  retry "$E2E_RUNTIME" pull "$BUILDKIT_IMAGE" >/dev/null
-  load_image "$BUILDKIT_IMAGE"
+  # Pulled by the node itself: `kind load` of a multi-arch upstream image imports with
+  # --all-platforms and fails on the platforms the host never pulled ("content digest not found").
+  retry "$E2E_RUNTIME" exec "$CLUSTER-control-plane" crictl pull "$BUILDKIT_IMAGE" >/dev/null
 }
 
 addons() {
