@@ -201,8 +201,14 @@ pub enum CompileError {
     /// The annotation names a key the team's grant — or the admin's override — does not allow.
     NotGranted(CatalogueKey),
     /// RFC 0021: the effective default is a restricted key the namespace does not grant, so the
-    /// endpoint has nothing to fall back to and is indexed closed.
-    RestrictedNotGranted(CatalogueKey),
+    /// endpoint has nothing to fall back to and is indexed closed. `requested` is the restricted
+    /// key that was asked for and fell back to that default, when it was not the default itself.
+    RestrictedNotGranted {
+        /// The effective default.
+        default: CatalogueKey,
+        /// The restricted key the annotation or a rule named, if other than the default.
+        requested: Option<CatalogueKey>,
+    },
     /// The grant's own default is not in its allowed set, or an override narrowed the allowed set
     /// to something the default is no longer in. A configuration bug, and a closed endpoint until
     /// it is fixed.
@@ -234,7 +240,7 @@ impl fmt::Display for CompileError {
             }
             Self::UnknownKey(key) => write!(f, "no catalogue entry named {key}"),
             Self::NotGranted(key) => write!(f, "{key} is not granted here"),
-            Self::RestrictedNotGranted(key) => {
+            Self::RestrictedNotGranted { default: key, .. } => {
                 write!(f, "{key} is not granted here (a restricted default)")
             }
             Self::DefaultNotAllowed(key) => write!(f, "default {key} is not in the allowed set"),
@@ -384,9 +390,22 @@ impl Reach<'_> {
             return Ok(key);
         }
         if &key == self.default {
-            return Err(CompileError::RestrictedNotGranted(key));
+            return Err(CompileError::RestrictedNotGranted {
+                default: key,
+                requested: None,
+            });
         }
-        let served_as = self.unlock(self.default.clone(), seen)?;
+        let served_as = self
+            .unlock(self.default.clone(), seen)
+            .map_err(|err| match err {
+                CompileError::RestrictedNotGranted { default, .. } => {
+                    CompileError::RestrictedNotGranted {
+                        default,
+                        requested: Some(key.clone()),
+                    }
+                }
+                other => other,
+            })?;
         record(
             seen,
             &key,
@@ -952,13 +971,44 @@ mod tests {
         let mut raw = raw_endpoint("user-alice", "alice");
         assert_eq!(
             compile_restricted(&raw, &grant, &[]),
-            Err(CompileError::RestrictedNotGranted(CatalogueKey::new(
-                "open"
-            )))
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("open"),
+                requested: None,
+            })
         );
         raw.namespace_grant = namespace_grant(Some("open"));
         let policy = compile_restricted(&raw, &grant, &[]).unwrap();
         assert!(policy.profile.anonymous);
+    }
+
+    /// A restricted key falling back to a restricted, ungranted default names both in the error,
+    /// so the audit can report the key the developer asked for.
+    #[test]
+    fn a_closed_endpoint_names_the_requested_key_and_the_default() {
+        let mut catalogue = restricted_open();
+        if let Some(private) = catalogue.entries.get_mut(&CatalogueKey::new("private")) {
+            private.restricted = true;
+        }
+        let grant = Grant {
+            allowed: keys(&["private", "open"]),
+            default: CatalogueKey::new("private"),
+        };
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("open".into());
+        assert_eq!(
+            compile(
+                &raw,
+                &catalogue,
+                &grant,
+                &[],
+                &CompileSettings::default(),
+                1
+            ),
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("private"),
+                requested: Some(CatalogueKey::new("open")),
+            })
+        );
     }
 
     /// Coordinator decision after patch 03: the fallback is the *effective* default, so an
@@ -975,9 +1025,10 @@ mod tests {
         raw.access = Some("open".into());
         assert_eq!(
             compile_restricted(&raw, &full_grant(), std::slice::from_ref(&open_by_default)),
-            Err(CompileError::RestrictedNotGranted(CatalogueKey::new(
-                "open"
-            )))
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("open"),
+                requested: None,
+            })
         );
         // Without the override the same endpoint falls back to the team default.
         assert!(compile_restricted(&raw, &full_grant(), &[]).is_ok());

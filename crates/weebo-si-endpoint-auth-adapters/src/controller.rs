@@ -415,8 +415,10 @@ fn restricted_sets(
     let mut refused = BTreeMap::new();
     let policy = match compiled {
         Some(Ok(policy)) => Some(policy),
-        Some(Err(CompileError::RestrictedNotGranted(key))) => {
-            refused.insert(key.to_string(), CLOSED.to_string());
+        Some(Err(CompileError::RestrictedNotGranted { default, requested })) => {
+            for key in std::iter::once(default).chain(requested) {
+                refused.insert(key.to_string(), CLOSED.to_string());
+            }
             None
         }
         Some(Err(_)) | None => None,
@@ -1123,12 +1125,16 @@ mod tests {
         );
         assert_eq!(restricted_sets(None), (Vec::new(), BTreeMap::new()));
         assert_eq!(
-            restricted_sets(Some(&Err(CompileError::RestrictedNotGranted(
-                CatalogueKey::new("open")
-            )))),
+            restricted_sets(Some(&Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("private"),
+                requested: Some(CatalogueKey::new("open")),
+            }))),
             (
                 Vec::new(),
-                BTreeMap::from([("open".to_owned(), "closed".to_owned())])
+                BTreeMap::from([
+                    ("open".to_owned(), "closed".to_owned()),
+                    ("private".to_owned(), "closed".to_owned())
+                ])
             )
         );
         assert_eq!(
