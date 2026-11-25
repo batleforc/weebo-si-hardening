@@ -307,21 +307,22 @@ enum Denied<'a> {
 
 /// The first `deniedParents` entry the parent matches, numbered from 1. A `uriPrefix` matches a
 /// `parent.uri` after both are normalised (T3: scheme and host lowercased, userinfo, query and
-/// fragment dropped); an `id` matches `parent.id` with one of `versions`, or any version (an
+/// fragment dropped, unreserved escapes decoded, dot segments resolved) and compared without case,
+/// since forges such as GitHub serve `Org/Repo` and `org/repo` alike; an `id` matches `parent.id` with one of `versions`, or any version (an
 /// absent one included) when `versions` is empty.
 pub fn denied_match<'a>(
     parent: &Parent,
     denied: &'a [DeniedParent],
 ) -> Option<(usize, &'a DeniedParent)> {
     let uri = match parent {
-        Parent::Uri(uri) => Some(normalise_uri(uri)),
+        Parent::Uri(uri) => Some(normalise_uri(uri).to_lowercase()),
         Parent::Id { .. } | Parent::Kubernetes => None,
     };
     denied.iter().enumerate().find_map(|(index, entry)| {
         let matched = match (parent, &entry.uri_prefix, &entry.id) {
             (Parent::Uri(_), Some(prefix), _) => uri
                 .as_deref()
-                .is_some_and(|uri| uri.starts_with(&normalise_uri(prefix))),
+                .is_some_and(|uri| uri.starts_with(&normalise_uri(prefix).to_lowercase())),
             (Parent::Id { id, version }, None, Some(denied_id)) => {
                 id == denied_id
                     && (entry.versions.is_empty()

@@ -93,7 +93,7 @@ pub enum UriPin {
 }
 
 /// A URI with its scheme and host lowercased, its userinfo, default port, query and fragment
-/// removed and repeated `/` collapsed (T3). A string without `://` is kept whole, minus query
+/// removed, unreserved escapes decoded, and `.`, `..` and repeated `/` resolved (T3). A string without `://` is kept whole, minus query
 /// and fragment.
 pub fn normalise_uri(uri: &str) -> String {
     let without_query = uri.split(['?', '#']).next().unwrap_or_default();
@@ -116,12 +116,53 @@ pub fn normalise_uri(uri: &str) -> String {
         Some(bare) if !default_port.is_empty() => bare.to_string(),
         _ => host,
     };
-    let mut out = format!("{scheme}://{host}");
-    for c in path.chars() {
-        if !(c == '/' && out.ends_with('/')) {
-            out.push(c);
+    let decoded = decode_unreserved(path);
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in decoded.split('/').filter(|s| !s.is_empty()) {
+        match segment {
+            "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
         }
     }
+    let mut out = format!("{scheme}://{host}");
+    for segment in &segments {
+        out.push('/');
+        out.push_str(segment);
+    }
+    let last = decoded.rsplit('/').next().unwrap_or_default();
+    if !segments.is_empty() && (decoded.ends_with('/') || matches!(last, "." | "..")) {
+        out.push('/');
+    }
+    out
+}
+
+/// Decodes the percent-encoded unreserved characters (RFC 3986 §2.3) that a server reads as the
+/// literal character, so `%6Fld` and `old` normalise alike; any other escape stays as written.
+fn decode_unreserved(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(i) = rest.find('%') {
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        let byte = tail
+            .get(1..3)
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+        match byte {
+            Some(b) => {
+                out.push(char::from(b));
+                rest = tail.get(3..).unwrap_or_default();
+            }
+            None => {
+                out.push('%');
+                rest = tail.get(1..).unwrap_or_default();
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -367,6 +408,14 @@ mod tests {
             ("https://Host:443//a///b/", "https://host/a/b/"),
             ("http://host:80/a", "http://host/a"),
             ("https://host:8443/a", "https://host:8443/a"),
+            (
+                "https://host/org/%6Fld-stack/%2F",
+                "https://host/org/old-stack/%2F",
+            ),
+            ("https://host/org/x/../old/./a", "https://host/org/old/a"),
+            ("https://host/a/b/..", "https://host/a/"),
+            ("https://host/../..", "https://host"),
+            ("https://host/a%zz%4", "https://host/a%zz%4"),
         ];
         for (uri, expected) in rows {
             assert_eq!(normalise_uri(uri), expected, "{uri}");

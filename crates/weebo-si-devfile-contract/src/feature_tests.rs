@@ -410,7 +410,7 @@ fn a_denied_prefix_matches_despite_query_and_userinfo() {
         let (index, _) = denied_match(&Parent::Uri(uri.clone()), &denied).unwrap();
         assert_eq!(index, 2, "{uri}");
     }
-    // The path keeps its case: a prefix is not a case-insensitive match.
+    // The path is compared without case: GitHub serves `WeeboDevImage` and `weebodevimage` alike.
     assert!(
         denied_match(
             &Parent::Uri(
@@ -418,7 +418,7 @@ fn a_denied_prefix_matches_despite_query_and_userinfo() {
             ),
             &denied
         )
-        .is_none()
+        .is_some()
     );
 }
 
@@ -828,4 +828,22 @@ fn evaluate_never_errs_on_arbitrary_json() {
             }
         }
     }
+}
+
+#[test]
+fn a_denied_prefix_is_not_bypassed_by_another_spelling() {
+    let denied = [prefix("https://github.com/org/old-stack")];
+    for uri in [
+        "https://github.com/Org/Old-Stack/raw/v1/devfile.yaml",
+        "https://github.com/org/%6Fld-stack/raw/v1/devfile.yaml",
+        "https://github.com/org/x/../old-stack/raw/v1/devfile.yaml",
+        "https://github.com/org/./old-stack/devfile.yaml",
+    ] {
+        assert!(
+            denied_match(&Parent::Uri(uri.to_string()), &denied).is_some(),
+            "{uri}"
+        );
+    }
+    let other = Parent::Uri("https://github.com/org/old-stack-2/devfile.yaml".to_string());
+    assert!(denied_match(&other, &[prefix("https://github.com/org/new-stack")]).is_none());
 }
