@@ -107,7 +107,8 @@ attributes:
   hardening.weebo.io/team-tools: buildkit
 ```
 
-A comma-separated list, at most 8 keys. **Absent** means the team `default`; **present and
+A comma-separated list, at most 8 keys; more counts as the invalid key `<invalid>`, refused
+under `Deny` and warned about under `Default`. **Absent** means the team `default`; **present and
 empty** (`""`) means no tool, even with a default. Inside the workspace, once started:
 
 ```text

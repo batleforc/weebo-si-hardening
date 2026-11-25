@@ -35,10 +35,12 @@ fn is_key_shaped(segment: &str) -> bool {
 }
 
 /// Parse the attribute: a comma-separated list, trimmed, empty segments dropped, deduplicated in
-/// order, **at most 8** (RFC 0020, D3); the rest is dropped unread.
+/// order, **at most 8** (RFC 0020, D3). A ninth distinct key stops the read and is reported as
+/// [`INVALID_KEY`], so the overflow is refused or warned about, never silently lost.
 pub fn parse_keys(raw: &str) -> Vec<ToolKey> {
     let mut seen = HashSet::new();
-    raw.split(',')
+    let mut keys: Vec<ToolKey> = raw
+        .split(',')
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
         .map(|segment| {
@@ -49,9 +51,17 @@ pub fn parse_keys(raw: &str) -> Vec<ToolKey> {
             }
         })
         .filter(|segment| seen.insert(*segment))
-        .take(MAX_REQUESTED_TOOLS)
+        .take(MAX_REQUESTED_TOOLS.saturating_add(1))
         .map(ToolKey::new)
-        .collect()
+        .collect();
+    let invalid = ToolKey::new(INVALID_KEY);
+    if keys.len() > MAX_REQUESTED_TOOLS {
+        keys.truncate(MAX_REQUESTED_TOOLS);
+        if !keys.contains(&invalid) {
+            keys.push(invalid);
+        }
+    }
+    keys
 }
 
 /// The first team whose `namespaceSelector` matches `labels` — teams are ordered, first match
@@ -144,11 +154,25 @@ mod tests {
     }
 
     #[test]
-    fn a_ninth_key_is_dropped() {
-        let raw = "k1,k2,k3,k4,k5,k6,k7,k8,k9";
-        let parsed = parse_keys(raw);
-        assert_eq!(parsed.len(), MAX_REQUESTED_TOOLS);
-        assert!(!parsed.contains(&ToolKey::new("k9")));
+    fn a_ninth_key_is_reported_as_invalid() {
+        let parsed = parse_keys("k1,k2,k3,k4,k5,k6,k7,k8,k9,k10");
+        assert_eq!(
+            parsed,
+            keys(&["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", INVALID_KEY])
+        );
+        assert_eq!(
+            parse_keys("k1,k2,k3,k4,k5,k6,k7,k8").len(),
+            MAX_REQUESTED_TOOLS
+        );
+        // An overflow is never granted: `<invalid>` is not a catalogue key.
+        let config = config_with(&["k1"], &[]);
+        let request = resolve(
+            &[team()],
+            &config,
+            &weebo_labels(),
+            Some("k1,k2,k3,k4,k5,k6,k7,k8,k9"),
+        );
+        assert!(request.dropped.contains(&ToolKey::new(INVALID_KEY)));
     }
 
     #[test]

@@ -824,7 +824,7 @@ workspace pod into the privileged namespace; a `RUN` step into the network.
 | I2 | The client key leaks from the workspace | workspace ns | 24 h certificate, the key is the user's own credential, readable only in their namespace | `the_client_certificate_lasts_24h` | A compromised workspace builds as its user for ≤ 24 h |
 | D1 | Tools exhaust the single node | tools ns | binding refused without a `ResourceQuota` on `limits.memory`: `bind::has_memory_quota` | `a_namespace_without_quota_is_unbound` | Quota sizing is the admin's |
 | D2 | Tool stuck on with no requester (T-41) | scale | grace state machine: `scale::ScaleDecision`; alert on `up_without_requester` | `zero_requesters_reach_idle_after_grace` + obs. 8 | +1 grace after a restart |
-| D3 | Many keys in the attribute | admission/reconcile | at most 8 keys parsed, rest dropped: `resolve::requested_keys` | `a_ninth_key_is_dropped` | none |
+| D3 | Many keys in the attribute | admission/reconcile | at most 8 keys parsed; a ninth stops the read and is reported as `<invalid>` (refused under `Deny`, warned under `Default`): `resolve::parse_keys` | `a_ninth_key_is_reported_as_invalid` | none |
 | E1 | BuildKit as a springboard (T-40): `RUN` egress, SA token, bind mounts | tools ns | tool egress CNP template; `automountServiceAccountToken: false` validated; bind mounts only from context or stages (BuildKit semantics); insecure entitlements off [R23] | obs. 10; `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`, `added_capabilities_are_invalid` | Only if V-16 forces `--oci-worker-no-process-sandbox`: a teammate's `RUN` step can signal or ptrace daemon processes and read the server key. The exception, owned by the RFC owner (batleforc), recorded in the runbook with the V-16 result |
 | E2 | Compromised controller writes privileged pods, ConfigMaps or certificates anywhere | RBAC | Deployment/StatefulSet write only through per-namespace RoleBindings the admin creates in tools namespaces; ConfigMap and `Certificate` write only through a RoleBinding in each workspace namespace, rendered by `2.helm/user-app` | `the_controller_cannot_write_outside_a_bound_namespace` (e2e kind with the chart's RBAC: `kubectl auth can-i create deployments -n kube-system --as=<controller SA>` = no) | Within a bound workspace namespace, a `Certificate` naming any allow-listed `ClusterIssuer` |
 
@@ -1018,7 +1018,7 @@ None: every question raised by this draft is resolved above.
   `an_unlabelled_namespace_is_never_written`, `a_workspace_namespace_is_never_a_tools_namespace`; T4
   `a_privileged_template_is_invalid` (and hostPath, hostNetwork, hostPID, hostIPC); I2
   `the_client_certificate_lasts_24h`; D1 `a_namespace_without_quota_is_unbound`; D2
-  `zero_requesters_reach_idle_after_grace`; D3 `a_ninth_key_is_dropped`; E1
+  `zero_requesters_reach_idle_after_grace`; D3 `a_ninth_key_is_reported_as_invalid`; E1
   `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`,
   `added_capabilities_are_invalid`; E2 e2e kind with the chart RBAC
   `the_controller_cannot_write_outside_a_bound_namespace`; S3
