@@ -56,5 +56,10 @@ pub async fn controller_deps(
         config: shared.config_store.endpoint_auth_config(),
         gate: shared.config_store.clone(),
         operator_namespace: NamespaceName::new(shared.operator_namespace.clone()),
+        namespace_view: Arc::clone(&shared.ns_store) as _,
+        restricted: Arc::new(weebo_si_controller::restricted::RestrictedReporter::new(
+            shared.restricted_grants.clone(),
+            "endpoint-auth",
+        )),
     }))
 }

@@ -72,6 +72,9 @@ pub struct AccessProfile {
     pub anonymous: bool,
     /// Who else, besides the owner, may reach the endpoint.
     pub delegation: BTreeSet<Delegation>,
+    /// Honoured only where the namespace's `hardening.weebo.io/endpoint-access` annotation names
+    /// it (RFC 0021); elsewhere an endpoint naming it is served its default instead.
+    pub restricted: bool,
 }
 
 impl AccessProfile {
@@ -81,6 +84,7 @@ impl AccessProfile {
             key: CatalogueKey::new("private"),
             anonymous: false,
             delegation: BTreeSet::new(),
+            restricted: false,
         }
     }
 
@@ -302,6 +306,23 @@ pub struct EndpointPolicy {
     /// checked against the policy it was computed under, and so a log line can say which
     /// revision answered.
     pub generation: u64,
+    /// Every restricted key this policy met, once each, and what became of it (RFC 0021) — what
+    /// the controller's audit reports: a key the endpoint or a rule named, and a restricted
+    /// default it was served (named or not). Empty when nothing restricted was met.
+    pub restricted: Vec<(CatalogueKey, RestrictedResult)>,
+}
+
+/// What became of a restricted key an endpoint named (RFC 0021).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestrictedResult {
+    /// The namespace grants it: served as named.
+    Honoured,
+    /// The namespace does not grant it: the endpoint (or the rule) is served its effective
+    /// default instead.
+    Refused {
+        /// The key served in its place.
+        served_as: CatalogueKey,
+    },
 }
 
 /// The profile one request resolved to, and which rule produced it.
@@ -361,6 +382,7 @@ mod tests {
                 key: CatalogueKey::new(key),
                 anonymous: key == "open",
                 delegation: BTreeSet::new(),
+                restricted: false,
             },
             bearer: None,
         }
@@ -391,6 +413,7 @@ mod tests {
             provenance: Provenance::Devfile,
             upstream: None,
             generation: 1,
+            restricted: Vec::new(),
         }
     }
 

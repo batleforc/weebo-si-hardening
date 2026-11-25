@@ -35,6 +35,7 @@ pub fn policy_for(namespace: &str, _name: &str) -> EndpointPolicy {
         provenance: Provenance::Devfile,
         upstream: None,
         generation: 1,
+        restricted: Vec::new(),
     }
 }
 
@@ -46,18 +47,20 @@ pub fn catalogue() -> Catalogue {
                   message names which key is wrong"
     )]
     Catalogue::new([
-        (CatalogueKey::new("private"), false, BTreeSet::new()),
+        (CatalogueKey::new("private"), false, false, BTreeSet::new()),
         (
             CatalogueKey::new("team"),
+            false,
             false,
             BTreeSet::from([Delegation::Team]),
         ),
         (
             CatalogueKey::new("shared"),
             false,
+            false,
             BTreeSet::from([Delegation::Team, Delegation::UsersAndGroups]),
         ),
-        (CatalogueKey::new("open"), true, BTreeSet::new()),
+        (CatalogueKey::new("open"), true, false, BTreeSet::new()),
     ])
     .expect("the fixture catalogue must build")
 }
@@ -87,6 +90,7 @@ pub fn raw_endpoint(namespace: &str, owner: &str) -> RawEndpoint {
         rules: None,
         upstream: None,
         provenance: Provenance::Devfile,
+        namespace_grant: BTreeSet::new(),
     }
 }
 

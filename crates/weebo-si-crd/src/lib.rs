@@ -51,11 +51,12 @@ pub use dwoc_pin::{
 pub use endpoint_auth::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AccessEntry, AccessGrant,
     AccessKey, Attachment, AttachmentMode, COMPANION_SERVICE, CustomDialect, DEVELOPER_ANNOTATIONS,
-    DelegationKind, Dialect, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED,
-    EndpointAuthConfig, EndpointAuthConfigViolation, EndpointOverride, EndpointSelection,
-    GateEnforcement, GatewayRef, HostOwnership, HostsConfig, MIDDLEWARE_NAME, OverrideMatch,
-    OwnerConfig, RULES_ANNOTATION, ResolvedEndpointAuthConfig, Retarget, RoutingKind,
-    SelfOriginConfig, ServiceRef, TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
+    DelegationKind, Dialect, ENDPOINT_ACCESS_NAMESPACE_ANNOTATION, ENDPOINT_AUTH_ANNOTATION,
+    ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED, EndpointAuthConfig, EndpointAuthConfigViolation,
+    EndpointOverride, EndpointSelection, GateEnforcement, GatewayRef, HostOwnership, HostsConfig,
+    MIDDLEWARE_NAME, OverrideMatch, OwnerConfig, RULES_ANNOTATION, ResolvedEndpointAuthConfig,
+    Retarget, RoutingKind, SelfOriginConfig, ServiceRef, TeamEndpointAuth, TriState,
+    UPSTREAM_ANNOTATION,
 };
 pub use feature_mode::FeatureMode;
 pub use identity::{

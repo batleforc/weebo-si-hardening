@@ -107,6 +107,15 @@ impl RestrictedReporter {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(uid);
     }
+
+    /// Keep only the objects `live` still answers for — for a loop that never sees a deletion
+    /// (an object without a finalizer is gone before any pass could `forget` it).
+    pub fn retain(&self, live: impl Fn(&str) -> bool) {
+        self.last
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|uid, _| live(uid));
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +185,17 @@ mod tests {
         reporter.forget("uid-1");
         reporter.observe("uid-1", keys(&["internet"]), keys(&[]));
         assert_eq!(value(&registry, "internet", "honoured"), 2);
+    }
+
+    #[test]
+    fn a_retained_object_is_remembered_and_a_dropped_one_reports_again() {
+        let (registry, reporter) = reporter();
+        reporter.observe("uid-1", keys(&["open"]), keys(&[]));
+        reporter.observe("uid-2", keys(&["open"]), keys(&[]));
+        reporter.retain(|uid| uid == "uid-1");
+        reporter.observe("uid-1", keys(&["open"]), keys(&[]));
+        reporter.observe("uid-2", keys(&["open"]), keys(&[]));
+        assert_eq!(value(&registry, "open", "honoured"), 3);
     }
 
     #[test]

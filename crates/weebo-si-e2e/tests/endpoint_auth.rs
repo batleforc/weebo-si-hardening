@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use weebo_si_e2e::{
     Cleanup, DOMAIN, Endpoint, Ingress, Namespace, OPERATOR_NAMESPACE, RECONCILE, Value, Workspace,
-    WorkspaceSpec, apply, ca_file, gateway_metric_sum, get, json, kubectl, must, set_features,
-    team, text, try_apply, wait_until,
+    WorkspaceSpec, apply, ca_file, gateway_metric_sum, get, json, kubectl, metric_sum, must,
+    set_features, team, text, try_apply, wait_until,
 };
 
 fn endpoint_auth() -> Value {
@@ -53,6 +53,11 @@ fn endpoint_auth() -> Value {
 /// Team `payments` — alice's and carol's namespaces — reaches `team`, `shared` and `open` on top
 /// of the cluster's `private`.
 fn payments_team() -> Cleanup {
+    payments_team_with(false)
+}
+
+/// Team `payments`, its `open` entry marked `restricted` or not (RFC 0021).
+fn payments_team_with(restricted: bool) -> Cleanup {
     team(
         "e2e-payments",
         json!({
@@ -62,7 +67,7 @@ fn payments_team() -> Cleanup {
                 "catalog": [
                     { "key": "team", "delegation": ["Team"] },
                     { "key": "shared", "delegation": ["Team", "UsersAndGroups"] },
-                    { "key": "open", "anonymous": true, "delegation": [] },
+                    { "key": "open", "anonymous": true, "delegation": [], "restricted": restricted },
                 ],
                 "default": "private",
             } },
@@ -1178,4 +1183,130 @@ fn a_second_namespace_claiming_a_host_the_patterns_give_to_another_is_refused() 
         format!("{OPERATOR_NAMESPACE}-weebo-si-endpoint-auth@kubernetescrd"),
         "a developer's own Ingress is gated on the way in"
     );
+}
+
+// --- restricted access keys and the namespace grant (RFC 0021) ----------------------------------
+
+const ENDPOINT_ACCESS: &str = "hardening.weebo.io/endpoint-access";
+
+fn restricted_open_total(result: &str) -> f64 {
+    metric_sum(
+        "controller",
+        "weebo_si_restricted_grant_total",
+        &[
+            ("feature", "endpoint-auth"),
+            ("key", "open"),
+            ("result", result),
+        ],
+    )
+}
+
+/// How many Events with `reason` regard an `Ingress` of `namespace`.
+fn ingress_events(namespace: &str, reason: &str) -> usize {
+    get(&[
+        "events",
+        "-n",
+        namespace,
+        "--field-selector",
+        &format!("reason={reason},involvedObject.kind=Ingress"),
+    ])
+    .and_then(|list| list.get("items").and_then(Value::as_array).map(Vec::len))
+    .unwrap_or(0)
+}
+
+/// RFC 0021 (4)(5)(6), T-27: an endpoint naming the restricted `open` is served its default until
+/// the Namespace grants `open`, and again once the grant is removed. The workspace starts either
+/// way (S10), and both outcomes are counted and leave an Event on the `Ingress`.
+#[test]
+fn an_open_endpoint_needs_the_namespace_grant() {
+    let _team = payments_team_with(true);
+    set_features(json!({ "endpointAuth": endpoint_auth() }));
+    let refused_before = restricted_open_total("refused");
+    let honoured_before = restricted_open_total("honoured");
+    let ns = Namespace::workspace("alice", "gate-restricted", Some("payments"));
+    let refused_events = ingress_events(&ns.name, "RestrictedGrantRefused");
+    let honoured_events = ingress_events(&ns.name, "RestrictedGrantHonoured");
+    let served = serve(&ns, "open", json!({ "hardening.weebo.io/access": "open" }));
+    let ingress = Ingress::open();
+
+    let (code, _) = unauthenticated(&ingress, &served.host, "/");
+    assert_eq!(code, 401, "no grant: served as private, anonymous refused");
+    let (code, _, _) = status(&ingress, &served.host, "/", Some(&ingress.token("alice")));
+    assert_eq!(code, 200, "the owner still reaches it");
+    wait_until("the refusal to be counted", RECONCILE, || {
+        let now = restricted_open_total("refused");
+        if now > refused_before
+            && ingress_events(&ns.name, "RestrictedGrantRefused") > refused_events
+        {
+            Ok(())
+        } else {
+            Err(format!("refused {now}"))
+        }
+    });
+
+    ns.annotate(ENDPOINT_ACCESS, "open");
+    wait_until(
+        "the gateway to honour the grant",
+        RECONCILE,
+        || match unauthenticated(&ingress, &served.host, "/").0 {
+            200 => Ok(()),
+            code => Err(format!("anonymous still gets {code}")),
+        },
+    );
+    // The controller re-reads the namespace on its next pass of the `Ingress`; an edit of the
+    // object brings that pass forward from the 300 s requeue.
+    must(&[
+        "annotate",
+        "--overwrite",
+        "ingress",
+        "--all",
+        "-n",
+        &ns.name,
+        "e2e.weebo.io/touched=granted",
+    ]);
+    wait_until("the honoured count and Event", RECONCILE, || {
+        let now = restricted_open_total("honoured");
+        if now > honoured_before
+            && ingress_events(&ns.name, "RestrictedGrantHonoured") > honoured_events
+        {
+            Ok(())
+        } else {
+            Err(format!("honoured {now}"))
+        }
+    });
+
+    must(&[
+        "annotate",
+        "namespace",
+        &ns.name,
+        &format!("{ENDPOINT_ACCESS}-"),
+    ]);
+    wait_until(
+        "the endpoint to close with the grant",
+        std::time::Duration::from_secs(30),
+        || match unauthenticated(&ingress, &served.host, "/").0 {
+            401 => Ok(()),
+            code => Err(format!("anonymous still gets {code}")),
+        },
+    );
+    // The revocation is a change of the object's sets, so it is counted again.
+    let refused_after_grant = restricted_open_total("refused");
+    must(&[
+        "annotate",
+        "--overwrite",
+        "ingress",
+        "--all",
+        "-n",
+        &ns.name,
+        "e2e.weebo.io/touched=revoked",
+    ]);
+    wait_until("the revocation to be counted", RECONCILE, || {
+        let now = restricted_open_total("refused");
+        if now > refused_after_grant {
+            Ok(())
+        } else {
+            Err(format!("refused {now}"))
+        }
+    });
+    drop(served.workspace);
 }
