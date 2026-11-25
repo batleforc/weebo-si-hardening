@@ -3832,6 +3832,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-devfile-contract"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-dwoc-pin"
 version = "0.1.0"
 dependencies = [
