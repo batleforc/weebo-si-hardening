@@ -146,10 +146,12 @@ impl Feature<WorkspaceAdmission> for WorkspaceGate {
             } else {
                 format!("no namespace grant ({grant_annotation})")
             };
-            vec![format!(
-                "network profile(s) [{}]: restricted, {clause}; {effect}",
-                join(refused)
-            )]
+            let tail = format!("]: restricted, {clause}; {effect}");
+            let head = "network profile(s) [";
+            let budget = weebo_si_chassis::admit::MAX_WARNING_CHARS
+                .saturating_sub(head.chars().count())
+                .saturating_sub(tail.chars().count());
+            vec![format!("{head}{}{tail}", join_within(refused, budget))]
         };
 
         // An UPDATE to a workspace that already exists is past the point this check protects:
@@ -243,6 +245,37 @@ fn join(keys: &[ProfileKey]) -> String {
         .map(ProfileKey::as_str)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// The keys comma-joined within `budget` characters: what does not fit becomes `+N more`, so the
+/// warning's clause and effect are never the part the chassis cuts. Always names at least the
+/// count, even when `budget` is too small for one key.
+fn join_within(keys: &[ProfileKey], budget: usize) -> String {
+    let mut out = String::new();
+    for (shown, key) in keys.iter().enumerate() {
+        let rest = keys.len().saturating_sub(shown).saturating_sub(1);
+        let candidate = if out.is_empty() {
+            key.as_str().to_string()
+        } else {
+            format!("{out},{}", key.as_str())
+        };
+        // The candidate must still fit once the count of what follows is appended.
+        let with_rest = if rest == 0 {
+            candidate.clone()
+        } else {
+            format!("{candidate},+{rest} more")
+        };
+        if with_rest.chars().count() > budget {
+            let left = keys.len().saturating_sub(shown);
+            return if out.is_empty() {
+                format!("+{left} more")
+            } else {
+                format!("{out},+{left} more")
+            };
+        }
+        out = candidate;
+    }
+    out
 }
 
 /// Why a restricted key is refused, in the RFC 0021 mock's words.
@@ -545,6 +578,18 @@ mod tests {
         let decision = evaluate(&gate(OnNotGranted::Deny, &[WORKSPACE_NS]), &subject);
         assert_eq!(decision.denial, None);
         assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn many_restricted_keys_are_counted_not_cut() {
+        let keys: Vec<ProfileKey> = (0..30)
+            .map(|i| ProfileKey::new(format!("profile-{i}")))
+            .collect();
+        let joined = join_within(&keys, 40);
+        assert!(joined.chars().count() <= 40, "{joined}");
+        assert!(joined.ends_with(" more"), "{joined}");
+        assert_eq!(join_within(&keys[..2], 40), "profile-0,profile-1");
+        assert_eq!(join_within(&keys, 3), "+30 more");
     }
 
     /// R-11: an UPDATE is never refused; the warning is the only admission-side trace.
