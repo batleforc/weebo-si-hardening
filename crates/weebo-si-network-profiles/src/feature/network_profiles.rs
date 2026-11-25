@@ -73,6 +73,9 @@ pub struct Workspace {
     pub attribute: Option<String>,
     /// The raw value of `namespaceSelection.annotation`, if the namespace carries it.
     pub namespace_annotation: Option<String>,
+    /// The raw value of `namespaceGrant.annotation`, if the namespace carries it (RFC 0021):
+    /// the restricted keys it unlocks. Read live, never from a cache that may lag.
+    pub namespace_grant: Option<String>,
     /// The DevWorkspace itself, as the owner every profile object this pass writes is
     /// garbage-collected with — so a deleted workspace's objects go with it, with no reconcile
     /// path having to notice it is gone (a workspace pass only ever sees its own objects, so a
@@ -240,6 +243,7 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
             &config,
             &ctx.namespace().labels,
             subject.namespace_annotation.as_deref(),
+            subject.namespace_grant.as_deref(),
             subject.attribute.as_deref(),
         );
         let provenance = match resolved {
@@ -247,7 +251,12 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
             Err(not_granted) => {
                 return Ok(DesiredState {
                     team: not_granted.team,
-                    not_granted: not_granted.requested,
+                    not_granted: not_granted
+                        .requested
+                        .into_iter()
+                        .filter(|key| !not_granted.restricted_refused.contains(key))
+                        .collect(),
+                    restricted_refused: not_granted.restricted_refused,
                     ..DesiredState::default()
                 });
             }
@@ -293,6 +302,9 @@ impl ReconcileFeature<Workspace> for NetworkProfiles {
             not_granted: provenance.dropped_not_granted,
             unsupported,
             held,
+            resolved: provenance.resolved,
+            restricted_honoured: provenance.restricted_honoured,
+            restricted_refused: provenance.restricted_refused,
         })
     }
 }
@@ -459,6 +471,7 @@ mod tests {
             workspace_id: "workspacede4f56".to_string(),
             attribute: attribute.map(str::to_string),
             namespace_annotation: None,
+            namespace_grant: None,
             owner: owner(),
         }
     }
@@ -539,6 +552,48 @@ mod tests {
 
         let desired = feature.desired(&subject, &context).unwrap();
         assert!(desired.objects.is_empty());
+    }
+
+    /// The restricted sets travel to the controller's reporter, under `Deny` too, where the
+    /// restricted key is not also counted as an ordinary ungranted one.
+    #[test]
+    fn the_restricted_sets_reach_the_desired_state() {
+        let mut grants = BTreeMap::new();
+        grants.insert("team-1".to_string(), team1_grant());
+        let mut cfg = config(grants);
+        let mut entries = cfg.catalog.entries().to_vec();
+        for entry in &mut entries {
+            entry.restricted = entry.key == ProfileKey::new("vault");
+        }
+        cfg.catalog = ProfileCatalog::new(entries);
+        let catalog = FakeDwocCatalog::new(std::iter::empty());
+        let mut namespace = namespace_facts();
+        namespace
+            .labels
+            .insert("weebo.io/team".to_string(), "team-1".to_string());
+        let teams = [team1()];
+        let context = ctx(&teams, &namespace, &catalog);
+
+        let desired = feature(cfg.clone())
+            .desired(&workspace(Some("vault")), &context)
+            .unwrap();
+        assert_eq!(desired.restricted_refused, vec![ProfileKey::new("vault")]);
+        assert_eq!(desired.resolved, vec![ProfileKey::new("git")]);
+        assert!(desired.not_granted.is_empty());
+
+        let mut granted = workspace(Some("vault"));
+        granted.namespace_grant = Some("vault".to_string());
+        let desired = feature(cfg.clone()).desired(&granted, &context).unwrap();
+        assert_eq!(desired.restricted_honoured, vec![ProfileKey::new("vault")]);
+        assert_eq!(desired.objects.len(), 1);
+
+        cfg.on_not_granted = OnNotGranted::Deny;
+        let desired = feature(cfg)
+            .desired(&workspace(Some("vault,nope")), &context)
+            .unwrap();
+        assert!(desired.objects.is_empty());
+        assert_eq!(desired.restricted_refused, vec![ProfileKey::new("vault")]);
+        assert_eq!(desired.not_granted, vec![ProfileKey::new("nope")]);
     }
 
     #[test]

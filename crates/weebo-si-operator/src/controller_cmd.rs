@@ -119,6 +119,9 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
     let quota_template_namespace = flag(args, "--quota-template-namespace")
         .unwrap_or(weebo_si_resource_quotas_adapters::DEFAULT_TEMPLATE_NAMESPACE)
         .to_string();
+    let restricted_grants =
+        weebo_si_controller::restricted::RestrictedGrantCounter::register(&prometheus_registry)
+            .map_err(|err| format!("could not register the restricted-grant counter: {err}"))?;
     let shared = ControllerShared {
         client: client.clone(),
         config_store,
@@ -131,6 +134,7 @@ async fn reconcile(args: &[String]) -> Result<(), String> {
         kubearmor_enabled,
         canary_image,
         quota_template_namespace,
+        restricted_grants,
     };
 
     // Every feature's watches start here, before the lease, so a standby replica's caches are

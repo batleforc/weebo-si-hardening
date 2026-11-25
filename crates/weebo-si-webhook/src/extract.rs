@@ -46,6 +46,7 @@ pub fn workspace_admission_from_object(
     operation: Operation,
     attribute_key: &str,
     namespace_annotation: Option<String>,
+    namespace_grant: Option<String>,
 ) -> WorkspaceAdmission {
     let attribute = if attribute_key.is_empty() {
         None
@@ -68,6 +69,7 @@ pub fn workspace_admission_from_object(
         },
         attribute,
         namespace_annotation,
+        namespace_grant,
     }
 }
 
@@ -200,6 +202,7 @@ mod tests {
             Operation::Create,
             PROFILES_ATTRIBUTE,
             None,
+            None,
         );
         assert_eq!(subject.attribute.as_deref(), Some("git,vault"));
         assert_eq!(subject.operation, WorkspaceOperation::Create);
@@ -218,6 +221,7 @@ mod tests {
             Operation::Create,
             "",
             None,
+            None,
         );
         assert_eq!(subject.attribute, None);
     }
@@ -231,6 +235,7 @@ mod tests {
                 &obj,
                 operation,
                 PROFILES_ATTRIBUTE,
+                None,
                 None,
             );
             assert_eq!(subject.operation, WorkspaceOperation::Update);

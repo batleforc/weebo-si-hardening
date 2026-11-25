@@ -164,7 +164,7 @@ async fn mutate_devworkspaces(
     // gate refuses a workspace that must not start, and its message explains the more
     // fundamental problem; a denied parent is refused before a pin is computed for it.
     if let Some(np) = &state.network_profiles {
-        let (attribute_key, annotation_key) = {
+        let (attribute_key, annotation_key, grant_key) = {
             let guard = np
                 .config
                 .read()
@@ -173,22 +173,30 @@ async fn mutate_devworkspaces(
                 Some(config) => (
                     config.workspace_selection.attribute.clone(),
                     config.namespace_selection.annotation.clone(),
+                    config.namespace_grant.annotation.clone(),
                 ),
                 // No `networkProfiles` block at all. `FeatureGate::mode` already reports `Off`
                 // for it, so `admit` would skip the gate anyway — returning early just avoids
                 // reading the object for keys nobody configured.
-                None => (String::new(), String::new()),
+                None => (String::new(), String::new(), String::new()),
             }
         };
-        let namespace_annotation = (!annotation_key.is_empty())
-            .then(|| state.namespace_view.annotation(&namespace, &annotation_key))
-            .flatten();
+        // From the cache: admission already refuses a namespace it has not observed, and an
+        // empty key (`""` disables restricted grants) reads as no grant.
+        let read = |key: &str| {
+            (!key.is_empty())
+                .then(|| state.namespace_view.annotation(&namespace, key))
+                .flatten()
+        };
+        let namespace_annotation = read(&annotation_key);
+        let namespace_grant = read(&grant_key);
         let subject = workspace_admission_from_object(
             &namespace,
             object,
             request.operation.clone(),
             &attribute_key,
             namespace_annotation,
+            namespace_grant,
         );
 
         let gate_timer = state

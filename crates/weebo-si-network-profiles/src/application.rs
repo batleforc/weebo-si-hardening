@@ -37,6 +37,12 @@ pub struct ReconcileOutcome {
     /// Objects whose template did not resolve this pass and whose live copy was therefore left
     /// untouched — see [`DesiredState::held`].
     pub held: Vec<ObjectKey>,
+    /// See [`DesiredState::resolved`].
+    pub resolved: Vec<ProfileKey>,
+    /// See [`DesiredState::restricted_honoured`].
+    pub restricted_honoured: Vec<ProfileKey>,
+    /// See [`DesiredState::restricted_refused`].
+    pub restricted_refused: Vec<ProfileKey>,
 }
 
 /// Run one reconcile pass for `subject`: compute what should exist, diff it against what
@@ -89,6 +95,9 @@ pub async fn reconcile<S: OwnedScope>(
         not_granted: desired.not_granted,
         unsupported: desired.unsupported,
         held: desired.held,
+        resolved: desired.resolved,
+        restricted_honoured: desired.restricted_honoured,
+        restricted_refused: desired.restricted_refused,
     })
 }
 
@@ -451,6 +460,7 @@ mod tests {
             workspace_id: id.to_string(),
             attribute: attribute.map(str::to_string),
             namespace_annotation: None,
+            namespace_grant: None,
             owner: owner_of(id),
         }
     }

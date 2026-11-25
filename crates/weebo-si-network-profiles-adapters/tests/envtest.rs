@@ -299,6 +299,7 @@ async fn a_workspace_with_two_granted_profiles_gets_two_real_objects() {
         workspace_id: "workspacede4f56".to_string(),
         attribute: Some("git,vault".to_string()),
         namespace_annotation: None,
+        namespace_grant: None,
         owner: weebo_si_network_profiles::Owner {
             api_version: "workspace.devfile.io/v1alpha2".to_string(),
             kind: "DevWorkspace".to_string(),
@@ -733,4 +734,60 @@ async fn a_leftover_server_pod_from_an_interrupted_run_is_reused() {
         .expect("a second run must not fail on the already-existing server pod");
     assert_eq!(observed, Reachability::Reached);
     kubelet.abort();
+}
+
+/// RFC 0021: the two restricted-grant Events reach a real apiserver with their reason and type,
+/// regarding the DevWorkspace.
+#[tokio::test]
+async fn the_restricted_grant_events_are_published_with_both_reasons() {
+    let Some(env_test) = EnvTest::try_start().await else {
+        return;
+    };
+    let client = env_test.client().expect("client should build");
+    create_namespace(client.clone(), WORKSPACE_NAMESPACE).await;
+    let recorder = weebo_si_controller::events::recorder(client.clone());
+    let workspace: kube::api::DynamicObject = serde_json::from_value(serde_json::json!({
+        "apiVersion": "workspace.devfile.io/v1alpha2",
+        "kind": "DevWorkspace",
+        "metadata": { "name": "python-web", "namespace": WORKSPACE_NAMESPACE, "uid": "u-1" },
+    }))
+    .unwrap();
+
+    weebo_si_controller::events::restricted_grant(&recorder, &workspace, false, "refused".into())
+        .await;
+    weebo_si_controller::events::restricted_grant(&recorder, &workspace, true, "honoured".into())
+        .await;
+
+    let events: Api<k8s_openapi::api::events::v1::Event> =
+        Api::namespaced(client, WORKSPACE_NAMESPACE);
+    let mut seen: Vec<(String, String, String)> = events
+        .list(&Default::default())
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|event| {
+            (
+                event.reason.unwrap_or_default(),
+                event.type_.unwrap_or_default(),
+                event.regarding.and_then(|r| r.name).unwrap_or_default(),
+            )
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "RestrictedGrantHonoured".to_string(),
+                "Normal".to_string(),
+                "python-web".to_string()
+            ),
+            (
+                "RestrictedGrantRefused".to_string(),
+                "Warning".to_string(),
+                "python-web".to_string()
+            ),
+        ]
+    );
 }

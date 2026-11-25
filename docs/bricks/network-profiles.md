@@ -179,6 +179,7 @@ Every metric in RFC 0004's *Observability contract* is wired.
 | `weebo_si_network_profile_unsupported` | gauge | `profile`, `backend` | config sync |
 | `weebo_si_network_canary` | gauge | `result` ∈ `enforcing`/`not_enforcing`/`unknown` | canary loop |
 | `weebo_si_network_not_granted_total` | counter | `team`, `profile` | reconcile |
+| `weebo_si_restricted_grant_total` | counter | `feature`, `key`, `result` ∈ `honoured`/`refused` — RFC 0021, counted when a workspace's restricted set changes, not every pass; Events `RestrictedGrantHonoured`/`RestrictedGrantRefused` and an INFO line go with it | reconcile |
 
 Three of these are worth an alert, in this order:
 

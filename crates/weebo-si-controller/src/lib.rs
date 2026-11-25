@@ -5,6 +5,7 @@
 
 pub mod events;
 pub mod reconcile;
+pub mod restricted;
 pub mod workspace;
 
 use std::sync::Arc;
@@ -46,6 +47,9 @@ pub struct ControllerShared {
     /// Where `resource-quotas`' templates live (`--quota-template-namespace`): a namespace that
     /// runs no pods, because a `ResourceQuota` or `LimitRange` is enforced where it lives.
     pub quota_template_namespace: String,
+    /// `weebo_si_restricted_grant_total`, registered once and shared by every feature that
+    /// reports restricted keys (RFC 0021).
+    pub restricted_grants: restricted::RestrictedGrantCounter,
 }
 
 /// Run the `WeeboSiConfig` status loop until the process is asked to stop. Every feature's own

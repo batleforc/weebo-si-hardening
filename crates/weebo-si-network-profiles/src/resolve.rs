@@ -40,13 +40,19 @@ pub struct Provenance {
     /// Which step of the resolution chain produced `resolved`.
     pub step: ResolutionStep,
     /// The profile keys this workspace gets, beyond the baseline. Always a subset of the
-    /// matched grant's `allowed`.
+    /// matched grant's `allowed`, minus every restricted key the namespace does not grant.
     pub resolved: Vec<ProfileKey>,
     /// Set when a requested key was outside the grant's `allowed` and
     /// [`OnNotGranted::Default`] dropped the whole request in favour of the grant's `default` —
     /// carries the offending keys for the `not_granted` metric and log line even though they did
-    /// not change the outcome beyond that fallback.
+    /// not change the outcome beyond that fallback. Never holds a restricted key: those are in
+    /// `restricted_refused`.
     pub dropped_not_granted: Vec<ProfileKey>,
+    /// Restricted keys in `resolved`: the namespace's grant annotation names each (RFC 0021).
+    pub restricted_honoured: Vec<ProfileKey>,
+    /// Restricted keys the team allows and the request (or the team default) named, refused
+    /// because the namespace's grant annotation does not name them (RFC 0021).
+    pub restricted_refused: Vec<ProfileKey>,
 }
 
 /// A requested key was outside the reachable grant, under [`OnNotGranted::Deny`].
@@ -54,8 +60,19 @@ pub struct Provenance {
 pub struct NotGranted {
     /// The team that matched, if any.
     pub team: Option<TeamName>,
-    /// The requested keys the grant does not allow.
+    /// The requested keys the grant does not allow, restricted ones included, in request order.
     pub requested: Vec<ProfileKey>,
+    /// The subset of `requested` the team allows but which is restricted and not granted by the
+    /// namespace (RFC 0021).
+    pub restricted_refused: Vec<ProfileKey>,
+}
+
+impl NotGranted {
+    /// Whether every refused key is a restricted one — the gate words the refusal for the
+    /// namespace grant and reports `denied_restricted`.
+    pub fn restricted(&self) -> bool {
+        !self.requested.is_empty() && self.requested.len() == self.restricted_refused.len()
+    }
 }
 
 /// Parse a comma-separated profile key list, trimming whitespace, dropping empty segments, and
@@ -81,16 +98,20 @@ fn parse_keys(raw: &str) -> Vec<ProfileKey> {
 /// 3. `namespace_annotation`, if `Some` and `workspace_attribute` is `None`.
 /// 4. The grant's `default`.
 ///
-/// Whatever list wins is checked against the grant's `allowed`: if every key is inside it,
-/// that list is the answer. If any key is outside it, [`NetworkProfilesConfig::on_not_granted`]
-/// decides: [`OnNotGranted::Default`] discards the whole requested list and falls back to the
-/// grant's `default` (flagging which keys were dropped); [`OnNotGranted::Deny`] refuses,
-/// naming them.
+/// Whatever list wins is checked against the grant's `allowed`, from which every restricted
+/// catalogue key that `namespace_grant` (the namespace's grant annotation, RFC 0021) does not name
+/// is removed first. If every key is inside it, that list is the answer. If any key is outside
+/// it, [`NetworkProfilesConfig::on_not_granted`] decides: [`OnNotGranted::Default`] discards the
+/// whole requested list and falls back to the grant's `default` (flagging which keys were
+/// dropped); [`OnNotGranted::Deny`] refuses, naming them. The grant's `default` is filtered the
+/// same way, and never refused: a workspace that asked for nothing is not denied for it.
+/// `namespace_grant` only unlocks: it never selects, and never reaches past the team's `allowed`.
 pub fn resolve(
     teams: &[Team],
     config: &ResolvedNetworkProfilesConfig,
     namespace_labels: &BTreeMap<String, String>,
     namespace_annotation: Option<&str>,
+    namespace_grant: Option<&str>,
     workspace_attribute: Option<&str>,
 ) -> Result<Provenance, NotGranted> {
     let matched_team = teams
@@ -112,23 +133,44 @@ pub fn resolve(
         }
     };
 
+    let unlocked = namespace_grant.map(parse_keys).unwrap_or_default();
+    let restricted = |key: &ProfileKey| {
+        config
+            .catalog
+            .profile(key)
+            .is_some_and(|profile| profile.restricted)
+    };
+    let locked = |key: &ProfileKey| restricted(key) && !unlocked.contains(key);
+    let only = |keys: &[ProfileKey], keep: &dyn Fn(&ProfileKey) -> bool| -> Vec<ProfileKey> {
+        keys.iter().filter(|key| keep(key)).cloned().collect()
+    };
+    // The team default minus every locked key — what a workspace gets when it asks for nothing,
+    // and what `Default` falls back to. The locked ones are refused, never denied.
+    let default = only(&grant.default, &|key| !locked(key));
+    let default_refused = only(&grant.default, &locked);
+
     let (requested, step) = if let Some(raw) = workspace_attribute {
         (parse_keys(raw), ResolutionStep::WorkspaceAttribute)
     } else if let Some(raw) = namespace_annotation {
         (parse_keys(raw), ResolutionStep::NamespaceAnnotation)
     } else {
-        (grant.default.clone(), ResolutionStep::GrantDefault)
+        (default.clone(), ResolutionStep::GrantDefault)
     };
 
-    let not_granted: Vec<ProfileKey> = requested
-        .iter()
-        .filter(|key| !grant.allowed.contains(key))
-        .cloned()
-        .collect();
+    let not_granted = only(&requested, &|key| !grant.allowed.contains(key));
+    let restricted_refused = only(&requested, &|key| {
+        grant.allowed.contains(key) && locked(key)
+    });
 
-    if not_granted.is_empty() {
+    if not_granted.is_empty() && restricted_refused.is_empty() {
         return Ok(Provenance {
             team: team_name,
+            restricted_honoured: only(&requested, &restricted),
+            restricted_refused: if step == ResolutionStep::GrantDefault {
+                default_refused
+            } else {
+                Vec::new()
+            },
             step,
             resolved: requested,
             dropped_not_granted: Vec::new(),
@@ -138,14 +180,27 @@ pub fn resolve(
     match config.on_not_granted {
         OnNotGranted::Deny => Err(NotGranted {
             team: team_name,
-            requested: not_granted,
+            requested: only(&requested, &|key| {
+                !grant.allowed.contains(key) || locked(key)
+            }),
+            restricted_refused,
         }),
-        OnNotGranted::Default => Ok(Provenance {
-            team: team_name,
-            step: ResolutionStep::GrantDefault,
-            resolved: grant.default.clone(),
-            dropped_not_granted: not_granted,
-        }),
+        OnNotGranted::Default => {
+            let mut refused = restricted_refused;
+            for key in default_refused {
+                if !refused.contains(&key) {
+                    refused.push(key);
+                }
+            }
+            Ok(Provenance {
+                team: team_name,
+                step: ResolutionStep::GrantDefault,
+                restricted_honoured: only(&default, &restricted),
+                resolved: default,
+                dropped_not_granted: not_granted,
+                restricted_refused: refused,
+            })
+        }
     }
 }
 
@@ -226,7 +281,7 @@ mod tests {
     #[test]
     fn no_team_falls_back_to_the_synthetic_empty_grant() {
         let cfg = config("base", BTreeMap::new());
-        let provenance = resolve(&[], &cfg, &BTreeMap::new(), None, None).unwrap();
+        let provenance = resolve(&[], &cfg, &BTreeMap::new(), None, None, None).unwrap();
         assert_eq!(provenance.team, None);
         assert_eq!(provenance.step, ResolutionStep::GrantDefault);
         assert!(provenance.resolved.is_empty());
@@ -240,6 +295,7 @@ mod tests {
             &teams,
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
+            None,
             None,
             None,
         )
@@ -267,6 +323,7 @@ mod tests {
             &labels(&[("weebo.io/team", "shared")]),
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(provenance.team, Some(TeamName::new("team-1")));
@@ -285,6 +342,7 @@ mod tests {
             &labels(&[("weebo.io/team", "team-1")]),
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(provenance.step, ResolutionStep::GrantDefault);
@@ -301,6 +359,7 @@ mod tests {
             &teams,
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
+            None,
             None,
             Some("git,vault"),
         )
@@ -323,6 +382,7 @@ mod tests {
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
             Some("vault"),
+            None,
             Some(""),
         )
         .unwrap();
@@ -342,6 +402,7 @@ mod tests {
             &labels(&[("weebo.io/team", "team-1")]),
             Some("vault"),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(provenance.step, ResolutionStep::NamespaceAnnotation);
@@ -359,6 +420,7 @@ mod tests {
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
             Some("vault"),
+            None,
             Some("git"),
         )
         .unwrap();
@@ -384,6 +446,7 @@ mod tests {
             &teams,
             &cfg,
             &labels(&[("weebo.io/team", "team-2")]),
+            None,
             None,
             Some("vault"),
         )
@@ -414,6 +477,7 @@ mod tests {
             &cfg,
             &labels(&[("weebo.io/team", "team-2")]),
             None,
+            None,
             Some("vault"),
         )
         .unwrap_err();
@@ -433,6 +497,7 @@ mod tests {
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
             None,
+            None,
             Some("git,nope"),
         )
         .unwrap_err();
@@ -450,6 +515,7 @@ mod tests {
             &cfg,
             &labels(&[("weebo.io/team", "team-1")]),
             None,
+            None,
             Some("git, vault ,git"),
         )
         .unwrap();
@@ -457,5 +523,182 @@ mod tests {
             provenance.resolved,
             vec![ProfileKey::new("git"), ProfileKey::new("vault")]
         );
+    }
+
+    /// Team-1 reaches `git` and `internet`, `internet` is restricted; `default` is `[git]` unless
+    /// a test says otherwise.
+    fn restricted_config(on_not_granted: OnNotGranted) -> ResolvedNetworkProfilesConfig {
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            "team-1".to_string(),
+            ProfileGrant {
+                allowed: vec![ProfileKey::new("git"), ProfileKey::new("internet")],
+                default: vec![ProfileKey::new("git")],
+            },
+        );
+        let mut cfg = config("base", grants);
+        let mut internet = profile("internet");
+        internet.restricted = true;
+        cfg.catalog = ProfileCatalog::new(vec![profile("base"), profile("git"), internet]);
+        cfg.on_not_granted = on_not_granted;
+        cfg
+    }
+
+    fn resolve_team1(
+        cfg: &ResolvedNetworkProfilesConfig,
+        selection: Option<&str>,
+        grant: Option<&str>,
+        attribute: Option<&str>,
+    ) -> Result<Provenance, NotGranted> {
+        resolve(
+            &[team("team-1", "team-1")],
+            cfg,
+            &labels(&[("weebo.io/team", "team-1")]),
+            selection,
+            grant,
+            attribute,
+        )
+    }
+
+    /// RFC 0021 S1 (T-07): the workspace names `internet` itself; the namespace grants nothing.
+    #[test]
+    fn a_restricted_key_requested_by_the_attribute_without_the_namespace_grant_is_not_granted() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, None, None, Some("internet")).unwrap();
+        assert_eq!(provenance.step, ResolutionStep::GrantDefault);
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert_eq!(
+            provenance.restricted_refused,
+            vec![ProfileKey::new("internet")]
+        );
+        assert!(provenance.restricted_honoured.is_empty());
+        assert!(
+            provenance.dropped_not_granted.is_empty(),
+            "a restricted refusal is not an ungranted key"
+        );
+    }
+
+    #[test]
+    fn a_restricted_key_named_by_the_grant_annotation_is_honoured() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, None, Some("internet"), Some("git,internet")).unwrap();
+        assert_eq!(provenance.step, ResolutionStep::WorkspaceAttribute);
+        assert_eq!(
+            provenance.resolved,
+            vec![ProfileKey::new("git"), ProfileKey::new("internet")]
+        );
+        assert_eq!(
+            provenance.restricted_honoured,
+            vec![ProfileKey::new("internet")]
+        );
+        assert!(provenance.restricted_refused.is_empty());
+    }
+
+    /// The selection annotation is selection only: naming `internet` there grants nothing.
+    #[test]
+    fn the_selection_annotation_does_not_grant_a_restricted_key() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, Some("internet"), None, None).unwrap();
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert_eq!(
+            provenance.restricted_refused,
+            vec![ProfileKey::new("internet")]
+        );
+    }
+
+    /// RFC 0021 S11: a grant unlocks; what an attribute-less workspace gets does not move.
+    #[test]
+    fn a_grant_never_selects() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, None, Some("internet"), None).unwrap();
+        assert_eq!(provenance.step, ResolutionStep::GrantDefault);
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert!(provenance.restricted_honoured.is_empty());
+        assert!(provenance.restricted_refused.is_empty());
+    }
+
+    #[test]
+    fn the_grant_annotation_is_read_as_a_set() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        for grant in [
+            " internet ",
+            "nope,,internet",
+            "internet,internet",
+            "git , internet",
+        ] {
+            let provenance = resolve_team1(&cfg, None, Some(grant), Some("internet")).unwrap();
+            assert_eq!(
+                provenance.resolved,
+                vec![ProfileKey::new("internet")],
+                "{grant:?}"
+            );
+        }
+        for grant in ["", "internet;git", "Internet"] {
+            let provenance = resolve_team1(&cfg, None, Some(grant), Some("internet")).unwrap();
+            assert_eq!(
+                provenance.restricted_refused,
+                vec![ProfileKey::new("internet")],
+                "{grant:?}"
+            );
+        }
+    }
+
+    /// The grant never widens past the team catalogue: an ungranted key stays the ordinary
+    /// not-granted case.
+    #[test]
+    fn an_annotation_naming_a_key_the_team_lacks_unlocks_nothing() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, None, Some("vault"), Some("vault")).unwrap();
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert_eq!(
+            provenance.dropped_not_granted,
+            vec![ProfileKey::new("vault")]
+        );
+        assert!(provenance.restricted_refused.is_empty());
+    }
+
+    /// RFC 0021 S5, runtime side: a restricted default is filtered, reported, never denied.
+    #[test]
+    fn a_restricted_default_is_a_violation_and_is_filtered() {
+        let mut cfg = restricted_config(OnNotGranted::Deny);
+        cfg.grants.get_mut("team-1").unwrap().default =
+            vec![ProfileKey::new("git"), ProfileKey::new("internet")];
+        let provenance = resolve_team1(&cfg, None, None, None).unwrap();
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert_eq!(
+            provenance.restricted_refused,
+            vec![ProfileKey::new("internet")]
+        );
+
+        let granted = resolve_team1(&cfg, None, Some("internet"), None).unwrap();
+        assert_eq!(
+            granted.resolved,
+            vec![ProfileKey::new("git"), ProfileKey::new("internet")]
+        );
+    }
+
+    #[test]
+    fn under_deny_a_restricted_refusal_is_named_as_restricted() {
+        let cfg = restricted_config(OnNotGranted::Deny);
+        let err = resolve_team1(&cfg, None, None, Some("git,internet")).unwrap_err();
+        assert_eq!(err.requested, vec![ProfileKey::new("internet")]);
+        assert!(err.restricted());
+
+        let mixed = resolve_team1(&cfg, None, None, Some("internet,vault")).unwrap_err();
+        assert_eq!(
+            mixed.requested,
+            vec![ProfileKey::new("internet"), ProfileKey::new("vault")]
+        );
+        assert_eq!(mixed.restricted_refused, vec![ProfileKey::new("internet")]);
+        assert!(!mixed.restricted());
+    }
+
+    #[test]
+    fn non_restricted_keys_ignore_the_grant_annotation() {
+        let cfg = restricted_config(OnNotGranted::Default);
+        let provenance = resolve_team1(&cfg, None, Some("git"), Some("git")).unwrap();
+        assert_eq!(provenance.resolved, vec![ProfileKey::new("git")]);
+        assert!(provenance.restricted_honoured.is_empty());
+        assert!(provenance.restricted_refused.is_empty());
     }
 }

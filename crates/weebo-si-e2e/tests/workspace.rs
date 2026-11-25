@@ -654,6 +654,11 @@ fn network_profiles() -> serde_json::Value {
 }
 
 fn sso_team() -> Cleanup {
+    sso_team_with(false)
+}
+
+/// The `sso` team, its `sso` profile marked `restricted` or not (RFC 0021).
+fn sso_team_with(restricted: bool) -> Cleanup {
     team(
         "e2e-sso",
         json!({
@@ -664,6 +669,7 @@ fn sso_team() -> Cleanup {
                     "key": "sso",
                     "variants": [{ "backend": "NetworkPolicy",
                                    "templateRef": { "name": "e2e-sso", "namespace": OPERATOR_NAMESPACE } }],
+                    "restricted": restricted,
                 }],
                 "default": [],
             } },
@@ -781,6 +787,212 @@ fn an_ungranted_profile_is_refused_before_the_workspace_exists() {
     )
     .expect_err("bob's namespace is in no team, so `sso` is not granted");
     assert!(err.contains("requests network profile(s) [sso]"), "{err}");
+}
+
+// --- restricted profiles and namespace grants (RFC 0021) ----------------------------------------
+
+const NETWORK_GRANTS: &str = "hardening.weebo.io/network-grants";
+
+/// `network_profiles()` in `mode`, with `onNotGranted: Default` so a refused restricted key
+/// starts the workspace on the team default.
+fn network_profiles_default(mode: &str) -> serde_json::Value {
+    let mut features = network_profiles();
+    features["mode"] = json!(mode);
+    features["onNotGranted"] = json!("Default");
+    features
+}
+
+fn restricted_total(result: &str) -> f64 {
+    metric_sum(
+        "controller",
+        "weebo_si_restricted_grant_total",
+        &[
+            ("feature", "network-profiles"),
+            ("key", "sso"),
+            ("result", result),
+        ],
+    )
+}
+
+/// The Events with `reason` regarding `workspace`.
+fn restricted_events(workspace: &Workspace, reason: &str) -> usize {
+    get(&[
+        "events",
+        "-n",
+        &workspace.namespace,
+        "--field-selector",
+        &format!("reason={reason},involvedObject.name={}", workspace.name),
+    ])
+    .and_then(|list| {
+        list.get("items")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+    })
+    .unwrap_or(0)
+}
+
+/// A namespace in team `sso`, with its baseline, and a workspace in it naming `sso` itself.
+fn sso_workspace(user: &str) -> (Namespace, Workspace) {
+    let ns = Namespace::workspace(user, "restricted", Some("sso"));
+    wait_until("the baseline", RECONCILE, || {
+        get(&["networkpolicy", "-n", &ns.name, "weebo-base"]).ok_or_else(|| "absent".to_string())
+    });
+    let workspace = Workspace::create(
+        &ns.name,
+        "wants-sso",
+        &WorkspaceSpec {
+            attributes: json!({ "hardening.weebo.io/network-profiles": "sso" }),
+            ..WorkspaceSpec::default()
+        },
+    );
+    (ns, workspace)
+}
+
+fn profile_object(workspace: &Workspace, id: &str) -> Option<serde_json::Value> {
+    get(&[
+        "networkpolicy",
+        "-n",
+        &workspace.namespace,
+        &format!("weebo-sso-{id}"),
+    ])
+}
+
+/// RFC 0021 (1)(2), T-07: the workspace names a restricted profile itself; nothing is written
+/// until the Namespace grants it, and both outcomes leave a counter and an Event.
+#[test]
+fn a_restricted_profile_is_honoured_only_through_the_namespace() {
+    let _templates = network_templates();
+    let _team = sso_team_with(true);
+    set_features(json!({ "networkProfiles": network_profiles_default("Enforce") }));
+    let refused_before = restricted_total("refused");
+    let honoured_before = restricted_total("honoured");
+    let (ns, workspace) = sso_workspace("dave");
+    let id = workspace.id();
+
+    wait_until("the refusal to be counted", RECONCILE, || {
+        let now = restricted_total("refused");
+        if now > refused_before {
+            Ok(())
+        } else {
+            Err(format!("refused {now}"))
+        }
+    });
+    assert!(restricted_events(&workspace, "RestrictedGrantRefused") >= 1);
+    stays(
+        "no sso profile without the grant",
+        Duration::from_secs(15),
+        || match profile_object(&workspace, &id) {
+            None => Ok(()),
+            Some(_) => Err("weebo-sso written without a namespace grant".into()),
+        },
+    );
+
+    ns.annotate(NETWORK_GRANTS, "sso");
+    wait_until("the granted profile", Duration::from_secs(30), || {
+        profile_object(&workspace, &id).ok_or_else(|| "absent".to_string())
+    });
+    wait_until("the honoured Event and count", RECONCILE, || {
+        let now = restricted_total("honoured");
+        if now > honoured_before && restricted_events(&workspace, "RestrictedGrantHonoured") >= 1 {
+            Ok(())
+        } else {
+            Err(format!("honoured {now}"))
+        }
+    });
+}
+
+/// RFC 0021 S9: in `DryRun` nothing is written, the refusal is still counted.
+#[test]
+fn a_dry_run_restricted_refusal_is_still_counted() {
+    let _templates = network_templates();
+    let _team = sso_team_with(true);
+    // The baseline is written in Enforce first: the gate refuses a workspace without one.
+    set_features(json!({ "networkProfiles": network_profiles_default("Enforce") }));
+    let ns = Namespace::workspace("erin", "restricted", Some("sso"));
+    wait_until("the baseline", RECONCILE, || {
+        get(&["networkpolicy", "-n", &ns.name, "weebo-base"]).ok_or_else(|| "absent".to_string())
+    });
+    set_features(json!({ "networkProfiles": network_profiles_default("DryRun") }));
+    let refused_before = restricted_total("refused");
+    let workspace = Workspace::create(
+        &ns.name,
+        "wants-sso",
+        &WorkspaceSpec {
+            attributes: json!({ "hardening.weebo.io/network-profiles": "sso" }),
+            ..WorkspaceSpec::default()
+        },
+    );
+    let id = workspace.id();
+    wait_until("the dry-run refusal to be counted", RECONCILE, || {
+        let now = restricted_total("refused");
+        if now > refused_before {
+            Ok(())
+        } else {
+            Err(format!("refused {now}"))
+        }
+    });
+    assert!(profile_object(&workspace, &id).is_none());
+}
+
+/// RFC 0021 (7): under `onNotGranted: Deny` a CREATE naming an ungranted restricted profile is
+/// refused, in the restricted wording.
+#[test]
+fn a_restricted_profile_without_the_grant_is_refused_at_create_under_deny() {
+    let _templates = network_templates();
+    let _team = sso_team_with(true);
+    set_features(json!({ "networkProfiles": network_profiles() }));
+    let ns = Namespace::workspace("frank", "restricted", Some("sso"));
+    wait_until("the baseline", RECONCILE, || {
+        get(&["networkpolicy", "-n", &ns.name, "weebo-base"]).ok_or_else(|| "absent".to_string())
+    });
+    let err = Workspace::try_create(
+        &ns.name,
+        "wants-sso",
+        &WorkspaceSpec {
+            attributes: json!({ "hardening.weebo.io/network-profiles": "sso" }),
+            ..WorkspaceSpec::default()
+        },
+    )
+    .expect_err("sso is restricted and the namespace does not grant it");
+    assert!(
+        err.contains(&format!(
+            "requests network profile(s) [sso], which are restricted: namespace {} does not \
+             grant them (annotation {NETWORK_GRANTS})",
+            ns.name
+        )),
+        "{err}"
+    );
+    assert!(get(&["devworkspace", "-n", &ns.name, "wants-sso"]).is_none());
+}
+
+/// RFC 0021 S6 / (6): the Namespace event re-queues the workspace, so a removed grant takes the
+/// profile away well inside the 300 s requeue. 30 s: one watch event, one reconcile, one delete.
+#[test]
+fn removing_a_network_grant_removes_the_profile_within_30_seconds() {
+    let _templates = network_templates();
+    let _team = sso_team_with(true);
+    set_features(json!({ "networkProfiles": network_profiles_default("Enforce") }));
+    let (ns, workspace) = sso_workspace("grace");
+    ns.annotate(NETWORK_GRANTS, "sso");
+    let id = workspace.id();
+    wait_until("the granted profile", RECONCILE, || {
+        profile_object(&workspace, &id).ok_or_else(|| "absent".to_string())
+    });
+
+    must(&[
+        "annotate",
+        "namespace",
+        &ns.name,
+        &format!("{NETWORK_GRANTS}-"),
+    ]);
+    wait_until(
+        "the profile to go with the grant",
+        Duration::from_secs(30),
+        || match profile_object(&workspace, &id) {
+            None => Ok(()),
+            Some(_) => Err("still there".into()),
+        },
+    );
 }
 
 #[test]
