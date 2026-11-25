@@ -610,8 +610,15 @@ fn a_token_in_parent_uri_never_reaches_a_warning_or_log() {
             "{:?} {:?} {:?} {:?}",
             decision.warnings, decision.note, decision.denial, decision.mutations
         );
-        assert!(!everything.contains(secret), "{uri}: {everything}");
-        assert!(!everything.contains("SECRET"), "{uri}: {everything}");
+        // The messages name no URI: the fixture's fake secret must not reach a log either.
+        assert!(
+            !everything.contains(secret),
+            "a URI secret leaked into the decision"
+        );
+        assert!(
+            !everything.contains("SECRET"),
+            "a URI secret leaked into the decision"
+        );
     }
 }
 
