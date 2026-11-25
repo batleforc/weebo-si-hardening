@@ -1301,6 +1301,7 @@ fn an_open_endpoint_needs_the_namespace_grant() {
         "-n",
         &ns.name,
         "e2e.weebo.io/touched=revoked",
+        "--as=system:serviceaccount:eclipse-che:che-operator",
     ]);
     wait_until("the revocation to be counted", RECONCILE, || {
         let now = restricted_open_total("refused");
