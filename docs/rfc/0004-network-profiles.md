@@ -13,6 +13,8 @@ superseded-by: []
 
 # RFC 0004 — network-profiles
 
+> A catalogue entry marked `restricted` is honoured only through a Namespace grant: [RFC 0021](./0021-namespace-only-grants.md), guide [`guides/namespace-grants.md`](../guides/namespace-grants.md).
+
 ## Summary
 
 Two features on the [RFC 0002](./0002-weebo-si-operator.md) chassis, sharing one catalogue.

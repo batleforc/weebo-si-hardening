@@ -15,6 +15,7 @@ Pages](https://batleforc.github.io/weebo-si-hardening/), whose pages point back 
 | [`architecture/`](./architecture/readme.md) | Cross-cutting conventions every brick follows (hexagonal layering, repo layout). |
 | [`bricks/`](./bricks/readme.md) | Operator-facing docs for what has shipped: flags, config, exit codes, failure modes. |
 | [`guides/weebo-si-standard.md`](./guides/weebo-si-standard.md) | The reference hardening for weebo-si and `che-min-mise`, step by step: every choice, every refused and allowed action and why, and how weebo-si-hardening, weebo-si and WeeboDevImage depend on each other. Applies [`../deploy/weebo-si/`](../deploy/weebo-si/README.md). |
+| [`guides/namespace-grants.md`](./guides/namespace-grants.md) | Restricted catalogue keys (`internet`, `open`) and the Namespace annotations that grant them (RFC 0021): what happens, timing, audit, rollout. |
 | [`che-min-mise-review.md`](./che-min-mise-review.md) | What WeeboDevImage's `che-min-mise` could change to be smaller and tighter while staying user-friendly: measurements, findings, order of work, and what each unlocks in the weebo-si standard. |
 | [`weebosiconfig.md`](./weebosiconfig.md) | Every field of the `WeeboSiConfig` CRD: type, default, meaning, and what a wrong value does. |
 | [`weebositeam.md`](./weebositeam.md) | Every field of the `WeeboSiTeam` CRD: a team's selector, priority, per-feature catalogues, groups and workspace template. |

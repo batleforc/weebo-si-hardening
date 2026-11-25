@@ -13,6 +13,8 @@ superseded-by: []
 
 # RFC 0009 — endpoint-auth
 
+> An access key marked `restricted` (such as `open`) is honoured only through a Namespace grant: [RFC 0021](./0021-namespace-only-grants.md), guide [`guides/namespace-grants.md`](../guides/namespace-grants.md).
+
 ## Summary
 
 Workspace endpoints exposed on their own FQDN (`<user>-<workspace>-<endpoint>.<suffix>`) are

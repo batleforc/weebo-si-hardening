@@ -440,10 +440,12 @@ networkProfiles:
 | `catalog[].key` | string | yes | — | |
 | `catalog[].variants[].backend` | `NetworkPolicy`/`Cilium` | yes | — | Which dialect this variant is written in. |
 | `catalog[].variants[].templateRef` | `{name, namespace}` | yes | — | The object whose rules are copied. |
-| `baseline` | key | yes | — | Applied to every namespace in scope; **no grant can withhold it**. |
+| `catalog[].restricted` | bool | no | `false` | Honoured only if the workspace's Namespace names the key in `namespaceGrant.annotation` (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). A team re-declaring the entry must carry the same value. |
+| `baseline` | key | yes | — | Applied to every namespace in scope; **no grant can withhold it**. A restricted baseline is `RestrictedKeyInDefault`. |
 | per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.networkProfiles.{catalog,default}`. The baseline applies either way. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/network-profiles` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/network-profiles` | |
+| `namespaceGrant.annotation` | string | no | `hardening.weebo.io/network-grants` | Namespace annotation granting restricted keys; it never selects. `""` refuses every restricted key. May not equal `namespaceSelection.annotation` (refused at apply). |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
 | `enforcement.backend` | `Auto`/`NetworkPolicy`/`Cilium` | no | `Auto` | `Auto` picks the most capable dialect the apiserver offers, preferring Cilium. |
 | `enforcement.canary.enabled` | bool | no | `true` | The periodic probe that proves the CNI enforces policy at all. |
@@ -843,6 +845,7 @@ endpointAuth:
 | `catalog[].key` | string | yes | — | `private`, `team`, `shared`, `open`… admin vocabulary; a developer names one and never defines one. |
 | `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with `delegation`. |
 | `catalog[].delegation` | `[Team\|UsersAndGroups]` | no | `[]` | `[]` is "the owner and nobody else". |
+| `catalog[].restricted` | bool | no | `false`, anonymous entries included | Honoured only if the endpoint's Namespace names the key in `hardening.weebo.io/endpoint-access`; otherwise the endpoint resolves to its default (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). A restricted `default` is `RestrictedKeyInDefault`. |
 | `default` | key | yes | — | What a namespace in no team resolves to. |
 | `overrides[]` | list | no | `[]` | Per-user narrowing. Intersected with the team's grant — it can only ever take away. |
 | `endpointSelection.annotation` | string | no | `hardening.weebo.io/access` | |
@@ -1208,6 +1211,8 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | --- | --- | --- | --- |
 | `hardening.weebo.io/dwoc` | Namespace | admin | Selects a `dwoc-pin` catalogue key. |
 | `hardening.weebo.io/network-profiles` | Namespace, DevWorkspace attribute | admin / workspace author | Selects network profile keys. |
+| `hardening.weebo.io/network-grants` | Namespace | admin | Grants restricted network profile keys; never selects (RFC 0021). |
+| `hardening.weebo.io/endpoint-access` | Namespace | admin | Grants restricted endpoint access keys; never selects (RFC 0021). |
 | `hardening.weebo.io/image-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects image entry keys. |
 | `hardening.weebo.io/image-rewrite` | DevWorkspace, Pod | **operator** (`imageRewrite`) | The original name of each rewritten image, as JSON. A record, never read as an input; `images audit` reads it for its `stale-mirror` table. |
 | `hardening.weebo.io/kubearmor-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects runtime profile keys. |

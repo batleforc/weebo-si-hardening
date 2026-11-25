@@ -240,6 +240,7 @@ name it.
 | `catalog[].key` | string | yes | — | **DNS-1123 label**, 1–63 characters, `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, checked by the API server — it is interpolated into object names and label values. |
 | `catalog[].variants[].backend` | `NetworkPolicy`/`Cilium` | yes | — | At most one variant per backend. |
 | `catalog[].variants[].templateRef` | `{name, namespace}` | yes | — | The template whose `policyTypes`/`ingress`/`egress` are copied. |
+| `catalog[].restricted` | bool | no | `false` | Honoured only through the Namespace grant annotation (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). Re-declaring a cluster entry with a different value is `CatalogKeyConflict`. |
 | `default` | list of keys | no | `[]` | Profiles a workspace of this team gets when it names none. Each item has the same DNS-1123 pattern. May be empty: the cluster `baseline` applies either way. |
 
 ### `features.imagePolicy`
@@ -288,6 +289,7 @@ cluster-level `default`, so a team reaches exactly the entries it catalogues —
 | `catalog[].key` | string | yes | — | What a developer's `hardening.weebo.io/access` annotation names. |
 | `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with a non-empty `delegation`. |
 | `catalog[].delegation` | `[Team\|UsersAndGroups]` | no | `[]` | Who besides the owner the profile lets in. `[]` is "the owner and nobody else". |
+| `catalog[].restricted` | bool | no | `false`, anonymous entries included | Honoured only if the Namespace names the key in `hardening.weebo.io/endpoint-access` (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). Re-declaring a cluster entry with a different value is `CatalogKeyConflict`. |
 | `default` | key | **yes** | — | The **one** profile an endpoint of this team resolves to when it names none. |
 
 The cluster `default` stays reachable whatever the team catalogues: a team never loses the profile

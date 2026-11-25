@@ -10,7 +10,8 @@ Design and rationale: [RFC 0004](../rfc/0004-network-profiles.md), and
 `KubeArmorPolicy`. Field reference: [`features.networkProfiles`](../weebosiconfig.md#featuresnetworkprofiles)
 and [`features.policyGuard`](../weebosiconfig.md#featurespolicyguard). The operator's own install,
 CLI and break-glass are on [`weebo-si-operator.md`](./weebo-si-operator.md); this page assumes
-it is installed.
+it is installed. A profile marked `restricted` (such as `internet`) needs a Namespace grant:
+[`guides/namespace-grants.md`](../guides/namespace-grants.md) (RFC 0021).
 
 ## Install checklist
 

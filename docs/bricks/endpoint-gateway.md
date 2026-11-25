@@ -6,6 +6,8 @@ identity — a browser session, a token this cluster's identity provider minted,
 pod it is calling from — **and** is the workspace's owner or someone the owner named.
 
 Design and rationale: [RFC 0009](../rfc/0009-endpoint-auth.md). This page is the operator's copy.
+An access key marked `restricted` (such as `open`) needs a Namespace grant:
+[`guides/namespace-grants.md`](../guides/namespace-grants.md) (RFC 0021).
 
 > **The gate fails closed.** With the gateway unavailable, every workspace endpoint stops
 > serving. That is deliberate — the feature's whole value is that the FQDN path is closed, and a
