@@ -26,6 +26,9 @@ pub const TOOL_KINDS: [&str; 5] = [
 pub const REQUESTER_KINDS: [&str; 1] = ["ConfigMap"];
 /// The prefix of every generated object name; no template may use it.
 pub const GENERATED_PREFIX: &str = "weebo-team-tool-";
+/// The name prefixes of the objects Kubernetes and OpenShift put in every namespace
+/// (`kube-root-ca.crt`, `openshift-service-ca.crt`): adoption would take them over.
+pub const SYSTEM_PREFIXES: [&str; 2] = ["kube-", "openshift-"];
 /// cert-manager refuses a `Certificate` shorter than this.
 pub const MIN_CLIENT_DURATION: Duration = Duration::from_secs(3600);
 
@@ -104,6 +107,8 @@ pub enum EntryViolation {
     WorkloadSelectorNotLabels,
     /// The template's name starts with `weebo-team-tool-`, the generated objects' prefix.
     TemplateNameReserved(ToolTemplateRef),
+    /// The template's name starts with one of [`SYSTEM_PREFIXES`].
+    TemplateNameSystem(ToolTemplateRef),
     /// Another catalogue entry names the same template: two keys would own one object.
     TemplateShared(ToolTemplateRef),
     /// The workload's pod spec.
@@ -156,6 +161,12 @@ impl fmt::Display for EntryViolation {
                 f,
                 "template {} uses the reserved prefix {GENERATED_PREFIX}",
                 template(r)
+            ),
+            Self::TemplateNameSystem(r) => write!(
+                f,
+                "template {} uses a system prefix ({})",
+                template(r),
+                SYSTEM_PREFIXES.join(", ")
             ),
             Self::TemplateShared(r) => write!(
                 f,
@@ -401,6 +412,8 @@ fn fetch(
             violations.push(EntryViolation::TemplateOutsideNamespace(r.clone()));
         } else if r.name.starts_with(GENERATED_PREFIX) {
             violations.push(EntryViolation::TemplateNameReserved(r.clone()));
+        } else if SYSTEM_PREFIXES.iter().any(|p| r.name.starts_with(p)) {
+            violations.push(EntryViolation::TemplateNameSystem(r.clone()));
         } else if shared {
             violations.push(EntryViolation::TemplateShared(r.clone()));
         } else if !allowed.contains(&r.kind.as_str()) {
@@ -781,6 +794,18 @@ mod tests {
             }
         });
         assert!(check(&buildkit_entry(), &retain).is_ok());
+    }
+
+    #[test]
+    fn a_system_object_name_is_refused() {
+        for name in ["kube-root-ca.crt", "openshift-service-ca.crt"] {
+            let mut entry = buildkit_entry();
+            entry.tool_templates[2].name = name.to_string();
+            assert!(matches!(
+                check(&entry, &store()).unwrap_err().as_slice(),
+                [EntryViolation::TemplateNameSystem(_)]
+            ));
+        }
     }
 
     #[test]
