@@ -166,6 +166,10 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
         // `dwoc-pin`'s own scenarios below run without `network-profiles`' gate in the way —
         // RFC 0004's admission half has its own suite at the bottom of this file.
         network_profiles: None,
+        // Inert until a scenario writes `spec.features.devfileContract` (the gate answers `Off`).
+        devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
+            config_store.devfile_contract_config(),
+        )),
         gate: Arc::new(config_store),
         namespace_view: ns_store,
         dwoc_catalog: dwoc_store,
@@ -452,6 +456,118 @@ async fn a_devworkspace_is_pinned_by_a_real_running_webhook() {
     let _ = devworkspaces
         .delete("python-web", &DeleteParams::default())
         .await;
+}
+
+/// `POST` a DevWorkspace and return the status, the `Warning` headers and the body — `Api`
+/// drops the headers, and the warnings are only there.
+async fn create_reading_warnings(
+    client: &kube::Client,
+    obj: &DynamicObject,
+) -> (u16, Vec<String>, serde_json::Value) {
+    let namespace = obj.metadata.namespace.clone().unwrap_or_default();
+    for _ in 0..40 {
+        let request = kube::core::Request::new(format!(
+            "/apis/workspace.devfile.io/v1alpha2/namespaces/{namespace}/devworkspaces"
+        ))
+        .create(&PostParams::default(), serde_json::to_vec(obj).unwrap())
+        .unwrap();
+        let response = client
+            .send(request.map(kube::client::Body::from))
+            .await
+            .expect("the apiserver should answer");
+        let status = response.status().as_u16();
+        let warnings =
+            weebo_si_pod_security_adapters::namespace_label_store::warnings(response.headers());
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect_bytes().await.unwrap()).unwrap();
+        // Only "webhook not reachable yet" is retried; a verdict is the answer.
+        if body.to_string().contains("failed calling webhook") {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        return (status, warnings, body);
+    }
+    panic!("the webhook never became reachable");
+}
+
+/// RFC 0019 PR 4 over a real apiserver: the warnings reach the client, one patch carries
+/// dwoc-pin's `SetConfigRef` and devfile-contract's annotations onto an object that had no
+/// annotations, and a denied parent is refused at creation.
+#[tokio::test]
+async fn devfile_contract_warns_and_annotates_beside_the_pin_live() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    start_webhook(&env_test, cert_dir.path()).await;
+
+    create_config(
+        client.clone(),
+        serde_json::json!({"features": {
+            "dwocPin": {
+                "mode": "Enforce",
+                "catalog": [{"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"}],
+                "default": "baseline",
+            },
+            "devfileContract": {
+                "mode": "Enforce",
+                "currentContract": 3,
+                "minimumContract": 2,
+                "deniedParents": [{"uriPrefix": "https://example.com/denied/"}],
+            },
+        }}),
+    )
+    .await;
+    for name in ["user-alice", "eclipse-che"] {
+        create_namespace(client.clone(), name, BTreeMap::new(), BTreeMap::new()).await;
+    }
+    create_target(client.clone(), "eclipse-che", "weebo-hardened-config").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The real-world case (RFC 0019, *Proof* row 2): no contract, parent on a branch.
+    let mut obj = devworkspace("user-alice", "weebo-che-project");
+    obj.data["spec"]["template"]["parent"] = serde_json::json!({
+        "uri": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml",
+    });
+    let (status, warnings, created) = create_reading_warnings(&client, &obj).await;
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(
+        warnings,
+        vec![
+            "devfile has no weebo.io/platform-contract attribute; add \"weebo.io/platform-contract: 3\" to its attributes".to_string(),
+            "devfile parent follows branch \"main\": pin parent.uri to a tag or a commit".to_string(),
+        ]
+    );
+    let annotations = &created["metadata"]["annotations"];
+    assert_eq!(
+        annotations["hardening.weebo.io/devfile-contract"], "unknown",
+        "{created}"
+    );
+    assert_eq!(
+        annotations["hardening.weebo.io/devfile-contract-reason"],
+        "contract-absent,parent-branch,schema-unknown"
+    );
+    assert_eq!(
+        created["spec"]["template"]["attributes"]["controller.devfile.io/devworkspace-config"]["name"],
+        "weebo-hardened-config",
+        "dwoc-pin's patch must land in the same response: {created}"
+    );
+
+    // A denied parent: refused before a pin is computed, quoting the admin's entry.
+    let mut denied = devworkspace("user-alice", "old-base");
+    denied.data["spec"]["template"]["parent"] =
+        serde_json::json!({"uri": "https://example.com/denied/devfile.yaml"});
+    let (status, _, body) = create_reading_warnings(&client, &denied).await;
+    // 400, not the mock's 403: `AdmissionResponse::deny` sets no code (RFC 0019, R9), as for
+    // every denial on this route.
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("devfile parent is denied by the platform (deniedParents entry 1: https://example.com/denied/)"),
+        "{body}"
+    );
 }
 
 /// `failurePolicy: Fail`: with the webhook unreachable, admission is refused rather than
@@ -2027,7 +2143,13 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
     )
     .await;
     create_policy_template(admin.clone()).await;
-    create_config(admin.clone(), rfc4_config_spec("Enforce", "Off")).await;
+    // `devfile-contract` would refuse this devfile too (no contract attribute counts as 1): the
+    // gate runs first on the route (RFC 0019, D-14), so its message is the one returned.
+    let mut spec = rfc4_config_spec("Enforce", "Off");
+    spec["features"]["devfileContract"] = serde_json::json!({
+        "mode": "Enforce", "currentContract": 2, "minimumContract": 1, "deniedContracts": [1],
+    });
+    create_config(admin.clone(), spec).await;
 
     let stack = rfc4_stack(admin.clone()).await;
     let mut dwoc_pin_registry: Registry<Workspace> = Registry::new();
@@ -2044,6 +2166,9 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
             registry: gate_registry,
             config: stack.config_store.network_profiles_config(),
         }),
+        devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
+            stack.config_store.devfile_contract_config(),
+        )),
         gate: Arc::clone(&stack.config_store) as _,
         namespace_view: Arc::clone(&stack.ns_store) as _,
         dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
@@ -2147,15 +2272,13 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
     .expect("the baseline should be written");
 
     // --- After it lands in the gate's watch cache: admitted. ---
+    // Declaring contract 2, so `devfile-contract` lets it through as well.
+    let mut in_time = devworkspace(RFC4_WORKSPACE_NAMESPACE, "in-time");
+    in_time.data["spec"]["template"]["attributes"] =
+        serde_json::json!({"weebo.io/platform-contract": 2});
     let mut admitted = false;
     for _ in 0..40 {
-        match workspaces
-            .create(
-                &PostParams::default(),
-                &devworkspace(RFC4_WORKSPACE_NAMESPACE, "in-time"),
-            )
-            .await
-        {
+        match workspaces.create(&PostParams::default(), &in_time).await {
             Ok(_) => {
                 admitted = true;
                 break;

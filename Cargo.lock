@@ -4273,6 +4273,7 @@ dependencies = [
  "tracing",
  "weebo-si-chassis",
  "weebo-si-crd",
+ "weebo-si-devfile-contract",
  "weebo-si-dwoc-pin",
  "weebo-si-envtest-support",
  "weebo-si-network-profiles",

@@ -159,6 +159,9 @@ async fn serve(args: &[String]) -> Result<(), String> {
             registry: workspace_gate_registry,
             config: config_store.network_profiles_config(),
         }),
+        devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
+            config_store.devfile_contract_config(),
+        )),
         gate: config_store.clone(),
         namespace_view: Arc::clone(&ns_store) as _,
         dwoc_catalog: Arc::clone(&dwoc_store) as _,

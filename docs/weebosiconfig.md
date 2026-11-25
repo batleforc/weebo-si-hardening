@@ -587,9 +587,8 @@ then no rule applies at all. Shared by every team: there is no `imageRewrite` on
 
 Tells a developer, through admission warnings on `kubectl apply`, that their devfile was written
 for older platform rules or follows a parent that can change under it; refuses a workspace start
-only when the devfile names a contract or a parent listed below as denied. **Not evaluated by
-this build yet:** the block is accepted and validated, and does nothing until RFC 0019's wiring
-lands.
+only when the devfile names a contract or a parent listed below as denied. How to roll it out
+and read its output: [`bricks/devfile-contract.md`](./bricks/devfile-contract.md).
 
 ```yaml
 devfileContract:

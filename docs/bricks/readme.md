@@ -11,6 +11,7 @@ Operator-facing documentation for what is built. Each page is the *how*; the mat
 | ↳ `network-profiles`, `policy-guard` | [`network-profiles.md`](./network-profiles.md) | [0004](../rfc/0004-network-profiles.md), [0008](../rfc/0008-policy-guard-coverage.md) | `crates/weebo-si-{network-profiles,policy-guard}` and their `-adapters` |
 | ↳ `image-policy` | [`image-policy.md`](./image-policy.md) | [0005](../rfc/0005-image-policy.md) | `crates/weebo-si-image-policy`, `crates/weebo-si-image-policy-adapters` |
 | ↳ `image-rewrite` | [`image-rewrite.md`](./image-rewrite.md) | [0017](../rfc/0017-image-rewrite.md) | inside `crates/weebo-si-image-policy` and its `-adapters` |
+| ↳ `devfile-contract` | [`devfile-contract.md`](./devfile-contract.md) | [0019](../rfc/0019-devfile-contract.md) | `crates/weebo-si-devfile-contract`, wired in `crates/weebo-si-webhook` |
 | ↳ `kubearmor-policy` | [`kubearmor-policy.md`](./kubearmor-policy.md) | [0006](../rfc/0006-kubearmor-policy.md) | `crates/weebo-si-kubearmor-policy`, `crates/weebo-si-kubearmor-policy-adapters` |
 | ↳ `registry-config` | [`registry-config.md`](./registry-config.md) | [0007](../rfc/0007-registry-config.md) | `crates/weebo-si-registry-config`, `crates/weebo-si-registry-config-adapters` |
 | ↳ `pod-security` | [`pod-security.md`](./pod-security.md) | [0013](../rfc/0013-pod-security.md) | `crates/weebo-si-pod-security`, `crates/weebo-si-pod-security-adapters` |

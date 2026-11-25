@@ -48,6 +48,13 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0017",
         resource: "DevWorkspace, Pod",
     },
+    // A third registry on the DevWorkspace mutation route, between the network-profiles gate and
+    // dwoc-pin (RFC 0019, D-14).
+    FeatureDescriptor {
+        id: "devfile-contract",
+        rfc: "RFC 0019",
+        resource: "DevWorkspace",
+    },
     FeatureDescriptor {
         id: "kubearmor-policy",
         rfc: "RFC 0006",

@@ -1,11 +1,17 @@
-//! Turns the raw `AdmissionReview` object into the domain subjects the two DevWorkspace-shaped
+//! Turns the raw `AdmissionReview` object into the domain subjects the DevWorkspace-shaped
 //! features take — the one place this crate reads the DevWorkspace's own JSON, and it reads
-//! nothing beyond the two attributes those features name, per RFC 0002's *Security
-//! considerations*.
+//! nothing beyond the fields those features name, per RFC 0002's *Security considerations*
+//! (RFC 0019's *Attributes and annotations read* for `devfile-contract`).
 
 use kube::core::DynamicObject;
 use kube::core::admission::Operation;
-use weebo_si_crd::{DwocRef, NamespaceName};
+use serde_json::Value;
+use weebo_si_crd::{
+    DEVFILE_CONTRACT_ANNOTATION, DEVFILE_CONTRACT_REASON_ANNOTATION, DwocRef, GENERATOR_ATTRIBUTE,
+    NamespaceName, PLATFORM_CONTRACT_ATTRIBUTE,
+};
+use weebo_si_devfile_contract::parse::SCHEMA_SCAN_BYTES;
+use weebo_si_devfile_contract::{DevfileWorkspace, Parent, is_start};
 use weebo_si_dwoc_pin::Workspace;
 use weebo_si_network_profiles::{WorkspaceAdmission, WorkspaceOperation};
 
@@ -62,6 +68,76 @@ pub fn workspace_admission_from_object(
         },
         attribute,
         namespace_annotation,
+    }
+}
+
+/// The Che dashboard's copy of the devfile head, where it keeps `schemaVersion` (RFC 0019, R15).
+pub const CHE_DEVFILE_ANNOTATION: &str = "che.eclipse.org/devfile";
+
+/// The first [`SCHEMA_SCAN_BYTES`] of `text`, cut on a character boundary: no user string is
+/// copied whole, whatever the apiserver let through.
+fn head(text: &str) -> String {
+    text.get(..text.floor_char_boundary(SCHEMA_SCAN_BYTES))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `spec.template.parent` as the developer wrote it: `uri`, then `id` (an empty `version` counts
+/// as none), then `kubernetes`. A parent naming none of them is no parent.
+fn parent(template: Option<&Value>) -> Option<Parent> {
+    let parent = template?.get("parent")?;
+    let text = |key: &str| parent.get(key).and_then(Value::as_str).map(str::to_string);
+    if let Some(uri) = text("uri") {
+        return Some(Parent::Uri(uri));
+    }
+    if let Some(id) = text("id") {
+        let version = text("version").filter(|version| !version.is_empty());
+        return Some(Parent::Id { id, version });
+    }
+    parent.get("kubernetes").map(|_| Parent::Kubernetes)
+}
+
+/// Build a [`DevfileWorkspace`] — `devfile-contract`'s subject — from the admitted object and, on
+/// an `UPDATE`, the stored one, which only feeds the start test (D-13). An `UPDATE` without an
+/// `oldObject` (the apiserver always sends one) of a started workspace reads as a start: the side
+/// the denied list applies to.
+pub fn devfile_workspace_from_object(
+    namespace: &NamespaceName,
+    obj: &DynamicObject,
+    old_obj: Option<&DynamicObject>,
+    operation: &Operation,
+) -> DevfileWorkspace {
+    let template = obj.data.pointer("/spec/template");
+    let attribute = |key: &str| {
+        template
+            .and_then(|t| t.get("attributes"))
+            .and_then(|a| a.get(key))
+    };
+    let annotation = |key: &str| {
+        obj.metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(key))
+    };
+    let started = |data: &Value| data.pointer("/spec/started") == Some(&Value::Bool(true));
+    let old_data = old_obj.map(|old| &old.data);
+    DevfileWorkspace {
+        name: obj.metadata.name.clone().unwrap_or_default(),
+        namespace: namespace.clone(),
+        platform_contract: attribute(PLATFORM_CONTRACT_ATTRIBUTE).cloned(),
+        generator: attribute(GENERATOR_ATTRIBUTE)
+            .and_then(Value::as_str)
+            .map(head),
+        parent: parent(template),
+        che_devfile: annotation(CHE_DEVFILE_ANNOTATION).map(|value| head(value)),
+        stored_verdict: annotation(DEVFILE_CONTRACT_ANNOTATION).cloned(),
+        stored_reasons: annotation(DEVFILE_CONTRACT_REASON_ANNOTATION).cloned(),
+        starting: is_start(
+            matches!(operation, Operation::Create),
+            old_data.is_some_and(started),
+            started(&obj.data),
+            old_data.is_none_or(|old| old.pointer("/spec/template") != template),
+        ),
     }
 }
 
@@ -159,5 +235,119 @@ mod tests {
             );
             assert_eq!(subject.operation, WorkspaceOperation::Update);
         }
+    }
+
+    fn devworkspace(started: bool, template: serde_json::Value) -> DynamicObject {
+        let mut obj = object(serde_json::json!({"started": started, "template": template}));
+        obj.metadata.annotations = Some(
+            [
+                (
+                    CHE_DEVFILE_ANNOTATION.to_string(),
+                    format!("schemaVersion: 2.3.0\n{}", "x".repeat(10_000)),
+                ),
+                (
+                    DEVFILE_CONTRACT_ANNOTATION.to_string(),
+                    "current".to_string(),
+                ),
+            ]
+            .into(),
+        );
+        obj
+    }
+
+    fn extract(
+        obj: &DynamicObject,
+        old: Option<&DynamicObject>,
+        operation: Operation,
+    ) -> DevfileWorkspace {
+        devfile_workspace_from_object(&NamespaceName::new("user-alice"), obj, old, &operation)
+    }
+
+    #[test]
+    fn the_devfile_fields_are_extracted_and_bounded() {
+        let obj = devworkspace(
+            true,
+            serde_json::json!({
+                "attributes": {
+                    (PLATFORM_CONTRACT_ATTRIBUTE): "2",
+                    (GENERATOR_ATTRIBUTE): "é".repeat(5_000),
+                },
+                "parent": {"uri": "https://example.com/devfile.yaml"},
+            }),
+        );
+        let subject = extract(&obj, None, Operation::Create);
+        assert_eq!(subject.platform_contract, Some(serde_json::json!("2")));
+        assert_eq!(
+            subject.parent,
+            Some(Parent::Uri("https://example.com/devfile.yaml".to_string()))
+        );
+        assert!(subject.generator.unwrap().len() <= SCHEMA_SCAN_BYTES);
+        let che = subject.che_devfile.unwrap();
+        assert!(che.starts_with("schemaVersion: 2.3.0") && che.len() == SCHEMA_SCAN_BYTES);
+        assert_eq!(subject.stored_verdict.as_deref(), Some("current"));
+        assert_eq!(subject.stored_reasons, None);
+        assert!(subject.starting);
+    }
+
+    #[test]
+    fn every_parent_shape_is_read() {
+        let parent_of = |parent: serde_json::Value| {
+            extract(
+                &devworkspace(false, serde_json::json!({"parent": parent})),
+                None,
+                Operation::Create,
+            )
+            .parent
+        };
+        assert_eq!(
+            parent_of(serde_json::json!({"id": "che-min-mise", "version": ""})),
+            Some(Parent::Id {
+                id: "che-min-mise".to_string(),
+                version: None
+            })
+        );
+        assert_eq!(
+            parent_of(serde_json::json!({"id": "che-min-mise", "version": "1.2.0"})),
+            Some(Parent::Id {
+                id: "che-min-mise".to_string(),
+                version: Some("1.2.0".to_string())
+            })
+        );
+        assert_eq!(
+            parent_of(serde_json::json!({"kubernetes": {"name": "base"}})),
+            Some(Parent::Kubernetes)
+        );
+        assert_eq!(parent_of(serde_json::json!({})), None);
+        assert_eq!(
+            extract(&object(serde_json::json!({})), None, Operation::Create).parent,
+            None
+        );
+    }
+
+    /// D-13: only a start transition or a template change while running is a start.
+    #[test]
+    fn the_start_transition_is_computed_from_both_objects() {
+        let template = serde_json::json!({"parent": {"uri": "https://a/v1.0.0/"}});
+        let other = serde_json::json!({"parent": {"uri": "https://a/main/"}});
+        let update = |old: &DynamicObject, new: &DynamicObject| {
+            extract(new, Some(old), Operation::Update).starting
+        };
+        let stopped = devworkspace(false, template.clone());
+        let running = devworkspace(true, template.clone());
+        assert!(update(&stopped, &running), "spec.started turned true");
+        assert!(!update(&running, &running), "a finalizer or label update");
+        assert!(!update(&running, &stopped), "a stop");
+        assert!(
+            update(&running, &devworkspace(true, other.clone())),
+            "parent changed while running"
+        );
+        assert!(
+            !update(&stopped, &devworkspace(false, other)),
+            "editing a stopped workspace"
+        );
+        assert!(
+            extract(&running, None, Operation::Update).starting,
+            "an UPDATE without oldObject reads as a start"
+        );
     }
 }

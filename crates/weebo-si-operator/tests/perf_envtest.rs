@@ -28,6 +28,10 @@
 //! webhook role builds. No apiserver: the network hop is the webhook's `timeoutSeconds`' business,
 //! and what this RFC added is the CPU on each side of it.
 //!
+//! A third, RFC 0019's *Capacity*: what `devfile-contract` adds to `/mutate/v1alpha1/devworkspaces`
+//! — extraction, evaluation over 64 `deniedParents` and a 4 KiB `che.eclipse.org/devfile`, the
+//! patch of its two annotations. The budget is the RFC's: p99 grows by under 1 ms.
+//!
 //! Run with `task envtest:operator-perf`; the `Operator perf` workflow runs it nightly. It is in
 //! the `envtest` feature, but in no suite list: a debug build measures the wrong binary.
 
@@ -789,6 +793,102 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
             },
             Row {
                 what: "mutate + validate p99",
+                measured: micros(p99),
+                budget: micros(budget_p99),
+                within: p99 <= budget_p99,
+            },
+        ],
+    );
+}
+
+#[test]
+fn devfile_contract_adds_under_a_millisecond_to_a_devworkspace_admission() {
+    // Same reason as the image case: a debug build's microseconds describe nothing we ship.
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: the budget describes the release build (task envtest:operator-perf)");
+        return;
+    }
+    let admissions: usize = env_or("PERF_DEVFILE_ADMISSIONS", 5000);
+    let budget_p99 = Duration::from_secs_f64(env_or("PERF_BUDGET_DEVFILE_P99_MS", 1.0) / 1000.0);
+
+    // 64 denied prefixes that never match: the worst case of the linear scan.
+    let denied: Vec<serde_json::Value> = (0..64)
+        .map(|i| serde_json::json!({"uriPrefix": format!("https://example.com/denied-{i}/")}))
+        .collect();
+    let config: weebo_si_crd::DevfileContractConfig = serde_json::from_value(serde_json::json!({
+        "mode": "Enforce", "currentContract": 3, "minimumContract": 2,
+        "minimumSchemaVersion": "2.2.0", "deniedParents": denied,
+    }))
+    .unwrap();
+    let registry = weebo_si_webhook::devfile_contract_registry(Arc::new(RwLock::new(Some(config))));
+
+    let namespace = NamespaceName::new("dev-ws-perf");
+    // Outdated on every check, so every warning is rendered; the annotation pads to 4 KiB.
+    let workspace: DynamicObject = serde_json::from_value(serde_json::json!({
+        "apiVersion": "workspace.devfile.io/v1alpha2",
+        "kind": "DevWorkspace",
+        "metadata": {
+            "name": "weebo-che-project",
+            "namespace": namespace.as_str(),
+            "annotations": {"che.eclipse.org/devfile": format!("{}schemaVersion: 2.1.0\n", "# x\n".repeat(1000))},
+        },
+        "spec": {"started": true, "template": {
+            "attributes": {"weebo.io/platform-contract": 1, "weebo.io/generator": "weebo-devfile-gen 1.4.0"},
+            "parent": {"uri": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml"},
+        }},
+    }))
+    .unwrap();
+    let body = serde_json::to_value(&workspace).unwrap();
+
+    let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+    let namespaces = FakeNamespaceView::new([(
+        namespace.clone(),
+        NamespaceFacts {
+            labels: BTreeMap::new(),
+            selection_annotation: None,
+        },
+    )]);
+    let catalog = FakeDwocCatalog::new(std::iter::empty());
+    let observer = SilentObserver;
+
+    let mut samples = Vec::with_capacity(admissions);
+    for _ in 0..admissions {
+        let started = Instant::now();
+        let subject = weebo_si_webhook::extract::devfile_workspace_from_object(
+            &namespace,
+            &workspace,
+            None,
+            &kube::core::admission::Operation::Create,
+        );
+        let Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) = admit(&registry, &subject, &gate, &namespaces, &catalog, &observer)
+        else {
+            panic!("an outdated devfile must be admitted");
+        };
+        let patch = render_patch(&body, &mutations);
+        samples.push(started.elapsed());
+        assert_eq!((mutations.len(), warnings.len()), (2, 3), "{warnings:?}");
+        std::hint::black_box(patch);
+    }
+    samples.sort();
+
+    let micros = |d: Duration| format!("{:.0} µs", d.as_secs_f64() * 1e6);
+    let p99 = percentile(&samples, 99.0);
+    report(
+        &format!(
+            "devfile-contract on /mutate/v1alpha1/devworkspaces — 64 deniedParents, 4 KiB annotation, {admissions} runs"
+        ),
+        &[
+            Row {
+                what: "devfile-contract p50",
+                measured: micros(percentile(&samples, 50.0)),
+                budget: "—".into(),
+                within: true,
+            },
+            Row {
+                what: "devfile-contract p99 (added to the route)",
                 measured: micros(p99),
                 budget: micros(budget_p99),
                 within: p99 <= budget_p99,
