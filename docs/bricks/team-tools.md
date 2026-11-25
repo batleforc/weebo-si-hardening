@@ -102,6 +102,16 @@ controller checks every template ref, kind and pod-spec rule and reports a broke
 `Invalid` (the `WeeboSiConfig` goes `Degraded`); **an invalid entry keeps what is already
 rendered**. RFC 0020's *What the admin writes* has the reference BuildKit StatefulSet.
 
+That reference needs one more template with `hostUsers: false`: rootlesskit maps the image's
+`/etc/subuid` range (`user:100000:65536`), which lies beyond the 65536 ids of a user-namespaced
+pod, so the daemon exits at once with `newuidmap … write to uid_map failed: Operation not
+permitted`. A `ConfigMap` template (`buildkitd-subid`, listed in `toolTemplates`) carries
+`user:1:999` and `user:1001:64535` as both `subuid` and `subgid`, mounted with `subPath` over
+`/etc/subuid` and `/etc/subgid`: every pod id but 0 and the daemon's own 1000, so a `RUN` step
+sees ids 0 to 65534. Nothing is relaxed: the process sandbox, `hostUsers: false` and the other
+fields stay as the RFC has them (reproduced with podman and a `RUN` step in `process-mode:
+sandbox`; `crates/weebo-si-e2e/tests/team_tools.rs` carries the same fixture).
+
 ## What a developer sees
 
 The request, in the devfile:

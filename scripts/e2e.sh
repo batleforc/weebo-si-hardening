@@ -881,6 +881,16 @@ diag() {
         > "$out/logs-$ns-$(basename "$pod").txt" 2>&1 || true
     done
   done
+  # Team tool pods (RFC 0020) crash-loop rather than fail: the previous container holds the reason.
+  for ns in $(kubectl get namespaces -o name 2>/dev/null | sed -n 's|^namespace/\(team-.*-tools\)$|\1|p'); do
+    kubectl -n "$ns" get statefulsets,deployments -o yaml --show-managed-fields > "$out/workloads-$ns.yaml" 2>&1 || true
+    for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 \
+        > "$out/logs-$ns-$(basename "$pod").txt" 2>&1 || true
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 --previous \
+        > "$out/logs-$ns-$(basename "$pod")-previous.txt" 2>&1 || true
+    done
+  done
   printf 'diagnostics in %s\n' "$out"
 }
 

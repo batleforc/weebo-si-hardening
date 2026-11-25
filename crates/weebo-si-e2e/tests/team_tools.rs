@@ -33,6 +33,8 @@ use weebo_si_e2e::{
 const BUILDKIT_IMAGE: &str = "docker.io/moby/buildkit:v0.35.1-rootless";
 /// The chart's template namespace (`resourceQuotas.templateNamespace.name`, shared by default).
 const TEMPLATES: &str = "weebo-si-hardening-templates";
+/// The ConfigMap template holding buildkitd's `/etc/subuid` and `/etc/subgid`.
+const SUBID: &str = "buildkitd-subid";
 const KEY: &str = "buildkit";
 const ATTRIBUTE: &str = "hardening.weebo.io/team-tools";
 const MANAGED: &str = "hardening.weebo.io/managed-by=weebo-si-operator";
@@ -63,6 +65,19 @@ fn templates() {
             "kind": "Service",
             "metadata": { "name": "buildkitd", "namespace": TEMPLATES },
             "spec": service_spec(),
+        })
+        .to_string(),
+    );
+    // rootlesskit maps the image's `user:100000:65536`, beyond the 65536 ids of a `hostUsers:
+    // false` pod: newuidmap fails with EPERM. These ranges are every pod id but 0 and 1000 (the
+    // daemon's own, mapped to nested root), so nested ids run 0..=65534.
+    let subid = "user:1:999\nuser:1001:64535\n";
+    apply(
+        &json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": SUBID, "namespace": TEMPLATES },
+            "data": { "subuid": subid, "subgid": subid },
         })
         .to_string(),
     );
@@ -101,9 +116,14 @@ fn statefulset_spec(replicas: u8) -> Value {
                     "volumeMounts": [
                         { "name": "certs", "mountPath": "/certs", "readOnly": true },
                         { "name": "cache", "mountPath": "/home/user/.local/share/buildkit" },
+                        { "name": "subid", "mountPath": "/etc/subuid", "subPath": "subuid", "readOnly": true },
+                        { "name": "subid", "mountPath": "/etc/subgid", "subPath": "subgid", "readOnly": true },
                     ],
                 }],
-                "volumes": [{ "name": "certs", "secret": { "secretName": "buildkitd-tls" } }],
+                "volumes": [
+                    { "name": "certs", "secret": { "secretName": "buildkitd-tls" } },
+                    { "name": "subid", "configMap": { "name": SUBID } },
+                ],
             },
         },
         "volumeClaimTemplates": [{
@@ -141,7 +161,11 @@ fn team_tools(on_not_granted: &str, idle_grace_seconds: u32) -> Value {
             "idleGraceSeconds": idle_grace_seconds,
             // cert-manager's minimum, so a renewal is a forced one (observation 8).
             "tls": { "serverSecretName": "buildkitd-tls", "clientDuration": "1h", "clientMountPath": MOUNT },
-            "toolTemplates": [template("StatefulSet"), template("Service")],
+            "toolTemplates": [
+                template("StatefulSet"),
+                template("Service"),
+                json!({ "kind": "ConfigMap", "name": SUBID, "namespace": TEMPLATES }),
+            ],
         }],
     } })
 }
