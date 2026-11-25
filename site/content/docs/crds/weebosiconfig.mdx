@@ -147,6 +147,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| `allowedIssuers` | `string[]` | no | `["vault-issuer"]` | The cert-manager issuers a routing object in scope may name in `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3). Any other value is refused at admission, so ingress-shim cannot mint a certificate from a team CA. Empty refuses every issuer annotation.<br /><br />Constraints: `maxItems: 16` |
 | `breakGlassIdentities` | `string[]` | no | `[]` | Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
 | [`catalog`](#spec.features.endpointAuth.catalog) | `object[]` | yes |  | The catalogue of access profiles. |
 | `default` | `string` | yes |  | The key a namespace belonging to no team resolves to. |
@@ -158,6 +159,10 @@ spec:
 | [`overrides`](#spec.features.endpointAuth.overrides) | `object[]` | no | `[]` | Ordered, first match wins; may only narrow. |
 | [`owner`](#spec.features.endpointAuth.owner) | `object` | yes |  | How a namespace names its owner, and which identity DevWorkspace Operator writes as. |
 | [`selfOrigin`](#spec.features.endpointAuth.selfOrigin) | `object` | no | `{"podNetwork":"Auto","serviceAccountToken":true}` | Whether, and how, a workspace may prove it is itself. |
+
+**Rules**
+
+- `allowedIssuers`: allowedIssuers names the same issuer twice — `self.all(i, self.exists_one(j, j == i))`
 
 ### `spec.features.endpointAuth.catalog[]` [#spec.features.endpointAuth.catalog]
 

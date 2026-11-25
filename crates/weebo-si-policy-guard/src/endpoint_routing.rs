@@ -104,6 +104,11 @@ pub struct EndpointRoutingWrite {
     /// ingress-shim turns them into the Certificate it requests, so a name annotation is a
     /// certificate for a host the namespace does not own.
     pub certificate_annotations: BTreeSet<String>,
+    /// The issuers this write names in `cert-manager.io/cluster-issuer` or
+    /// `cert-manager.io/issuer` (added or changed) that `allowedIssuers` does not list (RFC 0020,
+    /// S3): ingress-shim would have that issuer, a team CA for instance, sign a certificate whose
+    /// key lands in a Secret the developer reads.
+    pub refused_issuers: BTreeSet<String>,
 }
 
 impl Subject for EndpointRoutingWrite {
@@ -150,8 +155,9 @@ impl EndpointRoutingWrite {
 /// **An allow-list, not a deny-list**, because cert-manager v1.21 reads 40 annotation keys and
 /// six of them put a name in the certificate (`common-name`, `alt-names`, `ip-sans`,
 /// `uri-sans`, `email-sans`, `subject-serialnumber`); the next release may add a seventh. The
-/// issuer is not pinned here: the PKI role signs only what `spec.tls[].hosts` names, and the
-/// host-ownership check covers those.
+/// issuer *value* is checked on its own, against `allowedIssuers`
+/// ([`EndpointRoutingWrite::refused_issuers`]); `issuer-kind` and `issuer-group` stay off this
+/// list, so `issuer` cannot be turned into a reference to another kind of issuer.
 pub const ALLOWED_CERTIFICATE_ANNOTATIONS: &[&str] = &[
     "cert-manager.io/cluster-issuer",
     "cert-manager.io/issuer",
@@ -218,6 +224,7 @@ impl Feature<EndpointRoutingWrite> for EndpointRoutingGuard {
         if subject.actor == self.devworkspace_operator_identity
             && !subject.introduces_bypass
             && forbidden_certificate.is_empty()
+            && subject.refused_issuers.is_empty()
         {
             return Ok(Decision::new(Vec::new(), None, None, "dwo_allowed"));
         }
@@ -264,6 +271,29 @@ impl Feature<EndpointRoutingWrite> for EndpointRoutingGuard {
                 None,
                 Some("certificate_annotation_not_permitted".to_string()),
                 "denied_certificate_annotation",
+            ));
+        }
+
+        // RFC 0020, S3: the issuer decides which CA signs, and a team CA's certificate is a team
+        // identity. Only the issuers the admin lists may be named; DWO copies these from the
+        // devfile endpoint too, so it was not let through above.
+        if !subject.refused_issuers.is_empty() {
+            let named = subject
+                .refused_issuers
+                .iter()
+                .map(|issuer| format!("{issuer:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(Decision::deny(
+                format!(
+                    "{} may not name the cert-manager issuer {named} on this {}; only the issuers in \
+                     spec.features.endpointAuth.allowedIssuers may sign a workspace certificate",
+                    subject.actor,
+                    subject.kind.kind()
+                ),
+                None,
+                Some("certificate_issuer_not_permitted".to_string()),
+                "denied_certificate_issuer",
             ));
         }
 
@@ -415,6 +445,7 @@ mod tests {
             host_owned_by_namespace: Some(true),
             introduces_bypass: false,
             certificate_annotations: BTreeSet::new(),
+            refused_issuers: BTreeSet::new(),
         }
     }
 
@@ -518,6 +549,31 @@ mod tests {
             Provenance::Author,
         );
         subject.certificate_annotations = BTreeSet::from(["cert-manager.io/alt-names".to_owned()]);
+        assert!(verdict(&subject).denial.is_none());
+    }
+
+    #[test]
+    fn an_issuer_off_the_allow_list_is_refused_even_through_dwo() {
+        for actor in ["alice", DWO] {
+            for operation in [WriteOperation::Create, WriteOperation::Update] {
+                let mut subject = write(actor, operation, Provenance::Author);
+                subject.carries_devworkspace_label = false;
+                subject.refused_issuers = BTreeSet::from(["team-weebo-tools-ca".to_owned()]);
+                let decision = verdict(&subject);
+                let denial = decision.denial.unwrap_or_default();
+                assert!(
+                    denial.contains("\"team-weebo-tools-ca\""),
+                    "{actor} {denial}"
+                );
+                assert_eq!(decision.result, "denied_certificate_issuer");
+            }
+        }
+        let mut subject = write(
+            "system:serviceaccount:platform:break-glass",
+            WriteOperation::Create,
+            Provenance::Author,
+        );
+        subject.refused_issuers = BTreeSet::from(["team-weebo-tools-ca".to_owned()]);
         assert!(verdict(&subject).denial.is_none());
     }
 

@@ -527,6 +527,15 @@ fn guard_subject(
         .cloned()
         .collect();
 
+    // Only what this write adds or changes: an issuer already on the object was admitted then.
+    let refused_issuers = ISSUER_ANNOTATIONS
+        .iter()
+        .filter(|key| changed_annotations.contains(**key))
+        .filter_map(|key| submitted_annotations.get(*key))
+        .filter(|issuer| !ingress_issuer_allowed(issuer, &config.config.allowed_issuers))
+        .cloned()
+        .collect();
+
     EndpointRoutingWrite {
         namespace,
         actor,
@@ -541,7 +550,18 @@ fn guard_subject(
         host_owned_by_namespace,
         introduces_bypass,
         certificate_annotations,
+        refused_issuers,
     }
+}
+
+/// The two annotations through which cert-manager's ingress-shim picks the CA that signs.
+const ISSUER_ANNOTATIONS: [&str; 2] = ["cert-manager.io/cluster-issuer", "cert-manager.io/issuer"];
+
+/// Whether a routing object may name `issuer` in an [`ISSUER_ANNOTATIONS`] key (RFC 0020, S3):
+/// an exact match against `allowedIssuers`, so a team CA, or any issuer the admin did not list,
+/// never signs a certificate whose key lands in a Secret the developer reads.
+pub fn ingress_issuer_allowed(issuer: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|name| name == issuer)
 }
 
 /// What compiling an endpoint reads off its namespace: the owner, the team (first match wins,
@@ -887,6 +907,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
+            allowed_issuers: vec!["vault-issuer".to_owned()],
         })
     }
 
@@ -1130,6 +1151,70 @@ mod tests {
             write.certificate_annotations,
             BTreeSet::from(["cert-manager.io/common-name".to_owned()])
         );
+    }
+
+    #[test]
+    fn an_ingress_naming_a_team_ca_issuer_is_refused() {
+        let config = config(Dialect::Traefik);
+        let guard = EndpointRoutingGuard::new(
+            "system:serviceaccount:weebo-si-hardening:operator".to_owned(),
+            config.owner.devworkspace_operator_identity.clone(),
+            Vec::new(),
+        );
+        let verdict = |annotations: serde_json::Value, old: Option<serde_json::Value>| {
+            let object = ingress(annotations, "alice-ws-api.weebo.si");
+            let mut request = request_for(&object, Operation::Create, "alice");
+            if let Some(old) = old {
+                request.operation = Operation::Update;
+                request.old_object = Some(ingress(old, "alice-ws-api.weebo.si"));
+            }
+            let write = guard_subject(
+                &request,
+                RoutingKind::Ingress,
+                &config,
+                Some("alice".into()),
+                |_: &str| true,
+            );
+            let facts = weebo_si_chassis::NamespaceFacts {
+                labels: Default::default(),
+                selection_annotation: None,
+            };
+            let catalog = weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog::new([]);
+            let decision = guard
+                .evaluate(&write, &Context::new(&[], &facts, &catalog))
+                .unwrap();
+            (write.refused_issuers, decision.result)
+        };
+
+        for key in ISSUER_ANNOTATIONS {
+            let (refused, result) = verdict(json!({ key: "team-weebo-tools-ca" }), None);
+            assert_eq!(refused, BTreeSet::from(["team-weebo-tools-ca".to_owned()]));
+            assert_eq!(result, "denied_certificate_issuer", "{key}");
+        }
+        // What Che sets on every workspace Ingress of the live cluster stays admitted.
+        let (refused, result) = verdict(
+            json!({ "cert-manager.io/cluster-issuer": "vault-issuer" }),
+            None,
+        );
+        assert!(refused.is_empty());
+        assert_ne!(result, "denied_certificate_issuer");
+        // An UPDATE switching to a team CA is refused; one leaving an older value alone is not.
+        let (_, result) = verdict(
+            json!({ "cert-manager.io/cluster-issuer": "team-weebo-tools-ca" }),
+            Some(json!({ "cert-manager.io/cluster-issuer": "vault-issuer" })),
+        );
+        assert_eq!(result, "denied_certificate_issuer");
+        let old = json!({ "cert-manager.io/cluster-issuer": "legacy" });
+        let (refused, _) = verdict(old.clone(), Some(old));
+        assert!(refused.is_empty());
+        // Steering `issuer` at another kind is refused as a key, not as a value.
+        let (_, result) = verdict(
+            json!({ "cert-manager.io/issuer": "vault-issuer", "cert-manager.io/issuer-kind": "ClusterIssuer" }),
+            None,
+        );
+        assert_eq!(result, "denied_certificate_annotation");
+        // An empty allow-list refuses every issuer.
+        assert!(!ingress_issuer_allowed("vault-issuer", &[]));
     }
 
     #[test]

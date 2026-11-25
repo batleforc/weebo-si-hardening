@@ -879,6 +879,27 @@ pub struct EndpointAuthConfig {
     /// Whether, and how, a workspace may prove it is itself.
     #[serde(default)]
     pub self_origin: SelfOriginConfig,
+    /// The cert-manager issuers a routing object in scope may name in
+    /// `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3). Any other
+    /// value is refused at admission, so ingress-shim cannot mint a certificate from a team CA.
+    /// Empty refuses every issuer annotation.
+    #[serde(default = "default_allowed_issuers")]
+    #[schemars(
+        length(max = MAX_ALLOWED_ISSUERS),
+        inner(length(min = 1, max = 253)),
+        extend("x-kubernetes-validations" = [{
+            "rule": "self.all(i, self.exists_one(j, j == i))",
+            "message": "allowedIssuers names the same issuer twice"
+        }])
+    )]
+    pub allowed_issuers: Vec<String>,
+}
+
+/// Bound on `allowedIssuers`.
+pub const MAX_ALLOWED_ISSUERS: u32 = 16;
+
+fn default_allowed_issuers() -> Vec<String> {
+    vec!["vault-issuer".to_owned()]
 }
 
 /// [`EndpointAuthConfig`] resolved against the `WeeboSiTeam` objects — what the feature
@@ -1389,6 +1410,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
+            allowed_issuers: default_allowed_issuers(),
         })
     }
 
@@ -1878,6 +1900,25 @@ mod tests {
             Some(RoutingKind::Ingress)
         );
         assert_eq!(RoutingKind::from_plural("pods"), None);
+    }
+
+    #[test]
+    fn allowed_issuers_default_to_vault_issuer_and_are_bounded() {
+        let mut wire = serde_json::to_value(config(Dialect::Traefik).config).unwrap();
+        wire.as_object_mut().unwrap().remove("allowedIssuers");
+        let parsed: EndpointAuthConfig = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed.allowed_issuers, vec!["vault-issuer".to_owned()]);
+
+        let schema = serde_json::to_value(schemars::schema_for!(EndpointAuthConfig)).unwrap();
+        let issuers = &schema["properties"]["allowedIssuers"];
+        assert_eq!(issuers["maxItems"], MAX_ALLOWED_ISSUERS);
+        assert_eq!(issuers["items"]["minLength"], 1);
+        assert_eq!(issuers["items"]["maxLength"], 253);
+        assert_eq!(issuers["default"], serde_json::json!(["vault-issuer"]));
+        assert_eq!(
+            issuers["x-kubernetes-validations"][0]["rule"],
+            "self.all(i, self.exists_one(j, j == i))"
+        );
     }
 
     #[ignore = "OpenShift's ReverseProxy dialect is deferred (RFC 0009): the code is here, nothing has run it against a router, and the base suite does not assert it. Run this tier with `task test:openshift`."]

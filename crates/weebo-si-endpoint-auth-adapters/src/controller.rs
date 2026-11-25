@@ -886,6 +886,7 @@ mod tests {
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
+            allowed_issuers: vec!["vault-issuer".to_owned()],
         })
     }
 

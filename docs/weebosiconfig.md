@@ -796,6 +796,7 @@ endpointAuth:
     # errorPageMiddleware: weebo-si-hardening-endpoint-gateway-errors@kubernetescrd # Traefik only
     haproxyPrerequisite: false # HaproxyIngress only, and required there — see below
   breakGlassIdentities: []
+  allowedIssuers: [vault-issuer] # cert-manager issuers an Ingress may name
   owner:
     namespaceAnnotation: che.eclipse.org/username
     devworkspaceOperatorIdentity: "system:serviceaccount:devworkspace-controller:devworkspace-controller-serviceaccount"
@@ -833,6 +834,7 @@ endpointAuth:
 | `gateway.errorPageMiddleware` | string | no | — | Traefik only. One `errors` middleware placed **before** ours, so a gateway outage reads as the platform's error page rather than a bare `500`. Must be `<gateway.service.namespace>-<name>@kubernetescrd`; anything else is not attached and raises `Degraded`. See *The gateway's error page* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
+| `allowedIssuers` | `[string]` | no | `[vault-issuer]` | The only values a routing object may give `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3); ≤ 16. `[]` refuses every issuer annotation, Che's own included. See *Certificate annotations* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2: whoever writes the generated routing objects. Wrong here means every workspace endpoint stops being created. Under Eclipse Che (`routingClass: che`) that is che-operator, not DWO — `system:serviceaccount:eclipse-che:che-operator`. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |

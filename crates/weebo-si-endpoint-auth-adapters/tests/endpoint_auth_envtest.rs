@@ -537,6 +537,38 @@ async fn the_gate_is_attached_pinned_and_refused_the_way_rfc_0009_says() {
         .expect_err("a catalogue key this team's grant does not reach must be refused");
     assert!(format!("{error}").contains("not usable"), "{error}");
 
+    // --- RFC 0020 S3: only an allow-listed issuer may sign through ingress-shim -----------------
+    // The fixture sets no `allowedIssuers`: the schema's default (`[vault-issuer]`) is what is
+    // read. DWO is refused too, since it copies a devfile endpoint's annotations.
+    let issued = |name: &str, issuer: &str| {
+        ingress(
+            name,
+            "user-alice",
+            &format!("alice-ws-{name}.weebo.si"),
+            BTreeMap::from([(
+                "cert-manager.io/cluster-issuer".to_string(),
+                issuer.to_string(),
+            )]),
+        )
+    };
+    for client in [&alice_ingresses, &dwo_ingresses] {
+        let error = client
+            .create(
+                &PostParams::default(),
+                &issued("tools", "team-weebo-tools-ca"),
+            )
+            .await
+            .expect_err("an Ingress naming a team CA issuer must be refused");
+        assert!(
+            format!("{error}").contains("allowedIssuers"),
+            "the refusal should name the allow-list: {error}"
+        );
+    }
+    dwo_ingresses
+        .create(&PostParams::default(), &issued("vault", "vault-issuer"))
+        .await
+        .expect("the issuer Che sets on every workspace Ingress must stay admitted");
+
     // --- row 9: delete is allowed, because the route dies with the gate ------------------------
     alice_ingresses
         .delete("alice-ws-preview", &DeleteParams::default())

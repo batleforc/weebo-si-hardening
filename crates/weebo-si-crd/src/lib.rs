@@ -54,9 +54,9 @@ pub use endpoint_auth::{
     DelegationKind, Dialect, ENDPOINT_ACCESS_NAMESPACE_ANNOTATION, ENDPOINT_AUTH_ANNOTATION,
     ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED, EndpointAuthConfig, EndpointAuthConfigViolation,
     EndpointOverride, EndpointSelection, GateEnforcement, GatewayRef, HostOwnership, HostsConfig,
-    MIDDLEWARE_NAME, OverrideMatch, OwnerConfig, RULES_ANNOTATION, ResolvedEndpointAuthConfig,
-    Retarget, RoutingKind, SelfOriginConfig, ServiceRef, TeamEndpointAuth, TriState,
-    UPSTREAM_ANNOTATION,
+    MAX_ALLOWED_ISSUERS, MIDDLEWARE_NAME, OverrideMatch, OwnerConfig, RULES_ANNOTATION,
+    ResolvedEndpointAuthConfig, Retarget, RoutingKind, SelfOriginConfig, ServiceRef,
+    TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
 };
 pub use feature_mode::FeatureMode;
 pub use identity::{

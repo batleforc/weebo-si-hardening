@@ -475,6 +475,70 @@ async fn pod_identity_cel_rules_accept_the_example_and_refuse_ids_out_of_range()
     }
 }
 
+/// RFC 0020 S3's issuer allow-list: defaulted to `[vault-issuer]` by the schema, bounded, and a
+/// name listed twice is refused at write.
+#[tokio::test]
+async fn endpoint_auth_allowed_issuers_default_and_refuse_duplicates() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |issuers: Option<serde_json::Value>| {
+        let mut block = serde_json::json!({
+            "mode": "Enforce",
+            "gateway": {
+                "externalUrl": "https://auth.weebo.si",
+                "service": {"name": "endpoint-gateway", "namespace": "weebo-si-hardening", "port": 4180},
+                "dialect": "Traefik"
+            },
+            "owner": {"namespaceAnnotation": "che.eclipse.org/username", "devworkspaceOperatorIdentity": "dwo"},
+            "hosts": {"suffix": ".weebo.si", "ownership": [{"template": "{user}-{workspace}-{endpoint}"}]},
+            "catalog": [{"key": "private"}],
+            "default": "private"
+        });
+        if let Some(issuers) = issuers {
+            block["allowedIssuers"] = issuers;
+        }
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"endpointAuth": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    let created = api
+        .create(&PostParams::default(), &spec(None))
+        .await
+        .expect("a block without allowedIssuers should be accepted");
+    assert_eq!(
+        created.data["spec"]["features"]["endpointAuth"]["allowedIssuers"],
+        serde_json::json!(["vault-issuer"])
+    );
+    let _ = api.delete("cluster", &DeleteParams::default()).await;
+
+    for (issuers, expected) in [
+        (
+            serde_json::json!(["vault-issuer", "vault-issuer"]),
+            "allowedIssuers names the same issuer twice",
+        ),
+        (serde_json::json!([""]), "should be at least 1 chars long"),
+        (
+            serde_json::json!((0..17).map(|i| format!("issuer-{i}")).collect::<Vec<_>>()),
+            "must have at most 16 items",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(Some(issuers.clone())))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{issuers}: unexpected error: {error}"
+        );
+    }
+}
+
 /// RFC 0021's CEL rule, against a real apiserver: a grant annotation equal to the selection one is
 /// refused at write (a grant must never select), and the defaults, an explicit distinct grant and
 /// the empty (disabled) grant are accepted.

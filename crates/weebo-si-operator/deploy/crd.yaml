@@ -266,6 +266,23 @@ spec:
                     description: '`spec.features.endpointAuth`, per RFC 0009.'
                     nullable: true
                     properties:
+                      allowedIssuers:
+                        default:
+                        - vault-issuer
+                        description: |-
+                          The cert-manager issuers a routing object in scope may name in
+                          `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3). Any other
+                          value is refused at admission, so ingress-shim cannot mint a certificate from a team CA.
+                          Empty refuses every issuer annotation.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-validations:
+                        - message: allowedIssuers names the same issuer twice
+                          rule: self.all(i, self.exists_one(j, j == i))
                       breakGlassIdentities:
                         default: []
                         description: 'Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object.'

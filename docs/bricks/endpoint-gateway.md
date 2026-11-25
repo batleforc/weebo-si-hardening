@@ -520,6 +520,39 @@ strip the namespaces it leaves. The shared `Middleware` is not deleted; remove i
 `Ingress` names it. Between the two, `gateway.enforcement: Observe` reopens every endpoint
 within a request while keeping the telemetry.
 
+## Certificate annotations
+
+cert-manager's ingress-shim turns a routing object's `cert-manager.io/*` annotations into the
+`Certificate` it requests, with the key in a Secret the namespace reads. The validating webhook
+therefore refuses, on any `CREATE` or `UPDATE` that adds or changes them, for every writer but the
+operator and `breakGlassIdentities` (DevWorkspace Operator included: it copies a devfile endpoint's
+annotations):
+
+- **a name in the certificate**: only the issuer keys, `subject-organizations`,
+  `subject-organizationalunits` and the key/lifetime keys (`duration`, `renew-before*`,
+  `private-key-*`, `revision-history-limit`) are allowed; `common-name`, `alt-names`, `ip-sans`,
+  `uri-sans`, `email-sans`, `subject-serialnumber`, `issuer-kind`, `issuer-group` and every key
+  not listed are refused (`result=denied_certificate_annotation`);
+- **an issuer the admin did not list**: `cert-manager.io/cluster-issuer` and
+  `cert-manager.io/issuer` must name an entry of `allowedIssuers` (default `[vault-issuer]`), so a
+  team tools CA ([RFC 0020](../rfc/0020-team-tools.md), S3) never signs through an `Ingress`
+  (`result=denied_certificate_issuer`).
+
+```console
+$ kubectl annotate ingress api -n user-alice cert-manager.io/cluster-issuer=team-weebo-tools-ca
+Error from server (BadRequest): admission webhook "ingresses.endpointauthguard.hardening.weebo.io"
+denied the request: alice may not name the cert-manager issuer "team-weebo-tools-ca" on this Ingress;
+only the issuers in spec.features.endpointAuth.allowedIssuers may sign a workspace certificate
+```
+
+**Before upgrading**, check the issuer Che's `CheCluster` `spec.networking.annotations` and your
+devfile endpoints put on workspace `Ingress`es: anything other than `vault-issuer` must be in
+`allowedIssuers`, or DevWorkspace Operator's next `CREATE` is refused and the workspace does not
+start. An empty list refuses every issuer annotation, Che's included. An issuer already on an
+object is not re-judged until a write changes it, and the same name is accepted in both keys, so
+`cert-manager.io/issuer: vault-issuer` names a namespaced `Issuer` of that name: keep users without
+RBAC on `issuers.cert-manager.io`.
+
 ## Break-glass
 
 ```console
