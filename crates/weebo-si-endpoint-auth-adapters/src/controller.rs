@@ -36,7 +36,7 @@ use weebo_si_crd::{
     AttachmentMode, COMPANION_SERVICE, Dialect, FeatureMode, MIDDLEWARE_NAME, NamespaceName,
     ResolvedEndpointAuthConfig,
 };
-use weebo_si_endpoint_auth::compile::UnknownKey;
+use weebo_si_endpoint_auth::compile::{CompileError, UnknownKey};
 use weebo_si_endpoint_auth::policy::{EndpointPolicy, RestrictedResult};
 use weebo_si_network_profiles::is_excluded_namespace;
 
@@ -363,21 +363,17 @@ async fn report_restricted(
         config,
         namespace,
     );
-    let policy = inputs
-        .owner
-        .as_ref()
-        .and_then(|_| {
-            compile_annotations(
-                config,
-                annotations,
-                namespace,
-                &inputs,
-                &gateway_overrides(config),
-                UnknownKey::Default,
-            )
-        })
-        .and_then(Result::ok);
-    let (honoured, refused) = restricted_sets(policy.as_ref());
+    let compiled = inputs.owner.as_ref().and_then(|_| {
+        compile_annotations(
+            config,
+            annotations,
+            namespace,
+            &inputs,
+            &gateway_overrides(config),
+            UnknownKey::Default,
+        )
+    });
+    let (honoured, refused) = restricted_sets(compiled.as_ref());
     let change = ctx
         .deps
         .restricted
@@ -406,11 +402,25 @@ async fn report_restricted(
     }
 }
 
+/// What a refused restricted key is served as when no default can replace it.
+const CLOSED: &str = "closed";
+
 /// The restricted keys a compiled policy honoured, and those it refused with the key served in
-/// each one's place.
-fn restricted_sets(policy: Option<&EndpointPolicy>) -> (Vec<String>, BTreeMap<String, String>) {
+/// each one's place. A restricted default with no grant leaves nothing to serve: the endpoint is
+/// closed, and that refusal gets the same Event and metric as one served as the default.
+fn restricted_sets(
+    compiled: Option<&Result<EndpointPolicy, CompileError>>,
+) -> (Vec<String>, BTreeMap<String, String>) {
     let mut honoured = Vec::new();
     let mut refused = BTreeMap::new();
+    let policy = match compiled {
+        Some(Ok(policy)) => Some(policy),
+        Some(Err(CompileError::RestrictedNotGranted(key))) => {
+            refused.insert(key.to_string(), CLOSED.to_string());
+            None
+        }
+        Some(Err(_)) | None => None,
+    };
     for (key, result) in policy
         .map(|policy| policy.restricted.as_slice())
         .unwrap_or_default()
@@ -1105,13 +1115,28 @@ mod tests {
             ),
             (CatalogueKey::new("team"), RestrictedResult::Honoured),
         ];
-        let (honoured, refused) = restricted_sets(Some(&policy));
+        let (honoured, refused) = restricted_sets(Some(&Ok(policy)));
         assert_eq!(honoured, vec!["team".to_owned()]);
         assert_eq!(
             refused,
             BTreeMap::from([("open".to_owned(), "private".to_owned())])
         );
         assert_eq!(restricted_sets(None), (Vec::new(), BTreeMap::new()));
+        assert_eq!(
+            restricted_sets(Some(&Err(CompileError::RestrictedNotGranted(
+                CatalogueKey::new("open")
+            )))),
+            (
+                Vec::new(),
+                BTreeMap::from([("open".to_owned(), "closed".to_owned())])
+            )
+        );
+        assert_eq!(
+            restricted_sets(Some(&Err(CompileError::NotGranted(CatalogueKey::new(
+                "open"
+            ))))),
+            (Vec::new(), BTreeMap::new())
+        );
         assert_eq!(
             refused_note("open", "dev-ws-batleforc-test", "private"),
             "access key open is restricted and namespace dev-ws-batleforc-test does not grant it \

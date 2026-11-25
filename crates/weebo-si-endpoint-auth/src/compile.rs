@@ -200,6 +200,9 @@ pub enum CompileError {
     UnknownKey(CatalogueKey),
     /// The annotation names a key the team's grant — or the admin's override — does not allow.
     NotGranted(CatalogueKey),
+    /// RFC 0021: the effective default is a restricted key the namespace does not grant, so the
+    /// endpoint has nothing to fall back to and is indexed closed.
+    RestrictedNotGranted(CatalogueKey),
     /// The grant's own default is not in its allowed set, or an override narrowed the allowed set
     /// to something the default is no longer in. A configuration bug, and a closed endpoint until
     /// it is fixed.
@@ -231,6 +234,9 @@ impl fmt::Display for CompileError {
             }
             Self::UnknownKey(key) => write!(f, "no catalogue entry named {key}"),
             Self::NotGranted(key) => write!(f, "{key} is not granted here"),
+            Self::RestrictedNotGranted(key) => {
+                write!(f, "{key} is not granted here (a restricted default)")
+            }
             Self::DefaultNotAllowed(key) => write!(f, "default {key} is not in the allowed set"),
             Self::UnparseableRules(why) => write!(f, "rules did not parse: {why}"),
             Self::TooManyRules { found, max } => write!(f, "{found} rules, at most {max} allowed"),
@@ -378,7 +384,7 @@ impl Reach<'_> {
             return Ok(key);
         }
         if &key == self.default {
-            return Err(CompileError::NotGranted(key));
+            return Err(CompileError::RestrictedNotGranted(key));
         }
         let served_as = self.unlock(self.default.clone(), seen)?;
         record(
@@ -946,7 +952,9 @@ mod tests {
         let mut raw = raw_endpoint("user-alice", "alice");
         assert_eq!(
             compile_restricted(&raw, &grant, &[]),
-            Err(CompileError::NotGranted(CatalogueKey::new("open")))
+            Err(CompileError::RestrictedNotGranted(CatalogueKey::new(
+                "open"
+            )))
         );
         raw.namespace_grant = namespace_grant(Some("open"));
         let policy = compile_restricted(&raw, &grant, &[]).unwrap();
@@ -967,7 +975,9 @@ mod tests {
         raw.access = Some("open".into());
         assert_eq!(
             compile_restricted(&raw, &full_grant(), std::slice::from_ref(&open_by_default)),
-            Err(CompileError::NotGranted(CatalogueKey::new("open")))
+            Err(CompileError::RestrictedNotGranted(CatalogueKey::new(
+                "open"
+            )))
         );
         // Without the override the same endpoint falls back to the team default.
         assert!(compile_restricted(&raw, &full_grant(), &[]).is_ok());
