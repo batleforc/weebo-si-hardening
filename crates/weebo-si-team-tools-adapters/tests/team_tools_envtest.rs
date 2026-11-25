@@ -591,5 +591,34 @@ async fn the_team_status_keeps_identitys_condition() {
         .collect();
     assert_eq!(types, vec!["Ready"]);
     assert!(written.team_tools.is_empty());
-    assert!(!status::write(&teams, "gone", &cleared).await.unwrap());
+    assert!(status::write(&teams, "gone", &cleared).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_stale_team_tools_status_write_is_a_lost_race_not_an_error() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().unwrap();
+    install(&client, WeeboSiTeam::crd()).await;
+    let teams: Api<WeeboSiTeam> = Api::all(client.clone());
+    let team: WeeboSiTeam = serde_json::from_value(json!({
+        "apiVersion": "hardening.weebo.io/v1alpha1", "kind": "WeeboSiTeam",
+        "metadata": {"name": "raced"},
+        "spec": {"namespaceSelector": {"matchLabels": {"weebo.io/team": "raced"}}},
+    }))
+    .unwrap();
+    let stale = teams.create(&PostParams::default(), &team).await.unwrap();
+    // Identity writes first: the read above is now stale.
+    teams
+        .patch_status(
+            "raced",
+            &PatchParams::default(),
+            &Patch::Merge(json!({"status": {"members": 1}})),
+        )
+        .await
+        .unwrap();
+    let report = TeamReport {
+        tools: Vec::new(),
+        ready: Some((true, "Bound".to_string(), "no tool allowed".to_string())),
+    };
+    assert!(!status::write_over(&teams, &stale, &report).await.unwrap());
 }

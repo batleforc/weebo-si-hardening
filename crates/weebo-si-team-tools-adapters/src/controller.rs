@@ -1060,10 +1060,13 @@ impl Loop {
             // `status::write` compares with the live status: a value another writer reverted is
             // put back on the next pass, an unchanged one costs a GET.
             match status::write(&api, &team, &report).await {
-                Ok(_) if report.ready.is_none() => {
+                Ok(false) => tracing::debug!(
+                    "feature={FEATURE_ID} team={team} status write lost a race (retried next pass)"
+                ),
+                Ok(true) if report.ready.is_none() => {
                     self.memory.written.remove(&team);
                 }
-                Ok(_) => {
+                Ok(true) => {
                     self.memory.written.insert(team);
                 }
                 Err(err) => tracing::warn!(

@@ -7,8 +7,8 @@
 //! rather than dropping identity's `Ready`. Identity, in turn, carries `TeamToolsReady` over.
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
-use kube::Api;
 use kube::api::{Patch, PatchParams};
+use kube::{Api, ResourceExt};
 use serde_json::json;
 use weebo_si_crd::{TeamToolStatus, WeeboSiTeam};
 use weebo_si_team_tools::FIELD_MANAGER;
@@ -59,17 +59,26 @@ pub fn merge_conditions(
     conditions
 }
 
-/// Write `report` on team `name`, unless the live status already says it. `Ok(false)` when the
-/// team is gone.
+/// Write `report` on team `name`, unless the live status already says it or the team is gone.
+/// `Ok(false)` when the write lost a race with another writer (409): retried next pass.
 pub async fn write(
     api: &Api<WeeboSiTeam>,
     name: &str,
     report: &TeamReport,
 ) -> Result<bool, kube::Error> {
-    let Some(team) = api.get_opt(name).await? else {
-        return Ok(false);
-    };
-    let status = team.status.unwrap_or_default();
+    match api.get_opt(name).await? {
+        Some(team) => write_over(api, &team, report).await,
+        None => Ok(true),
+    }
+}
+
+/// [`write`] against `team` as read, its `resourceVersion` pinning the patch.
+pub async fn write_over(
+    api: &Api<WeeboSiTeam>,
+    team: &WeeboSiTeam,
+    report: &TeamReport,
+) -> Result<bool, kube::Error> {
+    let status = team.status.clone().unwrap_or_default();
     let conditions = merge_conditions(
         &status.conditions,
         report.ready.as_ref(),
@@ -85,13 +94,18 @@ pub async fn write(
         // leave the last value behind.
         "status": {"teamTools": report.tools, "conditions": conditions},
     });
-    api.patch_status(
-        name,
-        &PatchParams::apply(FIELD_MANAGER),
-        &Patch::Merge(&patch),
-    )
-    .await?;
-    Ok(true)
+    match api
+        .patch_status(
+            &team.name_any(),
+            &PatchParams::apply(FIELD_MANAGER),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(kube::Error::Api(status)) if status.code == 409 => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]
