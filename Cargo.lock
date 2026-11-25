@@ -4246,6 +4246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weebo-si-team-tools"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weebo-si-chassis",
+ "weebo-si-crd",
+]
+
+[[package]]
 name = "weebo-si-webhook"
 version = "0.1.0"
 dependencies = [
