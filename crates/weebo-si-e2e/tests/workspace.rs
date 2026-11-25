@@ -22,7 +22,7 @@ use std::time::Duration;
 use weebo_si_e2e::{
     Cleanup, Namespace, OPERATOR_NAMESPACE, RECONCILE, WORKSPACE_START, Workspace, WorkspaceSpec,
     apply, delete, feature_status, get, json, kubectl, metric_sum, must, set_features, stays, team,
-    text, try_apply, wait_until,
+    text, try_apply, try_apply_with_warnings, wait_until,
 };
 
 fn in_scope() -> serde_json::Value {
@@ -1296,6 +1296,438 @@ fn a_team_reports_its_namespaces_and_a_conflicting_redefinition_is_blamed_on_it(
     assert!(
         !first.to_string().contains("redefines"),
         "e2e-first must not carry e2e-second's mistake: {first}"
+    );
+}
+
+// --- devfile-contract (RFC 0019, *Proof against a real client*) --------------------------------------
+
+/// The real `weebo-che-project` parent: WeeboDevImage on `refs/heads/main` (row 2).
+const BRANCH_PARENT: &str = "https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml";
+/// The namespace of the suite's own parent devfile server: outside every feature's selector.
+const PARENTS_NS: &str = "e2e-devfile-parents";
+/// A 40-hex path segment, which the classifier reads as a pinned commit.
+const PARENT_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+const CONTRACT_ANNOTATION: &str = "hardening.weebo.io/devfile-contract";
+const REASON_ANNOTATION: &str = "hardening.weebo.io/devfile-contract-reason";
+const ABSENT_WARNING: &str = "devfile has no weebo.io/platform-contract attribute; add \"weebo.io/platform-contract: 3\" to its attributes";
+const BRANCH_WARNING: &str =
+    "devfile parent follows branch \"main\": pin parent.uri to a tag or a commit";
+/// What every devfile-contract refusal is prefixed with: denials on this route are HTTP 400,
+/// which kubectl prints `BadRequest` (not the RFC mocks' `Forbidden`).
+const DENIED_BY: &str =
+    "admission webhook \"devworkspaces.hardening.weebo.io\" denied the request: ";
+
+/// The pinned parent's URI, served in-cluster by [`parent_server`] — no internet needed for
+/// DevWorkspace Operator to resolve it.
+fn pinned_parent() -> String {
+    format!("http://parents.{PARENTS_NS}.svc:8080/{PARENT_COMMIT}/devfile.yaml")
+}
+
+/// The mocks' configuration: `currentContract: 3`, `minimumContract: 2`, schema `2.2.0`.
+fn devfile_contract(mode: &str, denied_parents: serde_json::Value) -> serde_json::Value {
+    json!({
+        "mode": mode,
+        "namespaceSelector": in_scope(),
+        "currentContract": 3,
+        "minimumContract": 2,
+        "minimumSchemaVersion": "2.2.0",
+        "deniedContracts": [],
+        "deniedParents": denied_parents,
+        "onDenied": "Deny",
+    })
+}
+
+/// [`Workspace::manifest`] with a devfile `parent` and `started`.
+fn with_parent(
+    namespace: &str,
+    name: &str,
+    spec: &WorkspaceSpec<'_>,
+    parent: serde_json::Value,
+    started: bool,
+) -> serde_json::Value {
+    let mut manifest = Workspace::manifest(namespace, name, spec);
+    manifest["spec"]["template"]["parent"] = parent;
+    manifest["spec"]["started"] = json!(started);
+    manifest
+}
+
+/// The `weebo-che-project` devfile as a DevWorkspace: no contract, parent on a branch (row 2).
+fn weebo_che_project(namespace: &str, name: &str, spec: &WorkspaceSpec<'_>) -> serde_json::Value {
+    with_parent(namespace, name, spec, json!({ "uri": BRANCH_PARENT }), true)
+}
+
+/// Apply `manifest`, failing the test on a refusal: the workspace (dropped = deleted) and
+/// kubectl's stderr.
+#[track_caller]
+fn apply_dw(manifest: &serde_json::Value) -> (Workspace, String) {
+    let stderr =
+        try_apply_with_warnings(&manifest.to_string()).unwrap_or_else(|err| panic!("{err}"));
+    let workspace = Workspace {
+        namespace: text(manifest, "/metadata/namespace"),
+        name: text(manifest, "/metadata/name"),
+    };
+    (workspace, stderr)
+}
+
+/// The admission warnings in kubectl's stderr, without kubectl's `Warning: ` prefix.
+fn warnings(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("Warning: "))
+        .collect()
+}
+
+fn annotation(workspace: &Workspace, key: &str) -> String {
+    text(
+        &workspace.object(),
+        &format!("/metadata/annotations/{}", key.replace('/', "~1")),
+    )
+}
+
+/// A plain HTTP server for the pinned parent devfile, in a namespace of its own: the suite's
+/// workspace image running `python3 -m http.server` over a ConfigMap at `/<PARENT_COMMIT>/`.
+fn parent_server() -> Cleanup {
+    // A rerun must not apply into the previous run's namespace (left over or terminating).
+    delete(&["namespace", PARENTS_NS]);
+    wait_until(
+        "the previous parents namespace to be gone",
+        RECONCILE,
+        || get(&["namespace", PARENTS_NS]).map_or(Ok(()), |_| Err("still there".to_string())),
+    );
+    let devfile = "schemaVersion: 2.2.0\nmetadata:\n  name: e2e-parent\n";
+    for object in [
+        json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": PARENTS_NS } }),
+        json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": "parent", "namespace": PARENTS_NS },
+            "data": { "devfile.yaml": devfile },
+        }),
+        json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "parents", "namespace": PARENTS_NS, "labels": { "app": "parents" } },
+            "spec": {
+                "securityContext": { "runAsNonRoot": true, "seccompProfile": { "type": "RuntimeDefault" } },
+                "containers": [{
+                    "name": "http",
+                    "image": weebo_si_e2e::WORKSPACE_IMAGE,
+                    "command": ["python3", "-m", "http.server", "8080", "--directory", "/srv"],
+                    "ports": [{ "containerPort": 8080 }],
+                    "securityContext": {
+                        "allowPrivilegeEscalation": false,
+                        "capabilities": { "drop": ["ALL"] },
+                    },
+                    "volumeMounts": [{ "name": "parent", "mountPath": format!("/srv/{PARENT_COMMIT}") }],
+                }],
+                "volumes": [{ "name": "parent", "configMap": { "name": "parent" } }],
+            },
+        }),
+        json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": { "name": "parents", "namespace": PARENTS_NS },
+            "spec": { "selector": { "app": "parents" }, "ports": [{ "port": 8080 }] },
+        }),
+    ] {
+        apply(&object.to_string());
+    }
+    let cleanup = Cleanup::new(&["namespace", PARENTS_NS]);
+    must(&[
+        "wait",
+        "-n",
+        PARENTS_NS,
+        "--for=condition=Ready",
+        "pod/parents",
+        "--timeout=600s",
+    ]);
+    cleanup
+}
+
+fn warnings_total(mode: &str) -> f64 {
+    metric_sum(
+        "webhook",
+        "weebo_si_admission_warnings_total",
+        &[("feature", "devfile-contract"), ("mode", mode)],
+    )
+}
+
+/// Rows 1 and 5. A current devfile costs zero lines of output and runs; denying its parent later
+/// never blocks the running workspace's stop or delete, only its next start.
+#[test]
+fn a_current_devfile_is_silent_and_a_later_denial_only_refuses_the_next_start() {
+    let _server = parent_server();
+    set_features(json!({ "devfileContract": devfile_contract("Enforce", json!([])) }));
+    let ns = Namespace::workspace("alice", "devfile-current", None);
+    let current = WorkspaceSpec {
+        attributes: json!({ "weebo.io/platform-contract": 3 }),
+        ..WorkspaceSpec::default()
+    };
+    let parent = json!({ "uri": pinned_parent() });
+
+    let (workspace, stderr) = apply_dw(&with_parent(
+        &ns.name,
+        "go-api",
+        &current,
+        parent.clone(),
+        true,
+    ));
+    assert_eq!(stderr, "", "a current devfile prints nothing");
+    assert_eq!(annotation(&workspace, CONTRACT_ANNOTATION), "current");
+    workspace.wait_running();
+    // The copy is created stopped while nothing is denied: a CREATE is a start (D-13).
+    let (copy, _) = apply_dw(&with_parent(
+        &ns.name,
+        "go-api-copy",
+        &current,
+        parent,
+        false,
+    ));
+
+    let prefix = format!("http://parents.{PARENTS_NS}.svc:8080/{PARENT_COMMIT}/");
+    set_features(json!({
+        "devfileContract": devfile_contract("Enforce", json!([{ "uriPrefix": prefix }])),
+    }));
+    let stop = weebo_si_e2e::kubectl_with_warnings(
+        &[
+            "patch",
+            "devworkspace",
+            "-n",
+            &ns.name,
+            &workspace.name,
+            "--type=merge",
+            "-p",
+            r#"{"spec":{"started":false}}"#,
+        ],
+        None,
+    )
+    .unwrap_or_else(|err| panic!("a stop is never refused: {err}"));
+    assert!(
+        warnings(&stop).contains(
+            &"devfile parent is denied by the platform (deniedParents entry 1): this workspace will be refused at its next start"
+        ),
+        "{stop}"
+    );
+    must(&[
+        "delete",
+        "devworkspace",
+        "-n",
+        &ns.name,
+        &workspace.name,
+        "--timeout=300s",
+    ]);
+
+    let err = kubectl(&[
+        "patch",
+        "devworkspace",
+        "-n",
+        &ns.name,
+        &copy.name,
+        "--type=merge",
+        "-p",
+        r#"{"spec":{"started":true}}"#,
+    ])
+    .expect_err("starting a workspace on a denied parent is refused");
+    assert!(
+        err.contains("(BadRequest)") && err.contains(DENIED_BY),
+        "{err}"
+    );
+}
+
+/// Row 2: the real-world devfile, exactly the mock's two warnings and the `unknown` annotation.
+#[test]
+fn the_weebo_che_project_devfile_gets_exactly_the_two_warnings_of_the_mock() {
+    set_features(json!({ "devfileContract": devfile_contract("Enforce", json!([])) }));
+    let ns = Namespace::workspace("alice", "devfile-real", None);
+    let (workspace, stderr) = apply_dw(&weebo_che_project(
+        &ns.name,
+        "weebo-che-project",
+        &WorkspaceSpec::default(),
+    ));
+    assert_eq!(
+        warnings(&stderr),
+        [ABSENT_WARNING, BRANCH_WARNING],
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 2, "{stderr}");
+    assert_eq!(annotation(&workspace, CONTRACT_ANNOTATION), "unknown");
+    assert_eq!(
+        annotation(&workspace, REASON_ANNOTATION),
+        "contract-absent,parent-branch,schema-unknown"
+    );
+}
+
+/// Row 3: a DevWorkspaceTemplate parent warns once, and the workspace still starts.
+#[test]
+fn a_devworkspacetemplate_parent_warns_and_still_starts() {
+    set_features(json!({ "devfileContract": devfile_contract("Enforce", json!([])) }));
+    let ns = Namespace::workspace("alice", "devfile-dwt", None);
+    apply(
+        &json!({
+            "apiVersion": "workspace.devfile.io/v1alpha2",
+            "kind": "DevWorkspaceTemplate",
+            "metadata": { "name": "base", "namespace": ns.name },
+            "spec": {},
+        })
+        .to_string(),
+    );
+    let spec = WorkspaceSpec {
+        attributes: json!({ "weebo.io/platform-contract": 3 }),
+        ..WorkspaceSpec::default()
+    };
+    let (workspace, stderr) = apply_dw(&with_parent(
+        &ns.name,
+        "dwt-parent",
+        &spec,
+        json!({ "kubernetes": { "name": "base" } }),
+        true,
+    ));
+    assert_eq!(
+        warnings(&stderr),
+        [
+            "devfile parent is a DevWorkspaceTemplate (parent.kubernetes): the workspace itself can change it"
+        ],
+        "{stderr}"
+    );
+    workspace.wait_running();
+}
+
+/// Row 4: a denied parent is refused with the mock's text (HTTP 400, `BadRequest`), and nothing
+/// reaches DevWorkspace Operator.
+#[test]
+fn a_denied_parent_is_refused_before_devworkspace_operator_sees_it() {
+    let prefix = format!("http://parents.{PARENTS_NS}.svc:8080/{PARENT_COMMIT}/");
+    set_features(json!({
+        "devfileContract": devfile_contract("Enforce", json!([{ "uriPrefix": prefix }])),
+    }));
+    let ns = Namespace::workspace("bob", "devfile-denied", None);
+    let spec = WorkspaceSpec {
+        attributes: json!({ "weebo.io/platform-contract": 3 }),
+        ..WorkspaceSpec::default()
+    };
+    let manifest = with_parent(
+        &ns.name,
+        "old-base",
+        &spec,
+        json!({ "uri": pinned_parent() }),
+        true,
+    );
+    let err = try_apply_with_warnings(&manifest.to_string())
+        .expect_err("the parent is on the denied list");
+    assert!(err.contains("exit status: 1"), "{err}");
+    assert!(err.contains("Error from server (BadRequest)"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "{DENIED_BY}devfile parent is denied by the platform (deniedParents entry 1: {prefix}): \
+             move parent.uri to a newer version; contract 3 in the User Guide lists them"
+        )),
+        "{err}"
+    );
+    assert!(get(&["devworkspace", "-n", &ns.name, "old-base"]).is_none());
+    let created = get(&["devworkspacetemplates,deployments", "-n", &ns.name]).unwrap();
+    assert_eq!(created["items"], json!([]), "{created}");
+}
+
+/// Row 6: DryRun shows the developer nothing and writes nothing, yet counts the two warnings.
+#[test]
+fn dry_run_is_invisible_to_the_developer_and_counted() {
+    let ns = Namespace::workspace("carol", "devfile-dry", None);
+    // Scoped to this namespace alone: the counter is global, and an earlier test's workspace
+    // still being torn down would otherwise add its own warnings.
+    let mut config = devfile_contract("DryRun", json!([]));
+    config["namespaceSelector"] =
+        json!({ "matchLabels": { "kubernetes.io/metadata.name": ns.name } });
+    set_features(json!({ "devfileContract": config }));
+    let before = warnings_total("dry_run");
+    // (2)'s object, stopped: an ephemeral, stopped workspace gets no write from DevWorkspace
+    // Operator that would be judged again before the scrape.
+    let mut manifest = weebo_che_project(&ns.name, "dry", &WorkspaceSpec::default());
+    manifest["spec"]["started"] = json!(false);
+    let (workspace, stderr) = apply_dw(&manifest);
+    assert_eq!(stderr, "", "DryRun prints nothing");
+    assert_eq!(annotation(&workspace, CONTRACT_ANNOTATION), "");
+    let delta = warnings_total("dry_run") - before;
+    assert!(
+        (delta - 2.0).abs() < f64::EPSILON,
+        "warnings counter moved by {delta}"
+    );
+}
+
+/// Row 7: a 10 KiB generator full of ESC and CRLF reaches no warning and at most 32 characters
+/// of the log line.
+#[test]
+fn a_hostile_generator_attribute_is_bounded_everywhere() {
+    set_features(json!({ "devfileContract": devfile_contract("Enforce", json!([])) }));
+    let ns = Namespace::workspace("dave", "devfile-bounds", None);
+    let generator = "\u{1b}[31mgen\r\n".repeat(1024);
+    let spec = WorkspaceSpec {
+        attributes: json!({ "weebo.io/generator": generator }),
+        ..WorkspaceSpec::default()
+    };
+    let (workspace, stderr) = apply_dw(&weebo_che_project(&ns.name, "hostile", &spec));
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "an ESC byte reached kubectl: {stderr:?}"
+    );
+    for warning in warnings(&stderr) {
+        assert!(warning.chars().count() <= 120, "{warning:?}");
+    }
+
+    let needle = format!("workspace={} ", workspace.name);
+    let line = wait_until("the decision's log line", RECONCILE, || {
+        weebo_si_e2e::operator_pods("webhook")
+            .iter()
+            .filter_map(|pod| kubectl(&["logs", "-n", OPERATOR_NAMESPACE, pod, "--since=10m"]).ok())
+            .flat_map(|logs| logs.lines().map(str::to_string).collect::<Vec<_>>())
+            .find(|line| line.contains("devfile-contract") && line.contains(&needle))
+            .ok_or_else(|| "no devfile-contract line for the workspace yet".to_string())
+    });
+    let field = line
+        .split("generator=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no generator= field: {line}"));
+    let value: String = field
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\u{1b}'))
+        .collect();
+    // The field only: the log formatter may colour the rest of the line with its own ESC codes.
+    assert!(
+        !value.is_empty()
+            && value.chars().count() <= 32
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-')),
+        "generator={value:?} in {line:?}"
+    );
+}
+
+/// Row 8: with the image rewrite on, the apiserver reinvokes this webhook after the rewrite.
+/// The RFC leaves open whether kubectl then prints each warning once or twice [R10].
+// shortcut: accepts once or twice until a kind run records the count; pin it to that count then.
+#[test]
+fn a_reinvocation_prints_each_warning_the_same_number_of_times() {
+    set_features(json!({
+        "devfileContract": devfile_contract("Enforce", json!([])),
+        "imageRewrite": image_rewrite("Enforce", mirror_rule()),
+    }));
+    let ns = Namespace::workspace("erin", "devfile-reinvoke", None);
+    let spec = WorkspaceSpec {
+        image: UPSTREAM_IMAGE,
+        ..WorkspaceSpec::default()
+    };
+    let (workspace, stderr) = apply_dw(&weebo_che_project(&ns.name, "reinvoked", &spec));
+    assert_eq!(
+        component_image(&workspace),
+        MIRRORED_IMAGE,
+        "the rewrite ran"
+    );
+    let lines = warnings(&stderr);
+    let absent = lines.iter().filter(|line| **line == ABSENT_WARNING).count();
+    let branch = lines.iter().filter(|line| **line == BRANCH_WARNING).count();
+    eprintln!("reinvocation: each warning printed {absent} time(s)");
+    assert!(
+        (1..=2).contains(&absent) && absent == branch && lines.len() == absent * 2,
+        "{stderr}"
     );
 }
 

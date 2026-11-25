@@ -53,6 +53,18 @@ pub fn ca_file() -> String {
 /// Run `kubectl`, feeding `stdin` if given: `Ok(stdout)` on success, `Err` naming the command and
 /// its stderr otherwise.
 pub fn kubectl_with(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    run(args, stdin).map(|(stdout, _)| stdout)
+}
+
+/// [`kubectl_with`], but `Ok(stderr)`: where kubectl prints the admission warnings (`Warning: `
+/// lines) of a request it otherwise accepted, and which [`kubectl_with`] drops.
+pub fn kubectl_with_warnings(args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    run(args, stdin).map(|(_, stderr)| stderr)
+}
+
+/// Run `kubectl`: `Ok((stdout, stderr))` on success, `Err` naming the command and its output
+/// otherwise.
+fn run(args: &[&str], stdin: Option<&str>) -> Result<(String, String), String> {
     let mut child = Command::new("kubectl")
         .args(args)
         .stdin(if stdin.is_some() {
@@ -72,7 +84,10 @@ pub fn kubectl_with(args: &[&str], stdin: Option<&str>) -> Result<String, String
         .wait_with_output()
         .map_err(|err| format!("kubectl {}: {err}", args.join(" ")))?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok((
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
     } else {
         Err(format!(
             "kubectl {} failed ({}): {}{}",
@@ -105,20 +120,30 @@ pub fn fail(message: &str) -> ! {
     panic!("{message}")
 }
 
+/// The arguments of every server-side apply here, `yaml` on stdin.
+fn apply_args() -> [String; 6] {
+    [
+        "apply".to_string(),
+        "--server-side".to_string(),
+        "--force-conflicts".to_string(),
+        format!("--field-manager={FIELD_MANAGER}"),
+        "-f".to_string(),
+        "-".to_string(),
+    ]
+}
+
 /// Server-side apply `yaml`, returning the apiserver's refusal (an admission denial included)
 /// rather than failing — the shape a test asserting a refusal needs.
 pub fn try_apply(yaml: &str) -> Result<String, String> {
-    kubectl_with(
-        &[
-            "apply",
-            "--server-side",
-            "--force-conflicts",
-            &format!("--field-manager={FIELD_MANAGER}"),
-            "-f",
-            "-",
-        ],
-        Some(yaml),
-    )
+    let args = apply_args();
+    kubectl_with(&args.each_ref().map(String::as_str), Some(yaml))
+}
+
+/// [`try_apply`], returning kubectl's stderr on success: the admission warnings, one
+/// `Warning: <text>` line each (RFC 0019).
+pub fn try_apply_with_warnings(yaml: &str) -> Result<String, String> {
+    let args = apply_args();
+    kubectl_with_warnings(&args.each_ref().map(String::as_str), Some(yaml))
 }
 
 /// [`try_apply`], failing the test on error.
