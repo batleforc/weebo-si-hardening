@@ -81,11 +81,12 @@ next start`, so a workspace can always be stopped and deleted. `onDenied: Warn` 
 refusal into a warning.
 
 ```text
-Error from server (BadRequest): … admission webhook "devworkspaces.hardening.weebo.io" denied the request: devfile parent is denied by the platform (deniedParents entry 1: https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/): move parent.uri to a newer version; contract 3 in the User Guide lists them
+Error from server: admission webhook "devworkspaces.hardening.weebo.io" denied the request: devfile parent is denied by the platform (deniedParents entry 1: https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/): move parent.uri to a newer version; contract 3 in the User Guide lists them
 ```
 
-The refusal quotes the admin's entry, never the developer's URI. kubectl prints `BadRequest`,
-not the RFC mock's `Forbidden`: the route's denials carry no HTTP code.
+The refusal quotes the admin's entry, never the developer's URI. kubectl prints a bare
+`Error from server:`, not the RFC mock's `Forbidden`: the route's denials carry no HTTP code
+(seen on kind, Kubernetes 1.35).
 
 Writing a `uriPrefix`:
 

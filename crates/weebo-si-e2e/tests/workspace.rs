@@ -1313,7 +1313,7 @@ const ABSENT_WARNING: &str = "devfile has no weebo.io/platform-contract attribut
 const BRANCH_WARNING: &str =
     "devfile parent follows branch \"main\": pin parent.uri to a tag or a commit";
 /// What every devfile-contract refusal is prefixed with: denials on this route are HTTP 400,
-/// which kubectl prints `BadRequest` (not the RFC mocks' `Forbidden`).
+/// which kubectl prints as a bare `Error from server:` (not the RFC mocks' `Forbidden`).
 const DENIED_BY: &str =
     "admission webhook \"devworkspaces.hardening.weebo.io\" denied the request: ";
 
@@ -1441,6 +1441,37 @@ fn parent_server() -> Cleanup {
         "pod/parents",
         "--timeout=600s",
     ]);
+    // A Ready pod is not yet a Service endpoint: DWO's fetch would meet "connection refused".
+    wait_until("the parents Service to have an endpoint", RECONCILE, || {
+        let slices = get(&[
+            "endpointslices",
+            "-n",
+            PARENTS_NS,
+            "-l",
+            "kubernetes.io/service-name=parents",
+        ])
+        .ok_or("no endpointslice list")?;
+        let ready = slices
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|slice| {
+                    slice
+                        .pointer("/endpoints")
+                        .and_then(Value::as_array)
+                        .is_some_and(|endpoints| {
+                            endpoints.iter().any(|endpoint| {
+                                endpoint.pointer("/conditions/ready") == Some(&Value::Bool(true))
+                            })
+                        })
+                })
+            });
+        if ready {
+            Ok(())
+        } else {
+            Err("no ready endpoint".to_string())
+        }
+    });
     cleanup
 }
 
@@ -1529,7 +1560,7 @@ fn a_current_devfile_is_silent_and_a_later_denial_only_refuses_the_next_start() 
     ])
     .expect_err("starting a workspace on a denied parent is refused");
     assert!(
-        err.contains("(BadRequest)") && err.contains(DENIED_BY),
+        err.contains("Error from server") && err.contains(DENIED_BY),
         "{err}"
     );
 }
@@ -1592,7 +1623,7 @@ fn a_devworkspacetemplate_parent_warns_and_still_starts() {
     workspace.wait_running();
 }
 
-/// Row 4: a denied parent is refused with the mock's text (HTTP 400, `BadRequest`), and nothing
+/// Row 4: a denied parent is refused with the mock's text (HTTP 400, a bare `Error from server:`), and nothing
 /// reaches DevWorkspace Operator.
 #[test]
 fn a_denied_parent_is_refused_before_devworkspace_operator_sees_it() {
@@ -1615,7 +1646,7 @@ fn a_denied_parent_is_refused_before_devworkspace_operator_sees_it() {
     let err = try_apply_with_warnings(&manifest.to_string())
         .expect_err("the parent is on the denied list");
     assert!(err.contains("exit status: 1"), "{err}");
-    assert!(err.contains("Error from server (BadRequest)"), "{err}");
+    assert!(err.contains("Error from server"), "{err}");
     assert!(
         err.contains(&format!(
             "{DENIED_BY}devfile parent is denied by the platform (deniedParents entry 1: {prefix}): \

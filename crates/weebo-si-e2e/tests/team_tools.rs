@@ -733,10 +733,7 @@ fn an_ungranted_key_is_refused_under_deny_and_nothing_is_rendered() {
         }
     });
     assert!(refusal.contains("exit status: 1"), "{refusal}");
-    assert!(
-        refusal.contains("Error from server (BadRequest)"),
-        "{refusal}"
-    );
+    assert!(refusal.contains("Error from server"), "{refusal}");
     assert!(
         refusal.contains(
             "admission webhook \"devworkspaces.hardening.weebo.io\" denied the request: \

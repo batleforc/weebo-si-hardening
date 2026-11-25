@@ -542,7 +542,7 @@ annotations):
 
 ```console
 $ kubectl annotate ingress api -n user-alice cert-manager.io/cluster-issuer=team-weebo-tools-ca
-Error from server (BadRequest): admission webhook "ingresses.endpointauthguard.hardening.weebo.io"
+Error from server: admission webhook "ingresses.endpointauthguard.hardening.weebo.io"
 denied the request: alice may not name the cert-manager issuer "team-weebo-tools-ca" on this Ingress;
 only the issuers in spec.features.endpointAuth.allowedIssuers may sign a workspace certificate
 ```
