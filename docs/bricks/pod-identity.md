@@ -56,6 +56,12 @@ namespace until they restart**: admission runs at creation only.
 
    The paths answer in every mode, `Off` included, so register them once the release runs and
    **before** `mode: DryRun`; otherwise `DryRun` sees no request at all.
+6. **Label the workspace namespaces.** Both webhooks are registered only on namespaces that carry
+   `hardening.weebo.io/workspace-namespace` and not `hardening.weebo.io/exclude` (the chart's
+   `namespaceExclusionLabel`); the apiserver never sends them a pod from any other namespace,
+   whatever `namespaceSelector` says. weebo-si labels every workspace namespace; elsewhere, label
+   them yourself. A namespace that lacks the label is silently out of scope: no rewrite, no
+   refusal, and no log line, since the request never reaches the operator.
 
 ## Configure it
 
@@ -72,19 +78,23 @@ spec:
       grantGroupZero: false  # last resort, see the reference
 ```
 
+`namespaceSelector` narrows the scope inside the namespaces the webhooks reach; it cannot widen
+it. A namespace it selects without the `hardening.weebo.io/workspace-namespace` label is never
+rewritten nor checked, and nothing logs it (install checklist, step 6).
+
 ## Refusals and their fixes
 
 A refused pod is not created. A workspace pod is created by DevWorkspace Operator's ReplicaSet,
 so the developer sees the refusal in the workspace's status (the dashboard, or `kubectl get dw`):
 DWO does not retry, it marks the workspace `Failed` with the event. The fix is in the devfile, then
-a restart. A direct pod gets the refusal from `kubectl`, exit code 1. Denials carry no HTTP code,
-so the apiserver answers **400**: kubectl prints `Error from server (BadRequest)`, not the RFC
+a restart. A direct pod gets the refusal from `kubectl`, exit code 1. Denials carry no status
+reason, so kubectl prints a bare `Error from server:` (seen on kind, Kubernetes 1.35), not the RFC
 mocks' `Forbidden`.
 
 ```text
 $ kubectl run -n dev-ws-batleforc-test probe --image=<image> --restart=Never \
     --overrides='{"spec":{"hostUsers":true}}'
-Error from server (BadRequest): admission webhook "pod-identity-validate.hardening.weebo.io"
+Error from server: admission webhook "pod-identity-validate.hardening.weebo.io"
   denied the request: hostUsers=true: pods in a workspace namespace run in their own user
   namespace; remove hostUsers from the pod spec (or the devfile's pod-overrides)
 ```

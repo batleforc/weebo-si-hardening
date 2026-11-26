@@ -83,18 +83,29 @@ grant is a `kubectl annotate` Argo CD does not own: write it down.
 | `namespaceGrant.annotation: ""` | every restricted key refused (fail closed) | n/a |
 
 **network-profiles, `onNotGranted: Default`:** the request is dropped and the team default
-applied. **`onNotGranted: Deny`:** a DevWorkspace **created** with a refused key is refused (400
-`BadRequest` in kubectl, not the RFC mock's `Forbidden`):
+applied. **`onNotGranted: Deny`:** a DevWorkspace **created** with a refused key is refused
+(kubectl prints a bare `Error from server:`, not the RFC mock's `Forbidden`):
 
 ```text
-Error from server (BadRequest): error when creating "python-web.yaml": admission webhook
+Error from server: error when creating "python-web.yaml": admission webhook
 "devworkspaces.hardening.weebo.io" denied the request: workspace python-web requests network
 profile(s) [internet], which are restricted: namespace dev-ws-batleforc-test does not grant them
 (annotation hardening.weebo.io/network-grants)
 ```
 
 An `UPDATE` is admitted. Every **admitted** write naming a refused key (any `UPDATE`, and a
-`CREATE` under `Default`) gets an admission warning; a refused `CREATE` gets the denial alone.
+`CREATE` under `Default`) gets an admission warning; a refused `CREATE` gets the denial alone:
+
+```text
+Warning: network profile(s) [internet]: restricted, no namespace grant (hardening.weebo.io/network-grants); not applied
+```
+
+The effect is `not applied` under `onNotGranted: Default` and `Deny: baseline only` when the
+request is refused under `Deny` (an `UPDATE`). With `namespaceGrant.annotation: ""` the clause
+reads `grants disabled (namespaceGrant.annotation empty)` instead. The warning fits in 120
+characters: keys that do not fit are counted as `+N more` (`[internet,+2 more]`), so the clause
+and the effect are never cut.
+
 Warnings reach `kubectl` only (the Che dashboard drops them); the Event below is for everyone. **Under `Deny`, revoking a grant from a running workspace drops every profile beyond
 the baseline**, not only the revoked key: a refused request applies nothing beyond the baseline,
 which is the existing `Deny` rule (RFC 0021 does not cover it; the lab runs `Default`). A workspace

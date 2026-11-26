@@ -152,12 +152,12 @@ granted=buildkit;dropped=android
 | `TeamToolRestartNeeded` | the attribute was added to a running workspace: DWO mounts the client objects only when it builds the pod | `team tool "buildkit" was added to a running workspace: restart it once to mount its client side` |
 
 **Under `onNotGranted: Deny`**, a `CREATE` naming an ungranted key, or an `UPDATE` that starts the
-workspace, is refused. Denials carry no HTTP code, so the apiserver answers **400**: kubectl
-prints `Error from server (BadRequest)`, not the RFC mock's `Forbidden`:
+workspace, is refused. Denials carry no status reason, so kubectl prints a bare
+`Error from server:` (seen on kind, Kubernetes 1.35), not the RFC mock's `Forbidden`:
 
 ```text
 $ kubectl apply -f devworkspace.yaml
-Error from server (BadRequest): error when creating "devworkspace.yaml": admission webhook
+Error from server: error when creating "devworkspace.yaml": admission webhook
 "devworkspaces.hardening.weebo.io" denied the request: team tool "android" is not granted to
 team weebo
 ```
