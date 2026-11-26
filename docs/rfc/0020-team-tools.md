@@ -1,10 +1,10 @@
 ---
 rfc: 0020
 title: team tools
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-26
 decided: 2026-11-24
 brick: crates/weebo-si-team-tools
 supersedes: []
@@ -1045,27 +1045,30 @@ None: every question raised by this draft is resolved above.
 
 ## Implementation plan
 
-- [ ] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL (incl.
+- [x] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL (incl.
       `issuerRef.kind: ClusterIssuer`). A configuration validates and does nothing; the feature
       is listed in `crates/weebo-si-operator/src/features.rs` only in PR 4, with its wiring.
-- [ ] PR 2 — `weebo-si-team-tools`: resolution, validation table, `ScaleDecision`, three
+- [x] PR 2 — `weebo-si-team-tools`: resolution, validation table, `ScaleDecision`, three
       subjects' `desired()`, admission gate type; all unit tests above.
-- [ ] PR 3a — endpoint-auth: the Ingress issuer allow-list and subject-key refusal (S3). Lands
+- [x] PR 3a — endpoint-auth: the Ingress issuer allow-list and subject-key refusal (S3). Lands
       before any team CA exists, so the shim path is closed first.
-- [ ] PR 3 — chart: unbound ClusterRoles `weebo-si-team-tools` and
+- [x] PR 3 — chart: unbound ClusterRoles `weebo-si-team-tools` and
       `weebo-si-team-tools-requester`, cluster-wide read of `certificates` and `configmaps`
       behind `teamTools.rbac.enabled` (default `false`), template-namespace Role,
       `--team-tools-template-namespace`. Lands **before** any writer so the boundary exists
       first.
-- [ ] PR 4 — `weebo-si-team-tools-adapters`: stores, `/scale`, controller loop, metrics,
+- [x] PR 4 — `weebo-si-team-tools-adapters`: stores, `/scale`, controller loop, metrics,
       status, `features.rs` entry; envtest; the network-profiles invariant test. Gated by the
       remaining V-16 items. Security controls (binding gate,
       quota gate, template validation) are in PR 2 and wired here, never after.
-- [ ] PR 5 — webhook: fold `mutate_devworkspaces` into one loop over the ordered registries,
+- [x] PR 5 — webhook: fold `mutate_devworkspaces` into one loop over the ordered registries,
       `TeamToolsAdmission` as the fourth, verdict annotation, router tests. After RFC 0019 PR 1
       (chassis `warnings`).
-- [ ] PR 6 — e2e `team-tools` suite on kind with cert-manager and BuildKit.
-- [ ] PR 7 — docs: brick page, CRD pages; RFC to `Implemented`.
+- [x] PR 6 — e2e `team-tools` suite on kind with cert-manager and BuildKit.
+- [x] PR 7 — docs: brick page, CRD pages; RFC to `Implemented`.
+- [ ] On the cluster and in weebo-si (not done in this branch): the remaining V-16 items, phase 0
+      and phase 1 of *Integration in weebo-si*, ≥ 7 days of `DryRun`, T-39 to T-42, and the
+      `trivy image` scan of the BuildKit image (CI does not run one yet).
 
 ### Estimate
 
@@ -1158,6 +1161,33 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | R30 | `charts/weebo-si-operator/templates/webhookconfiguration-endpoints.yaml:65`, `:89` | c412ee3 | endpoint-auth already admits Ingresses at `/mutate/v1/ingresses` |
 | R31 | `crates/weebo-si-envtest-support/src/lib.rs:23`, `:67`, `:129` | c412ee3 | `start` is `AlwaysAllow`; `start_rbac` exists |
 
+## Revision against the tree (2026-11-26)
+
+Shipped on the branch `feat/rfc-0018-0021` (PR #24): the CRD blocks and status, the
+`allowedIssuers` allow-list of endpoint-auth (S3, default `[vault-issuer]`), the chart RBAC behind
+`teamTools.rbac.enabled`, `weebo-si-team-tools` and its adapters (controller, stores, `/scale`,
+metrics), the admission gate as the fourth registry of the DevWorkspace route, the `team-tools`
+e2e suite on kind with cert-manager and BuildKit, and [`docs/bricks/team-tools.md`](../bricks/team-tools.md).
+
+**What differs from the text above:**
+
+1. **Refusals print a bare `Error from server:`**, not the mock's `Error from server (Forbidden)`:
+   the route's denials carry no status reason (seen on kind, Kubernetes 1.35).
+2. **The BuildKit entry needs a `buildkitd-subid` ConfigMap template.** The rootless image's
+   `/etc/subuid` is `user:100000:65536`, beyond the 65536 ids a `hostUsers: false` pod owns, so
+   rootlesskit's `newuidmap` failed and `buildkitd` crash-looped. The template maps every pod id
+   but 0 and 1000; the process sandbox and `hostUsers: false` stay.
+3. **The per-workspace egress CNP is additive** (`enableDefaultDeny` off), as the 2026-11-25
+   changelog row records.
+4. **Template validation refuses more than the table lists**: a template named like a system
+   object (`kube-*`, `openshift-*`), a template with `immutable: true`, and a workload whose
+   `persistentVolumeClaimRetentionPolicy.whenDeleted` is `Delete`. A rendered `Service` drops the
+   template's allocated `clusterIP` and `nodePorts`.
+5. **The node pulls the BuildKit image itself in the e2e suite** instead of `kind load`.
+
+**Not done here:** the remaining V-16 items, *Integration in weebo-si* (phases 0 and 1), the
+`DryRun` week, T-39 to T-42, and the `trivy` scan of the BuildKit image.
+
 ## Changelog
 
 | Date | Change |
@@ -1167,3 +1197,4 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | 2026-11-24 | Still-open 1–5 resolved by the owner as recommended (Resolved 10–14); BuildKit template keeps the process sandbox by default, mTLS mandatory for the BuildKit entry. |
 | 2026-11-24 | Accepted by the owner |
 | 2026-11-25 | Implementation review: the egress CNP is additive (`enableDefaultDeny` off); residual risks T6 (hand edits kept) and E3 (tool pod-spec checks) added. |
+| 2026-11-26 | `Implemented` (PR #24): PRs 1–7 shipped; *Revision against the tree* records the bare `Error from server:`, the `buildkitd-subid` template and the extra template checks. V-16, the weebo-si phases and the BuildKit image scan are still owed. |

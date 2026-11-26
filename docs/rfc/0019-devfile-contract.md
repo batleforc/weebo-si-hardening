@@ -1,10 +1,10 @@
 ---
 rfc: 0019
 title: devfile contract
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-26
 decided: 2026-11-24
 brick: crates/weebo-si-devfile-contract
 supersedes: []
@@ -917,21 +917,25 @@ V-14 and V-23 are answered (D-10, D-9).
 
 ## Implementation plan
 
-- [ ] **PR 1 — chassis warnings.** `Decision.warnings`, `AdmitOutcome::Allow { … }`,
+- [x] **PR 1 — chassis warnings.** `Decision.warnings`, `AdmitOutcome::Allow { … }`,
       `bound_warnings`, every route renders them once through `render::with_warnings`,
       `weebo_si_admission_warnings_total`. No feature emits one yet: tree green, responses
       unchanged. **Lands before RFC 0020 and RFC 0021 use warnings** (their
       `onNotGranted: Default` and restricted-refusal warnings build on it).
-- [ ] **PR 2 — config.** `DevfileContractConfig` with CEL, resolution, config store handle,
+- [x] **PR 2 — config.** `DevfileContractConfig` with CEL, resolution, config store handle,
       `docs/weebosiconfig.md`. Feature not registered: the block is accepted and does nothing.
-- [ ] **PR 3 — domain.** `weebo-si-devfile-contract`: subject, `evaluate`, classifiers, denial
+- [x] **PR 3 — domain.** `weebo-si-devfile-contract`: subject, `evaluate`, classifiers, denial
       and its start-only rule (D-13), unit, parser-table and property tests. Not wired.
-- [ ] **PR 4 — wiring.** extraction, third registry on the route in the D-14 order, the
+- [x] **PR 4 — wiring.** extraction, third registry on the route in the D-14 order, the
       network-profiles `Allow` payload kept, metrics, operator lines, envtest, perf delta, brick
       page and operator-internals (route table, order, "Adding a feature" exception). The denied list ships in the same PR
       as the surface it protects.
-- [ ] **PR 5 — e2e.** `try_apply_with_warnings`, the eight rows of *Proof*.
-- [ ] Docs updated; RFC flipped to `Implemented`.
+- [x] **PR 5 — e2e.** `try_apply_with_warnings`, the eight rows of *Proof*.
+- [x] Docs updated; RFC flipped to `Implemented`.
+- [ ] **On the cluster and in weebo-si (not done in this branch).** V-13 (waits for tagged
+      WeeboDevImage releases), ≥ 7 days of `DryRun`, the `devfileContract` values, the User Guide's
+      "Platform contract" page in `0.docs`, the parents of `weebo-che-project` and
+      `weebo-dotfiles-che`.
 
 ### Estimate
 
@@ -1001,6 +1005,29 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | R30 | V-23, validated by the RFC owner — a statement, not a probe recorded in this repo | 2026-11-24 | top-level devfile `attributes` reach `spec.template.attributes` |
 | R31 | Kubernetes apimachinery `pkg/api/validation/objectmeta.go`, `TotalAnnotationSizeLimitB = 256 * (1 << 10)` — not re-fetched from the authoring environment (fetch blocked); verify at land | 2026-11-24 (not fetched) | the 256 KiB total-annotation cap in D1 |
 
+## Revision against the tree (2026-11-26)
+
+Shipped on the branch `feat/rfc-0018-0021` (PR #24): the chassis warnings, the `devfileContract`
+block with its CEL rules, `weebo-si-devfile-contract`, its wiring on the DevWorkspace route in the
+D-14 order (with `team-tools` appended fourth by RFC 0020), the envtest and perf rows, the e2e rows
+in `crates/weebo-si-e2e/tests/workspace.rs` and
+[`docs/bricks/devfile-contract.md`](../bricks/devfile-contract.md).
+
+**What differs from the text above:**
+
+1. **Refusals print a bare `Error from server:`**, not the mocks' `Error from server (Forbidden)`:
+   the route's denials carry no status reason (seen on kind, Kubernetes 1.35). The messages are as
+   written.
+2. **A `uriPrefix` matches after a wider normalisation** than T3 lists: `http` is read as `https`,
+   a trailing `.` on the host is dropped, the URI is also compared with its path as written (so an
+   encoded `%2e%2e` cannot step out of a prefix), and a prefix without a trailing `/` stops at a
+   path segment.
+3. **A `devfileContract` block removed between the mode read and the evaluation** admits the
+   write unjudged, logged `devfile=no_config` and left out of `weebo_si_devfile_contract_total`.
+
+**Not done here:** V-13, the `DryRun` week, and *Integration in weebo-si*, the User Guide page
+included.
+
 ## Changelog
 
 | Date | Change |
@@ -1011,3 +1038,4 @@ namespace for 2 days before everywhere. Expect two weeks end to end.
 | 2026-11-24 | V-14 answered from the dashboard source: warnings never reach the dashboard (D-10, R28) |
 | 2026-11-24 | Last review applied (6 lenses): kubectl-only scope (D-12), template change while running is a start (D-13), global registry order and bound-once (D-14), table tests instead of fuzzing (D-15), resolved ids renamed R-n → D-n |
 | 2026-11-24 | Accepted by the owner |
+| 2026-11-26 | `Implemented` (PR #24): PRs 1–5 shipped; *Revision against the tree* records the bare `Error from server:`, the wider `uriPrefix` normalisation and the `no_config` admit. V-13 and the weebo-si integration are still owed. |

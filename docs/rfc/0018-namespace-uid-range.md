@@ -1,10 +1,10 @@
 ---
 rfc: 0018
 title: workspace pod identity
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-26
 decided: 2026-11-24
 brick: crates/weebo-si-pod-identity
 supersedes: []
@@ -788,16 +788,16 @@ None: Q20, Q21 and Q23 were decided by the owner on 2026-11-24 (Q1 to Q23, L1 to
 
 ## Implementation plan
 
-- [ ] **PR 1 — CRD + status.** `podIdentity` config (`runAsUser`, `runAsGroup`,
+- [x] **PR 1 — CRD + status.** `podIdentity` config (`runAsUser`, `runAsGroup`,
       `exemptDwocKeys`, `grantGroupZero` with its warning doc), CEL rules, the `resolve_mode`
       arm, the controller status block (L25), `docs/weebosiconfig.md`. Inert.
-- [ ] **PR 2 — chassis + domain:** `Mutation::SetInt`/`SetBool`, the shared missing-parent
+- [x] **PR 2 — chassis + domain:** `Mutation::SetInt`/`SetBool`, the shared missing-parent
       helper and the render tests (L26); `weebo-si-pod-identity`: subject, `identity_rewrite`,
       `identity_violations`, the two features, `PodIdentityObserver`, unit tests. No wiring.
-- [ ] **PR 3 — webhooks:** adapters crate (handlers, Prometheus observer), composition root,
+- [x] **PR 3 — webhooks:** adapters crate (handlers, Prometheus observer), composition root,
       both chart webhooks in the same PR (validation never later than mutation),
       `podIdentity.webhooks.enabled` default `false` (L7), admission and perf envtests.
-- [ ] **PR 4 — e2e + docs:** `pod_identity.rs`, the `scripts/e2e.sh` addon,
+- [x] **PR 4 — e2e + docs:** `pod_identity.rs`, the `scripts/e2e.sh` addon,
       `docs/bricks/pod-identity.md`, install checklist.
 - [ ] **WeeboDevImage (outside this repo, required, done when `Enforce` approaches).** The dev
       images must change before any namespace reaches `Enforce` (Q20): `chgrp -R 0` becomes
@@ -805,7 +805,10 @@ None: Q20, Q21 and Q23 were decided by the owner on 2026-11-24 (Q1 to Q23, L1 to
       `COPY --chown=0:0` of user-edited config becomes `--chown=1234:0` (che-min-mise, che-lgtm,
       che-android, and every image that inherits them). Not part of PRs 1–4: the feature ships and
       runs `DryRun` without it; the images are rebuilt and re-pinned in weebo-si at that point.
-- [ ] RFC flipped to `Implemented`.
+- [ ] **On the cluster (not done in this branch).** PSA `restricted` on the namespaces in scope,
+      ≥ 7 days of `DryRun`, T-11, V-10 and V-30 on `dev-ws-batleforc-test`, then Che's DWOC values
+      (rollout step 5) and the rest of *Integration in weebo-si*.
+- [x] RFC flipped to `Implemented`.
 
 ### Estimate
 
@@ -923,6 +926,26 @@ An analogy with the measured RFCs, not a measurement.
 | R84 | probe `task k -- explain checluster.spec.devEnvironments.security.podSecurityContext` (has `supplementalGroupsPolicy`) and `checluster.spec.devEnvironments` (no `hostUsers`); `get checluster -o jsonpath='{…security}'` → `{}` | 2026-11-24 | the CheCluster can carry the pod security context, not `hostUsers` |
 | R85 | probe `talosctl ls /var/run/nri` → `nri.sock`; no NRI section in `/etc/cri/conf.d/*` | 2026-11-24 | NRI is enabled on the node with containerd's default, no plugin installed |
 
+## Revision against the tree (2026-11-26)
+
+Shipped on the branch `feat/rfc-0018-0021` (PR #24): the `podIdentity` block and status, the
+chassis's integer and boolean mutations, `weebo-si-pod-identity` and its adapters, both webhooks
+behind `podIdentity.webhooks.enabled` (default `false`), admission and perf envtests, the
+`pod-identity` e2e suite on kind and [`docs/bricks/pod-identity.md`](../bricks/pod-identity.md).
+
+**What differs from the text above:**
+
+1. **Refusals print a bare `Error from server:`**, not the mocks' `Error from server (Forbidden)`:
+   a webhook denial carries no status reason (seen on kind, Kubernetes 1.35,
+   `crates/weebo-si-e2e/tests/pod_identity.rs`). The messages themselves are as written.
+2. **`grantGroupZero` never adds group 0.** It only stops the refusal of an `fsGroup: 0` or a `0`
+   in `supplementalGroups` the pod asked for, and keeps the mutation from rewriting that
+   `fsGroup: 0`. Nothing writes `0` into a pod. The status message reads `grantGroupZero is on:
+   pods in scope may run with group 0`, not the *Validation* text.
+
+**Not done here:** the WeeboDevImage change (Q20), PSA `restricted` and the `DryRun` week on the
+cluster, and every item of *Integration in weebo-si*. `Enforce` waits for them.
+
 ## Changelog
 
 | Date | Change |
@@ -937,3 +960,4 @@ An analogy with the measured RFCs, not a measurement.
 | 2026-11-24 | Q20 and Q21 decided by the owner: `chown 1234:0` + `g=u` in WeeboDevImage; keep non-zero ids, set 1234 when absent, refuse uid 0. Still open: none |
 | 2026-11-24 | Accepted by the owner |
 | 2026-11-24 | Q23: webhook HA prerequisite waived for the lab (1 replica, single node accepted) |
+| 2026-11-26 | `Implemented` (PR #24): PRs 1–4 shipped; *Revision against the tree* records the bare `Error from server:` and `grantGroupZero` adding nothing. Q20 and the cluster validation are still owed. |

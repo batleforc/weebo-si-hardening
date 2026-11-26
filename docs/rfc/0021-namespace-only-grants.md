@@ -1,10 +1,10 @@
 ---
 rfc: 0021
 title: namespace-only grants
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-26
 decided: 2026-11-24
 brick: crates/weebo-si-crd
 supersedes: []
@@ -817,21 +817,26 @@ None: the draft's three open questions were decided on 2026-11-24 and are R-10 t
 
 ## Implementation plan
 
-- [ ] **PR 1 — CRD**: `restricted` on `Profile` and `AccessEntry`, `NamespaceGrant` and its CEL
+- [x] **PR 1 — CRD**: `restricted` on `Profile` and `AccessEntry`, `NamespaceGrant` and its CEL
   rule, the endpoint-access annotation constant, `RestrictedKeyInDefault` in both `validate`s, CRD
   regen, merge test S4. Nothing reads the flag yet: tree green, behaviour unchanged.
-- [ ] **Prerequisite — RFC 0019 PR 1** (chassis `warnings`) lands before PR 2.
-- [ ] **PR 2 — network-profiles**: `namespaceGrant.annotation`, `resolve` filter,
+- [x] **Prerequisite — RFC 0019 PR 1** (chassis `warnings`) lands before PR 2.
+- [x] **PR 2 — network-profiles**: `namespaceGrant.annotation`, `resolve` filter,
   `Provenance`/`DesiredState` lists, gate wording and `denied_restricted`, the Namespace →
   DevWorkspace watch mapping and the grant `GET`, the admission warning, shared counter + Event
   reasons + change-only reporter, unit + e2e including the
   30 s revocation case. The control lands with its own audit and its own revocation path, before
   any value marks `internet` restricted.
-- [ ] **PR 3 — endpoint-auth**: `AccessProfile.restricted`, `RawEndpoint.namespace_grant`,
+- [x] **PR 3 — endpoint-auth**: `AccessProfile.restricted`, `RawEndpoint.namespace_grant`,
   `compile`/`compile_rule` fallback, gateway `owners_of`, webhook `compile_error`, controller
   reporter, unit + e2e. No default changes here.
-- [ ] **PR 4 — docs**: guide page, pointers in RFC 0004 / 0009.
-- [ ] RFC flipped to `Implemented`.
+- [x] **PR 4 — docs**: guide page, pointers in RFC 0004 / 0009.
+- [x] RFC flipped to `Implemented`.
+- [ ] On the cluster and in weebo-si (not done in this branch): *Integration in weebo-si*
+  (`restricted: true` in the values, the grants in `dev-ns.yaml`, the alerts and the runbook),
+  ≥ 7 days watching `result="refused"`, T-07, T-12 and T-27.
+- [ ] The config-load warning for an `anonymous: true` entry without `restricted: true`
+  (*Validation*): not built, see *Revision against the tree*.
 
 ### Estimate
 
@@ -903,6 +908,31 @@ An analogy with comparable work in this repository [R30], not a measurement.
 | R33 | `charts/weebo-si-operator/templates/mutatingwebhookconfiguration.yaml:30` | c412ee3 | webhook name `devworkspaces.hardening.weebo.io` |
 | R34 | `bins/endpoint-gateway/tests/conformance.rs:156,647`; `crates/weebo-si-e2e/tests/endpoint_auth.rs:65,293,609` | c412ee3 | suites whose fixtures use `open` |
 
+## Revision against the tree (2026-11-26)
+
+Shipped on the branch `feat/rfc-0018-0021` (PR #24): `restricted` and the namespace grants in the
+CRD with the CEL rule, the network-profiles and endpoint-auth halves with their reporting, the e2e
+rows, the guide [`guides/namespace-grants.md`](../guides/namespace-grants.md) and the pointers in
+RFC 0004 and RFC 0009.
+
+**What differs from the text above:**
+
+1. **Refusals print a bare `Error from server:`**, not the mock's `Error from server (Forbidden)`:
+   the DevWorkspace route's denials carry no status reason (seen on kind, Kubernetes 1.35). The
+   namespace-patch mock (a plain RBAC refusal) does print `Forbidden`.
+2. **A restricted network `baseline` is reported but still written.** `RestrictedKeyInDefault`
+   sets `Degraded` as *Validation* says, but only `resolve` filters restricted keys and the
+   baseline does not go through it, so every namespace keeps it.
+3. **The admission warning has a fixed form**, `network profile(s) [<keys>]: restricted, no
+   namespace grant (<annotation>); <effect>`, where the effect is `not applied` under
+   `onNotGranted: Default` and `Deny: baseline only` under `Deny`. It is cut to the chassis's
+   120 characters by counting the keys that do not fit as `+N more`, never the clause or the
+   effect.
+4. **Not built:** the `WARN` at each config load for an `anonymous: true` entry without
+   `restricted: true`. Nothing in the tree emits it; it is a bug against this text until it is.
+
+**Not done here:** *Integration in weebo-si*, the observation week, T-07, T-12 and T-27.
+
 ## Changelog
 
 | Date | Change |
@@ -910,3 +940,4 @@ An analogy with comparable work in this repository [R30], not a measurement.
 | 2026-11-24 | Draft |
 | 2026-11-24 | Last review applied (6 lenses) |
 | 2026-11-24 | Accepted by the owner |
+| 2026-11-26 | `Implemented` (PR #24): PRs 1–4 shipped; *Revision against the tree* records the bare `Error from server:`, the restricted baseline still written, the warning's form, and the anonymous-entry warning not built. |
