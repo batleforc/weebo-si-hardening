@@ -140,6 +140,13 @@ tears anything down. Set `mode: Off` first if the goal is a clean removal.
    step the new `image-rewrite` webhooks (`failurePolicy: Fail`) would be registered while 0.3.x
    pods, which have no such route, still answer: every workspace pod is refused for the length of
    the roll. See [`image-rewrite.md`](./image-rewrite.md#upgrade).
+3. **Check the certificate issuers first.** Since RFC 0020, the `Ingress` webhook refuses a
+   `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` annotation naming anything outside
+   `endpointAuth.allowedIssuers`, default `[vault-issuer]`. If Che's `CheCluster`
+   `spec.networking.annotations` or your devfile endpoints name another issuer, add it to
+   `allowedIssuers` before upgrading, or DevWorkspace Operator's next `Ingress` `CREATE` is refused
+   and the workspace does not start. See
+   [`endpoint-gateway.md`](./endpoint-gateway.md#certificate-annotations).
 
 Argo CD applies `crds/` on sync (with `ServerSideApply=true`), so step 1 is done for you there;
 the two-step `helm upgrade` is two commits.
