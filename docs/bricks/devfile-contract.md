@@ -79,7 +79,7 @@ default. A match refuses a **start** only: a `CREATE`, `spec.started` turning `t
 by DevWorkspace Operator, a label — gets a warning instead, so a workspace can always be stopped
 and deleted. `onDenied: Warn` turns every refusal into a warning.
 
-The two refusals, joined by `. ` when both match:
+The two refusals; when both match, one message carries both, joined by a period and a space:
 
 ```text
 Error from server: admission webhook "devworkspaces.hardening.weebo.io" denied the request: devfile parent is denied by the platform (deniedParents entry 1: https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/): move parent.uri to a newer version; contract 3 in the User Guide lists them
@@ -167,7 +167,7 @@ more than intended.
 | --- | --- |
 | webhook down | DevWorkspace writes refused (`failurePolicy: Fail` on the existing route): no workspace starts, stops or is deleted until a replica is Ready |
 | `WeeboSiConfig` absent or unparsed | **open**: every feature reads `Off` (house-wide), no warning, no annotation, no refusal |
-| `devfileContract` block removed mid-request | **open**: admitted unjudged, logged `devfile=no_config`, not counted in `weebo_si_devfile_contract_total` |
+| `devfileContract` block removed mid-request | **open**: admitted without a verdict, logged `devfile=no_config`, not counted in `weebo_si_devfile_contract_total` |
 | malformed devfile, attribute or parent | a verdict (`unknown` or `outdated`), never an error: the route's `Fail` cannot turn a bad devfile into a refusal |
 | invalid block (`minimumContract` above `currentContract`, a denied contract above `currentContract`, a parent entry with both `uriPrefix` and `id`) | refused at `kubectl apply` by the CRD's CEL rules; the previous configuration stays in force |
 | namespace labelled `hardening.weebo.io/exclude` | the route never sees it: nothing judged, nothing written |

@@ -1023,7 +1023,7 @@ in `crates/weebo-si-e2e/tests/workspace.rs` and
    encoded `%2e%2e` cannot step out of a prefix), and a prefix without a trailing `/` stops at a
    path segment.
 3. **A `devfileContract` block removed between the mode read and the evaluation** admits the
-   write unjudged, logged `devfile=no_config` and left out of `weebo_si_devfile_contract_total`.
+   write without a verdict, logged `devfile=no_config` and left out of `weebo_si_devfile_contract_total`.
 
 **Not done here:** V-13, the `DryRun` week, and *Integration in weebo-si*, the User Guide page
 included.
