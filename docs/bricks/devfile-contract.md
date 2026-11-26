@@ -76,17 +76,31 @@ rewrites them at the next admission: do not base a security decision on them.
 `deniedContracts` and `deniedParents` are the only path to a refusal, and they are empty by
 default. A match refuses a **start** only: a `CREATE`, `spec.started` turning `true`, or a
 `spec.template` change while the workspace runs. Any other update — a stop, a finalizer removed
-by DevWorkspace Operator, a label — gets the warning `… this workspace will be refused at its
-next start`, so a workspace can always be stopped and deleted. `onDenied: Warn` turns every
-refusal into a warning.
+by DevWorkspace Operator, a label — gets a warning instead, so a workspace can always be stopped
+and deleted. `onDenied: Warn` turns every refusal into a warning.
+
+The two refusals, joined by `. ` when both match:
 
 ```text
 Error from server: admission webhook "devworkspaces.hardening.weebo.io" denied the request: devfile parent is denied by the platform (deniedParents entry 1: https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/): move parent.uri to a newer version; contract 3 in the User Guide lists them
+Error from server: admission webhook "devworkspaces.hardening.weebo.io" denied the request: platform contract 1 is denied (devfiles without weebo.io/platform-contract count as 1): add "weebo.io/platform-contract: 3" and follow the User Guide
 ```
 
-The refusal quotes the admin's entry, never the developer's URI. kubectl prints a bare
-`Error from server:`, not the RFC mock's `Forbidden`: the route's denials carry no HTTP code
-(seen on kind, Kubernetes 1.35).
+The parenthesis after `platform contract 1 is denied` appears for contract `1` only. A parent
+entry written as `id` reads `(deniedParents entry 2: id che-min-mise): move parent.version to a
+newer version; …`. The refusal quotes the admin's entry, normalised (credentials dropped), never
+the developer's URI. kubectl prints a bare `Error from server:`, not the RFC mock's `Forbidden`:
+the route's denials carry no status reason (seen on kind, Kubernetes 1.35).
+
+A match that is not refused is a warning `<subject>: <action>`, short enough that the
+120-character cut keeps the action:
+
+| Subject | Action |
+| --- | --- |
+| `platform contract 1 is denied` | `this workspace will be refused at its next start` (an update that is not a start, under `onDenied: Deny`) |
+| `devfile parent is denied by the platform (deniedParents entry 1)` | the same |
+| `platform contract 1 is denied` | `add "weebo.io/platform-contract: 3" and follow the User Guide` (`onDenied: Warn`) |
+| `devfile parent is denied by the platform (deniedParents entry 1)` | `move parent.uri to a newer version` for a `uriPrefix` entry, `move parent.version to a newer version` for an `id` entry (`onDenied: Warn`) |
 
 Writing a `uriPrefix`:
 
@@ -104,10 +118,12 @@ Writing a `uriPrefix`:
 
 ## How it works
 
-- **Where it runs.** On the existing `/mutate/v1alpha1/devworkspaces` route, between the
-  `network-profiles` workspace gate and `dwoc-pin` (RFC 0019, D-14). A gate refusal wins; a denied
-  parent is refused before a pin is computed; otherwise one patch carries `dwoc-pin`'s pin and
-  this feature's annotations. No new webhook, no new RBAC, no chart change.
+- **Where it runs.** On the existing `/mutate/v1alpha1/devworkspaces` route, in a fixed order:
+  `network-profiles` workspace gate, `devfile-contract`, `dwoc-pin`, then `team-tools` (RFC 0019
+  D-14, RFC 0020). The first refusal wins and stops the rest: a gate refusal beats this
+  feature's, and a denied parent is refused before a pin is computed. Otherwise one patch carries
+  this feature's annotations, `dwoc-pin`'s pin and `team-tools`' mutations, in that order. No new
+  webhook, no new RBAC, no chart change.
 - **It reads** `spec.template.attributes` (the contract, and `weebo.io/generator`, logged only),
   `spec.template.parent` as written, the first 4 KiB of the dashboard's `che.eclipse.org/devfile`
   annotation, and `spec.started`/`spec.template` of the old and new object. It never fetches the
@@ -144,3 +160,15 @@ more than intended.
 
 **Break-glass and rollback**: `mode: Off` (hot-reloaded, no restart), or empty the denied lists.
 `Off` leaves the annotations already written in place; they go stale.
+
+## Failure modes
+
+| Failure | Direction |
+| --- | --- |
+| webhook down | DevWorkspace writes refused (`failurePolicy: Fail` on the existing route): no workspace starts, stops or is deleted until a replica is Ready |
+| `WeeboSiConfig` absent or unparsed | **open**: every feature reads `Off` (house-wide), no warning, no annotation, no refusal |
+| `devfileContract` block removed mid-request | **open**: admitted unjudged, logged `devfile=no_config`, not counted in `weebo_si_devfile_contract_total` |
+| malformed devfile, attribute or parent | a verdict (`unknown` or `outdated`), never an error: the route's `Fail` cannot turn a bad devfile into a refusal |
+| invalid block (`minimumContract` above `currentContract`, a denied contract above `currentContract`, a parent entry with both `uriPrefix` and `id`) | refused at `kubectl apply` by the CRD's CEL rules; the previous configuration stays in force |
+| namespace labelled `hardening.weebo.io/exclude` | the route never sees it: nothing judged, nothing written |
+| Che dashboard | warnings dropped by its backend (D-10): only refusals and the annotations are visible |
