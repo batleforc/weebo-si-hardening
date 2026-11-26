@@ -836,7 +836,7 @@ endpointAuth:
 | `gateway.errorPageMiddleware` | string | no | — | Traefik only. One `errors` middleware placed **before** ours, so a gateway outage reads as the platform's error page rather than a bare `500`. Must be `<gateway.service.namespace>-<name>@kubernetescrd`; anything else is not attached and raises `Degraded`. See *The gateway's error page* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
-| `allowedIssuers` | `[string]` | no | `[vault-issuer]` | The only values a routing object may give `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3); ≤ 16. `[]` refuses every issuer annotation, Che's own included. See *Certificate annotations* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
+| `allowedIssuers` | `[string]` | no | `[vault-issuer]` | The only values a routing object may give `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3); ≤ 16. `[]` refuses every issuer annotation, Che's own included. A duplicate is refused at `kubectl apply` (CEL). See *Certificate annotations* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2: whoever writes the generated routing objects. Wrong here means every workspace endpoint stops being created. Under Eclipse Che (`routingClass: che`) that is che-operator, not DWO — `system:serviceaccount:eclipse-che:che-operator`. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |
@@ -1187,7 +1187,10 @@ Validation is **mostly reconcile-time**: the apiserver accepts a structurally va
 the controller reports what is semantically wrong as `Degraded` conditions. The exception is
 CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
 above), `devfileContract` (*devfileContract* above), `podIdentity`'s ids (*podIdentity*
-above) and `teamTools`' bounds (*teamTools* above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+above), `teamTools`' bounds (*teamTools* above), `endpointAuth.allowedIssuers` naming an issuer
+twice, and `networkProfiles.namespaceGrant.annotation` equal to
+`namespaceSelection.annotation` (a grant must never select). On a `WeeboSiTeam`,
+`teamTools.issuerRef.kind` must be `ClusterIssuer`. A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 
@@ -1228,6 +1231,14 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `hardening.weebo.io/team-tools` | tools Namespace label | admin | Binds the namespace to the team it serves (`=<team>`). Read only. |
 | `hardening.weebo.io/team-tools` | DevWorkspace attribute; DevWorkspace annotation | workspace author; **operator** | The attribute requests team tools; the annotation is the verdict, `granted=<keys>;dropped=<keys>`. |
 | `hardening.weebo.io/team-tool` | objects `teamTools` writes | **operator** | Which catalogue key the object came from. |
+| `hardening.weebo.io/team-tools-fingerprint` | objects `teamTools` writes | **operator** | A hash of what the controller wrote; the next pass compares it, not the live body, to decide whether to re-apply. Never edit it. |
+| `hardening.weebo.io/workspace-namespace` | Namespace label | weebo-si / admin | Marks a workspace namespace. The `pods` webhooks (`imagePolicy`, `podIdentity`) are registered only on namespaces carrying it, and `teamTools` mints a client certificate only where it is `true`. |
+| `che.eclipse.org/username` | Namespace | **Che** | The developer a workspace namespace belongs to; `teamTools` puts it in the client certificate. Missing or malformed: no certificate. |
+| `weebo.io/platform-contract` | DevWorkspace attribute (`spec.template.attributes`) | workspace author | The platform contract the devfile was written for (`devfileContract`); absent or not an integer reads as `1`. |
+| `weebo.io/generator` | DevWorkspace attribute | the devfile generator | Its name and version. `devfileContract` logs it (`generator=`), never evaluates it. |
+| `weebo.io/devfile-parent` | DevWorkspace attribute | the devfile generator | The generator's record of the parent it chose. Reserved by RFC 0019; nothing in this repo reads it. |
+| `hardening.weebo.io/devfile-contract` | DevWorkspace annotation | **operator** (`devfileContract`, `Enforce`) | The verdict: `current`, `outdated` or `unknown`. A workspace user can write it; the next admission rewrites it. Never a security input. |
+| `hardening.weebo.io/devfile-contract-reason` | DevWorkspace annotation | **operator** (`devfileContract`, `Enforce`) | The reason codes behind the verdict, comma-separated. Same caveat. |
 
 A selection key naming something the team was not granted is not an escalation: it is a
 *request*, bounded by what the team reaches, resolved by `onNotGranted`. The boundary is the
