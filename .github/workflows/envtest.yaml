@@ -43,13 +43,13 @@ jobs:
     # apiserver per test and runs serialised. The old budget was sized for a third of the work.
     timeout-minutes: 35
     env:
-      ENVTEST_K8S_VERSION: "1.32.0"
+      ENVTEST_K8S_VERSION: "1.33.0"
       # RFC 0009's conformance suite drives a real Traefik. Pinned here and floating in
       # mise.toml, which is the usual trade: CI wants a reproducible run, a developer wants
       # whatever `mise` last installed, and the suite asserts behaviour stable across both.
       TRAEFIK_VERSION: "3.7.13"
       # Pinned checksums of the two tarballs below — see the "Fetch" steps.
-      ENVTEST_SHA512: "3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+      ENVTEST_SHA512: "2cb7f5468ed7cea1492f971b715bcc27069e824cf7d5927b7f127f1e8c75cf086eea050543cdb5f79faee0a2bf775f160adf27443aa7ee845d962d04e9d43ac9"
       TRAEFIK_SHA256: "52cd039a34258dd61c617a95d69252bc6bcae27c520f338186c31c7fef8f6394"
       KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
       REQUIRE_ENVTEST: "1"
@@ -70,7 +70,7 @@ jobs:
       # Checksums are pinned here rather than fetched: a `.sha512` downloaded from the same release
       # only proves the download is intact, not that the release is the one this repo audited.
       # Both values were computed on 2026-09-29 and matched upstream's published checksum files
-      # (`envtest-v1.32.0-linux-amd64.tar.gz.sha512`, `traefik_v3.7.13_checksums.txt`). Bumping
+      # (`envtest-v1.33.0-linux-amd64.tar.gz.sha512`, `traefik_v3.7.13_checksums.txt`). Bumping
       # ENVTEST_K8S_VERSION or TRAEFIK_VERSION means bumping the matching *_SHA* too — the step
       # fails closed until you do.
       - name: Fetch the envtest binaries

@@ -38,8 +38,8 @@ jobs:
     timeout-minutes: 30
     env:
       # The same pins and checksum as envtest.yaml — bump them together.
-      ENVTEST_K8S_VERSION: "1.32.0"
-      ENVTEST_SHA512: "3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+      ENVTEST_K8S_VERSION: "1.33.0"
+      ENVTEST_SHA512: "2cb7f5468ed7cea1492f971b715bcc27069e824cf7d5927b7f127f1e8c75cf086eea050543cdb5f79faee0a2bf775f160adf27443aa7ee845d962d04e9d43ac9"
       KUBEBUILDER_ASSETS: /home/runner/.local/share/kubebuilder-envtest
       # A missing apiserver is a failure here, not a green skip: a perf run that measured nothing
       # must not look like one that measured well.

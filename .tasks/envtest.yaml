@@ -14,7 +14,7 @@ version: "3"
 # `task test` / `cargo test` never needs the binaries.
 
 vars:
-  ENVTEST_K8S_VERSION: '{{ .ENVTEST_K8S_VERSION | default "1.32.0" }}'
+  ENVTEST_K8S_VERSION: '{{ .ENVTEST_K8S_VERSION | default "1.33.0" }}'
   ENVTEST_DIR: '{{ .ENVTEST_DIR | default (printf "%s/.local/share/kubebuilder-envtest" .HOME) }}'
 
 tasks:
@@ -35,8 +35,8 @@ tasks:
         set -eu
         url="https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{{ .ENVTEST_K8S_VERSION }}/envtest-v{{ .ENVTEST_K8S_VERSION }}-linux-amd64.tar.gz"
         curl -fsSL -o /tmp/envtest.tar.gz "$url"
-        if [ "{{ .ENVTEST_K8S_VERSION }}" = "1.32.0" ]; then
-          want="3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+        if [ "{{ .ENVTEST_K8S_VERSION }}" = "1.33.0" ]; then
+          want="2cb7f5468ed7cea1492f971b715bcc27069e824cf7d5927b7f127f1e8c75cf086eea050543cdb5f79faee0a2bf775f160adf27443aa7ee845d962d04e9d43ac9"
         else
           want="$(curl -fsSL "$url.sha512" | cut -d' ' -f1)"
         fi
