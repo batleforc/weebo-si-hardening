@@ -721,7 +721,10 @@ fn compile_error(
     // answering is worse than one that is more closed than its author meant. At *admission*
     // there is a person watching, so a key nobody defined is a typo worth naming. A restricted
     // key the namespace does not grant is not refused here: it compiles to the default (RFC 0021
-    // R-2), so DWO's `Ingress` is admitted and the workspace starts.
+    // R-2), so DWO's `Ingress` is admitted and the workspace starts. Only when that default is
+    // itself restricted and ungranted (a `RestrictedKeyInDefault` config violation) is there
+    // nothing to fall back to: `RestrictedNotGranted` is refused like `NotGranted` (RFC 0021
+    // *compile.rs*, "indexed closed as today").
     compile_annotations(
         config,
         annotations,

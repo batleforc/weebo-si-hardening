@@ -1253,19 +1253,7 @@ fn an_open_endpoint_needs_the_namespace_grant() {
             code => Err(format!("anonymous still gets {code}")),
         },
     );
-    // The controller re-reads the namespace on its next pass of the `Ingress`; an edit of the
-    // object brings that pass forward from the 300 s requeue. Made as che-operator, the only
-    // identity the guard lets write a DevWorkspace-generated Ingress (the admin is refused).
-    must(&[
-        "annotate",
-        "--overwrite",
-        "ingress",
-        "--all",
-        "-n",
-        &ns.name,
-        "e2e.weebo.io/touched=granted",
-        "--as=system:serviceaccount:eclipse-che:che-operator",
-    ]);
+    // The namespace's annotation change re-queues its `Ingress`es (RFC 0021 R-12).
     wait_until("the honoured count and Event", RECONCILE, || {
         let now = restricted_open_total("honoured");
         if now > honoured_before
@@ -1277,6 +1265,8 @@ fn an_open_endpoint_needs_the_namespace_grant() {
         }
     });
 
+    // The revocation is a change of the object's sets, so it is counted again.
+    let refused_after_grant = restricted_open_total("refused");
     must(&[
         "annotate",
         "namespace",
@@ -1291,18 +1281,6 @@ fn an_open_endpoint_needs_the_namespace_grant() {
             code => Err(format!("anonymous still gets {code}")),
         },
     );
-    // The revocation is a change of the object's sets, so it is counted again.
-    let refused_after_grant = restricted_open_total("refused");
-    must(&[
-        "annotate",
-        "--overwrite",
-        "ingress",
-        "--all",
-        "-n",
-        &ns.name,
-        "e2e.weebo.io/touched=revoked",
-        "--as=system:serviceaccount:eclipse-che:che-operator",
-    ]);
     wait_until("the revocation to be counted", RECONCILE, || {
         let now = restricted_open_total("refused");
         if now > refused_after_grant {

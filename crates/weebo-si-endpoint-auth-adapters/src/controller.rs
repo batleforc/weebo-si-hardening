@@ -17,12 +17,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::{Patch, PatchParams};
 use kube::core::{DynamicObject, GroupVersionKind, ObjectMeta, TypeMeta};
 use kube::discovery::ApiResource;
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::ObjectRef;
 
 use kube::runtime::events::Recorder;
 use kube::runtime::watcher::Config as WatcherConfig;
@@ -31,7 +33,7 @@ use serde_json::{Value, json};
 use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_controller::events::{self, ReasonCode};
-use weebo_si_controller::restricted::RestrictedReporter;
+use weebo_si_controller::restricted::{AnnotationChanges, RestrictedReporter};
 use weebo_si_crd::{
     AttachmentMode, COMPANION_SERVICE, Dialect, FeatureMode, MIDDLEWARE_NAME, NamespaceName,
     ResolvedEndpointAuthConfig,
@@ -147,8 +149,28 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, recorder: Recorder) {
         deps,
         recorder,
     });
-    let api: Api<Ingress> = Api::all(client);
+    let api: Api<Ingress> = Api::all(client.clone());
     let controller = Controller::new(api, WatcherConfig::default());
+    // RFC 0021 R-12: a Namespace whose annotations change re-queues every `Ingress` in it, so a
+    // removed `endpoint-access` grant is audited in seconds, not at the 300 s requeue.
+    let ingresses = controller.store();
+    let changes = AnnotationChanges::default();
+    let controller = controller.watches(
+        Api::<Namespace>::all(client),
+        WatcherConfig::default(),
+        move |ns: Namespace| {
+            if !changes.changed(&ns) {
+                return Vec::new();
+            }
+            let name = ns.name_any();
+            ingresses
+                .state()
+                .iter()
+                .filter(|ingress| ingress.metadata.namespace.as_deref() == Some(name.as_str()))
+                .map(|ingress| ObjectRef::from_obj(ingress.as_ref()))
+                .collect::<Vec<_>>()
+        },
+    );
     // A deleted `Ingress` (DWO's carry no finalizer) is never reconciled, so its audit memory is
     // pruned against the controller's own cache, at the sweep's backstop cadence.
     let live = controller.store();

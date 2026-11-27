@@ -8,10 +8,7 @@
 //! `weebo-si-network-profiles`. This module's own job is: watch, exclude two namespaces
 //! structurally, build a `Subject`, call `reconcile`, requeue.
 
-use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -29,7 +26,7 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, FeatureId};
 use weebo_si_controller::events::{self, ReasonCode, Regarding};
-use weebo_si_controller::restricted::RestrictedReporter;
+use weebo_si_controller::restricted::{AnnotationChanges, RestrictedReporter};
 use weebo_si_crd::{FeatureMode, NamespaceName, OnNotGranted, ResolvedNetworkProfilesConfig};
 use weebo_si_network_profiles::{
     CanaryProbe, NamespaceSubject, NetworkProfiles, PolicyStore, ReconcileObserver,
@@ -217,27 +214,6 @@ fn refused_note(
         ),
     };
     format!("network profile {key} is restricted and {why}; {then}")
-}
-
-/// Whether a Namespace's annotations changed since the last event about it — the filter on the
-/// Namespace → DevWorkspace mapping (RFC 0021 R-12), so a label or status change does not re-run
-/// every workspace of the namespace. One hash per namespace seen.
-// shortcut: a deleted namespace's hash is never dropped (one u64 each); upgrade if namespace churn
-// ever makes that matter.
-#[derive(Default)]
-struct AnnotationChanges(Mutex<HashMap<String, u64>>);
-
-impl AnnotationChanges {
-    fn changed(&self, ns: &Namespace) -> bool {
-        let mut hasher = DefaultHasher::new();
-        ns.metadata.annotations.hash(&mut hasher);
-        let hash = hasher.finish();
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(ns.name_any(), hash)
-            != Some(hash)
-    }
 }
 
 /// Whether the loaded configuration itself says `mode: Off`, as opposed to the gate answering
@@ -720,39 +696,6 @@ mod tests {
     #[test]
     fn nothing_held_means_nothing_logged() {
         assert!(held_warnings("kubearmor-policy", &[]).is_empty());
-    }
-
-    fn namespace(name: &str, annotations: &[(&str, &str)]) -> Namespace {
-        Namespace {
-            metadata: ObjectMeta {
-                name: Some(name.to_string()),
-                annotations: Some(
-                    annotations
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect(),
-                ),
-                ..ObjectMeta::default()
-            },
-            ..Namespace::default()
-        }
-    }
-
-    /// RFC 0021 R-12's filter: the first sight and every annotation change re-queue the
-    /// namespace's workspaces; an event that leaves the annotations alone does not.
-    #[test]
-    fn only_an_annotation_change_requeues_the_namespaces_workspaces() {
-        let changes = AnnotationChanges::default();
-        let granted = namespace(
-            "user-alice",
-            &[("hardening.weebo.io/network-grants", "internet")],
-        );
-        assert!(changes.changed(&granted));
-        let mut relabelled = granted.clone();
-        relabelled.metadata.labels = Some([("a".to_string(), "b".to_string())].into());
-        assert!(!changes.changed(&relabelled));
-        assert!(changes.changed(&namespace("user-alice", &[])));
-        assert!(changes.changed(&namespace("user-bob", &[])));
     }
 
     #[test]

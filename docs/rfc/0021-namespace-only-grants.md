@@ -920,9 +920,10 @@ RFC 0004 and RFC 0009.
 1. **Refusals print a bare `Error from server:`**, not the mock's `Error from server (Forbidden)`:
    the DevWorkspace route's denials carry no status reason (seen on kind, Kubernetes 1.35). The
    namespace-patch mock (a plain RBAC refusal) does print `Forbidden`.
-2. **A restricted network `baseline` is reported but still written.** `RestrictedKeyInDefault`
-   sets `Degraded` as *Validation* says, but only `resolve` filters restricted keys and the
-   baseline does not go through it, so every namespace keeps it.
+2. **A restricted network `baseline` is refused at `kubectl apply`** by a CEL rule on
+   `networkProfiles`, on top of the `RestrictedKeyInDefault` `Degraded` *Validation* asks for:
+   only `resolve` filters restricted keys and the baseline does not go through it, so an admitted
+   one would be written to every namespace.
 3. **The admission warning has a fixed form**, `network profile(s) [<keys>]: restricted, no
    namespace grant (<annotation>); <effect>`, where the effect is `not applied` under
    `onNotGranted: Default` and `Deny: baseline only` under `Deny`. It is cut to the chassis's
@@ -941,3 +942,4 @@ RFC 0004 and RFC 0009.
 | 2026-11-24 | Last review applied (6 lenses) |
 | 2026-11-24 | Accepted by the owner |
 | 2026-11-26 | `Implemented` (PR #24): PRs 1–4 shipped; *Revision against the tree* records the bare `Error from server:`, the restricted baseline still written, the warning's form, and the anonymous-entry warning not built. |
+| 2026-11-27 | Review fix (PR #24): a restricted network `baseline` is refused by CEL instead of written. |

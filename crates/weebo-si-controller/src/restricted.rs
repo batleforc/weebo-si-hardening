@@ -3,9 +3,34 @@
 //! honoured or refused set changes, not on every pass (R-15).
 
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 
+use k8s_openapi::api::core::v1::Namespace;
+use kube::ResourceExt;
 use prometheus::{IntCounterVec, Opts, Registry};
+
+/// Whether a Namespace's annotations changed since the last event about it — the filter on a
+/// Namespace → object mapping (RFC 0021 R-12), so a label or status change does not re-run every
+/// object of the namespace. One hash per namespace seen.
+// shortcut: a deleted namespace's hash is never dropped (one u64 each); upgrade if namespace churn
+// ever makes that matter.
+#[derive(Default)]
+pub struct AnnotationChanges(Mutex<HashMap<String, u64>>);
+
+impl AnnotationChanges {
+    /// True on the first sight of `ns` and whenever its annotations differ from the last call.
+    pub fn changed(&self, ns: &Namespace) -> bool {
+        let mut hasher = DefaultHasher::new();
+        ns.metadata.annotations.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(ns.name_any(), hash)
+            != Some(hash)
+    }
+}
 
 /// `weebo_si_restricted_grant_total{feature,key,result}`, registered once by the composition
 /// root and handed to each feature's adapters. Never a namespace, user or workspace label: `key`
@@ -126,6 +151,7 @@ impl RestrictedReporter {
 )]
 mod tests {
     use super::*;
+    use kube::api::ObjectMeta;
 
     fn keys(list: &[&str]) -> Vec<String> {
         list.iter().map(|key| (*key).to_string()).collect()
@@ -219,5 +245,38 @@ mod tests {
             let names: Vec<&str> = metric.get_label().iter().map(|pair| pair.name()).collect();
             assert_eq!(names, vec!["feature", "key", "result"]);
         }
+    }
+
+    fn namespace(name: &str, annotations: &[(&str, &str)]) -> Namespace {
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                annotations: Some(
+                    annotations
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                ),
+                ..ObjectMeta::default()
+            },
+            ..Namespace::default()
+        }
+    }
+
+    /// RFC 0021 R-12's filter: the first sight and every annotation change re-queue the
+    /// namespace's workspaces; an event that leaves the annotations alone does not.
+    #[test]
+    fn only_an_annotation_change_requeues_the_namespaces_workspaces() {
+        let changes = AnnotationChanges::default();
+        let granted = namespace(
+            "user-alice",
+            &[("hardening.weebo.io/network-grants", "internet")],
+        );
+        assert!(changes.changed(&granted));
+        let mut relabelled = granted.clone();
+        relabelled.metadata.labels = Some([("a".to_string(), "b".to_string())].into());
+        assert!(!changes.changed(&relabelled));
+        assert!(changes.changed(&namespace("user-alice", &[])));
+        assert!(changes.changed(&namespace("user-bob", &[])));
     }
 }

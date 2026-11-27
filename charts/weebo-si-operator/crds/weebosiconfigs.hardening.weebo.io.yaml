@@ -1355,6 +1355,8 @@ spec:
                     x-kubernetes-validations:
                     - message: 'namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select'
                       rule: '!has(self.namespaceGrant) || self.namespaceGrant.annotation == '''' || self.namespaceGrant.annotation != self.namespaceSelection.annotation'
+                    - message: 'the baseline profile may not be restricted: it applies to every namespace, granted or not'
+                      rule: self.catalog.all(p, p.key != self.baseline || !has(p.restricted) || !p.restricted)
                   podIdentity:
                     description: '`spec.features.podIdentity`, per RFC 0018.'
                     nullable: true

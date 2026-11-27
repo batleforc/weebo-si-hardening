@@ -327,6 +327,10 @@ pub struct Enforcement {
     {
         "rule": "!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation",
         "message": "namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select"
+    },
+    {
+        "rule": "self.catalog.all(p, p.key != self.baseline || !has(p.restricted) || !p.restricted)",
+        "message": "the baseline profile may not be restricted: it applies to every namespace, granted or not"
     }
 ]))]
 pub struct NetworkProfilesConfig {
@@ -819,12 +823,18 @@ mod tests {
     fn the_schema_refuses_a_grant_annotation_equal_to_the_selection_one() {
         let schema = serde_json::to_value(schemars::schema_for!(NetworkProfilesConfig)).unwrap();
         let rules = schema["x-kubernetes-validations"].as_array().unwrap();
-        assert_eq!(rules.len(), 1);
+        assert_eq!(rules.len(), 2);
         assert!(
             rules[0]["rule"]
                 .as_str()
                 .unwrap()
                 .contains("self.namespaceGrant.annotation != self.namespaceSelection.annotation")
+        );
+        assert!(
+            rules[1]["rule"]
+                .as_str()
+                .unwrap()
+                .contains("p.key != self.baseline")
         );
     }
 

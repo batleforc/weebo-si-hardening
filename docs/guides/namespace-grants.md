@@ -79,7 +79,7 @@ grant is a `kubectl annotate` Argo CD does not own: write it down.
 | restricted, in the catalogue, the Namespace grants it | **honoured** | **honoured** |
 | restricted, in the catalogue, no grant | **refused**: treated as not granted, `onNotGranted` applies (see below) | **refused**: the endpoint resolves to its default (the team's, narrowed by `overrides`); the `Ingress` is admitted |
 | restricted key in a team `default` | config violation `RestrictedKeyInDefault`, `Degraded`; filtered at runtime | same; if the endpoint's default itself is filtered, the endpoint is indexed closed (owner only) and, under `Enforce`, its `Ingress` write (DWO's included) is **refused at admission** until the grant exists |
-| restricted network `baseline` | `RestrictedKeyInDefault`, `Degraded`, but **the baseline is still written** to every namespace: only `resolve` filters, and the baseline does not go through it | n/a |
+| restricted network `baseline` | refused at `kubectl apply` by a CEL rule (`RestrictedKeyInDefault`, `Degraded` if one is already stored): only `resolve` filters, and the baseline does not go through it | n/a |
 | `namespaceGrant.annotation: ""` | every restricted key refused (fail closed) | n/a |
 
 **network-profiles, `onNotGranted: Default`:** the request is dropped and the team default

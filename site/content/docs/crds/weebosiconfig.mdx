@@ -490,6 +490,7 @@ spec:
 **Rules**
 
 - namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select — `!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation`
+- the baseline profile may not be restricted: it applies to every namespace, granted or not — `self.catalog.all(p, p.key != self.baseline || !has(p.restricted) || !p.restricted)`
 
 ### `spec.features.networkProfiles.catalog[]` [#spec.features.networkProfiles.catalog]
 

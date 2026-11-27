@@ -597,6 +597,49 @@ async fn network_profiles_grant_annotation_may_not_be_the_selection_annotation()
     }
 }
 
+/// RFC 0021's CEL rule, against a real apiserver: the baseline applies to every namespace, so a
+/// `restricted: true` baseline is refused at write; a restricted non-baseline key is accepted.
+#[tokio::test]
+async fn network_profiles_baseline_may_not_be_restricted() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |base_restricted: bool| {
+        serde_json::from_value::<kube::api::DynamicObject>(config(
+            "cluster",
+            serde_json::json!({"features": {"networkProfiles": {
+                "mode": "DryRun",
+                "catalog": [
+                    {"key": "base", "variants": [], "restricted": base_restricted},
+                    {"key": "internet", "variants": [], "restricted": true},
+                ],
+                "baseline": "base",
+            }}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    api.create(&PostParams::default(), &spec(false))
+        .await
+        .expect("a restricted non-baseline key should be accepted");
+    api.delete("cluster", &DeleteParams::default())
+        .await
+        .expect("the accepted object should be deleted before the next case");
+
+    let error = api
+        .create(&PostParams::default(), &spec(true))
+        .await
+        .expect_err("the apiserver should refuse a restricted baseline");
+    assert!(
+        error
+            .to_string()
+            .contains("the baseline profile may not be restricted"),
+        "unexpected error: {error}"
+    );
+}
+
 /// RFC 0020's CRD bounds on `teamTools`, against a real apiserver: the RFC's entry is accepted,
 /// and each structural mistake is refused at write.
 #[tokio::test]
