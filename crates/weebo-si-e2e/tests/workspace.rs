@@ -1794,6 +1794,21 @@ fn the_webhook_fails_closed_when_it_is_down() {
                 "--for=jsonpath={.status.readyReplicas}=2",
                 "--timeout=300s",
             ]);
+            // Ready replicas are not yet a programmed Service: until a dry run is admitted, the
+            // next test's write meets "connection refused" (nightly of 2026-11-27). No panic in
+            // a Drop: a test already unwinding would abort.
+            let probe = r#"{"apiVersion":"workspace.devfile.io/v1alpha2","kind":"DevWorkspace","metadata":{"name":"e2e-webhook-probe","namespace":"default"},"spec":{"started":false,"template":{}}}"#;
+            for _ in 0..60 {
+                if weebo_si_e2e::kubectl_with(
+                    &["apply", "--dry-run=server", "-f", "-"],
+                    Some(probe),
+                )
+                .is_ok()
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
     }
     let _restore = Restore(deployment);

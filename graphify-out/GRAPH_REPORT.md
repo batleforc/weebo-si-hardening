@@ -1,7 +1,7 @@
 # Graph Report - wt-rfc-series  (2026-11-27)
 
 ## Corpus Check
-- 612 files · ~861,587 words
+- 612 files · ~861,648 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 26 file(s) not represented in the graph (top: (none) 14, .toml 6, .tpl 3)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `60c239b3`
+- Built from commit: `6b69c78f`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -543,17 +543,17 @@
   bins/endpoint-gateway/src/adapters/kube_catalog.rs → crates/weebo-si-endpoint-auth/src/compile.rs
 
 ## Import Cycles
-- 1-file cycle: `crates/weebo-si-network-profiles/src/port.rs -> crates/weebo-si-network-profiles/src/port.rs`
 - 1-file cycle: `crates/weebo-si-webhook/src/router.rs -> crates/weebo-si-webhook/src/router.rs`
+- 1-file cycle: `crates/weebo-si-network-profiles/src/port.rs -> crates/weebo-si-network-profiles/src/port.rs`
 - 1-file cycle: `crates/weebo-si-team-tools/src/fixtures.rs -> crates/weebo-si-team-tools/src/fixtures.rs`
 - 1-file cycle: `crates/weebo-si-controller/src/events.rs -> crates/weebo-si-controller/src/events.rs`
 - 1-file cycle: `bins/preauth-proxy/src/adapters/http_client.rs -> bins/preauth-proxy/src/adapters/http_client.rs`
 - 1-file cycle: `crates/weebo-si-endpoint-auth/src/compile.rs -> crates/weebo-si-endpoint-auth/src/compile.rs`
 - 2-file cycle: `crates/weebo-si-image-policy/src/platform.rs -> crates/weebo-si-image-policy/src/rewrite.rs -> crates/weebo-si-image-policy/src/platform.rs`
-- 2-file cycle: `crates/weebo-si-endpoint-auth/src/index.rs -> crates/weebo-si-endpoint-auth/src/testing.rs -> crates/weebo-si-endpoint-auth/src/index.rs`
-- 2-file cycle: `crates/weebo-si-endpoint-auth/src/compile.rs -> crates/weebo-si-endpoint-auth/src/testing.rs -> crates/weebo-si-endpoint-auth/src/compile.rs`
 - 2-file cycle: `crates/weebo-si-team-tools/src/bind.rs -> crates/weebo-si-team-tools/src/fixtures.rs -> crates/weebo-si-team-tools/src/bind.rs`
 - 2-file cycle: `crates/weebo-si-team-tools/src/fixtures.rs -> crates/weebo-si-team-tools/src/validate.rs -> crates/weebo-si-team-tools/src/fixtures.rs`
+- 2-file cycle: `crates/weebo-si-endpoint-auth/src/index.rs -> crates/weebo-si-endpoint-auth/src/testing.rs -> crates/weebo-si-endpoint-auth/src/index.rs`
+- 2-file cycle: `crates/weebo-si-endpoint-auth/src/compile.rs -> crates/weebo-si-endpoint-auth/src/testing.rs -> crates/weebo-si-endpoint-auth/src/compile.rs`
 - 2-file cycle: `crates/weebo-si-crd/src/argo.rs -> crates/weebo-si-crd/src/identity.rs -> crates/weebo-si-crd/src/argo.rs`
 - 2-file cycle: `crates/weebo-si-crd/src/identity.rs -> crates/weebo-si-crd/src/user.rs -> crates/weebo-si-crd/src/identity.rs`
 - 2-file cycle: `crates/weebo-si-image-policy/src/port.rs -> crates/weebo-si-image-policy/src/variable.rs -> crates/weebo-si-image-policy/src/port.rs`
@@ -561,8 +561,8 @@
 - 2-file cycle: `crates/weebo-si-crd/src/dwoc_pin.rs -> crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/dwoc_pin.rs`
 - 2-file cycle: `crates/weebo-si-crd/src/pod_security.rs -> crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/pod_security.rs`
 - 2-file cycle: `crates/weebo-si-crd/src/registry_config.rs -> crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/registry_config.rs`
-- 2-file cycle: `crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/team_tools.rs -> crates/weebo-si-crd/src/team.rs`
 - 2-file cycle: `crates/weebo-si-crd/src/image_policy.rs -> crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/image_policy.rs`
+- 2-file cycle: `crates/weebo-si-crd/src/team.rs -> crates/weebo-si-crd/src/team_tools.rs -> crates/weebo-si-crd/src/team.rs`
 
 ## Communities (561 total, 83 thin omitted)
 
@@ -2479,7 +2479,7 @@ Cohesion: 0.33
 Nodes (3): RoutingKind, Ingress, Route
 
 ## Knowledge Gaps
-- **532 isolated node(s):** `Proxy<S, U>`, `Delete`, `One`, `Two`, `DevWorkspaceId` (+527 more)
+- **532 isolated node(s):** `Proxy<S, U>`, `Empty`, `NotAHostname`, `TooLong`, `Exclusion` (+527 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 4591 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **83 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -2487,16 +2487,16 @@ Nodes (3): RoutingKind, Ingress, Route
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `NamespaceName` connect `NamespaceName` to `weebo-si-pod-identity/src/lib.rs`, `feature/registry_config.rs`, `team_tools_envtest.rs`, `PodSubject`, `config_store.rs`, `variable.rs`, `weebo-si-team-tools-adapters/src/controller.rs`, `TemplateRef`, `kube_policy_store.rs`, `workspace_images.rs`, `weebo-si-resource-quotas-adapters/src/controller.rs`, `weebo-si-endpoint-auth-adapters/src/endpoint_auth.rs`, `weebo-si-team-tools/src/validate.rs`, `weebo-si-resource-quotas/src/application.rs`, `weebo-si-kubearmor-policy-adapters/src/controller.rs`, `Applied`, `ManagedObject`, `DomainError`, `weebo-si-policy-guard-adapters/src/policy_guard.rs`, `weebo-si-crd/src/lib.rs`, `weebo-si-endpoint-auth-adapters/src/controller.rs`, `src/network_profiles.rs`, `core.rs`, `weebo-si-kubearmor-policy/src/application.rs`, `arc`, `pod_security_metrics.rs`, `guard.rs`, `weebo-si-resource-quotas/src/lib.rs`, `FeatureId`, `weebo-si-team-tools/src/render.rs`, `objects.rs`, `registry_object_store.rs`, `weebo-si-network-profiles/src/application.rs`, `router.rs`, `webhook_cmd.rs`, `weebo-si-pod-security/src/lib.rs`, `feature.rs`, `perf_envtest.rs`, `endpoint_routing.rs`, `weebo-si-registry-config-adapters/src/controller.rs`, `quota_metrics.rs`, `TemplateRef`, `feature/image_rewrite.rs`, `images_cmd.rs`, `Team`, `image_metrics.rs`, `feature/kubearmor_policy.rs`, `weebo-si-pod-security-adapters/src/controller.rs`, `weebo-si-team-tools-adapters/src/reconcile.rs`, `registry_metrics.rs`, `RuntimeBackend`, `node_enforcer.rs`, `weebo-si-team-tools/src/feature.rs`, `weebo-si-registry-config/src/application.rs`, `feature/network_profiles.rs`, `kubearmor_policy_store.rs`, `src/workspace_gate.rs`, `kubearmor_metrics.rs`, `ResourceQuotasFeature`, `weebo-si-team-tools/src/lib.rs`, `admit.rs`, `scale.rs`, `weebo-si-pod-security/src/application.rs`, `compile_annotations`, `weebo-si-network-profiles-adapters/src/controller.rs`, `feature/workspace_gate.rs`, `feature/pod_security.rs`, `Subject`?**
-  _High betweenness centrality (0.026) - this node is a cross-community bridge._
-- **What connects `Proxy<S, U>`, `Delete`, `One` to the rest of the system?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **What connects `Proxy<S, U>`, `Empty`, `NotAHostname` to the rest of the system?**
   _532 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Host` be split into smaller, more focused modules?**
   _Cohesion score 0.05974025974025974 - nodes in this community are weakly interconnected._
-- **Why does `DomainError` connect `DomainError` to `scope.rs`, `feature/registry_config.rs`, `weebo-si-identity/src/application.rs`, `kube_policy_store.rs`, `workspace_images.rs`, `weebo-si-endpoint-auth-adapters/src/endpoint_auth.rs`, `weebo-si-resource-quotas/src/application.rs`, `weebo-si-kubearmor-policy-adapters/src/controller.rs`, `Applied`, `NamespaceName`, `ManagedObject`, `weebo-si-kubearmor-policy/src/application.rs`, `guard.rs`, `core.rs`, `pod_security_metrics.rs`, `weebo-si-resource-quotas/src/lib.rs`, `registry_object_store.rs`, `weebo-si-network-profiles/src/application.rs`, `router.rs`, `kube_provisioner.rs`, `kube_canary.rs`, `weebo-si-pod-security/src/lib.rs`, `feature.rs`, `endpoint_routing.rs`, `feature/image_rewrite.rs`, `TemplateRef`, `feature/kubearmor_policy.rs`, `weebo-si-team-tools-adapters/src/reconcile.rs`, `weebo-si-crd/tests/envtest.rs`, `weebo-si-devfile-contract/src/feature.rs`, `weebo-si-team-tools/src/feature.rs`, `feature/network_profiles.rs`, `kubearmor_policy_store.rs`, `kubearmor_metrics.rs`, `weebo-si-pod-identity/src/feature.rs`, `ResourceQuotasFeature`, `src/workspace_gate.rs`, `admit.rs`, `weebo-si-pod-security/src/application.rs`, `feature/workspace_gate.rs`, `Subject`, `weebo-si-registry-config/src/application.rs`, `feature/pod_security.rs`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
+- **Why does `a_component_rewritten_under_a_changed_or_removed_rule_is_a_stale_mirror()` connect `images_cmd.rs` to `config`?**
+  _High betweenness centrality (0.021) - this node is a cross-community bridge._
 - **Should `kube_workload.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.04553264604810996 - nodes in this community are weakly interconnected._
-- **Why does `RuntimeBackend` connect `RuntimeBackend` to `compute_diff`, `kubearmor_metrics.rs`, `weebo-si-crd/src/lib.rs`, `weebo-si-kubearmor-policy/src/application.rs`, `kubearmor_policy_store.rs`, `kubearmor_metrics.rs`, `config_store.rs`, `kubearmor_envtest.rs`, `DesiredState`, `controller_envtest.rs`, `Posture`, `src/kubearmor_policy.rs`, `feature/kubearmor_policy.rs`, `weebo-si-crd/tests/envtest.rs`, `weebo-si-controller/src/reconcile.rs`?**
-  _High betweenness centrality (0.012) - this node is a cross-community bridge._
+- **Why does `rules` connect `config` to `images_cmd.rs`?**
+  _High betweenness centrality (0.021) - this node is a cross-community bridge._
 - **Should `weebo-si-endpoint-auth/src/application.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.04819848293299621 - nodes in this community are weakly interconnected._

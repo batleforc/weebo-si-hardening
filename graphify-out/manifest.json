@@ -942,9 +942,9 @@
     "semantic_hash": ""
   },
   "crates/weebo-si-e2e/tests/workspace.rs": {
-    "mtime": 1795796907.5275624,
-    "seen": 1795796934.1600158,
-    "ast_hash": "380e1c87e267620648f67ae6c7d89b96",
+    "mtime": 1795798968.2510297,
+    "seen": 1795799001.935926,
+    "ast_hash": "d7d6f8c4a2c4afc614c4ccaeaf5914f8",
     "semantic_hash": ""
   },
   "crates/weebo-si-endpoint-auth-adapters/Cargo.toml": {
