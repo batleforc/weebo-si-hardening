@@ -54,7 +54,19 @@ pub enum Violation {
     Policy(Option<String>),
     /// A new ephemeral container on a pod still in the node's user namespace (L18).
     EphemeralOnHostUserns(String),
+    /// An id above [`MAX_ID`]: the kubelet cannot map it under `hostUsers: false` [R20].
+    IdOutOfRange {
+        /// The container whose own field it is, `None` at pod level.
+        container: Option<ContainerRef>,
+        /// The `securityContext` field.
+        field: &'static str,
+        /// The id.
+        id: i64,
+    },
 }
+
+/// The highest id a pod in its own user namespace can use (RFC 0018 [R20]).
+pub const MAX_ID: i64 = 65535;
 
 impl Violation {
     /// The `reason` label of `weebo_si_pod_identity_refusals_total`.
@@ -69,13 +81,14 @@ impl Violation {
             Self::GroupZero => "group_zero",
             Self::Policy(_) => "policy",
             Self::EphemeralOnHostUserns(_) => "ephemeral_on_host_userns",
+            Self::IdOutOfRange { .. } => "id_out_of_range",
         }
     }
 
     /// The container it names, if any — the `container=` field of the log line.
     pub fn container(&self) -> Option<&ContainerRef> {
         match self {
-            Self::UidZero(container) => container.as_ref(),
+            Self::UidZero(container) | Self::IdOutOfRange { container, .. } => container.as_ref(),
             Self::GidZero(container) | Self::UidUnset(container) | Self::GidUnset(container) => {
                 Some(container)
             }
@@ -146,6 +159,20 @@ impl fmt::Display for Violation {
                 "ephemeral container {name:?}: this pod still shares the node's user namespace \
                  (created before pod-identity was enforced); restart the workspace, then debug it"
             ),
+            Self::IdOutOfRange {
+                container,
+                field,
+                id,
+            } => {
+                if let Some(container) = container {
+                    write!(f, "{container}: ")?;
+                }
+                write!(
+                    f,
+                    "securityContext.{field}={id} is above {MAX_ID}, the highest id a pod in its \
+                     own user namespace can map; set an id between 1 and {MAX_ID}"
+                )
+            }
         }
     }
 }
@@ -180,6 +207,28 @@ pub fn identity_violations(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<
     let pod_uid_zero = create && context.run_as_user == Some(0);
     if pod_uid_zero {
         out.push(Violation::UidZero(None));
+    }
+    let mut out_of_range = |container: Option<&ContainerIdentity>, field, id: Option<i64>| {
+        if let Some(id) = id.filter(|id| *id > MAX_ID) {
+            out.push(Violation::IdOutOfRange {
+                container: container.map(ContainerRef::from),
+                field,
+                id,
+            });
+        }
+    };
+    // Pod level once, on create; each container's own ids below cover the effective ones.
+    if create {
+        out_of_range(None, "runAsUser", context.run_as_user);
+        out_of_range(None, "runAsGroup", context.run_as_group);
+        out_of_range(None, "fsGroup", context.fs_group);
+        for group in &context.supplemental_groups {
+            out_of_range(None, "supplementalGroups", Some(*group));
+        }
+    }
+    for container in &pod.containers {
+        out_of_range(Some(container), "runAsUser", container.run_as_user);
+        out_of_range(Some(container), "runAsGroup", container.run_as_group);
     }
     for container in &pod.containers {
         match (container.run_as_user, context.run_as_user) {
@@ -414,6 +463,74 @@ mod tests {
         }
     }
 
+    fn out_of_range(container: Option<ContainerRef>, field: &'static str, id: i64) -> Violation {
+        Violation::IdOutOfRange {
+            container,
+            field,
+            id,
+        }
+    }
+
+    #[test]
+    fn pod_level_ids_above_65535_are_refused() {
+        let mut pod = fixed_pod();
+        pod.security_context.run_as_user = Some(1_000_660_000);
+        pod.security_context.run_as_group = Some(65536);
+        pod.security_context.fs_group = Some(70000);
+        pod.security_context.supplemental_groups = vec![65535, 100_000];
+        assert_eq!(
+            identity_violations(&pod, &config()),
+            [
+                out_of_range(None, "runAsUser", 1_000_660_000),
+                out_of_range(None, "runAsGroup", 65536),
+                out_of_range(None, "fsGroup", 70000),
+                out_of_range(None, "supplementalGroups", 100_000),
+            ]
+        );
+        // The bound itself maps.
+        pod.security_context.run_as_user = Some(65535);
+        pod.security_context.run_as_group = Some(65535);
+        pod.security_context.fs_group = Some(65535);
+        pod.security_context.supplemental_groups = vec![65535];
+        assert!(identity_violations(&pod, &config()).is_empty());
+    }
+
+    #[test]
+    fn container_ids_above_65535_are_refused() {
+        let mut pod = fixed_pod();
+        pod.containers = vec![
+            container("tools", Some(1_000_660_000), None),
+            ContainerIdentity {
+                kind: ContainerKind::Init,
+                name: "init".to_string(),
+                run_as_user: None,
+                run_as_group: Some(70000),
+            },
+        ];
+        assert_eq!(
+            identity_violations(&pod, &config()),
+            [
+                out_of_range(Some(tools()), "runAsUser", 1_000_660_000),
+                out_of_range(
+                    Some(ContainerRef {
+                        kind: ContainerKind::Init,
+                        name: "init".to_string()
+                    }),
+                    "runAsGroup",
+                    70000
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn ephemeral_container_id_above_65535_is_refused() {
+        assert_eq!(
+            reasons(&ephemeral(Some(false), Some(65536)), &config()),
+            ["id_out_of_range"]
+        );
+    }
+
     #[test]
     fn each_refusal_reason_has_its_message() {
         let cases = [
@@ -479,6 +596,17 @@ mod tests {
                 "ephemeral container \"debugger-x7\": this pod still shares the node's user \
                  namespace (created before pod-identity was enforced); restart the workspace, \
                  then debug it",
+            ),
+            (
+                out_of_range(Some(tools()), "runAsUser", 1_000_660_000),
+                "container \"tools\": securityContext.runAsUser=1000660000 is above 65535, the \
+                 highest id a pod in its own user namespace can map; set an id between 1 and \
+                 65535",
+            ),
+            (
+                out_of_range(None, "fsGroup", 70000),
+                "securityContext.fsGroup=70000 is above 65535, the highest id a pod in its own \
+                 user namespace can map; set an id between 1 and 65535",
             ),
         ];
         for (violation, message) in cases {

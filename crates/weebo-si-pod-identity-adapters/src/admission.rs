@@ -319,6 +319,7 @@ mod tests {
     use weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog;
     use weebo_si_chassis::port::feature_gate::testing::FakeFeatureGate;
     use weebo_si_chassis::port::namespace_view::testing::FakeNamespaceView;
+    use weebo_si_pod_identity::Violation;
 
     const NS: &str = "dev-ws-test";
 
@@ -463,6 +464,31 @@ mod tests {
         assert_eq!(subject.containers[0].name, "debugger-b");
         assert_eq!(subject.containers[0].kind, ContainerKind::Ephemeral);
         assert_eq!(subject.containers[0].run_as_user, Some(0));
+    }
+
+    #[test]
+    fn an_ephemeral_update_without_old_object_is_refused_as_on_host_userns() {
+        // No oldObject means no proof the pod left the node's user namespace (L18).
+        let mut new = dwo_pod();
+        new["spec"]["ephemeralContainers"] = serde_json::json!([{"name": "debugger-x7"}]);
+        let update = || review("UPDATE", Some("ephemeralcontainers"), NS, new.clone(), None);
+        let subject = pod_subject_from_request(&request(update())).unwrap();
+        assert_eq!(
+            subject.admission,
+            Admission::EphemeralUpdate {
+                old_host_users: None
+            }
+        );
+        assert_eq!(subject.containers.len(), 1);
+        let validated = response(validate_review(
+            &state(FeatureMode::Enforce, true),
+            update(),
+        ));
+        assert!(!validated.allowed);
+        assert_eq!(
+            validated.result.message,
+            Violation::EphemeralOnHostUserns("debugger-x7".to_string()).to_string()
+        );
     }
 
     #[test]
