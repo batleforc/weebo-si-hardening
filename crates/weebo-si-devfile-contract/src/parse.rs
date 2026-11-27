@@ -99,22 +99,32 @@ fn split_uri(uri: &str) -> Option<(String, String, &str)> {
     let (scheme, rest) = without_query.split_once("://")?;
     let scheme = scheme.to_lowercase();
     let (authority, path) = rest.find('/').map_or((rest, ""), |i| rest.split_at(i));
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
-    let default_port = match scheme.as_str() {
-        "https" => ":443",
-        "http" => ":80",
-        _ => "",
-    };
-    let host = match host.strip_suffix(default_port) {
-        Some(bare) if !default_port.is_empty() => bare,
-        _ => host.as_str(),
-    };
+    // The host as Go's net/http reads it (IDNA, `:`, `:0443`), or a deny is bypassed (T3).
+    let parsed = url::Url::parse(without_query).ok().and_then(|url| {
+        let host = url.host_str()?.to_lowercase();
+        Some(
+            url.port()
+                .map_or_else(|| host.clone(), |port| format!("{host}:{port}")),
+        )
+    });
+    let host = parsed.unwrap_or_else(|| {
+        let host = authority
+            .rsplit('@')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        let default_port = match scheme.as_str() {
+            "https" => ":443",
+            "http" => ":80",
+            _ => "",
+        };
+        match host.strip_suffix(default_port) {
+            Some(bare) if !default_port.is_empty() => bare.to_string(),
+            _ => host,
+        }
+    });
     // `github.com.` is the same fully-qualified host as `github.com`.
-    let host = host.strip_suffix('.').unwrap_or(host).to_string();
+    let host = host.strip_suffix('.').unwrap_or(&host).to_string();
     Some((scheme, host, path))
 }
 
@@ -434,6 +444,35 @@ mod tests {
             ("https://host/../..", "https://host"),
             ("https://host/a%zz%4", "https://host/a%zz%4"),
             ("https://GitHub.com.:443/a", "https://github.com/a"),
+            (
+                "https://raw.githubusercontent.com:/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            (
+                "https://raw.githubusercontent.com:0443/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            (
+                "https://raw.githubusercontent.com:443/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            (
+                "https://\u{ff52}\u{ff41}\u{ff57}.githubusercontent.com/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            (
+                "https://user@raw.githubusercontent.com/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            (
+                "https://RAW.GITHUBUSERCONTENT.COM/o/r",
+                "https://raw.githubusercontent.com/o/r",
+            ),
+            ("http://host:80/a", "http://host/a"),
+            (
+                "https://raw.githubusercontent.com:8443/o/r",
+                "https://raw.githubusercontent.com:8443/o/r",
+            ),
         ];
         for (uri, expected) in rows {
             assert_eq!(normalise_uri(uri), expected, "{uri}");

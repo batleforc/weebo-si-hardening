@@ -3836,6 +3836,7 @@ name = "weebo-si-devfile-contract"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "url",
  "weebo-si-chassis",
  "weebo-si-crd",
 ]

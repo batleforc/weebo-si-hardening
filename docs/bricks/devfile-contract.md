@@ -77,7 +77,9 @@ rewrites them at the next admission: do not base a security decision on them.
 default. A match refuses a **start** only: a `CREATE`, `spec.started` turning `true`, or a
 `spec.template` change while the workspace runs. Any other update — a stop, a finalizer removed
 by DevWorkspace Operator, a label — gets a warning instead, so a workspace can always be stopped
-and deleted. `onDenied: Warn` turns every refusal into a warning.
+and deleted. `onDenied: Warn` turns every refusal into a warning. The list is version hygiene, not a
+security boundary: a developer can still reach a denied parent through `parent.kubernetes`, a
+mirror, or by copying its content into the devfile.
 
 The two refusals; when both match, one message carries both, joined by a period and a space:
 

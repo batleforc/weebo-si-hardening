@@ -12,6 +12,8 @@ weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
 # The contract attribute is free-form devfile JSON (RFC 0019, *Supply chain*).
 serde_json = { workspace = true }
+# Parses the parent host as DevWorkspace Operator does (IDNA, ports).
+url = "2.5.9"
 
 [dev-dependencies]
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }

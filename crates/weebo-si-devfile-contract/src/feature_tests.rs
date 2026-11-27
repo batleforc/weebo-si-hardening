@@ -423,6 +423,33 @@ fn a_denied_prefix_matches_despite_query_and_userinfo() {
 }
 
 #[test]
+fn a_denied_prefix_matches_every_spelling_of_its_host() {
+    let denied = [prefix("https://raw.githubusercontent.com/o/r/v1/")];
+    for uri in [
+        "https://raw.githubusercontent.com:/o/r/v1/devfile.yaml",
+        "https://raw.githubusercontent.com:0443/o/r/v1/devfile.yaml",
+        "https://raw.githubusercontent.com:443/o/r/v1/devfile.yaml",
+        "https://\u{ff52}\u{ff41}\u{ff57}.githubusercontent.com/o/r/v1/devfile.yaml",
+        "https://user@raw.githubusercontent.com/o/r/v1/devfile.yaml",
+        "https://RAW.GITHUBUSERCONTENT.COM/o/r/v1/devfile.yaml",
+        "http://raw.githubusercontent.com:80/o/r/v1/devfile.yaml",
+    ] {
+        assert!(
+            denied_match(&Parent::Uri(uri.to_string()), &denied).is_some(),
+            "{uri}"
+        );
+    }
+    // Another port is another server.
+    assert!(
+        denied_match(
+            &Parent::Uri("https://raw.githubusercontent.com:8443/o/r/v1/devfile.yaml".to_string()),
+            &denied
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn a_denied_parent_on_a_non_start_update_is_a_warning() {
     let subject = DevfileWorkspace {
         parent: Some(Parent::Uri(OLD_URI.to_string())),
