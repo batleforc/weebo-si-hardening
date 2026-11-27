@@ -936,15 +936,15 @@
     "semantic_hash": ""
   },
   "crates/weebo-si-e2e/tests/upgrade.rs": {
-    "mtime": 1795610176.316976,
-    "seen": 1795794479.0802171,
-    "ast_hash": "7b6fef1aa03cfa6e543eb872b6641f68",
+    "mtime": 1795796907.52775,
+    "seen": 1795796934.1600137,
+    "ast_hash": "cd6750f694a10e0296d0d3f877cd522f",
     "semantic_hash": ""
   },
   "crates/weebo-si-e2e/tests/workspace.rs": {
-    "mtime": 1795646402.1638982,
-    "seen": 1795794479.0802188,
-    "ast_hash": "b05bda378e84b184f2914473d6156bbc",
+    "mtime": 1795796907.5275624,
+    "seen": 1795796934.1600158,
+    "ast_hash": "380e1c87e267620648f67ae6c7d89b96",
     "semantic_hash": ""
   },
   "crates/weebo-si-endpoint-auth-adapters/Cargo.toml": {
@@ -2574,8 +2574,8 @@
     "semantic_hash": ""
   },
   "site/content/docs/crds/meta.json": {
-    "mtime": 1795794568.7873547,
-    "seen": 1795795045.6586404,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1717353,
     "ast_hash": "628c1f5427685f66fea4da831bd1f4fd",
     "semantic_hash": ""
   },
@@ -2622,32 +2622,32 @@
     "semantic_hash": ""
   },
   "site/public/crd-schemas/index.json": {
-    "mtime": 1795794568.7873547,
-    "seen": 1795795045.6588626,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1719582,
     "ast_hash": "bdd89b8d8a5444cd68b204fddb5bf88c",
     "semantic_hash": ""
   },
   "site/public/crd-schemas/links.json": {
-    "mtime": 1795794568.7873547,
-    "seen": 1795795045.6588635,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1719596,
     "ast_hash": "b78de41ac11ecda38aa5539b381abc30",
     "semantic_hash": ""
   },
   "site/public/crd-schemas/weebosiconfig.schema.json": {
-    "mtime": 1795794568.7853546,
-    "seen": 1795795045.658865,
+    "mtime": 1795795177.420219,
+    "seen": 1795796934.171961,
     "ast_hash": "8e9b3ef0c9000b90e111dc970671eb6f",
     "semantic_hash": ""
   },
   "site/public/crd-schemas/weebositeam.schema.json": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.6588662,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.171962,
     "ast_hash": "e757a73ec0eec85ae738963ccc797349",
     "semantic_hash": ""
   },
   "site/public/crd-schemas/weebosiuser.schema.json": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.6588674,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1719635,
     "ast_hash": "486f0e6faa8f736fbfee4c3e2246ef34",
     "semantic_hash": ""
   },
@@ -3090,26 +3090,26 @@
     "semantic_hash": ""
   },
   "site/content/docs/crds/index.mdx": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.6615298,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.175037,
     "ast_hash": "08766e52313ea7d55f8cbfe9ae05877f",
     "semantic_hash": ""
   },
   "site/content/docs/crds/weebosiconfig.mdx": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.661531,
+    "mtime": 1795795177.420219,
+    "seen": 1795796934.175038,
     "ast_hash": "c4d9fd0a1d892d3ad1166de364179498",
     "semantic_hash": ""
   },
   "site/content/docs/crds/weebositeam.mdx": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.6615324,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1750398,
     "ast_hash": "7bf2c4d02f5e67f1f5a7f19cda2e0775",
     "semantic_hash": ""
   },
   "site/content/docs/crds/weebosiuser.mdx": {
-    "mtime": 1795794568.7863548,
-    "seen": 1795795045.6615336,
+    "mtime": 1795795177.4212189,
+    "seen": 1795796934.1750412,
     "ast_hash": "84530bc789081a5018cc99196d3c0dd1",
     "semantic_hash": ""
   },

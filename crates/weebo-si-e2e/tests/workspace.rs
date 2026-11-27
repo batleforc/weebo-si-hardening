@@ -1430,7 +1430,9 @@ fn parent_server() -> Cleanup {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": { "name": "parents", "namespace": PARENTS_NS },
-            "spec": { "selector": { "app": "parents" }, "ports": [{ "port": 8080 }] },
+            // Headless: DNS names the pod itself, so no kube-proxy rule lagging behind the
+            // ready endpoint can refuse DWO's single fetch (nightly of 2026-11-27).
+            "spec": { "clusterIP": "None", "selector": { "app": "parents" }, "ports": [{ "port": 8080 }] },
         }),
     ] {
         apply(&object.to_string());
