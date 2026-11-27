@@ -30,8 +30,13 @@ stays a **sidecar** in the devfile: this feature is not for it (RFC 0020, *The r
 
    `teamTools.rbac.enabled` renders two **unbound** ClusterRoles (`weebo-si-team-tools`,
    `weebo-si-team-tools-requester`), the cluster-wide read on `configmaps` and
-   `certificates.cert-manager.io`, and a Role reading the template namespace. Without it the
-   controller logs `team-tools is inert` once and the feature never runs.
+   `certificates.cert-manager.io`, a Role reading the template namespace and the CA guard
+   (*CA guard* below, on by default with `teamTools.caGuard.enabled`). Without it the controller
+   logs `team-tools is inert` once and the feature never runs.
+   The ConfigMap read is every ConfigMap of the cluster, Secret-adjacent configuration included:
+   the controller watches the requester ConfigMaps of every workspace namespace with one
+   label-filtered watch, and RBAC has no label-scoped read. Narrowing it to the bound namespaces
+   would take one watch per namespace; it is kept, as `registryConfig`'s is.
    `networkProfiles.cilium.enabled` is the cluster-wide `ciliumnetworkpolicies` grant the ingress
    and egress policies need. The controller renders CNPs only when the apiserver serves Cilium's
    CRD (discovered at boot); without the CRD, or without the grant (the writes get 403), nothing
@@ -43,10 +48,12 @@ stays a **sidecar** in the devfile: this feature is not for it (RFC 0020, *The r
 3. **cert-manager** (`v1.21.3` on the lab) for any entry with `tls`, and **one `ClusterIssuer`
    per team** (the team CA, *Add a team tools namespace* below). Without cert-manager the other
    features run unchanged; an entry with `tls` fails its `Certificate` writes.
-4. **The endpoint-auth issuer allow-list** (RFC 0020 S3, the `WeeboSiConfig` field
-   [`spec.features.endpointAuth.allowedIssuers`](../weebosiconfig.md#featuresendpointauth), not a
-   chart value; default `[vault-issuer]`) stays without the team CAs: otherwise a user mints a team client certificate
-   through an `Ingress` annotated `cert-manager.io/cluster-issuer: <team CA>`.
+4. **Kubernetes ≥ 1.30** for the CA guard (`admissionregistration.k8s.io/v1`
+   `ValidatingAdmissionPolicy`); on an older apiserver the install fails on it. endpoint-auth is
+   no longer needed for RFC 0020 S3: keeping the team CAs out of its
+   [`allowedIssuers`](../weebosiconfig.md#featuresendpointauth) is still right, but the guard
+   refuses the `Certificate` an annotated `Ingress`, `Route` or `Gateway` makes ingress-shim
+   write, whatever endpoint-auth's mode, dialect or `failurePolicy`.
 5. **Per tools namespace and per workspace namespace**, the RoleBindings of the runbook below.
    RBAC cannot scope a write by label, so the RoleBinding *is* the scope: a namespace without it
    reports `Forbidden` and nothing else breaks.
@@ -220,7 +227,9 @@ read the annotation and the Events.
 - **Surgical:** remove the key from the team's `allowed`. Workspaces keep running without it.
 - **Whole feature:** `mode: Off` deletes every object this feature wrote, **the cache PVC
   excepted** (`feature=team-tools mode=Off deleted=<n>`). Deleting the cache is an admin's
-  `kubectl delete pvc`.
+  `kubectl delete pvc`. A namespace's ingress policy and server certificate go only once its
+  workloads were seen and deleted, so a tool is never left running without its ingress policy;
+  after a controller restart, former tools namespaces are found again by those two objects.
 - **Removing the `teamTools` block tears nothing down**: as for every feature here, only an
   explicit `mode: Off` removes what was written (a singleton re-applied without the block must not
   stop every tool). The statuses are cleared.
@@ -316,6 +325,39 @@ For a tool already deployed by a per-team chart (weebo-si's `2.helm/team-tools`,
    pod, same PVC. Objects in a **workspace namespace** are never adopted (`not writing … a
    workspace namespace's objects are never adopted`): delete those by hand.
 
+## CA guard
+
+The daemon trusts a client certificate's commonName, so a certificate from the team CA naming a
+colleague *is* that colleague. cert-manager's chart aggregates `certificates` and
+`certificaterequests` create into `edit` and `admin` (a Che user is project admin on OpenShift),
+and its default approver signs any `CertificateRequest`. The chart therefore renders, with
+`teamTools.rbac.enabled` and `teamTools.caGuard.enabled` (default `true`), the
+`ValidatingAdmissionPolicy` `<release>-team-tools-ca` and its binding:
+
+- its params are every `WeeboSiTeam`; the team CAs are their
+  `spec.features.teamTools.issuerRef.name`, the field the operator renders `issuerRef` from, not a
+  name pattern;
+- a `Certificate` whose `issuerRef` names a team CA (`kind: ClusterIssuer`, group
+  `cert-manager.io` or empty) is refused on `CREATE`, and on an `UPDATE` changing `spec`, unless
+  written by the controller ServiceAccount (`system:serviceaccount:<release ns>:<controller SA>`).
+  ingress-shim and gateway-shim act as cert-manager, so an annotated routing object is refused
+  too;
+- a `CertificateRequest` naming a team CA is refused on `CREATE` unless written by
+  `teamTools.caGuard.certManagerUsername` (default
+  `system:serviceaccount:cert-manager:cert-manager`). Set it when cert-manager runs elsewhere;
+- `failurePolicy: Fail`, fixed: the apiserver evaluates the CEL in process, no webhook is called.
+
+```console
+$ kubectl apply -n user-alice -f forged-certificate.yaml
+Error from server (Forbidden): error when creating "forged-certificate.yaml":
+certificates.cert-manager.io "forged" is forbidden: ValidatingAdmissionPolicy
+'weebo-si-operator-team-tools-ca' with binding 'weebo-si-operator-team-tools-ca' denied request:
+only the weebo-si operator may request a certificate from team tools CA team-weebo-tools-ca
+```
+
+Another cert-manager integration writing `CertificateRequest`s to a team CA (csi-driver,
+istio-csr) is refused by design.
+
 ## Failure modes
 
 | Failure | Direction |
@@ -323,6 +365,7 @@ For a tool already deployed by a per-team chart (weebo-si's `2.helm/team-tools`,
 | controller down | the tool keeps its replicas, no new client objects; the T-41 alerts below |
 | template or tools-namespace cache not synced | tools `Held`: no scale, no delete |
 | cert-manager down | no new client certificate; existing ones work until expiry |
+| CA guard misconfigured (`WeeboSiTeam` CRD missing, wrong `certManagerUsername`) | **closed**: no certificate from a team CA is issued |
 | webhook down | DevWorkspace writes refused (`failurePolicy: Fail`, existing) |
 | tools namespace unbound | nothing rendered; workspaces start without the tool |
 | node out of memory | tool pod `Pending`, the tools quota bounds the rest |
@@ -404,7 +447,11 @@ machine, the binding gates, one negative test per RFC 0020 STRIDE row); envtest 
 `crates/weebo-si-team-tools-adapters` (a template update never resetting `replicas`, phase-0
 adoption, a workspace object never adopted, an invalid entry keeping what is rendered and `Off`
 deleting only its own objects, the team status keeping identity's condition); the chart RBAC test
-`the_controller_cannot_write_outside_a_bound_namespace`; and
+`the_controller_cannot_write_outside_a_bound_namespace`; the CA guard envtest
+`only_the_operator_and_cert_manager_reach_a_team_ca` (`crates/weebo-si-operator`, the chart's
+policy on a real apiserver: a user's `Certificate` or `CertificateRequest` to the team CA, or a
+`spec` edit of the operator's, refused; the controller, cert-manager, a metadata edit and another
+issuer allowed); and
 `crates/weebo-si-e2e/tests/team_tools.rs` (`task e2e:run SUITE=team-tools`), with real rootless
 BuildKit and `buildctl` in Che workspaces: render at 0, scale on start, idle after the grace with
 the cache PVC kept, a renewed client certificate used without a restart, another team's

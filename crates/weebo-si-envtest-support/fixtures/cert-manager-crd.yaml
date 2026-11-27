@@ -1,0 +1,70 @@
+# Stand-ins for cert-manager's `Certificate` and `CertificateRequest`, so RFC 0020's CA guard (a
+# ValidatingAdmissionPolicy on both) can be put through real admission on a real apiserver.
+#
+# Only `spec.issuerRef` is spelled out: it is all the policy reads. The rest is preserved
+# wholesale; no cert-manager controller runs here, so nothing is ever issued.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: certificates.cert-manager.io
+spec:
+  group: cert-manager.io
+  names:
+    kind: Certificate
+    listKind: CertificateList
+    plural: certificates
+    singular: certificate
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              required: ["issuerRef"]
+              properties:
+                issuerRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    group: {type: string}
+                    kind: {type: string}
+                    name: {type: string}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: certificaterequests.cert-manager.io
+spec:
+  group: cert-manager.io
+  names:
+    kind: CertificateRequest
+    listKind: CertificateRequestList
+    plural: certificaterequests
+    singular: certificaterequest
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              required: ["issuerRef"]
+              properties:
+                issuerRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    group: {type: string}
+                    kind: {type: string}
+                    name: {type: string}

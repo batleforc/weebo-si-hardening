@@ -228,6 +228,7 @@ resourceQuotas:
 #   Empty `name` means the resource-quotas one. A quota profile template there is a live
 #   `ResourceQuota` enforced on the tool templates too: one capping object counts (`services: 0`,
 #   `count/configmaps`) refuses them, so keep such profiles elsewhere or set a separate name.
+# - the CA guard below (`caGuard`).
 teamTools:
   rbac:
     enabled: false
@@ -236,6 +237,16 @@ teamTools:
     # Render the Namespace. Off when it is created some other way (GitOps, a pre-existing one);
     # it must then exist before the install, since the template Role is rendered into it.
     create: true
+  # The CA guard (a ValidatingAdmissionPolicy, Kubernetes >= 1.30): a Certificate or
+  # CertificateRequest naming a team's `teamTools.issuerRef` is refused unless the operator's
+  # controller (Certificate) or cert-manager (CertificateRequest) writes it. Without it any user
+  # who can create a Certificate (cert-manager aggregates that into `edit`/`admin`) gets a client
+  # certificate with a colleague's commonName. Turn it off only for a cluster that denies those
+  # writes some other way.
+  caGuard:
+    enabled: true
+    # cert-manager's controller identity, the only writer of CertificateRequests to a team CA.
+    certManagerUsername: system:serviceaccount:cert-manager:cert-manager
 
 # RFC 0007's `registry-config`. Off by default, and this flag governs *RBAC and the guard rule*,
 # not the feature: whether the feature runs at all is `spec.features.registryConfig.mode` on the

@@ -538,7 +538,9 @@ annotations):
 - **an issuer the admin did not list**: `cert-manager.io/cluster-issuer` and
   `cert-manager.io/issuer` must name an entry of `allowedIssuers` (default `[vault-issuer]`), so a
   team tools CA ([RFC 0020](../rfc/0020-team-tools.md), S3) never signs through an `Ingress`
-  (`result=denied_certificate_issuer`).
+  (`result=denied_certificate_issuer`). This check runs only under `Enforce` and only on the
+  dialect's routing kind; the team tools CAs have their own guard, which does not depend on it
+  ([team-tools, *CA guard*](team-tools.md#ca-guard)).
 
 ```console
 $ kubectl annotate ingress api -n user-alice cert-manager.io/cluster-issuer=team-weebo-tools-ca

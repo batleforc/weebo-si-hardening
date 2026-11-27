@@ -345,6 +345,19 @@
               "type": "boolean"
             }
           }
+        },
+        "caGuard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "certManagerUsername": {
+              "type": "string",
+              "pattern": "^system:serviceaccount:[a-z0-9]([-a-z0-9]*[a-z0-9])?:[a-z0-9]([-.a-z0-9]*[a-z0-9])?$"
+            }
+          }
         }
       }
     },
