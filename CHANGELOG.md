@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.6.0](https://github.com/batleforc/weebo-si-hardening/compare/863660eedca8d7c1f021c100eb1d338201bc9c2b..v0.6.0) - 2026-11-27
+#### Features
+- implement RFCs 0018 to 0021 (pod identity, devfile contract, team tools, namespace-only grants) (#24) - ([2ea4e2e](https://github.com/batleforc/weebo-si-hardening/commit/2ea4e2ef6d22f7450eaf7c9ff4759d98b073b96c)) - Maxime, Claude Opus 5.5 (1M context)
+#### Bug Fixes
+- (**deploy**) the standard teams reach the team and shared access keys (#20) - ([03a43fd](https://github.com/batleforc/weebo-si-hardening/commit/03a43fd0888429a4dfcca5bf72d4d73d3548649d)) - Maxime, Claude Opus 5.5
+- (**endpoint-auth**) TLS hosts and certificate annotations go through the guard (#23) - ([aeb671e](https://github.com/batleforc/weebo-si-hardening/commit/aeb671e0e10bf7f25ed2f269ed630af5d3ebecf8)) - Maxime, Claude Opus 5.5
+#### Documentation
+- (**endpoint-auth**) opting an endpoint out of sign-in (#19) - ([863660e](https://github.com/batleforc/weebo-si-hardening/commit/863660eedca8d7c1f021c100eb1d338201bc9c2b)) - Maxime, Claude Opus 5.5
+- (**endpoint-gateway**) the operator-free HAProxy proof as a named gap - ([c412ee3](https://github.com/batleforc/weebo-si-hardening/commit/c412ee3652cb7b0b382b0337f56a1e94b16e3408)) - Max Batleforc
+- (**rfc**) 0018 to 0021, the missing workspace-hardening features, accepted (#22) - ([83df8de](https://github.com/batleforc/weebo-si-hardening/commit/83df8dedc080a682dd26c4b5d5d7beaed1efcc51)) - Maxime, Claude Opus 5.5
+#### Miscellaneous Chores
+- Claude Code tooling, the knowledge graph and draft RFCs 0015/0016 (#21) - ([f94ede1](https://github.com/batleforc/weebo-si-hardening/commit/f94ede17e5909114c807eb08c64839ad33f154fa)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+
+- - -
+
 ## [v0.5.0](https://github.com/batleforc/weebo-si-hardening/compare/24f8986c0c8bc1ca108b58b6af671d08b2e7ca70..v0.5.0) - 2026-11-12
 #### Features
 - (**endpoint-auth**) an error page in front of the gate (#17) - ([c11de68](https://github.com/batleforc/weebo-si-hardening/commit/c11de68b9a07f3f62cbb8a9ca95744e77d5e7be4)) - Maxime, Claude Opus 5.5
