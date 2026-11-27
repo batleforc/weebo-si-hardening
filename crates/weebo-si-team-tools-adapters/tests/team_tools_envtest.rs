@@ -36,7 +36,7 @@ use weebo_si_crd::{
 };
 use weebo_si_envtest_support::EnvTest;
 use weebo_si_team_tools::port::testing::{FakeClock, FakeTemplateStore};
-use weebo_si_team_tools::render::from_template;
+use weebo_si_team_tools::render::{from_template, ingress_policy_name};
 use weebo_si_team_tools::{
     SCALE_FIELD_MANAGER, TeamTool, TeamToolsFeature, ToolObject, ToolObjectKind, ToolTemplate,
     ToolTemplateStore, ToolsNamespace,
@@ -564,7 +564,8 @@ async fn an_invalid_entry_keeps_what_is_rendered_and_off_deletes_only_ours() {
         .create(&PostParams::default(), &foreign)
         .await
         .unwrap();
-    let applied = teardown(&store).await;
+    let tools = BTreeMap::from([(NamespaceName::new(TOOLS), TeamName::new("weebo"))]);
+    let applied = teardown(&store, &tools).await;
     assert_eq!(applied.deleted, 3);
     assert!(
         Api::<StatefulSet>::namespaced(client.clone(), TOOLS)
@@ -580,6 +581,75 @@ async fn an_invalid_entry_keeps_what_is_rendered_and_off_deletes_only_ours() {
             .unwrap()
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn off_after_a_restart_deletes_the_workload_before_its_ingress_policy() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().unwrap();
+    install(&client, cilium_crd()).await;
+    namespace(&client, TOOLS).await;
+    let ingress = ingress_policy_name(&ToolKey::new("buildkit"));
+    let written = KubeToolStore::spawn(client.clone(), true, false)
+        .await
+        .unwrap();
+    written
+        .apply(
+            &[
+                Diff::Create(rendered(
+                    "StatefulSet",
+                    "buildkitd",
+                    TOOLS,
+                    statefulset_body("moby/buildkit:v0.35.1", json!({})),
+                )),
+                Diff::Create(rendered(
+                    "CiliumNetworkPolicy",
+                    &ingress,
+                    TOOLS,
+                    json!({"spec": {"endpointSelector": {}}}),
+                )),
+            ],
+            Adoption::Never,
+        )
+        .await
+        .unwrap();
+    drop(written);
+
+    // A restart: nothing watches the tools namespace, its label and grant are gone; only the
+    // cluster-wide cache still sees the ingress policy.
+    let store = KubeToolStore::spawn(client.clone(), true, false)
+        .await
+        .unwrap();
+    wait_for("the ingress policy in the cluster-wide cache", || {
+        store
+            .tools_side_namespaces()
+            .contains(&NamespaceName::new(TOOLS))
+    })
+    .await;
+    let tools = BTreeMap::from([(NamespaceName::new(TOOLS), TeamName::new(""))]);
+    let statefulsets = Api::<StatefulSet>::namespaced(client.clone(), TOOLS);
+    let policies = Api::<kube::api::DynamicObject>::namespaced_with(
+        client.clone(),
+        TOOLS,
+        &kube::api::ApiResource::from_gvk_with_plural(
+            &kube::api::GroupVersionKind::gvk("cilium.io", "v2", "CiliumNetworkPolicy"),
+            "ciliumnetworkpolicies",
+        ),
+    );
+    for _ in 0..50 {
+        teardown(&store, &tools).await;
+        let workload = statefulsets.get_opt("buildkitd").await.unwrap().is_some();
+        let policy = policies.get_opt(&ingress).await.unwrap().is_some();
+        assert!(
+            policy || !workload,
+            "the workload outlived its ingress policy"
+        );
+        if !workload && !policy {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("Off never tore the restarted tools namespace down");
 }
 
 #[tokio::test]

@@ -325,12 +325,13 @@ impl ReconcileFeature<TeamTool> for TeamToolsFeature {
         if !subject.synced {
             return Ok(ToolDesired::held(TeamToolState::Held));
         }
-        // The team moved its tools elsewhere: what is here goes, even once the admin unlabelled
-        // the old namespace (the delete only reaches objects labelled managed-by, under RBAC).
+        // The team moved its tools elsewhere or lost its grant: what is here goes, even once the
+        // admin unlabelled the old namespace (the delete only reaches objects labelled
+        // managed-by, under RBAC).
         if config
             .grants
             .get(subject.team.as_str())
-            .is_some_and(|grant| grant.namespace != subject.namespace)
+            .is_none_or(|grant| grant.namespace != subject.namespace)
         {
             return Ok(ToolDesired::removed());
         }
@@ -680,6 +681,11 @@ mod tests {
         moved.namespace = NamespaceName::new("team-weebo-old");
         moved.tools_namespace = None;
         assert_eq!(tool_desired(&feature(), &moved), ToolDesired::removed());
+        // The team is gone (no grant) and its namespace unlabelled: removed, never held unbound.
+        let mut orphaned = tool(1, 1);
+        orphaned.team = TeamName::new("gone");
+        orphaned.tools_namespace = None;
+        assert_eq!(tool_desired(&feature(), &orphaned), ToolDesired::removed());
     }
 
     #[test]

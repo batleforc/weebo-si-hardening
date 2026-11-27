@@ -35,7 +35,7 @@ use weebo_si_team_tools::{
 use crate::kube_template_store::KubeToolTemplateStore;
 use crate::kube_tool_store::{KubeToolStore, Watch};
 use crate::metrics::{TeamToolsMetrics, ToolGauges};
-use crate::objects::ALL_KINDS;
+use crate::objects::{ALL_KINDS, is_tools_side};
 use crate::port::{Adoption, StoreError, ToolObjectStore};
 use crate::reconcile::{
     Converged, ToolOutcome, reconcile_requester, reconcile_tool, reconcile_workspace,
@@ -220,9 +220,22 @@ fn is_active(object: &DynamicObject) -> bool {
 }
 
 /// `mode: Off`: every object this feature wrote goes, the StatefulSets' PVCs excepted (a
-/// `StatefulSet` delete keeps them by default). A namespace whose delete fails is logged and
-/// retried next pass; the others still go.
-pub async fn teardown(store: &KubeToolStore) -> Applied {
+/// `StatefulSet` delete keeps them by default). Every tools namespace (`tools_namespaces`, with
+/// the team to ask its watch for) is watched first: until its workloads are seen, its ingress
+/// policy and server certificate stay, so a workload never runs without its ingress policy and
+/// the namespace stays found. A namespace whose delete fails is logged and retried next pass;
+/// the others still go.
+pub async fn teardown(
+    store: &KubeToolStore,
+    tools_namespaces: &BTreeMap<NamespaceName, TeamName>,
+) -> Applied {
+    for (namespace, team) in tools_namespaces {
+        if let Err(err) = store.watch_tools_namespace(team, namespace).await {
+            tracing::warn!(
+                "feature={FEATURE_ID} mode=Off ns={namespace} could not ask for watch access: {err}"
+            );
+        }
+    }
     let namespaces: BTreeSet<NamespaceName> = store
         .all()
         .into_iter()
@@ -230,8 +243,14 @@ pub async fn teardown(store: &KubeToolStore) -> Applied {
         .collect();
     let mut total = Applied::default();
     for namespace in namespaces {
-        let existing = store.all_in(&namespace);
+        let synced = store.synced(&namespace);
+        let existing: Vec<ToolObject> = store
+            .all_in(&namespace)
+            .into_iter()
+            .filter(|object| synced || !is_tools_side(object))
+            .collect();
         let mut diffs = Vec::new();
+        // Workloads first: a failed delete stops the apply before the ingress policy.
         for kind in ALL_KINDS {
             let of_kind: Vec<ToolObject> = existing
                 .iter()
@@ -250,6 +269,12 @@ pub async fn teardown(store: &KubeToolStore) -> Applied {
         }
     }
     total
+}
+
+/// A tools namespace bound to `team`: labelled for it, and not a workspace namespace.
+fn is_bound(team: &str, labels: &BTreeMap<String, String>) -> bool {
+    labels.get(TEAM_TOOLS_NAMESPACE_LABEL).map(String::as_str) == Some(team)
+        && !labels.contains_key(WORKSPACE_NAMESPACE_LABEL)
 }
 
 /// The namespaces holding DevWorkspaces that match the selectors of two teams which both have
@@ -319,8 +344,40 @@ impl Loop {
         hasher.finish()
     }
 
-    async fn teardown(&mut self) {
-        let applied = teardown(&self.deps.store).await;
+    /// Every namespace holding a tool's ingress policy or server certificate, with its team:
+    /// the grant pointing there, else the namespace's label (empty when unlabelled).
+    fn tools_side(&self, config: &ResolvedTeamToolsConfig) -> BTreeMap<NamespaceName, TeamName> {
+        self.deps
+            .store
+            .tools_side_namespaces()
+            .into_iter()
+            .map(|namespace| {
+                let team = config
+                    .grants
+                    .iter()
+                    .find(|(_, grant)| grant.namespace == namespace)
+                    .map(|(name, _)| name.clone())
+                    .or_else(|| {
+                        self.facts(&namespace)
+                            .labels
+                            .get(TEAM_TOOLS_NAMESPACE_LABEL)
+                            .cloned()
+                    })
+                    .unwrap_or_default();
+                (namespace, TeamName::new(team))
+            })
+            .collect()
+    }
+
+    async fn teardown(&mut self, config: &ResolvedTeamToolsConfig) {
+        let mut tools_namespaces = self.tools_side(config);
+        tools_namespaces.extend(
+            config
+                .grants
+                .iter()
+                .map(|(team, grant)| (grant.namespace.clone(), TeamName::new(team.clone()))),
+        );
+        let applied = teardown(&self.deps.store, &tools_namespaces).await;
         if applied.deleted > 0 {
             self.deps.metrics.reconciled("deleted");
             tracing::info!("feature={FEATURE_ID} mode=Off deleted={}", applied.deleted);
@@ -349,7 +406,7 @@ impl Loop {
         };
         let mode = mode_of(&config);
         if mode == FeatureMode::Off {
-            self.teardown().await;
+            self.teardown(&config).await;
             self.set_report(TeamToolsReport::default());
             self.write_statuses(None, BTreeMap::new(), &BTreeSet::new())
                 .await;
@@ -488,7 +545,8 @@ impl Loop {
     }
 
     /// Every `(team, key, tools namespace)` with something to decide: the team's allowed keys in
-    /// its namespace, plus every key that has objects in a tools namespace this loop watches.
+    /// its namespace, plus every key that has objects in a tools namespace this loop watches or
+    /// where an ingress policy or server certificate is left.
     fn tool_subjects(
         &self,
         config: &ResolvedTeamToolsConfig,
@@ -503,7 +561,9 @@ impl Loop {
                 ));
             }
         }
-        for (namespace, team) in self.deps.store.watched() {
+        let mut namespaces = self.tools_side(config);
+        namespaces.extend(self.deps.store.watched());
+        for (namespace, team) in namespaces {
             for key in self.deps.store.keys_in(&namespace) {
                 let team = config
                     .grants
@@ -533,21 +593,23 @@ impl Loop {
     ) {
         let now = SystemTime::now();
         let mut gauges = Vec::new();
+        for (namespace, _) in self.deps.store.watched() {
+            if self.deps.namespace_view.facts(&namespace).is_none() {
+                self.deps.store.forget(&namespace);
+            }
+        }
+        let tools_side = self.deps.store.tools_side_namespaces();
         for (team, key, namespace) in self.tool_subjects(config) {
             let facts = self.facts(&namespace);
             let observed = self.deps.namespace_view.facts(&namespace).is_some();
-            let labelled = facts
-                .labels
-                .get(TEAM_TOOLS_NAMESPACE_LABEL)
-                .map(String::as_str)
-                == Some(team.as_str())
-                && !facts.labels.contains_key(WORKSPACE_NAMESPACE_LABEL);
-            let watched = self
-                .deps
-                .store
-                .watched()
-                .iter()
-                .any(|(watched, _)| watched == &namespace);
+            let labelled = is_bound(team.as_str(), &facts.labels);
+            let watched = tools_side.contains(&namespace)
+                || self
+                    .deps
+                    .store
+                    .watched()
+                    .iter()
+                    .any(|(watched, _)| watched == &namespace);
             let watch = if labelled || watched {
                 match self
                     .deps
@@ -803,10 +865,13 @@ impl Loop {
         requesters: &[Requester],
         synced: bool,
     ) {
+        // A grant naming a namespace it is not bound to (a typo naming a workspace namespace)
+        // leaves that namespace's client objects alone.
         let tools_namespaces: BTreeSet<NamespaceName> = config
             .grants
-            .values()
-            .map(|grant| grant.namespace.clone())
+            .iter()
+            .filter(|(team, grant)| is_bound(team, &self.facts(&grant.namespace).labels))
+            .map(|(_, grant)| grant.namespace.clone())
             .chain(
                 self.deps
                     .store
@@ -814,6 +879,7 @@ impl Loop {
                     .into_iter()
                     .map(|(namespace, _)| namespace),
             )
+            .chain(self.deps.store.tools_side_namespaces())
             .collect();
         let mut subjects: BTreeMap<(NamespaceName, ToolKey), usize> = BTreeMap::new();
         for requester in requesters {
@@ -1289,5 +1355,31 @@ mod tests {
             .as_deref(),
             Some(weebo_si_team_tools::INVALID_KEY)
         );
+    }
+
+    #[test]
+    fn a_grant_naming_a_workspace_or_unlabelled_namespace_is_not_bound() {
+        let labels = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect()
+        };
+        assert!(is_bound(
+            "weebo",
+            &labels(&[(TEAM_TOOLS_NAMESPACE_LABEL, "weebo")])
+        ));
+        assert!(!is_bound("weebo", &labels(&[])));
+        assert!(!is_bound(
+            "weebo",
+            &labels(&[(TEAM_TOOLS_NAMESPACE_LABEL, "other")])
+        ));
+        assert!(!is_bound(
+            "weebo",
+            &labels(&[
+                (TEAM_TOOLS_NAMESPACE_LABEL, "weebo"),
+                (WORKSPACE_NAMESPACE_LABEL, "true")
+            ])
+        ));
     }
 }

@@ -18,7 +18,7 @@
 //! template would never be removed.) Deletes re-read the
 //! live object, refuse one without `managed-by`, and pin the delete to its uid.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,7 +37,9 @@ use weebo_si_crd::{
 use weebo_si_team_tools::{FIELD_MANAGER, SCALE_FIELD_MANAGER, ToolObject, ToolObjectKind};
 
 use crate::kube_template_store::spawn_reflector;
-use crate::objects::{apply_document, from_live, is_managed, is_workload, replicas_of, resource};
+use crate::objects::{
+    apply_document, from_live, is_managed, is_tools_side, is_workload, replicas_of, resource,
+};
 use crate::port::{Adoption, BoxFuture, StoreError, ToolObjectStore};
 
 /// How long a tools namespace this role may not watch is not asked about again.
@@ -299,9 +301,9 @@ impl KubeToolStore {
             })
             .abort_handle(),
         );
-        // shortcut: a watch lives as long as the process, even once its team moved elsewhere
-        // (it is what finds the objects left there); a restart forgets old namespaces, whose
-        // objects then stay until an admin deletes them by label.
+        // A watch lives as long as its namespace, even once its team moved elsewhere (it is what
+        // finds the objects left there); after a restart, [`Self::tools_side_namespaces`] finds
+        // them again.
         slots.insert(
             namespace.clone(),
             Slot::Watching(Arc::new(NamespaceWatch {
@@ -331,6 +333,29 @@ impl KubeToolStore {
                 )),
                 Slot::Forbidden(_) => None,
             })
+            .collect()
+    }
+
+    /// Whether `namespace`'s caches are watched and listed.
+    pub fn synced(&self, namespace: &NamespaceName) -> bool {
+        self.watch_of(namespace)
+            .is_some_and(|watch| watch.state() == Watch::Synced)
+    }
+
+    /// Drop `namespace`'s caches (a namespace that no longer exists).
+    pub fn forget(&self, namespace: &NamespaceName) {
+        self.slots().remove(namespace);
+    }
+
+    /// Every namespace where a cluster-wide cache holds a tool's ingress policy or server
+    /// certificate: a tools namespace, watched or not (a restart forgets which were).
+    pub fn tools_side_namespaces(&self) -> BTreeSet<NamespaceName> {
+        self.global
+            .iter()
+            .flat_map(|(kind, store)| store.state().into_iter().map(move |object| (*kind, object)))
+            .filter_map(|(kind, object)| from_live(kind, &object))
+            .filter(is_tools_side)
+            .map(|object| object.key.namespace)
             .collect()
     }
 

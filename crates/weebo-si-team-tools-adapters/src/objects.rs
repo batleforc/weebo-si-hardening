@@ -20,6 +20,7 @@ use weebo_si_crd::{
     ToolKey,
 };
 use weebo_si_runtime::owner_reference::{owner_from_references, owner_references_json};
+use weebo_si_team_tools::render::{ingress_policy_name, server_certificate_name};
 use weebo_si_team_tools::{ToolObject, ToolObjectKind};
 
 /// Where the apply records the fingerprint of what it wrote.
@@ -89,6 +90,16 @@ pub fn comparable(object: &ToolObject) -> ToolObject {
         body: Value::String(fingerprint(object)),
         owner: None,
         ..object.clone()
+    }
+}
+
+/// A tool's ingress policy or server certificate: only a tools namespace holds one, and the
+/// cluster-wide caches see it there even once the namespace is not watched.
+pub fn is_tools_side(object: &ToolObject) -> bool {
+    match object.kind {
+        ToolObjectKind::CiliumNetworkPolicy => object.key.name == ingress_policy_name(&object.tool),
+        ToolObjectKind::Certificate => object.key.name == server_certificate_name(&object.tool),
+        _ => false,
     }
 }
 
@@ -259,6 +270,22 @@ mod tests {
         assert!(from_live(ToolObjectKind::StatefulSet, &live(document.clone())).is_none());
         document["metadata"]["labels"] = json!({MANAGED_BY_LABEL: MANAGED_BY_VALUE});
         assert!(from_live(ToolObjectKind::StatefulSet, &live(document)).is_none());
+    }
+
+    #[test]
+    fn only_the_ingress_policy_and_the_server_certificate_mark_a_tools_namespace() {
+        let mut object = statefulset();
+        assert!(!is_tools_side(&object));
+        object.kind = ToolObjectKind::CiliumNetworkPolicy;
+        object.key.name = "weebo-team-tool-buildkit-ingress".to_string();
+        assert!(is_tools_side(&object));
+        object.key.name = "weebo-team-tool-buildkit-workspace1".to_string();
+        assert!(!is_tools_side(&object));
+        object.kind = ToolObjectKind::Certificate;
+        object.key.name = "weebo-team-tool-buildkit-server".to_string();
+        assert!(is_tools_side(&object));
+        object.key.name = "weebo-team-tool-buildkit-client".to_string();
+        assert!(!is_tools_side(&object));
     }
 
     #[test]
