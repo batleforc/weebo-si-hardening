@@ -737,11 +737,18 @@ fn another_teams_client_certificate_is_refused_by_the_daemon() {
     .unwrap_or_else(|err| fail(&err));
     let refused = buildctl(&bob, &weebo.host(), "/tmp/weebo-ca.crt")
         .expect_err("weebo's daemon accepted a certificate of team tt-blue");
-    // A TLS alert from the daemon, not a client-side x509 error. shortcut: the alert itself
-    // (`unknown certificate authority` per the RFC, or `bad certificate`) is not pinned; pin it on
-    // the first kind run.
+    // The daemon refusing, not a client-side x509 error. Under TLS 1.3 the server checks the client
+    // certificate after the client's handshake is done, so the client either reads the alert or
+    // finds the connection already closed (a broken pipe on kind, 2026-11-27).
     assert!(
-        refused.contains("remote error: tls:"),
+        !refused.contains("x509")
+            && [
+                "remote error: tls:",
+                "broken pipe",
+                "connection reset by peer"
+            ]
+            .iter()
+            .any(|daemon| refused.contains(daemon)),
         "not the daemon refusing the certificate: {refused}"
     );
 }
