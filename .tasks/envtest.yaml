@@ -14,7 +14,7 @@ version: "3"
 # `task test` / `cargo test` never needs the binaries.
 
 vars:
-  ENVTEST_K8S_VERSION: '{{ .ENVTEST_K8S_VERSION | default "1.32.0" }}'
+  ENVTEST_K8S_VERSION: '{{ .ENVTEST_K8S_VERSION | default "1.33.0" }}'
   ENVTEST_DIR: '{{ .ENVTEST_DIR | default (printf "%s/.local/share/kubebuilder-envtest" .HOME) }}'
 
 tasks:
@@ -35,8 +35,8 @@ tasks:
         set -eu
         url="https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{{ .ENVTEST_K8S_VERSION }}/envtest-v{{ .ENVTEST_K8S_VERSION }}-linux-amd64.tar.gz"
         curl -fsSL -o /tmp/envtest.tar.gz "$url"
-        if [ "{{ .ENVTEST_K8S_VERSION }}" = "1.32.0" ]; then
-          want="3a9584af30d041c42893d8f7a860aa434976d4aee479cf2e9a50a9e5677dcc83d3012a2146a6feb5b2e95a7b3c6f657ae9c591745981262da8b06e4b61dcdf17"
+        if [ "{{ .ENVTEST_K8S_VERSION }}" = "1.33.0" ]; then
+          want="2cb7f5468ed7cea1492f971b715bcc27069e824cf7d5927b7f127f1e8c75cf086eea050543cdb5f79faee0a2bf775f160adf27443aa7ee845d962d04e9d43ac9"
         else
           want="$(curl -fsSL "$url.sha512" | cut -d' ' -f1)"
         fi
@@ -73,7 +73,7 @@ tasks:
       - cargo test --release -p endpoint-gateway --bin endpoint-gateway cost -- --ignored --nocapture --test-threads=1
 
   operator-perf:
-    desc: "Measure the operator's resource budget on a release build: the controller binary against envtest, start time, convergence of PERF_NAMESPACES workspace namespaces, idle CPU, memory, and RFC 0017's in-process image admission cost — what .github/workflows/operator-perf.yaml runs"
+    desc: "Measure the operator's resource budget on a release build: the controller binary against envtest, start time, convergence of PERF_NAMESPACES workspace namespaces, idle CPU, memory, RFC 0017's in-process image admission cost and RFC 0019's devfile-contract delta — what .github/workflows/operator-perf.yaml runs"
     silent: true
     deps:
       - setup
@@ -129,6 +129,12 @@ tasks:
       # RFC 0014's suite: it writes ResourceQuota and LimitRange objects, including a foreign one
       # it must leave alone.
       - cargo test --workspace --features envtest --test resource_quotas_envtest -- --test-threads=1
+      # RFC 0020's suite: it writes StatefulSets and ConfigMaps, including foreign ones it must
+      # adopt (tools namespace) or leave alone (workspace namespace).
+      - cargo test --workspace --features envtest --test team_tools_envtest -- --test-threads=1
+      # RFC 0020's CA guard: the chart's ValidatingAdmissionPolicy, rendered by helm, over a
+      # cert-manager CRD fixture no other suite's apiserver serves.
+      - cargo test --workspace --features envtest --test team_tools_ca_envtest -- --test-threads=1
       # RFC 0013's OpenShift half: it installs a SecurityContextConstraints CRD so that
       # `backend: Auto` resolves to ObserveSynced, which no other suite's apiserver may serve.
       - cargo test --workspace --features envtest --test openshift_pod_security_envtest -- --test-threads=1

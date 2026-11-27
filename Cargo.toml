@@ -55,15 +55,15 @@ serde_yaml_bw = "2.5"
 # `tokio`, or kube-runtime's reconcile machinery as a dependency under any build) — not a full
 # guarantee at the Cargo *feature* level, since `cargo test --workspace --all-features` unifies
 # `kube`'s features across every crate that depends on it at all. See RFC 0002's amendment.
-kube = { version = "4", default-features = false }
+kube = { version = "5", default-features = false }
 # The generated API types kube-derive's CustomResource::crd() returns, and the type the
 # watch-backed adapters list/watch against. Pinned exactly (not a range) because `kube` itself
 # depends on a specific k8s-openapi version with no version feature of its own (by that crate's
 # own design — only a final consumer should choose one); a looser requirement here lets Cargo
 # resolve a second, incompatible copy that never gets a v1_* feature from anyone and fails to
-# build. `v1_32` is pinned to the same Kubernetes minor the envtest harness downloads, so a
+# build. `v1_33` is pinned to the same Kubernetes minor the envtest harness downloads, so a
 # schema drift is a compile error, not a cluster surprise.
-k8s-openapi = { version = "=0.28.0", features = ["v1_32", "schemars"] }
+k8s-openapi = { version = "=0.29.0", features = ["v1_33", "schemars"] }
 # JsonSchema derive, which kube-derive's CustomResource macro needs to generate WeeboSiConfig's
 # OpenAPI schema.
 schemars = "1"
@@ -86,7 +86,7 @@ axum = "0.8"
 # `crates/weebo-si-operator/src/main.rs`, mirrored in the envtest harness. With `ring` as the only
 # provider feature left in the graph, rustls would fall back to it anyway — the call keeps the
 # choice visible rather than implied by which features happen to be enabled.
-axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # RFC 6902 JSON Patch construction, specifically to avoid hand-rolling the JSON Pointer escaping
@@ -104,7 +104,7 @@ prometheus = "0.14"
 # The controller role's leader election — a thin wrapper over a coordination.k8s.io/v1 Lease.
 # Not hand-rolled: renewal, TTL handling and split-brain avoidance on a missed renewal are exactly
 # the kind of thing worth a maintained crate rather than a bespoke retry loop.
-kube-leader-election = "0.44"
+kube-leader-election = "0.45"
 # Driving kube-runtime's reflector streams (weebo-si-runtime's watch-backed caches).
 futures-util = "0.3"
 
@@ -112,9 +112,9 @@ futures-util = "0.3"
 # webhook server, leader election, requeue and Events. Pinned by tag; a kit release is a
 # dependency bump, reviewed as one. Keep `kube` and `k8s-openapi` on the kit's versions, or two
 # copies get linked.
-weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.26.0", version = "0.26.0" }
+weebo-kit-runtime = { git = "https://github.com/weebo-si-operator/weebo-operator-kit", tag = "v0.33.0", version = "0.33.0" }
 # The `Reason` trait and `reason_codes!`: what the kit's Events and retry policy take.
-weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.26.0", version = "0.26.0" }
+weebo-kit-domain = { git = "https://github.com/weebo-si-operator/weebo-operator-kit", tag = "v0.33.0", version = "0.33.0" }
 # What the kit's telemetry installs: the `tracing` macros every role logs through.
 tracing = "0.1"
 # The admin subcommands' own subscriber: warnings to stderr, so stdout stays their output.

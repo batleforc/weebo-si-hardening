@@ -10,7 +10,8 @@ Design and rationale: [RFC 0004](../rfc/0004-network-profiles.md), and
 `KubeArmorPolicy`. Field reference: [`features.networkProfiles`](../weebosiconfig.md#featuresnetworkprofiles)
 and [`features.policyGuard`](../weebosiconfig.md#featurespolicyguard). The operator's own install,
 CLI and break-glass are on [`weebo-si-operator.md`](./weebo-si-operator.md); this page assumes
-it is installed.
+it is installed. A profile marked `restricted` (such as `internet`) needs a Namespace grant:
+[`guides/namespace-grants.md`](../guides/namespace-grants.md) (RFC 0021).
 
 ## Install checklist
 
@@ -179,6 +180,7 @@ Every metric in RFC 0004's *Observability contract* is wired.
 | `weebo_si_network_profile_unsupported` | gauge | `profile`, `backend` | config sync |
 | `weebo_si_network_canary` | gauge | `result` ∈ `enforcing`/`not_enforcing`/`unknown` | canary loop |
 | `weebo_si_network_not_granted_total` | counter | `team`, `profile` | reconcile |
+| `weebo_si_restricted_grant_total` | counter | `feature`, `key`, `result` ∈ `honoured`/`refused` — RFC 0021, counted when a workspace's restricted set changes, not every pass; Events `RestrictedGrantHonoured`/`RestrictedGrantRefused` and an INFO line go with it | reconcile |
 
 Three of these are worth an alert, in this order:
 

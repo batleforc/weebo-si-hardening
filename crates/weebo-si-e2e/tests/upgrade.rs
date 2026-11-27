@@ -57,6 +57,10 @@ fn lease() -> (String, i64) {
 }
 
 fn controller_image(pod: &str) -> String {
+    // A leader releasing the Lease on shutdown leaves its holder empty for a moment.
+    if pod.is_empty() {
+        return String::new();
+    }
     let pod = get(&["pod", pod, "-n", OPERATOR_NAMESPACE]).unwrap_or(Value::Null);
     text(&pod, "/spec/containers/0/image")
 }

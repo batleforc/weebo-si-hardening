@@ -6,6 +6,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::devfile_contract::DevfileContractConfig;
 use crate::dwoc_pin::{DwocPinConfig, ResolvedDwocPinConfig};
 use crate::endpoint_auth::{EndpointAuthConfig, ResolvedEndpointAuthConfig};
 use crate::identity::IdentityConfig;
@@ -13,11 +14,13 @@ use crate::image_policy::{ImagePolicyConfig, ResolvedImagePolicyConfig};
 use crate::image_rewrite::ImageRewriteConfig;
 use crate::kubearmor_policy::{KubeArmorPolicyConfig, ResolvedKubeArmorPolicyConfig};
 use crate::network_profiles::{NetworkProfilesConfig, ResolvedNetworkProfilesConfig};
+use crate::pod_identity::PodIdentityConfig;
 use crate::pod_security::{PodSecurityConfig, ResolvedPodSecurityConfig};
 use crate::policy_guard::PolicyGuardConfig;
 use crate::registry_config::{RegistryConfig, ResolvedRegistryConfig};
 use crate::resource_quotas::{ResolvedResourceQuotasConfig, ResourceQuotasConfig};
 use crate::team::{TeamName, WeeboSiTeam};
+use crate::team_tools::{ResolvedTeamToolsConfig, TeamToolsConfig};
 
 /// One optional field per registered feature, typed — a feature the binary does not know about
 /// cannot be written into the resource at all, per RFC 0002's *Contract*.
@@ -52,12 +55,21 @@ pub struct Features {
     /// `spec.features.podSecurity`, per RFC 0013.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_security: Option<PodSecurityConfig>,
+    /// `spec.features.podIdentity`, per RFC 0018.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_identity: Option<PodIdentityConfig>,
     /// `spec.features.resourceQuotas`, per RFC 0014.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quotas: Option<ResourceQuotasConfig>,
     /// `spec.features.imageRewrite`, per RFC 0017.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_rewrite: Option<ImageRewriteConfig>,
+    /// `spec.features.devfileContract`, per RFC 0019.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devfile_contract: Option<DevfileContractConfig>,
+    /// `spec.features.teamTools`, per RFC 0020.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_tools: Option<TeamToolsConfig>,
 }
 
 /// The one name a `WeeboSiConfig` is honored under. Any other name is ignored and reported as a
@@ -127,10 +139,16 @@ pub struct ResolvedFeatures {
     pub identity: Option<IdentityConfig>,
     /// `spec.features.podSecurity`, resolved.
     pub pod_security: Option<ResolvedPodSecurityConfig>,
+    /// `spec.features.podIdentity`, unchanged: not team-overridable (RFC 0018).
+    pub pod_identity: Option<PodIdentityConfig>,
     /// `spec.features.resourceQuotas`, resolved.
     pub resource_quotas: Option<ResolvedResourceQuotasConfig>,
     /// `spec.features.imageRewrite`, unchanged: not team-overridable (RFC 0017, resolved 7).
     pub image_rewrite: Option<ImageRewriteConfig>,
+    /// `spec.features.devfileContract`, unchanged: not team-overridable (RFC 0019, *Teams*).
+    pub devfile_contract: Option<DevfileContractConfig>,
+    /// `spec.features.teamTools`, resolved: each team's block is its grant.
+    pub team_tools: Option<ResolvedTeamToolsConfig>,
 }
 
 impl WeeboSiConfigSpec {
@@ -279,8 +297,15 @@ impl WeeboSiConfigSpec {
             endpoint_auth,
             identity: self.features.identity.clone(),
             pod_security,
+            pod_identity: self.features.pod_identity.clone(),
             resource_quotas,
             image_rewrite: self.features.image_rewrite.clone(),
+            devfile_contract: self.features.devfile_contract.clone(),
+            team_tools: self
+                .features
+                .team_tools
+                .as_ref()
+                .map(|feature| feature.resolve(teams)),
         };
         (resolved, conflicts)
     }

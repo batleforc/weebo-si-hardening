@@ -24,4 +24,4 @@ pub use model::policy::{ManagedObject, ObjectKey, Owner, PodSelector, PolicyBody
 pub use port::{
     BaselineView, CanaryProbe, Capabilities, PolicyStore, ReconcileObserver, TemplateStore,
 };
-pub use resolve::{NotGranted, Provenance, ResolutionStep, resolve};
+pub use resolve::{INVALID_KEY, NotGranted, Provenance, ResolutionStep, resolve};

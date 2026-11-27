@@ -7,8 +7,10 @@ use std::collections::BTreeSet;
 
 use json_patch::{AddOperation, Patch, PatchOperation};
 use jsonptr::PointerBuf;
+use kube::core::admission::AdmissionResponse;
 use serde_json::Value;
 use weebo_si_chassis::Mutation;
+use weebo_si_chassis::admit::bound_warnings;
 
 use crate::extract::CONFIG_REF_ATTRIBUTE;
 
@@ -20,17 +22,15 @@ use crate::extract::CONFIG_REF_ATTRIBUTE;
 /// The patch is applied in order, so an operation that creates a missing map makes it present for
 /// every operation after it — and an implementation that keeps asking the *original* object emits
 /// a whole-map `add` per key, each one replacing the map the previous one built. Two annotations
-/// onto an object carrying none would leave one. That is why the three flags below are mutable
-/// and why `created` exists.
+/// onto an object carrying none would leave one. That is why every arm checks and records the
+/// parents it creates in one `created` set.
 pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
     // "Exists" means "exists and is not `null`": a key present with `null` (which a client may
     // send) cannot take a child, so it is replaced with a map exactly like an absent one — `add`
     // over an existing key replaces it.
-    let mut has_attributes = is_map(object, "/spec/template/attributes");
-    let mut has_annotations = is_map(object, "/metadata/annotations");
-    // Parents this patch has already created, so two `SetString`s under one missing parent do not
-    // each reset it — the same failure as the annotations one, in the shape the `Route` dialect
-    // reaches for when it writes `spec.port.targetPort`.
+    // Parents this patch has already created, shared by every arm, so no later write under the
+    // same missing parent (two annotations, an annotation and a scalar, `SetInt` and `SetBool`
+    // under one `securityContext`) resets it.
     let mut created: BTreeSet<String> = BTreeSet::new();
 
     let mut ops = Vec::with_capacity(mutations.len());
@@ -38,13 +38,12 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
         match mutation {
             Mutation::SetConfigRef(target) => {
                 let value = serde_json::json!({"name": target.name, "namespace": target.namespace.as_str()});
-                ops.push(if has_attributes {
+                ops.push(if !creates(object, &mut created, ATTRIBUTES) {
                     add(
                         ["spec", "template", "attributes", CONFIG_REF_ATTRIBUTE],
                         value,
                     )
                 } else {
-                    has_attributes = true;
                     add(
                         ["spec", "template", "attributes"],
                         serde_json::json!({CONFIG_REF_ATTRIBUTE: value}),
@@ -52,27 +51,22 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
                 });
             }
             Mutation::SetString { path, value } => {
-                // Every parent on the way down has to exist, or `add` is an error rather than a
-                // no-op — the same rule the two branches above follow, generalised. A `Route`
-                // always has `spec.to`; it does not always have `spec.port`.
-                for depth in 1..path.len() {
-                    let parent = &path[..depth];
-                    let pointer = PointerBuf::from_tokens(parent.iter().map(String::as_str));
-                    let path = pointer.to_string();
-                    if !is_map(object, pointer.as_str()) && created.insert(path) {
-                        ops.push(add(
-                            parent.iter().map(String::as_str),
-                            Value::Object(serde_json::Map::new()),
-                        ));
-                    }
-                }
-                ops.push(add(
-                    path.iter().map(String::as_str),
+                set(
+                    object,
+                    &mut created,
+                    &mut ops,
+                    path,
                     Value::String(value.clone()),
-                ));
+                );
+            }
+            Mutation::SetInt { path, value } => {
+                set(object, &mut created, &mut ops, path, Value::from(*value));
+            }
+            Mutation::SetBool { path, value } => {
+                set(object, &mut created, &mut ops, path, Value::Bool(*value));
             }
             Mutation::Annotate { key, value } => {
-                ops.push(if has_annotations {
+                ops.push(if !creates(object, &mut created, ANNOTATIONS) {
                     add(
                         ["metadata", "annotations", key.as_str()],
                         Value::String(value.clone()),
@@ -80,7 +74,6 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
                 } else {
                     // The map is created here, and every annotation after this one adds a key to
                     // it rather than building a second map over the top.
-                    has_annotations = true;
                     add(
                         ["metadata", "annotations"],
                         serde_json::json!({key.clone(): value.clone()}),
@@ -90,6 +83,53 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
         }
     }
     Patch(ops)
+}
+
+/// Put the merged warnings of every registry a route ran on `response`, bounded once
+/// ([`bound_warnings`], RFC 0019 D-14). No warning leaves `warnings` at `None`, so a response
+/// without one is byte-identical to what it was before warnings existed.
+pub fn with_warnings(mut response: AdmissionResponse, warnings: Vec<String>) -> AdmissionResponse {
+    let warnings = bound_warnings(warnings);
+    response.warnings = (!warnings.is_empty()).then_some(warnings);
+    response
+}
+
+/// Add `value` at `path`, creating every missing parent on the way down first — `add` under a
+/// missing parent is an error rather than a no-op (a `Route` always has `spec.to`, not always
+/// `spec.port`). One `created` set per patch, shared by every scalar arm, so a `SetInt` and a
+/// `SetBool` under one missing `spec.securityContext` add it once instead of the second wiping
+/// the first (RFC 0018, L26).
+fn set(
+    object: &Value,
+    created: &mut BTreeSet<String>,
+    ops: &mut Vec<PatchOperation>,
+    path: &[String],
+    value: Value,
+) {
+    // An empty path would be an `add` at the root, replacing the whole object with a scalar.
+    if path.is_empty() {
+        return;
+    }
+    for depth in 1..path.len() {
+        let parent = path.get(..depth).unwrap_or_default();
+        let pointer = PointerBuf::from_tokens(parent.iter().map(String::as_str));
+        if creates(object, created, pointer.as_str()) {
+            ops.push(add(
+                parent.iter().map(String::as_str),
+                Value::Object(serde_json::Map::new()),
+            ));
+        }
+    }
+    ops.push(add(path.iter().map(String::as_str), value));
+}
+
+const ATTRIBUTES: &str = "/spec/template/attributes";
+const ANNOTATIONS: &str = "/metadata/annotations";
+
+/// Whether the map at `pointer` is missing, neither in `object` nor already created by this
+/// patch — and if so, records that the caller now creates it.
+fn creates(object: &Value, created: &mut BTreeSet<String>, pointer: &str) -> bool {
+    !is_map(object, pointer) && created.insert(pointer.to_string())
 }
 
 /// Whether `pointer` names something other than nothing inside `object` — absent and `null` both
@@ -284,6 +324,120 @@ mod tests {
         );
     }
 
+    fn path(segments: &str) -> Vec<String> {
+        segments.split('/').map(str::to_string).collect()
+    }
+
+    /// RFC 0018's shape: ids, flags and a policy string under one missing `securityContext`. The
+    /// parent is added once, and every value keeps its JSON type (L26).
+    #[test]
+    fn mixed_scalars_under_one_missing_parent_add_it_once_and_all_survive() {
+        let object = serde_json::json!({"spec": {"containers": []}});
+        let mutations = vec![
+            Mutation::SetInt {
+                path: path("spec/securityContext/runAsUser"),
+                value: 1_000_100_000,
+            },
+            Mutation::SetBool {
+                path: path("spec/securityContext/runAsNonRoot"),
+                value: true,
+            },
+            Mutation::SetString {
+                path: path("spec/securityContext/fsGroupChangePolicy"),
+                value: "OnRootMismatch".into(),
+            },
+            Mutation::SetBool {
+                path: path("spec/hostUsers"),
+                value: false,
+            },
+        ];
+        let patch = render_patch(&object, &mutations);
+        let parents = patch
+            .0
+            .iter()
+            .filter(|op| op.path().as_str() == "/spec/securityContext")
+            .count();
+        assert_eq!(parents, 1);
+
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &patch.0).expect("the patch must apply");
+        assert_eq!(
+            patched["spec"]["securityContext"],
+            serde_json::json!({
+                "runAsUser": 1_000_100_000_i64,
+                "runAsNonRoot": true,
+                "fsGroupChangePolicy": "OnRootMismatch"
+            })
+        );
+        assert_eq!(patched["spec"]["hostUsers"], Value::Bool(false));
+    }
+
+    /// A scalar under `metadata.annotations` and an `Annotate` share one record of the map they
+    /// create: the second never writes a whole map over the first.
+    #[test]
+    fn a_scalar_and_an_annotation_under_one_missing_map_both_survive() {
+        let object = serde_json::json!({"metadata": {}});
+        let mutations = vec![
+            Mutation::SetString {
+                path: path("metadata/annotations/a"),
+                value: "1".into(),
+            },
+            Mutation::Annotate {
+                key: "b".into(),
+                value: "2".into(),
+            },
+        ];
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &render_patch(&object, &mutations).0)
+            .expect("the patch must apply");
+        assert_eq!(
+            patched["metadata"]["annotations"],
+            serde_json::json!({"a": "1", "b": "2"})
+        );
+    }
+
+    /// RFC 0018: a pod that asks for `hostUsers: true` leaves the mutation with `false`.
+    #[test]
+    fn host_users_true_replaced_by_false() {
+        let object = serde_json::json!({"spec": {"hostUsers": true}});
+        let mutations = vec![Mutation::SetBool {
+            path: path("spec/hostUsers"),
+            value: false,
+        }];
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &render_patch(&object, &mutations).0)
+            .expect("the patch must apply");
+        assert_eq!(patched, serde_json::json!({"spec": {"hostUsers": false}}));
+    }
+
+    #[test]
+    fn an_empty_path_writes_nothing() {
+        let object = serde_json::json!({"spec": {}});
+        let mutations = vec![Mutation::SetBool {
+            path: Vec::new(),
+            value: true,
+        }];
+        assert!(render_patch(&object, &mutations).0.is_empty());
+    }
+
+    /// An existing parent keeps its other fields: no `{}` is written over it.
+    #[test]
+    fn a_scalar_under_an_existing_parent_adds_only_the_field() {
+        let object = serde_json::json!({"spec": {"securityContext": {"fsGroup": 5}}});
+        let mutations = vec![Mutation::SetInt {
+            path: path("spec/securityContext/runAsGroup"),
+            value: 0,
+        }];
+        let patch = render_patch(&object, &mutations);
+        assert_eq!(patch.0.len(), 1);
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &patch.0).expect("the patch must apply");
+        assert_eq!(
+            patched["spec"]["securityContext"],
+            serde_json::json!({"fsGroup": 5, "runAsGroup": 0})
+        );
+    }
+
     #[test]
     fn set_string_creates_the_parents_a_route_does_not_already_have() {
         // Attaching the gate on OpenShift writes `spec.to.name` — which exists — and
@@ -311,6 +465,35 @@ mod tests {
         assert_eq!(
             paths,
             vec!["/spec/to/name", "/spec/port", "/spec/port/targetPort"]
+        );
+    }
+
+    #[test]
+    fn no_warning_leaves_the_response_unchanged() {
+        let response = with_warnings(AdmissionResponse::invalid("x"), Vec::new());
+        assert_eq!(response.warnings, None);
+    }
+
+    /// Two registries of four warnings each: one bound over the merged list keeps six, where a
+    /// bound per registry would have let eight through (RFC 0019 D-14).
+    #[test]
+    fn the_bound_runs_once_after_the_merge() {
+        let first = (0..4).map(|i| format!("first {i}"));
+        let second = (0..4).map(|i| format!("second {i}\n"));
+        let response = with_warnings(
+            AdmissionResponse::invalid("x"),
+            first.chain(second).collect(),
+        );
+        assert_eq!(
+            response.warnings.unwrap(),
+            [
+                "first 0",
+                "first 1",
+                "first 2",
+                "first 3",
+                "second 0 ",
+                "second 1 "
+            ]
         );
     }
 

@@ -48,6 +48,13 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0017",
         resource: "DevWorkspace, Pod",
     },
+    // A third registry on the DevWorkspace mutation route, between the network-profiles gate and
+    // dwoc-pin (RFC 0019, D-14).
+    FeatureDescriptor {
+        id: "devfile-contract",
+        rfc: "RFC 0019",
+        resource: "DevWorkspace",
+    },
     FeatureDescriptor {
         id: "kubearmor-policy",
         rfc: "RFC 0006",
@@ -70,9 +77,21 @@ pub const REGISTERED: &[FeatureDescriptor] = &[
         rfc: "RFC 0013",
         resource: "Namespace",
     },
+    // One entry, two Pod paths (`/mutate/v1/pods/identity`, `/validate/v1/pods/identity`): both
+    // halves report the same `FeatureId`, so one `mode` governs them.
+    FeatureDescriptor {
+        id: "pod-identity",
+        rfc: "RFC 0018",
+        resource: "Pod",
+    },
     FeatureDescriptor {
         id: "resource-quotas",
         rfc: "RFC 0014",
         resource: "Namespace",
+    },
+    FeatureDescriptor {
+        id: "team-tools",
+        rfc: "RFC 0020",
+        resource: "DevWorkspace, Namespace, WeeboSiTeam",
     },
 ];

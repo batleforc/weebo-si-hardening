@@ -28,6 +28,15 @@
 //! webhook role builds. No apiserver: the network hop is the webhook's `timeoutSeconds`' business,
 //! and what this RFC added is the CPU on each side of it.
 //!
+//! A third, RFC 0019's *Capacity*: what `devfile-contract` adds to `/mutate/v1alpha1/devworkspaces`
+//! — extraction, evaluation over 64 `deniedParents` and a 4 KiB `che.eclipse.org/devfile`, the
+//! patch of its two annotations. The budget is the RFC's: p99 grows by under 1 ms.
+//!
+//! A fourth, RFC 0018's *Capacity*: one walk of a DWO workspace pod (one init container, four
+//! containers) on `/mutate/v1/pods/identity` (extraction, rewrite, patch) and on
+//! `/validate/v1/pods/identity` (the rewritten pod judged). Measured, no budget, like the
+//! `/mutate/v1/pods` rows.
+//!
 //! Run with `task envtest:operator-perf`; the `Operator perf` workflow runs it nightly. It is in
 //! the `envtest` feature, but in no suite list: a debug build measures the wrong binary.
 
@@ -725,7 +734,7 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
     for _ in 0..admissions {
         let started = Instant::now();
         let subject = rewrite_images_from_object(&namespace, Resource::Pod, &upstream, None, false);
-        let Ok(AdmitOutcome::Allow(mutations)) = admit(
+        let Ok(AdmitOutcome::Allow { mutations, .. }) = admit(
             &rewrite_registry,
             &subject,
             &gate,
@@ -752,7 +761,7 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
         );
         let validated = started.elapsed();
         assert!(
-            matches!(outcome, Ok(AdmitOutcome::Allow(_))),
+            matches!(outcome, Ok(AdmitOutcome::Allow { .. })),
             "the rewritten pod must be admitted: {outcome:?}"
         );
 
@@ -793,6 +802,251 @@ fn a_pod_with_ten_images_under_sixty_four_rules_is_admitted_within_its_budget() 
                 budget: micros(budget_p99),
                 within: p99 <= budget_p99,
             },
+        ],
+    );
+}
+
+#[test]
+fn devfile_contract_adds_under_a_millisecond_to_a_devworkspace_admission() {
+    // Same reason as the image case: a debug build's microseconds describe nothing we ship.
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: the budget describes the release build (task envtest:operator-perf)");
+        return;
+    }
+    let admissions: usize = env_or("PERF_DEVFILE_ADMISSIONS", 5000);
+    let budget_p99 = Duration::from_secs_f64(env_or("PERF_BUDGET_DEVFILE_P99_MS", 1.0) / 1000.0);
+
+    // 64 denied prefixes that never match: the worst case of the linear scan.
+    let denied: Vec<serde_json::Value> = (0..64)
+        .map(|i| serde_json::json!({"uriPrefix": format!("https://example.com/denied-{i}/")}))
+        .collect();
+    let config: weebo_si_crd::DevfileContractConfig = serde_json::from_value(serde_json::json!({
+        "mode": "Enforce", "currentContract": 3, "minimumContract": 2,
+        "minimumSchemaVersion": "2.2.0", "deniedParents": denied,
+    }))
+    .unwrap();
+    let registry = weebo_si_webhook::devfile_contract_registry(Arc::new(RwLock::new(Some(config))));
+
+    let namespace = NamespaceName::new("dev-ws-perf");
+    // Outdated on every check, so every warning is rendered; the annotation pads to 4 KiB.
+    let workspace: DynamicObject = serde_json::from_value(serde_json::json!({
+        "apiVersion": "workspace.devfile.io/v1alpha2",
+        "kind": "DevWorkspace",
+        "metadata": {
+            "name": "weebo-che-project",
+            "namespace": namespace.as_str(),
+            "annotations": {"che.eclipse.org/devfile": format!("{}schemaVersion: 2.1.0\n", "# x\n".repeat(1000))},
+        },
+        "spec": {"started": true, "template": {
+            "attributes": {"weebo.io/platform-contract": 1, "weebo.io/generator": "weebo-devfile-gen 1.4.0"},
+            "parent": {"uri": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml"},
+        }},
+    }))
+    .unwrap();
+    let body = serde_json::to_value(&workspace).unwrap();
+
+    let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+    let namespaces = FakeNamespaceView::new([(
+        namespace.clone(),
+        NamespaceFacts {
+            labels: BTreeMap::new(),
+            selection_annotation: None,
+        },
+    )]);
+    let catalog = FakeDwocCatalog::new(std::iter::empty());
+    let observer = SilentObserver;
+
+    let mut samples = Vec::with_capacity(admissions);
+    for _ in 0..admissions {
+        let started = Instant::now();
+        let subject = weebo_si_webhook::extract::devfile_workspace_from_object(
+            &namespace,
+            &workspace,
+            None,
+            &kube::core::admission::Operation::Create,
+        );
+        let Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) = admit(&registry, &subject, &gate, &namespaces, &catalog, &observer)
+        else {
+            panic!("an outdated devfile must be admitted");
+        };
+        let patch = render_patch(&body, &mutations);
+        samples.push(started.elapsed());
+        assert_eq!((mutations.len(), warnings.len()), (2, 3), "{warnings:?}");
+        std::hint::black_box(patch);
+    }
+    samples.sort();
+
+    let micros = |d: Duration| format!("{:.0} µs", d.as_secs_f64() * 1e6);
+    let p99 = percentile(&samples, 99.0);
+    report(
+        &format!(
+            "devfile-contract on /mutate/v1alpha1/devworkspaces — 64 deniedParents, 4 KiB annotation, {admissions} runs"
+        ),
+        &[
+            Row {
+                what: "devfile-contract p50",
+                measured: micros(percentile(&samples, 50.0)),
+                budget: "—".into(),
+                within: true,
+            },
+            Row {
+                what: "devfile-contract p99 (added to the route)",
+                measured: micros(p99),
+                budget: micros(budget_p99),
+                within: p99 <= budget_p99,
+            },
+        ],
+    );
+}
+
+impl weebo_si_pod_identity::PodIdentityObserver for SilentObserver {
+    fn rewrites(
+        &self,
+        _pod: &weebo_si_pod_identity::PodSubject,
+        _r: &[weebo_si_pod_identity::Rewrite],
+    ) {
+    }
+    fn violations(
+        &self,
+        _pod: &weebo_si_pod_identity::PodSubject,
+        _v: &[weebo_si_pod_identity::Judged],
+    ) {
+    }
+}
+
+#[test]
+fn pod_identity_admission_cost_is_measured() {
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: the rows describe the release build (task envtest:operator-perf)");
+        return;
+    }
+    let admissions: usize = env_or("PERF_IDENTITY_ADMISSIONS", 5000);
+    let config: weebo_si_crd::PodIdentityConfig =
+        serde_json::from_value(serde_json::json!({"mode": "Enforce"})).unwrap();
+    let (mutation, validation) = weebo_si_pod_identity_adapters::registries(
+        Arc::new(RwLock::new(Some(config))),
+        Arc::new(SilentObserver),
+    );
+
+    let namespace = NamespaceName::new("dev-ws-perf");
+    let request = |security_context: serde_json::Value, host_users: Option<bool>| {
+        let containers: Vec<serde_json::Value> = (0..4)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "image": "x"}))
+            .collect();
+        let review: kube::core::admission::AdmissionReview<DynamicObject> =
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "admission.k8s.io/v1",
+                "kind": "AdmissionReview",
+                "request": {
+                    "uid": "perf",
+                    "kind": {"group": "", "version": "v1", "kind": "Pod"},
+                    "resource": {"group": "", "version": "v1", "resource": "pods"},
+                    "operation": "CREATE",
+                    "userInfo": {},
+                    "namespace": namespace.as_str(),
+                    "object": {
+                        "apiVersion": "v1", "kind": "Pod",
+                        "metadata": {"generateName": "workspace-perf-", "namespace": namespace.as_str()},
+                        "spec": {
+                            "hostUsers": host_users,
+                            "securityContext": security_context,
+                            "initContainers": [{"name": "project-clone", "image": "x"}],
+                            "containers": containers,
+                        },
+                    },
+                    "dryRun": false,
+                },
+            }))
+            .unwrap();
+        let request: kube::core::admission::AdmissionRequest<DynamicObject> =
+            review.try_into().unwrap();
+        request
+    };
+    // DWO v1.1.1's pod, then the same pod as the apiserver sends it to validation once patched.
+    let raw = request(
+        serde_json::json!({"runAsUser": 1234, "runAsGroup": 0, "fsGroup": 1234}),
+        None,
+    );
+    let body = serde_json::to_value(raw.object.as_ref().unwrap()).unwrap();
+    let patched = request(
+        serde_json::json!({
+            "runAsUser": 1234, "runAsGroup": 1234, "fsGroup": 1234,
+            "fsGroupChangePolicy": "OnRootMismatch", "supplementalGroupsPolicy": "Strict",
+            "runAsNonRoot": true,
+        }),
+        Some(false),
+    );
+
+    let gate = FakeFeatureGate::new(FeatureMode::Enforce, Vec::new());
+    let namespaces = FakeNamespaceView::new([(
+        namespace.clone(),
+        NamespaceFacts {
+            labels: BTreeMap::new(),
+            selection_annotation: None,
+        },
+    )]);
+    let catalog = FakeDwocCatalog::new(std::iter::empty());
+    let observer = SilentObserver;
+
+    let (mut mutate, mut validate) = (
+        Vec::with_capacity(admissions),
+        Vec::with_capacity(admissions),
+    );
+    for _ in 0..admissions {
+        let started = Instant::now();
+        let subject = weebo_si_pod_identity_adapters::pod_subject_from_request(&raw).unwrap();
+        let Ok(AdmitOutcome::Allow { mutations, .. }) =
+            admit(&mutation, &subject, &gate, &namespaces, &catalog, &observer)
+        else {
+            panic!("the mutation must allow");
+        };
+        let patch = render_patch(&body, &mutations);
+        mutate.push(started.elapsed());
+        assert_eq!(mutations.len(), 5, "{mutations:?}");
+        std::hint::black_box(patch);
+
+        let started = Instant::now();
+        let subject = weebo_si_pod_identity_adapters::pod_subject_from_request(&patched).unwrap();
+        let outcome = admit(
+            &validation,
+            &subject,
+            &gate,
+            &namespaces,
+            &catalog,
+            &observer,
+        );
+        validate.push(started.elapsed());
+        assert!(
+            matches!(outcome, Ok(AdmitOutcome::Allow { .. })),
+            "the patched pod must be admitted: {outcome:?}"
+        );
+    }
+    mutate.sort();
+    validate.sort();
+
+    let micros = |d: Duration| format!("{:.0} µs", d.as_secs_f64() * 1e6);
+    let row = |what: &'static str, measured: Duration| Row {
+        what,
+        measured: micros(measured),
+        budget: "—".into(),
+        within: true,
+    };
+    report(
+        &format!("pod-identity — one DWO pod, 5 containers, {admissions} runs"),
+        &[
+            row("/mutate/v1/pods/identity p50", percentile(&mutate, 50.0)),
+            row("/mutate/v1/pods/identity p99", percentile(&mutate, 99.0)),
+            row(
+                "/validate/v1/pods/identity p50",
+                percentile(&validate, 50.0),
+            ),
+            row(
+                "/validate/v1/pods/identity p99",
+                percentile(&validate, 99.0),
+            ),
         ],
     );
 }

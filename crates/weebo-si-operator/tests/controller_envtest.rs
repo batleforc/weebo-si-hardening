@@ -138,6 +138,7 @@ async fn a_team_redefining_a_catalogue_key_is_reported_degraded() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         recorder: weebo_si_controller::events::recorder(client.clone()),
+        team_tools: Arc::default(),
     });
     reconcile_fn(Arc::new(config), ctx)
         .await
@@ -195,6 +196,7 @@ async fn a_well_formed_configuration_is_reported_ready_and_active() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         recorder: weebo_si_controller::events::recorder(client.clone()),
+        team_tools: Arc::default(),
     });
     reconcile_fn(Arc::new(config), ctx)
         .await
@@ -276,6 +278,7 @@ async fn haproxy_without_its_prerequisite_is_reported_degraded() {
             let ctx = Arc::new(Ctx {
                 client: client.clone(),
                 recorder: weebo_si_controller::events::recorder(client.clone()),
+                team_tools: Arc::default(),
             });
             reconcile_fn(Arc::new(config), ctx)
                 .await
@@ -422,6 +425,7 @@ async fn every_validate_violation_reaches_status() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         recorder: weebo_si_controller::events::recorder(client.clone()),
+        team_tools: Arc::default(),
     });
     reconcile_fn(Arc::new(config), ctx)
         .await
@@ -485,6 +489,7 @@ async fn a_config_under_the_wrong_name_is_reported_degraded() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         recorder: weebo_si_controller::events::recorder(client.clone()),
+        team_tools: Arc::default(),
     });
     reconcile_fn(Arc::new(config), ctx)
         .await
@@ -520,6 +525,7 @@ async fn mode_transitions_are_reflected_in_status_across_reconciles() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         recorder: weebo_si_controller::events::recorder(client.clone()),
+        team_tools: Arc::default(),
     });
 
     let catalog = serde_json::json!([{"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"}]);

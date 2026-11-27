@@ -30,6 +30,7 @@ use weebo_si_crd::{
 use weebo_si_registry_config::{RegistryGuard, RegistryObjectWrite, WriteOperation};
 
 use weebo_si_webhook::metrics::WebhookMetrics;
+use weebo_si_webhook::render::with_warnings;
 
 /// Path the `configmaps`/`secrets` rule points at — one handler, resource-agnostic, per RFC
 /// 0007's *Design → Contract*.
@@ -227,9 +228,9 @@ async fn validate_registry_configs(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             log_decision(&write, None);
-            response
+            with_warnings(response, warnings)
         }
         Ok(AdmitOutcome::Deny(reason)) => {
             log_decision(&write, Some(&reason));

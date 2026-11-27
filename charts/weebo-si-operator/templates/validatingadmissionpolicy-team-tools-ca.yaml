@@ -1,0 +1,86 @@
+{{- if and .Values.teamTools.rbac.enabled .Values.teamTools.caGuard.enabled }}
+{{/*
+  RFC 0020's CA guard: a team tool authenticates a user by the commonName of a client
+  certificate its team's CA signed, so only the operator may ask that CA for one.
+
+  Without it, cert-manager's chart aggregates `certificates`/`certificaterequests` create into
+  `edit`/`admin` (a Che user is project admin on OpenShift): a developer writes a Certificate
+  naming the team CA and a colleague's commonName, or a CertificateRequest with their own CSR,
+  which the default approver signs. An Ingress or Gateway annotated
+  `cert-manager.io/cluster-issuer: <team CA>` gets the same Certificate written by ingress-shim.
+
+  A ValidatingAdmissionPolicy, not a webhook row: the apiserver evaluates it in-process, so
+  `failurePolicy: Fail` costs no outage when the operator is down, and it holds whatever
+  endpoint-auth's mode or dialect. The team CAs are not a name pattern: they are read from every
+  WeeboSiTeam's `spec.features.teamTools.issuerRef` (the params), the field the operator itself
+  renders `issuerRef` from. The policy runs once per team; one refusal refuses the request.
+
+  - a Certificate naming a team CA: CREATE, or an UPDATE that changes `spec`, only by the
+    operator's controller ServiceAccount (ingress-shim acts as cert-manager's, so it is refused);
+  - a CertificateRequest naming a team CA: CREATE only by cert-manager's controller, which
+    writes them from the operator's Certificates.
+
+  cert-manager matches `issuerRef.kind` exactly and treats an empty group as its own, as here.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-team-tools-ca
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+spec:
+  # Fixed: in-process CEL, so Fail only ever fires on a broken expression or a missing param kind.
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: hardening.weebo.io/v1alpha1
+    kind: WeeboSiTeam
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["cert-manager.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["certificates", "certificaterequests"]
+  variables:
+    - name: teamCa
+      expression: >-
+        has(params.spec.features) && params.spec.features != null &&
+        has(params.spec.features.teamTools) && params.spec.features.teamTools != null &&
+        has(params.spec.features.teamTools.issuerRef) && params.spec.features.teamTools.issuerRef != null
+        ? params.spec.features.teamTools.issuerRef.name : ''
+    - name: targetsTeamCa
+      expression: >-
+        variables.teamCa != '' &&
+        has(object.spec.issuerRef) && has(object.spec.issuerRef.name) &&
+        object.spec.issuerRef.name == variables.teamCa &&
+        has(object.spec.issuerRef.kind) && object.spec.issuerRef.kind == 'ClusterIssuer' &&
+        (!has(object.spec.issuerRef.group) || object.spec.issuerRef.group in ['', 'cert-manager.io'])
+  validations:
+    - expression: >-
+        !variables.targetsTeamCa || request.kind.kind != 'Certificate' ||
+        (request.operation == 'UPDATE' && object.spec == oldObject.spec) ||
+        request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:{{ include "weebo-si-operator.controllerServiceAccountName" . }}'
+      messageExpression: >-
+        'only the weebo-si operator may request a certificate from team tools CA ' + variables.teamCa
+      reason: Forbidden
+    - expression: >-
+        !variables.targetsTeamCa || request.kind.kind != 'CertificateRequest' ||
+        request.operation != 'CREATE' ||
+        request.userInfo.username == '{{ .Values.teamTools.caGuard.certManagerUsername }}'
+      messageExpression: >-
+        'only cert-manager may write a CertificateRequest to team tools CA ' + variables.teamCa
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-team-tools-ca
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+spec:
+  policyName: {{ include "weebo-si-operator.fullname" . }}-team-tools-ca
+  validationActions: ["Deny"]
+  paramRef:
+    # Every team; none (no team tools CA anywhere) leaves nothing to guard.
+    selector: {}
+    parameterNotFoundAction: Allow
+{{- end }}

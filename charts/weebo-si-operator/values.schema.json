@@ -320,6 +320,47 @@
         }
       }
     },
+    "teamTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rbac": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "templateNamespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 63
+            },
+            "create": {
+              "type": "boolean"
+            }
+          }
+        },
+        "caGuard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "certManagerUsername": {
+              "type": "string",
+              "pattern": "^system:serviceaccount:[a-z0-9]([-a-z0-9]*[a-z0-9])?:[a-z0-9]([-.a-z0-9]*[a-z0-9])?$"
+            }
+          }
+        }
+      }
+    },
     "registryConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -475,6 +516,21 @@
       }
     },
     "imageRewrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "webhooks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "podIdentity": {
       "type": "object",
       "additionalProperties": false,
       "properties": {

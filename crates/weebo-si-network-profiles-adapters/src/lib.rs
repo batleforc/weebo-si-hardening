@@ -63,5 +63,9 @@ pub async fn controller_deps(shared: &ControllerShared) -> Result<NetworkProfile
             &shared.canary_image,
         )),
         operator_namespace: NamespaceName::new(shared.operator_namespace.clone()),
+        restricted: Arc::new(weebo_si_controller::restricted::RestrictedReporter::new(
+            shared.restricted_grants.clone(),
+            "network-profiles",
+        )),
     })
 }

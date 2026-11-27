@@ -17,24 +17,32 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::{Patch, PatchParams};
 use kube::core::{DynamicObject, GroupVersionKind, ObjectMeta, TypeMeta};
 use kube::discovery::ApiResource;
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::ObjectRef;
 
 use kube::runtime::events::Recorder;
 use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Api, Client, ResourceExt};
 use serde_json::{Value, json};
 use weebo_si_chassis::port::feature_gate::FeatureGate;
+use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_controller::events::{self, ReasonCode};
+use weebo_si_controller::restricted::{AnnotationChanges, RestrictedReporter};
 use weebo_si_crd::{
     AttachmentMode, COMPANION_SERVICE, Dialect, FeatureMode, MIDDLEWARE_NAME, NamespaceName,
     ResolvedEndpointAuthConfig,
 };
+use weebo_si_endpoint_auth::compile::{CompileError, UnknownKey};
+use weebo_si_endpoint_auth::policy::{EndpointPolicy, RestrictedResult};
 use weebo_si_network_profiles::is_excluded_namespace;
+
+use crate::endpoint_auth::{NamespaceInputs, compile_annotations, gateway_overrides};
 
 /// The largest auth response body Traefik will read from the gate, in bytes — two orders of
 /// magnitude above what the gate sends.
@@ -63,6 +71,10 @@ pub struct EndpointAuthDeps {
     pub gate: Arc<dyn FeatureGate + Send + Sync>,
     /// The operator's own namespace — where the shared `Middleware` lives.
     pub operator_namespace: NamespaceName,
+    /// The namespace cache: owner, team labels and the `endpoint-access` grant (RFC 0021).
+    pub namespace_view: Arc<dyn NamespaceView + Send + Sync>,
+    /// The change-only audit of restricted access keys (RFC 0021).
+    pub restricted: Arc<RestrictedReporter>,
 }
 
 struct Ctx {
@@ -137,9 +149,46 @@ pub async fn spawn(client: Client, deps: EndpointAuthDeps, recorder: Recorder) {
         deps,
         recorder,
     });
-    let api: Api<Ingress> = Api::all(client);
+    let api: Api<Ingress> = Api::all(client.clone());
+    let controller = Controller::new(api, WatcherConfig::default());
+    // RFC 0021 R-12: a Namespace whose annotations change re-queues every `Ingress` in it, so a
+    // removed `endpoint-access` grant is audited in seconds, not at the 300 s requeue.
+    let ingresses = controller.store();
+    let changes = AnnotationChanges::default();
+    let controller = controller.watches(
+        Api::<Namespace>::all(client),
+        WatcherConfig::default(),
+        move |ns: Namespace| {
+            if !changes.changed(&ns) {
+                return Vec::new();
+            }
+            let name = ns.name_any();
+            ingresses
+                .state()
+                .iter()
+                .filter(|ingress| ingress.metadata.namespace.as_deref() == Some(name.as_str()))
+                .map(|ingress| ObjectRef::from_obj(ingress.as_ref()))
+                .collect::<Vec<_>>()
+        },
+    );
+    // A deleted `Ingress` (DWO's carry no finalizer) is never reconciled, so its audit memory is
+    // pruned against the controller's own cache, at the sweep's backstop cadence.
+    let live = controller.store();
+    let restricted = Arc::clone(&ctx.deps.restricted);
     tokio::spawn(async move {
-        Controller::new(api, WatcherConfig::default())
+        let mut interval = tokio::time::interval(REQUEUE);
+        loop {
+            interval.tick().await;
+            let uids: std::collections::HashSet<String> = live
+                .state()
+                .iter()
+                .filter_map(|ingress| ingress.metadata.uid.clone())
+                .collect();
+            restricted.retain(|uid| uids.contains(uid));
+        }
+    });
+    tokio::spawn(async move {
+        controller
             .shutdown_on_signal()
             .run(
                 |object, ctx| events::tracked(Arc::clone(&object), reconcile(object, ctx)),
@@ -220,7 +269,15 @@ pub fn sweep(
 }
 
 async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    // The audit's memory is dropped whenever no pass reports for the object (deleted, feature
+    // absent, not governed, `Off`, a `Route` dialect), so it reports afresh once one does.
+    let forget = || {
+        if let Some(uid) = ingress.metadata.uid.as_deref() {
+            ctx.deps.restricted.forget(uid);
+        }
+    };
     let Some(config) = read(&ctx.deps.config) else {
+        forget();
         return Ok(Action::requeue(REQUEUE));
     };
     let namespace = NamespaceName::new(ingress.namespace().unwrap_or_default());
@@ -228,6 +285,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
     // without it an unset `namespaceSelector` makes this loop gate every `Ingress` in the
     // cluster, the gateway's own and Che's included, and users are locked out of the login page.
     if !governs_ingress(&config, &namespace, &ctx.deps.operator_namespace, &ingress) {
+        forget();
         return Ok(Action::requeue(REQUEUE));
     }
     let mode = ctx
@@ -241,10 +299,18 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
     // `Route`'s backend is a local reference.
     if config.gateway.dialect.target_kind() != weebo_si_crd::RoutingKind::Ingress {
         // `sweep_routes` in the ticker above owns that dialect's objects, companions included.
+        forget();
         return Ok(Action::requeue(REQUEUE));
     }
 
     let annotations: BTreeMap<String, String> = ingress.annotations().clone().into_iter().collect();
+    // Before the sweep's patch, whose failure ends the pass: the gateway serves the object either
+    // way, so its audit must not depend on that write.
+    if mode == FeatureMode::Off || ingress.metadata.deletion_timestamp.is_some() {
+        forget();
+    } else {
+        report_restricted(&ctx, &ingress, &config, &namespace, &annotations, mode).await;
+    }
     let outcome = sweep(&config, mode, &annotations, None);
     let name = ingress.name_any();
 
@@ -295,6 +361,119 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<Ctx>) -> Result<Action, Error
     }
 
     Ok(Action::requeue(REQUEUE))
+}
+
+/// The RFC 0021 audit of one pass: compile the `Ingress` as the gateway does, and for each
+/// restricted key that entered its honoured or refused set since the last pass, one count (in
+/// the reporter), one INFO line and one Event. Runs in `DryRun` too (S9). A namespace with no
+/// owner is not indexed by the gateway, and a policy that does not compile is indexed closed:
+/// neither serves a restricted key, so neither reports one.
+async fn report_restricted(
+    ctx: &Ctx,
+    ingress: &Ingress,
+    config: &ResolvedEndpointAuthConfig,
+    namespace: &NamespaceName,
+    annotations: &BTreeMap<String, String>,
+    mode: FeatureMode,
+) {
+    let Some(uid) = ingress.metadata.uid.as_deref() else {
+        return;
+    };
+    let inputs = NamespaceInputs::read(
+        ctx.deps.namespace_view.as_ref(),
+        ctx.deps.gate.as_ref(),
+        config,
+        namespace,
+    );
+    let compiled = inputs.owner.as_ref().and_then(|_| {
+        compile_annotations(
+            config,
+            annotations,
+            namespace,
+            &inputs,
+            &gateway_overrides(config),
+            UnknownKey::Default,
+        )
+    });
+    let (honoured, refused) = restricted_sets(compiled.as_ref());
+    let change = ctx
+        .deps
+        .restricted
+        .observe(uid, honoured, refused.keys().cloned());
+    let name = ingress.name_any();
+    for key in &change.honoured {
+        tracing::info!(
+            "feature=endpoint-auth restricted={key} namespace={namespace} ingress={name} \
+             mode={mode:?} result=honoured"
+        );
+        events::restricted_grant(&ctx.recorder, ingress, true, honoured_note(key)).await;
+    }
+    for key in &change.refused {
+        tracing::info!(
+            "feature=endpoint-auth restricted={key} namespace={namespace} ingress={name} \
+             mode={mode:?} result=refused reason=no_namespace_grant"
+        );
+        let served_as = refused.get(key).map(String::as_str).unwrap_or_default();
+        events::restricted_grant(
+            &ctx.recorder,
+            ingress,
+            false,
+            refused_note(key, namespace.as_str(), served_as),
+        )
+        .await;
+    }
+}
+
+/// What a refused restricted key is served as when no default can replace it.
+const CLOSED: &str = "closed";
+
+/// The restricted keys a compiled policy honoured, and those it refused with the key served in
+/// each one's place. A restricted default with no grant leaves nothing to serve: the endpoint is
+/// closed, and that refusal gets the same Event and metric as one served as the default.
+fn restricted_sets(
+    compiled: Option<&Result<EndpointPolicy, CompileError>>,
+) -> (Vec<String>, BTreeMap<String, String>) {
+    let mut honoured = Vec::new();
+    let mut refused = BTreeMap::new();
+    let policy = match compiled {
+        Some(Ok(policy)) => Some(policy),
+        Some(Err(CompileError::RestrictedNotGranted { default, requested })) => {
+            for key in std::iter::once(default).chain(requested) {
+                refused.insert(key.to_string(), CLOSED.to_string());
+            }
+            None
+        }
+        Some(Err(_)) | None => None,
+    };
+    for (key, result) in policy
+        .map(|policy| policy.restricted.as_slice())
+        .unwrap_or_default()
+    {
+        match result {
+            RestrictedResult::Honoured => honoured.push(key.to_string()),
+            RestrictedResult::Refused { served_as } => {
+                refused.insert(key.to_string(), served_as.to_string());
+            }
+        }
+    }
+    (honoured, refused)
+}
+
+/// The `RestrictedGrantHonoured` Event's note, in the RFC 0021 mock's words.
+fn honoured_note(key: &str) -> String {
+    format!(
+        "access key {key} is restricted; granted by namespace annotation {}",
+        weebo_si_crd::ENDPOINT_ACCESS_NAMESPACE_ANNOTATION
+    )
+}
+
+/// The `RestrictedGrantRefused` Event's note, in the RFC 0021 mock's words.
+fn refused_note(key: &str, namespace: &str, served_as: &str) -> String {
+    format!(
+        "access key {key} is restricted and namespace {namespace} does not grant it \
+         (annotation {}); served as {served_as}",
+        weebo_si_crd::ENDPOINT_ACCESS_NAMESPACE_ANNOTATION
+    )
 }
 
 /// Whether this feature governs `ingress` at all: not in a namespace the operator never touches,
@@ -735,11 +914,13 @@ mod tests {
                 key: AccessKey::new("private"),
                 anonymous: false,
                 delegation: Vec::new(),
+                restricted: false,
             }],
             default: AccessKey::new("private"),
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
+            allowed_issuers: vec!["vault-issuer".to_owned()],
         })
     }
 
@@ -941,6 +1122,58 @@ mod tests {
         assert_eq!(
             slice["metadata"]["labels"][weebo_si_crd::MANAGED_BY_LABEL],
             json!(weebo_si_crd::MANAGED_BY_VALUE)
+        );
+    }
+
+    /// RFC 0021: the audit reads what `compile` recorded, and words it as the mocks do.
+    #[test]
+    fn the_restricted_audit_reads_the_compiled_policy_in_the_mocks_words() {
+        use weebo_si_endpoint_auth::policy::CatalogueKey;
+        let mut policy = weebo_si_endpoint_auth::testing::policy_for("dev-ws-alice", "api");
+        policy.restricted = vec![
+            (
+                CatalogueKey::new("open"),
+                RestrictedResult::Refused {
+                    served_as: CatalogueKey::new("private"),
+                },
+            ),
+            (CatalogueKey::new("team"), RestrictedResult::Honoured),
+        ];
+        let (honoured, refused) = restricted_sets(Some(&Ok(policy)));
+        assert_eq!(honoured, vec!["team".to_owned()]);
+        assert_eq!(
+            refused,
+            BTreeMap::from([("open".to_owned(), "private".to_owned())])
+        );
+        assert_eq!(restricted_sets(None), (Vec::new(), BTreeMap::new()));
+        assert_eq!(
+            restricted_sets(Some(&Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("private"),
+                requested: Some(CatalogueKey::new("open")),
+            }))),
+            (
+                Vec::new(),
+                BTreeMap::from([
+                    ("open".to_owned(), "closed".to_owned()),
+                    ("private".to_owned(), "closed".to_owned())
+                ])
+            )
+        );
+        assert_eq!(
+            restricted_sets(Some(&Err(CompileError::NotGranted(CatalogueKey::new(
+                "open"
+            ))))),
+            (Vec::new(), BTreeMap::new())
+        );
+        assert_eq!(
+            refused_note("open", "dev-ws-batleforc-test", "private"),
+            "access key open is restricted and namespace dev-ws-batleforc-test does not grant it \
+             (annotation hardening.weebo.io/endpoint-access); served as private"
+        );
+        assert_eq!(
+            honoured_note("open"),
+            "access key open is restricted; granted by namespace annotation \
+             hardening.weebo.io/endpoint-access"
         );
     }
 

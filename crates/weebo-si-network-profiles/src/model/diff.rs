@@ -98,6 +98,15 @@ pub struct DesiredState {
     /// `objects` alone would turn a momentarily unreadable template into a `Delete` of the policy
     /// currently enforced (fail-open); holding them fails closed.
     pub held: Vec<ObjectKey>,
+    /// The profile keys the resolution chain settled on — empty for a namespace baseline and for
+    /// a request refused under `onNotGranted: Deny`. Read by the restricted-grant Event, which
+    /// names what was applied instead.
+    pub resolved: Vec<ProfileKey>,
+    /// Restricted keys this subject uses because its namespace grants them (RFC 0021).
+    pub restricted_honoured: Vec<ProfileKey>,
+    /// Restricted keys this subject asked for (or its team default holds) and its namespace does
+    /// not grant (RFC 0021). Never also in `not_granted`.
+    pub restricted_refused: Vec<ProfileKey>,
 }
 
 impl DesiredState {

@@ -19,7 +19,8 @@
 # deletes it. Everything else a run writes (the realm, the Corefile, packaged charts, image
 # archives) goes into a fresh `mktemp -d` that is removed when the script exits.
 #
-# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas. `task e2e SUITE=<suite>` runs the
+# Suites: workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas | pod-identity |
+# team-tools. `task e2e SUITE=<suite>` runs the
 # whole sequence plus the Rust suite of the same name (crates/weebo-si-e2e/tests/<suite>.rs).
 #
 # **Every upstream is pinned**, unlike the spike rig this grew out of (scripts/spike-0009-che.sh):
@@ -53,6 +54,8 @@ WEEBO_AUTHENTIK_CHART=0.15.0
 POSTGRES_IMAGE=docker.io/library/postgres:16-alpine
 REDIS_IMAGE=docker.io/library/redis:7-alpine
 NGINX_IMAGE=docker.io/nginxinc/nginx-unprivileged:1.29-alpine
+BUILDKIT_IMAGE=docker.io/moby/buildkit:v0.35.1-rootless # RFC 0020 [R24]
+CILIUM_VERSION=v1.19.10 # weebo-si's Cilium; only its CiliumNetworkPolicy CRD is installed
 
 if [ -z "${E2E_RUNTIME:-}" ]; then
   if command -v docker >/dev/null 2>&1; then E2E_RUNTIME=docker; else E2E_RUNTIME=podman; fi
@@ -689,15 +692,43 @@ MANIFEST
   kubectl -n charts rollout status deploy/charts --timeout=300s >/dev/null
 }
 
+# RFC 0020's team tools. The controller renders `CiliumNetworkPolicy` objects and discovers the
+# CRD at boot, so the CRD goes in before `deploy`; kind's CNI does not enforce it, which is why the
+# suite proves the mTLS layer of a cross-team call alone (*Proof against a real client*, obs. 5).
+# BuildKit is preloaded: the daemon and the workspaces' `buildctl` both run it.
+addon_team_tools() {
+  say "Cilium $CILIUM_VERSION's CiliumNetworkPolicy CRD (served, not enforced)"
+  kubectl apply --server-side -f "https://raw.githubusercontent.com/cilium/cilium/$CILIUM_VERSION/pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml" >/dev/null
+  kubectl wait --for=condition=Established crd/ciliumnetworkpolicies.cilium.io --timeout=60s >/dev/null
+  say "BuildKit ($BUILDKIT_IMAGE), preloaded"
+  # Pulled by the node itself: `kind load` of a multi-arch upstream image imports with
+  # --all-platforms and fails on the platforms the host never pulled ("content digest not found").
+  retry "$E2E_RUNTIME" exec "$CLUSTER-control-plane" crictl pull "$BUILDKIT_IMAGE" >/dev/null
+}
+
 addons() {
   case "${1:-}" in
     workspace | endpoint-auth | upgrade | resource-quotas) ;;
     # A build workspace runs with `hostUsers: false`, which a kind node refuses until its /sys
     # overmounts and product-files hook are lifted (e2e/runtime-matrix/kind-userns.sh says why).
     pod-security) ENGINE="$E2E_RUNTIME" "$REPO_ROOT/e2e/runtime-matrix/kind-userns.sh" "$CLUSTER-control-plane" ;;
+    # Every workspace pod of pod-identity, and buildkitd in team-tools, runs with `hostUsers:
+    # false` (RFC 0018, RFC 0020). Rootless podman gives the node 65536 ids, all of which one
+    # user-namespaced pod needs: no pod can start.
+    pod-identity | team-tools)
+      if [ "$E2E_RUNTIME" = podman ]; then
+        rootless=$(podman info --format '{{.Host.Security.Rootless}}') || rootless=""
+        case "$rootless" in
+          false) ;;
+          true) die "addons: $1 cannot run under rootless podman (a user-namespaced pod needs 65536 ids beyond the node's own); run it with docker or rootful podman (E2E_RUNTIME)" ;;
+          *) die "addons: $1: 'podman info' did not say whether podman is rootless" ;;
+        esac
+      fi
+      ENGINE="$E2E_RUNTIME" "$REPO_ROOT/e2e/runtime-matrix/kind-userns.sh" "$CLUSTER-control-plane"
+      if [ "$1" = team-tools ]; then addon_team_tools; fi ;;
     kubearmor) addon_kubearmor ;;
     identity) addon_authentik; addon_argocd ;;
-    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas)" ;;
+    *) die "addons: unknown suite '${1:-}' (workspace|kubearmor|endpoint-auth|identity|upgrade|pod-security|resource-quotas|pod-identity|team-tools)" ;;
   esac
 }
 
@@ -723,18 +754,20 @@ build() {
   "$E2E_RUNTIME" tag localhost/e2e-workspace:e2e localhost/e2e/e2e-workspace:e2e
 }
 
+load_image() {
+  if [ "$E2E_RUNTIME" = docker ]; then
+    kind load docker-image "$1" --name "$CLUSTER" >/dev/null
+  else
+    # kind cannot read podman's store directly; an archive is the portable hand-over.
+    archive="$WORK/$(printf '%s' "$1" | tr /: --).tar"
+    "$E2E_RUNTIME" save -o "$archive" "$1" >/dev/null
+    kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
+    rm -f "$archive"
+  fi
+}
+
 load_images() {
-  for image in $IMAGES; do
-    if [ "$E2E_RUNTIME" = docker ]; then
-      kind load docker-image "localhost/$image:e2e" --name "$CLUSTER" >/dev/null
-    else
-      # kind cannot read podman's store directly; an archive is the portable hand-over.
-      archive="$WORK/$(printf '%s' "$image" | tr / -).tar"
-      "$E2E_RUNTIME" save -o "$archive" "localhost/$image:e2e" >/dev/null
-      kind load image-archive "$archive" --name "$CLUSTER" >/dev/null
-      rm -f "$archive"
-    fi
-  done
+  for image in $IMAGES; do load_image "localhost/$image:e2e"; done
 }
 
 # --- our charts ---------------------------------------------------------------------------------------
@@ -747,6 +780,9 @@ deploy_operator() {
     workspace) set -- "$@" --set registryConfig.rbac.enabled=true ;;
     kubearmor) set -- "$@" --set kubearmorPolicy.rbac.enabled=true ;;
     pod-security) set -- "$@" --set podSecurity.rbac.enabled=true ;;
+    pod-identity) set -- "$@" --set podIdentity.webhooks.enabled=true ;;
+    # The egress policy and the cluster-wide policy watch ride on the network-profiles grant.
+    team-tools) set -- "$@" --set teamTools.rbac.enabled=true --set networkProfiles.cilium.enabled=true ;;
     resource-quotas) set -- "$@" --set resourceQuotas.rbac.enabled=true ;;
     endpoint-auth) set -- "$@" --set endpointAuth.rbac.enabled=true --set endpointAuth.dialect=Traefik ;;
     identity) set -- "$@" --set identity.rbac.enabled=true --set identity.argoNamespace=argocd ;;
@@ -800,7 +836,7 @@ deploy_gateway() {
 deploy() {
   suite=${1:-}
   case "$suite" in
-    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas) ;;
+    workspace | kubearmor | endpoint-auth | identity | upgrade | pod-security | resource-quotas | pod-identity | team-tools) ;;
     *) die "deploy: unknown suite '$suite'" ;;
   esac
   kubectl config use-context "kind-$CLUSTER" >/dev/null
@@ -833,6 +869,7 @@ diag() {
   kubectl get devworkspaces -A -o yaml > "$out/devworkspaces.yaml" 2>&1 || true
   kubectl get checluster -A -o yaml > "$out/checluster.yaml" 2>&1 || true
   kubectl get networkpolicies,ingresses -A -o yaml > "$out/networking.yaml" 2>&1 || true
+  kubectl get certificates,clusterissuers,ciliumnetworkpolicies -A -o yaml > "$out/cert-manager-cilium.yaml" 2>&1 || true
   # AppArmor denials land in the host kernel's log, not in any pod's — the one place a profile
   # refusing a process explains itself.
   { sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null; } | grep -i apparmor | tail -n 500 > "$out/dmesg-apparmor.txt" || true
@@ -842,6 +879,16 @@ diag() {
     for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
       kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 \
         > "$out/logs-$ns-$(basename "$pod").txt" 2>&1 || true
+    done
+  done
+  # Team tool pods (RFC 0020) crash-loop rather than fail: the previous container holds the reason.
+  for ns in $(kubectl get namespaces -o name 2>/dev/null | sed -n 's|^namespace/\(team-.*-tools\)$|\1|p'); do
+    kubectl -n "$ns" get statefulsets,deployments -o yaml --show-managed-fields > "$out/workloads-$ns.yaml" 2>&1 || true
+    for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 \
+        > "$out/logs-$ns-$(basename "$pod").txt" 2>&1 || true
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix --tail=2000 --previous \
+        > "$out/logs-$ns-$(basename "$pod")-previous.txt" 2>&1 || true
     done
   done
   printf 'diagnostics in %s\n' "$out"

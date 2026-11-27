@@ -140,6 +140,13 @@ tears anything down. Set `mode: Off` first if the goal is a clean removal.
    step the new `image-rewrite` webhooks (`failurePolicy: Fail`) would be registered while 0.3.x
    pods, which have no such route, still answer: every workspace pod is refused for the length of
    the roll. See [`image-rewrite.md`](./image-rewrite.md#upgrade).
+3. **Check the certificate issuers first.** Since RFC 0020, the `Ingress` webhook refuses a
+   `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` annotation naming anything outside
+   `endpointAuth.allowedIssuers`, default `[vault-issuer]`. If Che's `CheCluster`
+   `spec.networking.annotations` or your devfile endpoints name another issuer, add it to
+   `allowedIssuers` before upgrading, or DevWorkspace Operator's next `Ingress` `CREATE` is refused
+   and the workspace does not start. See
+   [`endpoint-gateway.md`](./endpoint-gateway.md#certificate-annotations).
 
 Argo CD applies `crds/` on sync (with `ServerSideApply=true`), so step 1 is done for you there;
 the two-step `helm upgrade` is two commits.
@@ -189,6 +196,12 @@ And two more, specific to the `WeeboSiTeam` objects and
   `Namespace` object, so this is already admin-only. Where that is not true,
   `namespaceSelection.annotation: ""` removes this step of the resolution chain entirely.
 
+And before `podIdentity` reaches `Enforce` (its own
+[install checklist](./pod-identity.md#install-checklist)): nodes that run user-namespaced pods,
+PSA `restricted` on the namespaces in scope, and the chart's two webhook replicas with their
+`PodDisruptionBudget` on a multi-node cluster (a single-node cluster runs one and restarts the
+workspaces a webhook outage failed).
+
 ## Usage
 
 ```text
@@ -197,6 +210,7 @@ weebo-si-operator webhook     [--addr 0.0.0.0:9443] [--cert-dir /etc/webhook/cer
                                --operator-identity <system:serviceaccount:ns:name>
 weebo-si-operator controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
                                [--canary-image <ref>] [--quota-template-namespace <ns>]
+                               [--team-tools-template-namespace <ns>]
 weebo-si-operator crd         [weebosiconfigs|weebositeams|weebosiusers]
                                # print the generated CRD YAML — what `task recu` writes
 weebo-si-operator features    # print the registry: id, originating RFC, target resource
@@ -394,6 +408,7 @@ render call, never a log line.
 | `weebo_si_admission_requests_total` | counter | `feature`, `resource`, `mode`, `outcome` — `resource` is the subject's Kubernetes kind |
 | `weebo_si_admission_duration_seconds` | histogram | `feature`, `resource` — the same pair the counter carries |
 | `weebo_si_admission_unguarded_total` | counter | `feature`, `path` — requests a guard allowed **without checking**, because it does not know the resource |
+| `weebo_si_admission_warnings_total` | counter | `feature`, `mode` — admission warnings features decided, counted before `DryRun` drops them (RFC 0019): not what reached the client, since a denial carries none and each response keeps at most 6 of 120 characters |
 | `weebo_si_feature_mode` | gauge | `feature` |
 | `weebo_si_dwoc_pin_total` | counter | `result`, `team` |
 | `weebo_si_dwoc_pin_catalog_entries` | gauge | `state` ∈ `resolvable`/`missing` |

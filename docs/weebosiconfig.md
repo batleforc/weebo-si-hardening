@@ -356,11 +356,14 @@ rather than ignored at runtime.
 | [`policyGuard`](#featurespolicyguard) | [0004](./rfc/0004-network-profiles.md) | `NetworkPolicy`, `CiliumNetworkPolicy`, `KubeArmorPolicy`, catalogued `ConfigMap`/`Secret` copies (validating admission) |
 | [`imagePolicy`](#featuresimagepolicy) | [0005](./rfc/0005-image-policy.md) | `DevWorkspace`, `Pod` (validating admission) |
 | [`imageRewrite`](#featuresimagerewrite) | [0017](./rfc/0017-image-rewrite.md) | `DevWorkspace`, `Pod` (mutating admission) |
+| [`devfileContract`](#featuresdevfilecontract) | [0019](./rfc/0019-devfile-contract.md) | `DevWorkspace` (mutating admission) |
 | [`kubearmorPolicy`](#featureskubearmorpolicy) | [0006](./rfc/0006-kubearmor-policy.md) | `Namespace`, `DevWorkspace` (reconcile) |
 | [`registryConfig`](#featuresregistryconfig) | [0007](./rfc/0007-registry-config.md) | `Namespace` (reconcile) |
 | [`endpointAuth`](#featuresendpointauth) | [0009](./rfc/0009-endpoint-auth.md) | `Ingress`, `Route` (mutating + validating admission, reconcile) |
 | [`podSecurity`](#featurespodsecurity) | [0013](./rfc/0013-pod-security.md) | `Namespace` labels (reconcile) |
+| [`podIdentity`](#featurespodidentity) | [0018](./rfc/0018-namespace-uid-range.md) | `Pod` (mutating + validating admission) |
 | [`resourceQuotas`](#featuresresourcequotas) | [0014](./rfc/0014-resource-quotas.md) | `ResourceQuota`, `LimitRange` (reconcile) |
+| [`teamTools`](#featuresteamtools) | [0020](./rfc/0020-team-tools.md) | tools namespace workloads, `DevWorkspace` (reconcile, mutating admission) |
 
 ### `features.dwocPin`
 
@@ -437,10 +440,12 @@ networkProfiles:
 | `catalog[].key` | string | yes | — | |
 | `catalog[].variants[].backend` | `NetworkPolicy`/`Cilium` | yes | — | Which dialect this variant is written in. |
 | `catalog[].variants[].templateRef` | `{name, namespace}` | yes | — | The object whose rules are copied. |
-| `baseline` | key | yes | — | Applied to every namespace in scope; **no grant can withhold it**. |
+| `catalog[].restricted` | bool | no | `false` | Honoured only if the workspace's Namespace names the key in `namespaceGrant.annotation` (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). A team re-declaring the entry must carry the same value. |
+| `baseline` | key | yes | — | Applied to every namespace in scope; **no grant can withhold it**. A restricted baseline is `RestrictedKeyInDefault`. |
 | per-team catalogue and default | on [`WeeboSiTeam`](#weebositeam) | no | — | `spec.features.networkProfiles.{catalog,default}`. The baseline applies either way. |
 | `namespaceSelection.annotation` | string | no | `hardening.weebo.io/network-profiles` | |
 | `workspaceSelection.attribute` | string | no | `hardening.weebo.io/network-profiles` | |
+| `namespaceGrant.annotation` | string | no | `hardening.weebo.io/network-grants` | Namespace annotation granting restricted keys; it never selects. `""` refuses every restricted key. May not equal `namespaceSelection.annotation` (refused at apply). |
 | `onNotGranted` | `Default`/`Deny` | no | `Default` | |
 | `enforcement.backend` | `Auto`/`NetworkPolicy`/`Cilium` | no | `Auto` | `Auto` picks the most capable dialect the apiserver offers, preferring Cilium. |
 | `enforcement.canary.enabled` | bool | no | `true` | The periodic probe that proves the CNI enforces policy at all. |
@@ -579,6 +584,49 @@ with no `.` or `:` other than `localhost` (an image reads it as a Docker Hub nam
 cannot judge — a host or path the reference parser refuses — makes the feature `Degraded`, and
 then no rule applies at all. Shared by every team: there is no `imageRewrite` on
 `WeeboSiTeam`.
+
+### `features.devfileContract`
+
+Tells a developer, through admission warnings on `kubectl apply`, that their devfile was written
+for older platform rules or follows a parent that can change under it; refuses a workspace start
+only when the devfile names a contract or a parent listed below as denied. How to roll it out
+and read its output: [`bricks/devfile-contract.md`](./bricks/devfile-contract.md).
+
+```yaml
+devfileContract:
+  mode: DryRun
+  namespaceSelector:
+    matchLabels: { hardening.weebo.io/workspace-namespace: "true" }
+  currentContract: 1
+  minimumContract: 1
+  minimumSchemaVersion: "2.2.0"
+  deniedContracts: []
+  deniedParents:
+    - { uriPrefix: "https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/" }
+    - { id: che-min-mise, versions: ["1.2.0"] }
+  onDenied: Deny
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | `DryRun` counts and logs; no warning, no annotation, no denial. |
+| `namespaceSelector` | Selector | no | matches all | |
+| `currentContract` | integer | yes | — | The newest contract the User Guide publishes. A devfile declaring more gets a warning. |
+| `minimumContract` | integer | yes | — | Below it a devfile is `outdated`: a warning, never a refusal. |
+| `minimumSchemaVersion` | `MAJOR.MINOR.PATCH` | no | — | Checked only when the Che dashboard kept the devfile's `schemaVersion`; a warning only. |
+| `deniedContracts` | list of integers | no | `[]` | Refused at a workspace start. A devfile without `weebo.io/platform-contract` counts as `1`. |
+| `deniedParents[].uriPrefix` | string | one of the two | — | A `parent.uri` prefix, `http://` or `https://`. |
+| `deniedParents[].id` | string | one of the two | — | A registry stack id (`parent.id`). |
+| `deniedParents[].versions` | list of strings | no | `[]` | With `id` only. Empty denies every version of the stack, an unversioned parent included. |
+| `onDenied` | `Deny`/`Warn` | no | `Deny` | What a denied-list match does on a start. Any other update only warns. |
+
+**The apiserver refuses**, at `kubectl apply`: contracts outside `1 <= minimumContract <=
+currentContract <= 1000`, a denied contract above `currentContract`, a `deniedParents` entry
+naming both or neither of `uriPrefix` and `id`, a `uriPrefix` that is not an `http(s)` prefix of
+8 to 2048 characters, `versions` without `id`, and a `minimumSchemaVersion` that is not
+`MAJOR.MINOR.PATCH`. Each list holds at most 64 entries (`versions`: 32, of 1 to 64 characters).
+Everything it accepts is meaningful, so this block never makes the status `Degraded`. Shared by
+every team: there is no `devfileContract` on `WeeboSiTeam`.
 
 ### `features.kubearmorPolicy`
 
@@ -750,6 +798,7 @@ endpointAuth:
     # errorPageMiddleware: weebo-si-hardening-endpoint-gateway-errors@kubernetescrd # Traefik only
     haproxyPrerequisite: false # HaproxyIngress only, and required there — see below
   breakGlassIdentities: []
+  allowedIssuers: [vault-issuer] # cert-manager issuers an Ingress may name
   owner:
     namespaceAnnotation: che.eclipse.org/username
     devworkspaceOperatorIdentity: "system:serviceaccount:devworkspace-controller:devworkspace-controller-serviceaccount"
@@ -787,6 +836,7 @@ endpointAuth:
 | `gateway.errorPageMiddleware` | string | no | — | Traefik only. One `errors` middleware placed **before** ours, so a gateway outage reads as the platform's error page rather than a bare `500`. Must be `<gateway.service.namespace>-<name>@kubernetescrd`; anything else is not attached and raises `Degraded`. See *The gateway's error page* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `gateway.haproxyPrerequisite` | bool | on `HaproxyIngress` | `false` | Your assertion that the controller carries the `config-frontend` lines that dialect needs. Nothing can check it, and `false` raises `Degraded` — see below. |
 | `breakGlassIdentities` | `[string]` | no | `[]` | May set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
+| `allowedIssuers` | `[string]` | no | `[vault-issuer]` | The only values a routing object may give `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3); ≤ 16. `[]` refuses every issuer annotation, Che's own included. A duplicate is refused at `kubectl apply` (CEL). See *Certificate annotations* in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.namespaceAnnotation` | string | yes | — | Where Che writes the namespace's owner. Its **value** must match what `claims.username` yields — read a real namespace before choosing, because Che may write the display name where you expected the username. See *Ground truth* row 2a in [`bricks/endpoint-gateway.md`](./bricks/endpoint-gateway.md). |
 | `owner.devworkspaceOperatorIdentity` | string | yes | — | Guard row 2: whoever writes the generated routing objects. Wrong here means every workspace endpoint stops being created. Under Eclipse Che (`routingClass: che`) that is che-operator, not DWO — `system:serviceaccount:eclipse-che:che-operator`. |
 | `hosts.suffix` | string | yes | — | Must start with a dot. |
@@ -795,6 +845,7 @@ endpointAuth:
 | `catalog[].key` | string | yes | — | `private`, `team`, `shared`, `open`… admin vocabulary; a developer names one and never defines one. |
 | `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with `delegation`. |
 | `catalog[].delegation` | `[Team\|UsersAndGroups]` | no | `[]` | `[]` is "the owner and nobody else". |
+| `catalog[].restricted` | bool | no | `false`, anonymous entries included | Honoured only if the endpoint's Namespace names the key in `hardening.weebo.io/endpoint-access`; otherwise the endpoint resolves to its default (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). A restricted `default` is `RestrictedKeyInDefault`. |
 | `default` | key | yes | — | What a namespace in no team resolves to. |
 | `overrides[]` | list | no | `[]` | Per-user narrowing. Intersected with the team's grant — it can only ever take away. |
 | `endpointSelection.annotation` | string | no | `hardening.weebo.io/access` | |
@@ -954,6 +1005,39 @@ asking for more than the `ceiling`, which is reported on that team's status.
 Before `Enforce`, `weebo-si-operator pods audit --all-namespaces` lists the existing pods each
 namespace's level would refuse.
 
+### `features.podIdentity`
+
+Makes every pod in a workspace namespace run as one fixed, non-root identity in its own user
+namespace (`hostUsers: false`), with no group 0. The two webhooks that apply it are registered
+only with `podIdentity.webhooks.enabled=true`. Operating it (install checklist, refusals, rollout,
+rollback): [`bricks/pod-identity.md`](./bricks/pod-identity.md).
+
+```yaml
+podIdentity:
+  mode: DryRun
+  namespaceSelector:
+    matchLabels: { kubernetes.io/metadata.name: dev-ws-batleforc-test }
+  runAsUser: 1234
+  runAsGroup: 1234
+  exemptDwocKeys: [build]
+  grantGroupZero: false
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | |
+| `namespaceSelector` | Selector | no | matches all | The rollout knob: the test namespace first. |
+| `runAsUser` | integer, 1–65535 | no | `1234` | The pod-level uid set when a pod gives none. A pod's own non-zero uid is kept; `runAsUser: 0` is refused. |
+| `runAsGroup` | integer, 1–65535 | no | `1234` | The pod-level gid and `fsGroup` set when a pod gives none, or gives 0 (DWO's default). A pod's own non-zero gid is kept. |
+| `exemptDwocKeys` | list of strings | no | `[]` | `dwocPin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left untouched, e.g. `[build]`. |
+| `grantGroupZero` | boolean | no | `false` | **Last resort.** `true` lets pods in scope run with group 0 (`fsGroup: 0` or a `0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on every group-0-writable (`g=u`) file of the image. The status `message` says so for as long as it is on. |
+
+**The apiserver refuses**, at `kubectl apply`, a `runAsUser` or `runAsGroup` outside 1–65535
+(`runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)`), and more
+than 64 `exemptDwocKeys` (each 1 to 253 characters). Everything
+it accepts is meaningful, so this block never makes the status `Degraded`. Shared by every team:
+there is no `podIdentity` on `WeeboSiTeam`.
+
 ### `features.resourceQuotas`
 
 One quota profile per workspace namespace, per team: a `ResourceQuota` and a `LimitRange` copied
@@ -988,6 +1072,83 @@ resourceQuotas:
 container default, defaults out of order, an unparseable quantity, a scoped quota, or a template
 outside the template namespace makes it invalid. An invalid profile is applied nowhere, and
 namespaces keep what they have. The rules are in the brick page.
+
+### `features.teamTools`
+
+Moves tools a hardened workspace cannot run (BuildKit, an emulator) into a tools namespace per
+team, started on demand when a DevWorkspace asks for them with a devfile attribute. Install,
+runbook and what a developer sees: [`bricks/team-tools.md`](./bricks/team-tools.md).
+
+```yaml
+teamTools:
+  mode: DryRun
+  idleGraceSeconds: 600
+  onNotGranted: Default
+  catalog:
+    - key: buildkit
+      workload: {kind: StatefulSet, name: buildkitd}
+      service: {name: buildkitd, port: 1234}
+      clientEnv: BUILDKIT_HOST
+      tls:
+        serverSecretName: buildkitd-tls
+        clientDuration: 24h
+        clientMountPath: /home/user/.config/weebo/buildkit
+      toolTemplates:
+        - {kind: StatefulSet, name: buildkitd, namespace: weebo-si-hardening-templates}
+        - {kind: Service, name: buildkitd, namespace: weebo-si-hardening-templates}
+      requesterTemplates:
+        - {kind: ConfigMap, name: buildx-client, namespace: weebo-si-hardening-templates}
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `mode` | `Off`/`DryRun`/`Enforce` | yes | — | |
+| `namespaceSelector` | Selector | no | matches all | Narrows which *requesting* namespaces are read. |
+| `catalog` | list, at most 32 | yes | — | May be empty. |
+| `catalog[].key` | DNS label, 1–40 characters | yes | — | What the devfile attribute and a team's `allowed` name. Unique in the catalogue. |
+| `catalog[].workload` | `{kind: Deployment\|StatefulSet, name}` | yes | — | The tool template scaled to 1 and back to 0 through `/scale`. |
+| `catalog[].service` | `{name, port}` | yes | — | The port the generated network policies open; `port` 1–65535. |
+| `catalog[].clientEnv` | environment variable name | no | — | Key of the endpoint `ConfigMap` written in the workspace namespace. |
+| `catalog[].tls` | `{serverSecretName, clientDuration, clientMountPath}` | no | — | Server and per-user client certificates from the team's `issuerRef`. Absent means no mTLS (allowed, logged). |
+| `catalog[].toolTemplates` | list of `{kind, name, namespace}`, at most 16 | yes | — | Rendered into the team's tools namespace. |
+| `catalog[].requesterTemplates` | same, at most 16 | no | `[]` | `ConfigMap`s rendered into each requesting namespace. |
+| `catalog[].idleGraceSeconds` | integer | no | the block's | Per-tool override. |
+| `workspaceSelection.attribute` | string | no | `hardening.weebo.io/team-tools` | DevWorkspace attribute naming a comma-separated key list. `""` turns the request step off: the team `default` still applies, as in `networkProfiles`. |
+| `onNotGranted` | `Default`/`Deny` | no | `Default` | An ungranted key: dropped, or the workspace's create or start refused. |
+| `idleGraceSeconds` | integer | no | `600` | How long a tool stays up after its last requester stops. |
+| per-team namespace and grant | on [`WeeboSiTeam`](./weebositeam.md#featuresteamtools) | no | — | A namespace of no team never gets a tool. |
+
+**The apiserver refuses**, at `kubectl apply`, a key that is not a DNS label of at most 40
+characters, two entries with the same key, more than 32 entries or 16 templates per list, a
+`service.port` of 0, an `idleGraceSeconds` above 4294967295, a `clientEnv` that is not an environment variable name, and a relative
+`clientMountPath`. What needs the templates (kinds, the workload at `replicas: 0`, the pod spec
+rules) is checked by the controller and reported as `Degraded`.
+
+**Chart RBAC** (`teamTools.rbac.enabled`, default `false`; RFC 0020 Resolved 9 and 19). The switch
+renders two ClusterRoles that **nothing in the chart binds**, a cluster-wide read on `configmaps`
+and `certificates.cert-manager.io`, and a Role reading the five template kinds in
+`teamTools.templateNamespace.name` (empty by default: the resource-quotas one,
+`weebo-si-hardening-templates`; passed as `--team-tools-template-namespace`). A quota profile
+template in a shared namespace is a live `ResourceQuota` there: one capping object counts
+(`services: 0`, `count/configmaps`) refuses the tool templates, so keep it elsewhere or give team
+tools its own namespace. Every write needs a RoleBinding in the target namespace:
+
+| ClusterRole | Bound by | Grants there |
+| --- | --- | --- |
+| `weebo-si-team-tools` | the admin, one RoleBinding per tools namespace, in Git next to the Namespace, its label and quota | Deployments, StatefulSets, Services, ConfigMaps, CNPs, Certificates; `/scale`; read `resourcequotas` |
+| `weebo-si-team-tools-requester` | weebo-si's `2.helm/user-app`, one per workspace namespace | create, update, patch, delete ConfigMaps and Certificates |
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: weebo-si-team-tools, namespace: team-weebo-tools}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: weebo-si-team-tools}
+subjects:
+  - {kind: ServiceAccount, name: weebo-si-operator-controller, namespace: weebo-si-hardening}
+```
+
+A namespace without its RoleBinding gets a 403 and nothing else breaks: the apiserver, not the
+label check, is the boundary.
 
 ## `status`
 
@@ -1025,7 +1186,11 @@ rather than one per edit round-trip.
 Validation is **mostly reconcile-time**: the apiserver accepts a structurally valid object, and
 the controller reports what is semantically wrong as `Degraded` conditions. The exception is
 CEL in the CRD itself, refused at `kubectl apply` — today `imageRewrite.rules` (*imageRewrite*
-above). A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
+above), `devfileContract` (*devfileContract* above), `podIdentity`'s ids (*podIdentity*
+above), `teamTools`' bounds (*teamTools* above), `endpointAuth.allowedIssuers` naming an issuer
+twice, and `networkProfiles.namespaceGrant.annotation` equal to
+`namespaceSelection.annotation` (a grant must never select). On a `WeeboSiTeam`,
+`teamTools.issuerRef.kind` must be `ClusterIssuer`. A validating webhook on our own CRD is shared future work across RFC 0002 and RFC 0005.
 
 Every feature with a catalogue reports the same family of violations:
 
@@ -1049,6 +1214,8 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | --- | --- | --- | --- |
 | `hardening.weebo.io/dwoc` | Namespace | admin | Selects a `dwoc-pin` catalogue key. |
 | `hardening.weebo.io/network-profiles` | Namespace, DevWorkspace attribute | admin / workspace author | Selects network profile keys. |
+| `hardening.weebo.io/network-grants` | Namespace | admin | Grants restricted network profile keys; never selects (RFC 0021). |
+| `hardening.weebo.io/endpoint-access` | Namespace | admin | Grants restricted endpoint access keys; never selects (RFC 0021). |
 | `hardening.weebo.io/image-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects image entry keys. |
 | `hardening.weebo.io/image-rewrite` | DevWorkspace, Pod | **operator** (`imageRewrite`) | The original name of each rewritten image, as JSON. A record, never read as an input; `images audit` reads it for its `stale-mirror` table. |
 | `hardening.weebo.io/kubearmor-policy` | Namespace, DevWorkspace attribute | admin / workspace author | Selects runtime profile keys. |
@@ -1061,6 +1228,17 @@ Worth knowing because they are the surface a *user* touches, not an admin.
 | `hardening.weebo.io/resource-quota` | Namespace | admin / namespace user | Picks a quota profile among the team's granted ones. |
 | `hardening.weebo.io/pod-security-previous` | Namespace | **operator** | The Pod Security labels as found before the first write; what `mode: Off` restores. Never edit it. |
 | `kubearmor.io/enforcer` | Node | **KubeArmor** | Which LSM that node can enforce with. Read-only for us. |
+| `hardening.weebo.io/team-tools` | tools Namespace label | admin | Binds the namespace to the team it serves (`=<team>`). Read only. |
+| `hardening.weebo.io/team-tools` | DevWorkspace attribute; DevWorkspace annotation | workspace author; **operator** | The attribute requests team tools; the annotation is the verdict, `granted=<keys>;dropped=<keys>`. |
+| `hardening.weebo.io/team-tool` | objects `teamTools` writes | **operator** | Which catalogue key the object came from. |
+| `hardening.weebo.io/team-tools-fingerprint` | objects `teamTools` writes | **operator** | A hash of what the controller wrote; the next pass compares it, not the live body, to decide whether to re-apply. Never edit it. |
+| `hardening.weebo.io/workspace-namespace` | Namespace label | weebo-si / admin | Marks a workspace namespace. The `pods` webhooks (`imagePolicy`, `podIdentity`) are registered only on namespaces carrying it, and `teamTools` mints a client certificate only where it is `true`. |
+| `che.eclipse.org/username` | Namespace | **Che** | The developer a workspace namespace belongs to; `teamTools` puts it in the client certificate. Missing or malformed: no certificate. |
+| `weebo.io/platform-contract` | DevWorkspace attribute (`spec.template.attributes`) | workspace author | The platform contract the devfile was written for (`devfileContract`); absent or not an integer reads as `1`. |
+| `weebo.io/generator` | DevWorkspace attribute | the devfile generator | Its name and version. `devfileContract` logs it (`generator=`), never evaluates it. |
+| `weebo.io/devfile-parent` | DevWorkspace attribute | the devfile generator | The generator's record of the parent it chose. Reserved by RFC 0019; nothing in this repo reads it. |
+| `hardening.weebo.io/devfile-contract` | DevWorkspace annotation | **operator** (`devfileContract`, `Enforce`) | The verdict: `current`, `outdated` or `unknown`. A workspace user can write it; the next admission rewrites it. Never a security input. |
+| `hardening.weebo.io/devfile-contract-reason` | DevWorkspace annotation | **operator** (`devfileContract`, `Enforce`) | The reason codes behind the verdict, comma-separated. Same caveat. |
 
 A selection key naming something the team was not granted is not an escalation: it is a
 *request*, bounded by what the team reaches, resolved by `onNotGranted`. The boundary is the

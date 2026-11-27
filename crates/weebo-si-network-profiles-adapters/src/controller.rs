@@ -8,8 +8,7 @@
 //! `weebo-si-network-profiles`. This module's own job is: watch, exclude two namespaces
 //! structurally, build a `Subject`, call `reconcile`, requeue.
 
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -17,6 +16,7 @@ use k8s_openapi::api::core::v1::Namespace;
 use kube::api::DynamicObject;
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::ObjectRef;
 
 use kube::runtime::events::Recorder;
 use kube::runtime::watcher::Config as WatcherConfig;
@@ -26,7 +26,8 @@ use weebo_si_chassis::port::feature_gate::FeatureGate;
 use weebo_si_chassis::port::namespace_view::NamespaceView;
 use weebo_si_chassis::{Context, FeatureId};
 use weebo_si_controller::events::{self, ReasonCode, Regarding};
-use weebo_si_crd::{FeatureMode, NamespaceName, ResolvedNetworkProfilesConfig};
+use weebo_si_controller::restricted::{AnnotationChanges, RestrictedReporter};
+use weebo_si_crd::{FeatureMode, NamespaceName, OnNotGranted, ResolvedNetworkProfilesConfig};
 use weebo_si_network_profiles::{
     CanaryProbe, NamespaceSubject, NetworkProfiles, PolicyStore, ReconcileObserver,
     ReconcileOutcome, Workspace, is_excluded_namespace,
@@ -70,11 +71,15 @@ pub struct NetworkProfilesDeps {
     pub canary: Arc<dyn CanaryProbe>,
     /// This operator's own namespace — excluded structurally alongside Che's.
     pub operator_namespace: NamespaceName,
+    /// The change-only audit of restricted profile keys (RFC 0021).
+    pub restricted: Arc<RestrictedReporter>,
 }
 
 struct Ctx {
     deps: NetworkProfilesDeps,
     recorder: Recorder,
+    /// The live read of a namespace's grant annotation (RFC 0021 R-14).
+    namespaces: Api<Namespace>,
 }
 
 /// Something that stopped a reconcile from completing. Never panics the loop —
@@ -129,6 +134,86 @@ fn warn_not_granted(outcome: &ReconcileOutcome, workspace: &str) {
          requested=[{}] result=not_granted",
         requested.join(",")
     );
+}
+
+/// The RFC 0021 audit of one pass: for each restricted key that entered the workspace's honoured
+/// or refused set since its last pass, one count (in the reporter), one INFO line and one Event.
+async fn report_restricted(
+    ctx: &Ctx,
+    obj: &DynamicObject,
+    outcome: &ReconcileOutcome,
+    mode: FeatureMode,
+    grant_key: &str,
+    on_not_granted: OnNotGranted,
+) {
+    let Some(uid) = obj.metadata.uid.as_deref() else {
+        return;
+    };
+    let keys = |list: &[weebo_si_crd::ProfileKey]| {
+        list.iter()
+            .map(|key| key.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    let change = ctx.deps.restricted.observe(
+        uid,
+        keys(&outcome.restricted_honoured),
+        keys(&outcome.restricted_refused),
+    );
+    let namespace = obj.metadata.namespace.as_deref().unwrap_or_default();
+    let workspace = obj.name_any();
+    for key in &change.honoured {
+        tracing::info!(
+            "feature=network-profiles restricted={key} namespace={namespace} \
+             workspace={workspace} mode={mode:?} result=honoured"
+        );
+        events::restricted_grant(&ctx.recorder, obj, true, honoured_note(key, grant_key)).await;
+    }
+    for key in &change.refused {
+        tracing::info!(
+            "feature=network-profiles restricted={key} namespace={namespace} \
+             workspace={workspace} mode={mode:?} result=refused reason=no_namespace_grant"
+        );
+        events::restricted_grant(
+            &ctx.recorder,
+            obj,
+            false,
+            refused_note(key, namespace, grant_key, on_not_granted, &outcome.resolved),
+        )
+        .await;
+    }
+}
+
+/// The `RestrictedGrantHonoured` Event's note, in the RFC 0021 mock's words.
+fn honoured_note(key: &str, grant_key: &str) -> String {
+    format!("network profile {key} is restricted; granted by namespace annotation {grant_key}")
+}
+
+/// The `RestrictedGrantRefused` Event's note, in the RFC 0021 mock's words.
+fn refused_note(
+    key: &str,
+    namespace: &str,
+    grant_key: &str,
+    on_not_granted: OnNotGranted,
+    applied: &[weebo_si_crd::ProfileKey],
+) -> String {
+    let why = if grant_key.is_empty() {
+        "restricted grants are disabled (namespaceGrant.annotation is empty)".to_string()
+    } else {
+        format!("namespace {namespace} does not grant it (annotation {grant_key})")
+    };
+    let applied: Vec<&str> = applied.iter().map(|key| key.as_str()).collect();
+    // Under `Deny` the refused key may still come from the team default, which is then filtered
+    // and applied rather than refused: name what was applied whenever something was.
+    let then = match on_not_granted {
+        OnNotGranted::Deny if applied.is_empty() => {
+            "onNotGranted=Deny: no profile beyond the baseline applied".to_string()
+        }
+        _ => format!(
+            "onNotGranted={on_not_granted:?} applied the team default [{}]",
+            applied.join(",")
+        ),
+    };
+    format!("network profile {key} is restricted and {why}; {then}")
 }
 
 /// Whether the loaded configuration itself says `mode: Off`, as opposed to the gate answering
@@ -213,8 +298,20 @@ async fn reconcile_namespace(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action
 }
 
 async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    // The reporter's memory is dropped when the workspace goes, and whenever no pass reports for
+    // it (excluded, `Off`), so it reports afresh once the feature reaches it again. DWO puts a
+    // finalizer on every DevWorkspace, so a deletion is always seen as a `deletionTimestamp`.
+    let forget = || {
+        if let Some(uid) = obj.metadata.uid.as_deref() {
+            ctx.deps.restricted.forget(uid);
+        }
+    };
+    if obj.metadata.deletion_timestamp.is_some() {
+        forget();
+    }
     let namespace = NamespaceName::new(obj.metadata.namespace.clone().unwrap_or_default());
     if is_excluded_namespace(&namespace, &ctx.deps.operator_namespace) {
+        forget();
         return Ok(Action::await_change());
     }
 
@@ -228,6 +325,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         // Re-checked rather than awaited: the gate answers from the namespace index and the
         // singleton, either of which can lag the event that got us here, and a namespace seen
         // `Off` once would otherwise never be looked at again when the feature reaches it.
+        forget();
         return Ok(Action::requeue(off_recheck(was_indexed)));
     }
 
@@ -239,7 +337,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         return Ok(Action::requeue(Duration::from_secs(15)));
     };
 
-    let (attribute_key, annotation_key) = {
+    let (attribute_key, annotation_key, grant_key, on_not_granted, any_restricted) = {
         let guard = ctx
             .deps
             .config
@@ -249,6 +347,13 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
             Some(config) => (
                 config.workspace_selection.attribute.clone(),
                 config.namespace_selection.annotation.clone(),
+                config.namespace_grant.annotation.clone(),
+                config.on_not_granted,
+                config
+                    .catalog
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.restricted),
             ),
             // `mode` above already confirmed the feature is not Off, which the FeatureGate
             // cannot report without a config present — this is defensive, not a reachable path.
@@ -256,19 +361,25 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         }
     };
 
-    let attribute = if attribute_key.is_empty() {
-        None
-    } else {
-        obj.data
-            .pointer("/spec/template/attributes")
-            .and_then(|attributes| attributes.get(&attribute_key))
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-    };
+    let attribute = attribute_of(&obj, &attribute_key);
     let namespace_annotation = ctx
         .deps
         .namespace_view
         .annotation(&namespace, &annotation_key);
+    // The grant, live (R-14): the Namespace event that re-queued this pass may be ahead of the
+    // namespace cache. Skipped while nothing is restricted — the grant could not change anything.
+    // A failed GET fails the pass, which is retried: a grant is never read as absent because a
+    // read failed.
+    let namespace_grant = if any_restricted && !grant_key.is_empty() {
+        ctx.namespaces
+            .get_opt(namespace.as_str())
+            .await
+            .map_err(|err| Error(format!("could not read namespace {namespace}: {err}")))?
+            .and_then(|ns| ns.metadata.annotations)
+            .and_then(|mut annotations| annotations.remove(&grant_key))
+    } else {
+        None
+    };
 
     let teams = ctx.deps.gate.teams();
     let facts = ctx
@@ -286,6 +397,7 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
         workspace_id,
         attribute,
         namespace_annotation,
+        namespace_grant,
         owner,
     };
 
@@ -302,6 +414,9 @@ async fn reconcile_devworkspace(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Resul
     ctx.deps.observer.reconciled(&outcome);
     warn_unsupported(&outcome, &format!("{:?}", ctx.deps.feature.backend()));
     warn_not_granted(&outcome, &subject.name);
+    if obj.metadata.deletion_timestamp.is_none() {
+        report_restricted(&ctx, &obj, &outcome, mode, &grant_key, on_not_granted).await;
+    }
     warn_held("network-profiles", &outcome.held);
     tracing::info!(
         "network-profiles workspace={}/{} mode={mode:?} diffs={} applied={:?}",
@@ -389,9 +504,13 @@ async fn canary_loop(ctx: Arc<Ctx>) {
 /// `kube-runtime`'s watcher retries on its own, matching `run`'s own `WeeboSiConfig`
 /// loop.
 pub async fn spawn(client: Client, deps: NetworkProfilesDeps, recorder: Recorder) {
-    let ctx = Arc::new(Ctx { deps, recorder });
-
     let ns_api: Api<Namespace> = Api::all(client.clone());
+    let ctx = Arc::new(Ctx {
+        deps,
+        recorder,
+        namespaces: ns_api.clone(),
+    });
+
     let ns_ctx = Arc::clone(&ctx);
     tokio::spawn(
         Controller::new(ns_api, WatcherConfig::default())
@@ -408,8 +527,29 @@ pub async fn spawn(client: Client, deps: NetworkProfilesDeps, recorder: Recorder
     let resource = devworkspace_resource();
     let dw_api: Api<DynamicObject> = Api::all_with(client, &resource);
     let dw_ctx = Arc::clone(&ctx);
+    let controller = Controller::new_with(dw_api, WatcherConfig::default(), resource.clone());
+    // RFC 0021 R-12: a Namespace whose annotations change re-queues every DevWorkspace in it, so a
+    // removed grant takes the restricted profile away in seconds, not at the 300 s requeue.
+    let workspaces = controller.store();
+    let changes = AnnotationChanges::default();
+    let controller = controller.watches(
+        ctx.namespaces.clone(),
+        WatcherConfig::default(),
+        move |ns: Namespace| {
+            if !changes.changed(&ns) {
+                return Vec::new();
+            }
+            let name = ns.name_any();
+            workspaces
+                .state()
+                .iter()
+                .filter(|dw| dw.metadata.namespace.as_deref() == Some(name.as_str()))
+                .map(|dw| ObjectRef::from_obj_with(dw.as_ref(), resource.clone()))
+                .collect::<Vec<_>>()
+        },
+    );
     tokio::spawn(
-        Controller::new_with(dw_api, WatcherConfig::default(), resource)
+        controller
             .run(
                 |object, ctx| {
                     events::tracked(Arc::clone(&object), reconcile_devworkspace(object, ctx))
@@ -422,6 +562,24 @@ pub async fn spawn(client: Client, deps: NetworkProfilesDeps, recorder: Recorder
 
     tokio::spawn(managed_objects_loop(Arc::clone(&ctx)));
     tokio::spawn(canary_loop(ctx));
+}
+
+/// The DevWorkspace attribute, `None` when absent or when requests are off (`""`). A value that
+/// is not a string (a YAML list, say) is an invalid key, never the team default.
+fn attribute_of(object: &DynamicObject, key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    object
+        .data
+        .pointer("/spec/template/attributes")
+        .and_then(|attributes| attributes.get(key))
+        .map(|value| {
+            value.as_str().map_or_else(
+                || weebo_si_network_profiles::INVALID_KEY.to_string(),
+                str::to_string,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -492,6 +650,18 @@ mod tests {
     }
 
     #[test]
+    fn a_non_string_attribute_is_an_invalid_key_not_an_absent_one() {
+        let mut listed = devworkspace(Some("ws"), Some("uid-1"));
+        listed.data = serde_json::json!({"spec": {"template": {"attributes": {"k": ["git"]}}}});
+        assert_eq!(
+            attribute_of(&listed, "k").as_deref(),
+            Some(weebo_si_network_profiles::INVALID_KEY)
+        );
+        assert_eq!(attribute_of(&listed, "other"), None);
+        assert_eq!(attribute_of(&listed, ""), None);
+    }
+
+    #[test]
     fn a_devworkspace_without_a_uid_has_no_owner_to_offer() {
         assert_eq!(devworkspace_owner(&devworkspace(Some("x"), None)), None);
         assert_eq!(devworkspace_owner(&devworkspace(None, Some("uid-1"))), None);
@@ -526,5 +696,46 @@ mod tests {
     #[test]
     fn nothing_held_means_nothing_logged() {
         assert!(held_warnings("kubearmor-policy", &[]).is_empty());
+    }
+
+    #[test]
+    fn the_event_notes_follow_the_rfc_mocks() {
+        assert_eq!(
+            refused_note(
+                "internet",
+                "dev-ws-batleforc-test",
+                "hardening.weebo.io/network-grants",
+                OnNotGranted::Default,
+                &[
+                    weebo_si_crd::ProfileKey::new("dev-registries"),
+                    weebo_si_crd::ProfileKey::new("anthropic")
+                ],
+            ),
+            "network profile internet is restricted and namespace dev-ws-batleforc-test does not \
+             grant it (annotation hardening.weebo.io/network-grants); onNotGranted=Default \
+             applied the team default [dev-registries,anthropic]"
+        );
+        assert_eq!(
+            honoured_note("internet", "hardening.weebo.io/network-grants"),
+            "network profile internet is restricted; granted by namespace annotation \
+             hardening.weebo.io/network-grants"
+        );
+        assert_eq!(
+            refused_note("internet", "ns", "", OnNotGranted::Deny, &[]),
+            "network profile internet is restricted and restricted grants are disabled \
+             (namespaceGrant.annotation is empty); onNotGranted=Deny: no profile beyond the \
+             baseline applied"
+        );
+        // A restricted key in the team default is filtered, the rest applied, under Deny too.
+        assert!(
+            refused_note(
+                "internet",
+                "ns",
+                "a",
+                OnNotGranted::Deny,
+                &[weebo_si_crd::ProfileKey::new("git")]
+            )
+            .ends_with("onNotGranted=Deny applied the team default [git]")
+        );
     }
 }

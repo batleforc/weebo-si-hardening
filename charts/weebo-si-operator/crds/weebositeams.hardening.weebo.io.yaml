@@ -106,6 +106,13 @@ spec:
                             key:
                               description: The key a grant, an annotation or a path rule names.
                               type: string
+                            restricted:
+                              default: false
+                              description: |-
+                                Honoured only if the endpoint's Namespace names this key in
+                                `hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries
+                                included, so an upgrade changes nothing a catalogue grants.
+                              type: boolean
                           required:
                           - key
                           type: object
@@ -229,6 +236,13 @@ spec:
                               minLength: 1
                               pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
+                            restricted:
+                              default: false
+                              description: |-
+                                Honoured only if the workspace's Namespace also names this key in
+                                `namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue
+                                is the grant.
+                              type: boolean
                             variants:
                               description: This profile's variants, at most one per [`Backend`].
                               items:
@@ -450,6 +464,66 @@ spec:
                     required:
                     - default
                     type: object
+                  teamTools:
+                    description: This team's `team-tools` namespace and grant, per RFC 0020.
+                    nullable: true
+                    properties:
+                      allowed:
+                        default: []
+                        description: The keys this team may request.
+                        items:
+                          description: |-
+                            A catalogue key: the attribute's vocabulary. A DNS label of at most 40 characters, so
+                            `weebo-team-tool-<key>-client` and the other generated names stay valid object names.
+                          maxLength: 40
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        maxItems: 32
+                        type: array
+                      default:
+                        default: []
+                        description: The keys a workspace with no attribute gets; within `allowed` (checked by `validate()`).
+                        items:
+                          description: |-
+                            A catalogue key: the attribute's vocabulary. A DNS label of at most 40 characters, so
+                            `weebo-team-tool-<key>-client` and the other generated names stay valid object names.
+                          maxLength: 40
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        maxItems: 8
+                        type: array
+                      issuerRef:
+                        description: This team's CA; required by `validate()` when an allowed entry has `tls`.
+                        nullable: true
+                        properties:
+                          kind:
+                            description: |-
+                              `ClusterIssuer` only: a namespaced `Issuer` cannot serve workspace namespaces (RFC 0020,
+                              Resolved 18).
+                            maxLength: 32
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'issuerRef.kind must be ClusterIssuer: a namespaced Issuer cannot serve workspace namespaces'
+                              rule: self == 'ClusterIssuer'
+                          name:
+                            description: The `ClusterIssuer`'s name.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - kind
+                        - name
+                        type: object
+                      namespace:
+                        description: The tools namespace; it must carry `hardening.weebo.io/team-tools=<team name>`.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - namespace
+                    type: object
                 type: object
               identity:
                 description: What this team's members are outside Kubernetes.
@@ -670,6 +744,46 @@ spec:
                 description: The `metadata.generation` this status reflects.
                 format: int64
                 type: integer
+              teamTools:
+                description: 'One entry per tool of this team, per RFC 0020: counts, never who requests.'
+                items:
+                  description: 'One entry of `WeeboSiTeam.status.teamTools`: counts only, never who requests (privacy).'
+                  properties:
+                    key:
+                      description: The catalogue key.
+                      maxLength: 40
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    namespace:
+                      description: The tools namespace.
+                      type: string
+                    replicas:
+                      description: The workload's current replicas.
+                      format: int32
+                      type: integer
+                    requesters:
+                      description: How many DevWorkspaces of the team request the key.
+                      format: int64
+                      type: integer
+                    state:
+                      description: Where the tool stands.
+                      enum:
+                      - Running
+                      - Grace
+                      - Idle
+                      - Held
+                      - Unbound
+                      - Invalid
+                      type: string
+                  required:
+                  - key
+                  - namespace
+                  - replicas
+                  - requesters
+                  - state
+                  type: object
+                type: array
             type: object
         required:
         - spec

@@ -34,15 +34,21 @@ use weebo_si_chassis::{
 };
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AttachmentMode,
-    DEVELOPER_ANNOTATIONS, DEVWORKSPACE_ID_LABEL, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_MANAGED,
-    NamespaceName, RULES_ANNOTATION, ResolvedEndpointAuthConfig, RoutingKind,
+    DEVELOPER_ANNOTATIONS, DEVWORKSPACE_ID_LABEL, ENDPOINT_ACCESS_NAMESPACE_ANNOTATION,
+    ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_MANAGED, NamespaceName, RULES_ANNOTATION,
+    ResolvedEndpointAuthConfig, RoutingKind,
 };
 use weebo_si_policy_guard::{
     EndpointRoutingGuard, EndpointRoutingWrite, ManagedField, Provenance, WriteOperation,
 };
 
+use weebo_si_endpoint_auth::compile::{
+    Catalogue, CompileError, CompileSettings, Grant, Override, OverrideMatch, RawEndpoint,
+    UnknownKey, compile, namespace_grant,
+};
+use weebo_si_endpoint_auth::policy::{CatalogueKey, Delegation, EndpointPolicy};
 use weebo_si_webhook::metrics::WebhookMetrics;
-use weebo_si_webhook::render::render_patch;
+use weebo_si_webhook::render::{render_patch, with_warnings};
 
 /// Path the mutating rule on `networking.k8s.io/v1` `ingresses` points at.
 pub const MUTATE_INGRESSES_PATH: &str = "/mutate/v1/ingresses";
@@ -340,8 +346,14 @@ async fn mutate(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(mutations)) if mutations.is_empty() => response,
-        Ok(AdmitOutcome::Allow(mutations)) => {
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) if mutations.is_empty() => with_warnings(response, warnings),
+        Ok(AdmitOutcome::Allow {
+            mutations,
+            warnings,
+        }) => {
             let body = object
                 .map(|object| serde_json::to_value(object).unwrap_or_default())
                 .unwrap_or_default();
@@ -353,7 +365,7 @@ async fn mutate(
                 patch.0.len()
             );
             match response.with_patch(patch) {
-                Ok(response) => response,
+                Ok(response) => with_warnings(response, warnings),
                 // A patch that cannot be serialised is a bug in this crate, never a reason to
                 // let an ungated endpoint through: refusing is the fail-closed answer, and it
                 // names itself so the bug is findable.
@@ -515,6 +527,15 @@ fn guard_subject(
         .cloned()
         .collect();
 
+    // Only what this write adds or changes: an issuer already on the object was admitted then.
+    let refused_issuers = ISSUER_ANNOTATIONS
+        .iter()
+        .filter(|key| changed_annotations.contains(**key))
+        .filter_map(|key| submitted_annotations.get(*key))
+        .filter(|issuer| !ingress_issuer_allowed(issuer, &config.config.allowed_issuers))
+        .cloned()
+        .collect();
+
     EndpointRoutingWrite {
         namespace,
         actor,
@@ -529,7 +550,149 @@ fn guard_subject(
         host_owned_by_namespace,
         introduces_bypass,
         certificate_annotations,
+        refused_issuers,
     }
+}
+
+/// The two annotations through which cert-manager's ingress-shim picks the CA that signs.
+const ISSUER_ANNOTATIONS: [&str; 2] = ["cert-manager.io/cluster-issuer", "cert-manager.io/issuer"];
+
+/// Whether a routing object may name `issuer` in an [`ISSUER_ANNOTATIONS`] key (RFC 0020, S3):
+/// an exact match against `allowedIssuers`, so a team CA, or any issuer the admin did not list,
+/// never signs a certificate whose key lands in a Secret the developer reads.
+pub fn ingress_issuer_allowed(issuer: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|name| name == issuer)
+}
+
+/// What compiling an endpoint reads off its namespace: the owner, the team (first match wins,
+/// exactly like every other feature's team resolution) and the `hardening.weebo.io/endpoint-access`
+/// grant (RFC 0021). Read from the namespace cache, so an unobserved namespace has no owner and
+/// grants nothing.
+pub(crate) struct NamespaceInputs {
+    /// The owner annotation's value.
+    pub owner: Option<String>,
+    /// The namespace's team.
+    pub team: Option<weebo_si_crd::TeamName>,
+    /// The grant annotation's raw value.
+    pub grant: Option<String>,
+}
+
+impl NamespaceInputs {
+    pub(crate) fn read(
+        view: &dyn NamespaceView,
+        gate: &dyn FeatureGate,
+        config: &ResolvedEndpointAuthConfig,
+        namespace: &NamespaceName,
+    ) -> Self {
+        let team = view
+            .facts(namespace)
+            .and_then(|facts| {
+                gate.teams()
+                    .into_iter()
+                    .find(|team| team.namespace_selector.matches(&facts.labels))
+            })
+            .map(|team| team.name);
+        Self {
+            owner: view.annotation(namespace, &config.owner.namespace_annotation),
+            team,
+            grant: view.annotation(namespace, ENDPOINT_ACCESS_NAMESPACE_ANNOTATION),
+        }
+    }
+}
+
+fn delegation(kind: &weebo_si_crd::DelegationKind) -> Delegation {
+    match kind {
+        weebo_si_crd::DelegationKind::Team => Delegation::Team,
+        weebo_si_crd::DelegationKind::UsersAndGroups => Delegation::UsersAndGroups,
+    }
+}
+
+/// The overrides as the gateway reads them: matched by user list only (its `owners_of` holds no
+/// selector match), so the controller's audit reports what the gateway serves.
+pub(crate) fn gateway_overrides(config: &ResolvedEndpointAuthConfig) -> Vec<Override> {
+    let keys = |keys: &Vec<weebo_si_crd::AccessKey>| {
+        keys.iter()
+            .map(|key| CatalogueKey::new(key.as_str()))
+            .collect()
+    };
+    config
+        .overrides
+        .iter()
+        .map(|over| Override {
+            matcher: OverrideMatch::Users(over.matcher.users.clone()),
+            allowed: over.allowed.as_ref().map(keys),
+            default: over
+                .default
+                .as_ref()
+                .map(|key| CatalogueKey::new(key.as_str())),
+            delegation: over
+                .delegation
+                .as_ref()
+                .map(|kinds| kinds.iter().map(delegation).collect()),
+        })
+        .collect()
+}
+
+/// Compile one routing object's annotations with the operator's configuration, through the same
+/// `compile` the gateway runs. An entry both anonymous and delegating is dropped, as the gateway's
+/// `catalogue_from` drops it (it is already a `Degraded` violation), so one bad entry does not
+/// silence admission and the audit for every other key.
+// shortcut: the controller's audit uses `CompileSettings::default()` with the given unknown-key
+// rule, which is the gateway's default; a gateway configured with other `rules.*` settings (its
+// own config file, not the CRD) can compile differently. Upgrade if those settings move into the
+// CRD.
+pub(crate) fn compile_annotations(
+    config: &ResolvedEndpointAuthConfig,
+    annotations: &BTreeMap<String, String>,
+    namespace: &NamespaceName,
+    inputs: &NamespaceInputs,
+    overrides: &[Override],
+    on_unknown_key: UnknownKey,
+) -> Option<Result<EndpointPolicy, CompileError>> {
+    let entries = config
+        .catalog
+        .iter()
+        .filter(|entry| !(entry.anonymous && !entry.delegation.is_empty()));
+    let catalogue = Catalogue::new(entries.map(|entry| {
+        (
+            CatalogueKey::new(entry.key.as_str()),
+            entry.anonymous,
+            entry.restricted,
+            entry.delegation.iter().map(delegation).collect(),
+        )
+    }))
+    .ok()?;
+    let granted = config.grant_for(inputs.team.as_ref());
+    let grant = Grant {
+        allowed: granted
+            .allowed
+            .iter()
+            .map(|key| CatalogueKey::new(key.as_str()))
+            .collect(),
+        default: CatalogueKey::new(granted.default.as_str()),
+    };
+    let raw = RawEndpoint {
+        namespace: weebo_si_endpoint_auth::identity::NamespaceName::new(namespace.as_str()),
+        owner: weebo_si_endpoint_auth::identity::Username::new(
+            inputs.owner.clone().unwrap_or_default(),
+        ),
+        team: inputs
+            .team
+            .as_ref()
+            .map(|team| weebo_si_endpoint_auth::identity::TeamName::new(team.as_str())),
+        access: annotations.get(ACCESS_ANNOTATION).cloned(),
+        allow_users: annotations.get(ALLOW_USERS_ANNOTATION).cloned(),
+        allow_groups: annotations.get(ALLOW_GROUPS_ANNOTATION).cloned(),
+        rules: annotations.get(RULES_ANNOTATION).cloned(),
+        upstream: None,
+        provenance: weebo_si_endpoint_auth::policy::Provenance::Author,
+        namespace_grant: namespace_grant(inputs.grant.as_deref()),
+    };
+    let settings = CompileSettings {
+        on_unknown_key,
+        ..CompileSettings::default()
+    };
+    Some(compile(&raw, &catalogue, &grant, overrides, &settings, 0))
 }
 
 /// Compile the developer's annotations the way the gateway will, and report what it says.
@@ -543,14 +706,8 @@ fn compile_error(
     config: &ResolvedEndpointAuthConfig,
     annotations: &BTreeMap<String, String>,
     namespace: &NamespaceName,
-    owner: Option<&str>,
-    team: Option<&weebo_si_crd::TeamName>,
+    inputs: &NamespaceInputs,
 ) -> Option<String> {
-    use weebo_si_endpoint_auth::compile::{
-        Catalogue, CompileSettings, Grant, RawEndpoint, UnknownKey, compile,
-    };
-    use weebo_si_endpoint_auth::policy::{CatalogueKey, Delegation};
-
     // Nothing written, nothing to validate. A developer who annotated nothing gets their team's
     // default and no opinion from this function.
     if DEVELOPER_ANNOTATIONS
@@ -559,54 +716,25 @@ fn compile_error(
     {
         return None;
     }
-
-    let catalogue = Catalogue::new(config.catalog.iter().map(|entry| {
-        (
-            CatalogueKey::new(entry.key.as_str()),
-            entry.anonymous,
-            entry
-                .delegation
-                .iter()
-                .map(|kind| match kind {
-                    weebo_si_crd::DelegationKind::Team => Delegation::Team,
-                    weebo_si_crd::DelegationKind::UsersAndGroups => Delegation::UsersAndGroups,
-                })
-                .collect(),
-        )
-    }))
-    .ok()?;
-    let granted = config.grant_for(team);
-    let grant = Grant {
-        allowed: granted
-            .allowed
-            .iter()
-            .map(|key| CatalogueKey::new(key.as_str()))
-            .collect(),
-        default: CatalogueKey::new(granted.default.as_str()),
-    };
-    let raw = RawEndpoint {
-        namespace: weebo_si_endpoint_auth::identity::NamespaceName::new(namespace.as_str()),
-        owner: weebo_si_endpoint_auth::identity::Username::new(owner.unwrap_or_default()),
-        team: team.map(|team| weebo_si_endpoint_auth::identity::TeamName::new(team.as_str())),
-        access: annotations.get(ACCESS_ANNOTATION).cloned(),
-        allow_users: annotations.get(ALLOW_USERS_ANNOTATION).cloned(),
-        allow_groups: annotations.get(ALLOW_GROUPS_ANNOTATION).cloned(),
-        rules: annotations.get(RULES_ANNOTATION).cloned(),
-        upstream: None,
-        provenance: weebo_si_endpoint_auth::policy::Provenance::Author,
-    };
-    let settings = CompileSettings {
-        foreign_bearer: weebo_si_endpoint_auth::policy::BearerMode::Reject,
-        max_rules: 16,
-        // Admission is stricter than the gateway on exactly one point, and deliberately: at
-        // *runtime* an unknown key falls to the team's default, because an endpoint that stops
-        // answering is worse than one that is more closed than its author meant. At *admission*
-        // there is a person watching, so a key nobody defined is a typo worth naming.
-        on_unknown_key: UnknownKey::Deny,
-    };
-    compile(&raw, &catalogue, &grant, &[], &settings, 0)
-        .err()
-        .map(|err| err.to_string())
+    // Admission is stricter than the gateway on exactly one point, and deliberately: at
+    // *runtime* an unknown key falls to the team's default, because an endpoint that stops
+    // answering is worse than one that is more closed than its author meant. At *admission*
+    // there is a person watching, so a key nobody defined is a typo worth naming. A restricted
+    // key the namespace does not grant is not refused here: it compiles to the default (RFC 0021
+    // R-2), so DWO's `Ingress` is admitted and the workspace starts. Only when that default is
+    // itself restricted and ungranted (a `RestrictedKeyInDefault` config violation) is there
+    // nothing to fall back to: `RestrictedNotGranted` is refused like `NotGranted` (RFC 0021
+    // *compile.rs*, "indexed closed as today").
+    compile_annotations(
+        config,
+        annotations,
+        namespace,
+        inputs,
+        &[],
+        UnknownKey::Deny,
+    )?
+    .err()
+    .map(|err| err.to_string())
 }
 
 async fn validate(
@@ -627,22 +755,12 @@ async fn validate(
     };
 
     let namespace = NamespaceName::new(request.namespace.clone().unwrap_or_default());
-    let namespace_owner_name = state
-        .namespace_view
-        .annotation(&namespace, &config.owner.namespace_annotation);
-    // The namespace's team, resolved the same way every other feature resolves one: ordered,
-    // first match wins, against the labels the namespace carries.
-    let team = state
-        .namespace_view
-        .facts(&namespace)
-        .and_then(|facts| {
-            state
-                .gate
-                .teams()
-                .into_iter()
-                .find(|team| team.namespace_selector.matches(&facts.labels))
-        })
-        .map(|team| team.name);
+    let inputs = NamespaceInputs::read(
+        state.namespace_view.as_ref(),
+        state.gate.as_ref(),
+        &config,
+        &namespace,
+    );
     // Who else a hyphen-ambiguous host could name: a reading is a real user when some namespace
     // carries it as its owner, by the same annotation this namespace is read with.
     let is_user = |user: &str| {
@@ -650,13 +768,7 @@ async fn validate(
             .namespace_view
             .annotated_anywhere(&config.owner.namespace_annotation, user)
     };
-    let write = guard_subject(
-        &request,
-        kind,
-        &config,
-        namespace_owner_name.clone(),
-        is_user,
-    );
+    let write = guard_subject(&request, kind, &config, inputs.owner.clone(), is_user);
 
     let mut registry: Registry<EndpointRoutingWrite> = Registry::new();
     registry.register(EndpointRoutingGuard::new(
@@ -679,7 +791,7 @@ async fn validate(
     );
 
     let response = match outcome {
-        Ok(AdmitOutcome::Allow(_)) => {
+        Ok(AdmitOutcome::Allow { warnings, .. }) => {
             // The guard said yes; the developer's own annotations still have to mean something.
             // Only on a write that is not a delete, and only in `Enforce` — a `DryRun` must not
             // refuse anything, which is the chassis's rule rather than this feature's.
@@ -693,8 +805,7 @@ async fn validate(
                         &config,
                         &annotations_of(request.object.as_ref()),
                         &namespace,
-                        namespace_owner_name.as_deref(),
-                        team.as_ref(),
+                        &inputs,
                     )
                 })
                 .flatten();
@@ -711,7 +822,7 @@ async fn validate(
                         kind.kind()
                     ))
                 }
-                None => response,
+                None => with_warnings(response, warnings),
             }
         }
         Ok(AdmitOutcome::Deny(reason)) => {
@@ -786,17 +897,20 @@ mod tests {
                     key: AccessKey::new("private"),
                     anonymous: false,
                     delegation: Vec::new(),
+                    restricted: false,
                 },
                 AccessEntry {
                     key: AccessKey::new("shared"),
                     anonymous: false,
                     delegation: vec![DelegationKind::Team, DelegationKind::UsersAndGroups],
+                    restricted: false,
                 },
             ],
             default: AccessKey::new("private"),
             overrides: Vec::new(),
             endpoint_selection: EndpointSelection::default(),
             self_origin: SelfOriginConfig::default(),
+            allowed_issuers: vec!["vault-issuer".to_owned()],
         })
     }
 
@@ -1043,6 +1157,70 @@ mod tests {
     }
 
     #[test]
+    fn an_ingress_naming_a_team_ca_issuer_is_refused() {
+        let config = config(Dialect::Traefik);
+        let guard = EndpointRoutingGuard::new(
+            "system:serviceaccount:weebo-si-hardening:operator".to_owned(),
+            config.owner.devworkspace_operator_identity.clone(),
+            Vec::new(),
+        );
+        let verdict = |annotations: serde_json::Value, old: Option<serde_json::Value>| {
+            let object = ingress(annotations, "alice-ws-api.weebo.si");
+            let mut request = request_for(&object, Operation::Create, "alice");
+            if let Some(old) = old {
+                request.operation = Operation::Update;
+                request.old_object = Some(ingress(old, "alice-ws-api.weebo.si"));
+            }
+            let write = guard_subject(
+                &request,
+                RoutingKind::Ingress,
+                &config,
+                Some("alice".into()),
+                |_: &str| true,
+            );
+            let facts = weebo_si_chassis::NamespaceFacts {
+                labels: Default::default(),
+                selection_annotation: None,
+            };
+            let catalog = weebo_si_chassis::port::dwoc_catalog::testing::FakeDwocCatalog::new([]);
+            let decision = guard
+                .evaluate(&write, &Context::new(&[], &facts, &catalog))
+                .unwrap();
+            (write.refused_issuers, decision.result)
+        };
+
+        for key in ISSUER_ANNOTATIONS {
+            let (refused, result) = verdict(json!({ key: "team-weebo-tools-ca" }), None);
+            assert_eq!(refused, BTreeSet::from(["team-weebo-tools-ca".to_owned()]));
+            assert_eq!(result, "denied_certificate_issuer", "{key}");
+        }
+        // What Che sets on every workspace Ingress of the live cluster stays admitted.
+        let (refused, result) = verdict(
+            json!({ "cert-manager.io/cluster-issuer": "vault-issuer" }),
+            None,
+        );
+        assert!(refused.is_empty());
+        assert_ne!(result, "denied_certificate_issuer");
+        // An UPDATE switching to a team CA is refused; one leaving an older value alone is not.
+        let (_, result) = verdict(
+            json!({ "cert-manager.io/cluster-issuer": "team-weebo-tools-ca" }),
+            Some(json!({ "cert-manager.io/cluster-issuer": "vault-issuer" })),
+        );
+        assert_eq!(result, "denied_certificate_issuer");
+        let old = json!({ "cert-manager.io/cluster-issuer": "legacy" });
+        let (refused, _) = verdict(old.clone(), Some(old));
+        assert!(refused.is_empty());
+        // Steering `issuer` at another kind is refused as a key, not as a value.
+        let (_, result) = verdict(
+            json!({ "cert-manager.io/issuer": "vault-issuer", "cert-manager.io/issuer-kind": "ClusterIssuer" }),
+            None,
+        );
+        assert_eq!(result, "denied_certificate_annotation");
+        // An empty allow-list refuses every issuer.
+        assert!(!ingress_issuer_allowed("vault-issuer", &[]));
+    }
+
+    #[test]
     fn a_hyphenated_owner_is_admitted_their_host_unless_another_reading_is_a_user() {
         let config = config(Dialect::Traefik);
         let object = ingress(json!({}), "alice-bob-ws-api.weebo.si");
@@ -1077,7 +1255,7 @@ mod tests {
             RULES_ANNOTATION.to_owned(),
             "this is not a list of rules".to_owned(),
         )]);
-        let refusal = compile_error(&config, &unparseable, &namespace, Some("alice"), None);
+        let refusal = compile_error(&config, &unparseable, &namespace, &alice());
         assert!(
             refusal.is_some_and(|why| why.contains("rules did not parse")),
             "unparseable"
@@ -1086,15 +1264,44 @@ mod tests {
         // A key the *catalogue* does not define is a typo, and admission is where a person is
         // watching.
         let unknown = BTreeMap::from([(ACCESS_ANNOTATION.to_owned(), "shard".to_owned())]);
-        assert!(compile_error(&config, &unknown, &namespace, Some("alice"), None).is_some());
+        assert!(compile_error(&config, &unknown, &namespace, &alice()).is_some());
 
         // A key the catalogue defines but this namespace's grant does not reach.
         let ungranted = BTreeMap::from([(ACCESS_ANNOTATION.to_owned(), "shared".to_owned())]);
-        let refusal = compile_error(&config, &ungranted, &namespace, Some("alice"), None);
+        let refusal = compile_error(&config, &ungranted, &namespace, &alice());
         assert!(
             refusal.is_some_and(|why| why.contains("not granted")),
             "a namespace in no team reaches only the cluster default"
         );
+    }
+
+    fn alice() -> NamespaceInputs {
+        NamespaceInputs {
+            owner: Some("alice".to_owned()),
+            team: None,
+            grant: None,
+        }
+    }
+
+    /// RFC 0021: admission reads the namespace's grant. A restricted default the namespace does
+    /// not grant indexes the endpoint closed, so admission names it; the grant lifts it.
+    #[test]
+    fn admission_compiles_with_the_namespace_grant() {
+        let mut config = config(Dialect::Traefik);
+        for entry in &mut config.catalog {
+            entry.restricted = entry.key == AccessKey::new("private");
+        }
+        let namespace = NamespaceName::new("user-alice");
+        let private = BTreeMap::from([(ACCESS_ANNOTATION.to_owned(), "private".to_owned())]);
+        assert!(
+            compile_error(&config, &private, &namespace, &alice())
+                .is_some_and(|why| why.contains("private is not granted"))
+        );
+        let granted = NamespaceInputs {
+            grant: Some("private".to_owned()),
+            ..alice()
+        };
+        assert_eq!(compile_error(&config, &private, &namespace, &granted), None);
     }
 
     #[test]
@@ -1106,13 +1313,10 @@ mod tests {
             (ACCESS_ANNOTATION.to_owned(), "private".to_owned()),
             (ALLOW_USERS_ANNOTATION.to_owned(), "bob,carol".to_owned()),
         ]);
-        assert_eq!(
-            compile_error(&config, &allowed, &namespace, Some("alice"), None),
-            None
-        );
+        assert_eq!(compile_error(&config, &allowed, &namespace, &alice()), None);
         // And an object with none of our annotations is never judged at all.
         assert_eq!(
-            compile_error(&config, &BTreeMap::new(), &namespace, Some("alice"), None),
+            compile_error(&config, &BTreeMap::new(), &namespace, &alice()),
             None
         );
     }

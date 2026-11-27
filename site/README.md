@@ -1,7 +1,7 @@
 # site
 
 weebo-si-hardening's documentation site (RFC 0012): a Fumadocs site on
-[`@weebo/operator-docs`](https://github.com/batleforc/weebo-operator-kit/tree/main/packages/operator-docs),
+[`@weebo/operator-docs`](https://github.com/weebo-si-operator/weebo-operator-kit/tree/main/packages/operator-docs),
 published to GitHub Pages by `.github/workflows/pages.yaml`.
 
 It carries what is generated — the CRD reference, the CRD form and IDE,

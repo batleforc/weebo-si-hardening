@@ -100,10 +100,10 @@ fails if it is stale.
 | [0015](./0015-platform-api-group.md) | platform API group for teams and users | `Draft` | `crates/weebo-si-crd` |
 | [0016](./0016-weebo-si-project.md) | WeeboSiProject | `Draft` | `crates/weebo-si-project` |
 | [0017](./0017-image-rewrite.md) | image-rewrite | `Implemented` | `crates/weebo-si-image-policy` |
-| [0018](./0018-namespace-uid-range.md) | workspace pod identity | `Accepted` | `crates/weebo-si-pod-identity` |
-| [0019](./0019-devfile-contract.md) | devfile contract | `Accepted` | `crates/weebo-si-devfile-contract` |
-| [0020](./0020-team-tools.md) | team tools | `Accepted` | `crates/weebo-si-team-tools` |
-| [0021](./0021-namespace-only-grants.md) | namespace-only grants | `Accepted` | `crates/weebo-si-crd` |
+| [0018](./0018-namespace-uid-range.md) | workspace pod identity | `Implemented` | `crates/weebo-si-pod-identity` |
+| [0019](./0019-devfile-contract.md) | devfile contract | `Implemented` | `crates/weebo-si-devfile-contract` |
+| [0020](./0020-team-tools.md) | team tools | `Implemented` | `crates/weebo-si-team-tools` |
+| [0021](./0021-namespace-only-grants.md) | namespace-only grants | `Implemented` | `crates/weebo-si-crd` |
 
 <!-- rfc-index:end -->
 

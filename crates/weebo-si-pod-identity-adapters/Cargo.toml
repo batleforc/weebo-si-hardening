@@ -1,0 +1,26 @@
+[package]
+name = "weebo-si-pod-identity-adapters"
+version = "0.1.0"
+description = "pod-identity's adapters: its two Pod admission routes and their metrics"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+weebo-si-pod-identity = { version = "0.1.0", path = "../weebo-si-pod-identity" }
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+weebo-si-webhook = { version = "0.1.0", path = "../weebo-si-webhook" }
+kube = { workspace = true, features = ["client", "runtime", "admission"] }
+prometheus = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

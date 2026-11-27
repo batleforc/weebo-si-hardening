@@ -19,6 +19,17 @@ in-process: a pod with 10 images under 64 `imageRewrite` rules, through `/mutate
 extraction, rewrite and patch, then `image-policy`'s judgement of the rewritten pod, via the
 same `registries()` the webhook role builds (`PERF_IMAGE_ADMISSIONS` runs, 5 000 by default).
 
+A third, RFC 0019's, measures what `devfile-contract` adds to `/mutate/v1alpha1/devworkspaces`:
+extraction, evaluation of a devfile outdated on every check against 64 `deniedParents` and a 4 KiB
+`che.eclipse.org/devfile`, and the patch of its two annotations, through the same
+`devfile_contract_registry()` the webhook role builds (`PERF_DEVFILE_ADMISSIONS` runs, 5 000 by
+default). The route's other registries are unchanged, so this is the p99 delta.
+
+A fourth, RFC 0018's, walks one DWO workspace pod (one init container, four containers) through
+`/mutate/v1/pods/identity` (extraction, rewrite, patch) and `/validate/v1/pods/identity` (the
+patched pod judged), through the same `registries()` the webhook role builds
+(`PERF_IDENTITY_ADMISSIONS` runs, 5 000 by default). Measured, no budget.
+
 What it does **not** measure: the rest of the webhook role (its cost per admission request is
 RFC 0009's territory for endpoint-auth, and has no budget of its own yet), the apiserver's side of the load,
 and a real cluster's network round trip — envtest is loopback, so latencies here are a floor.
@@ -34,6 +45,7 @@ and a real cluster's network round trip — envtest is loopback, so latencies he
 | Memory peak (`VmHWM`) | ≤ 96 MiB | `PERF_BUDGET_PEAK_MIB` | Three quarters of the chart's controller limit (`128Mi`), headroom for a larger fleet. |
 | Memory resident after idle (`VmRSS`) | ≤ 64 MiB | `PERF_BUDGET_RSS_MIB` | The steady state the memory request should be sized for. |
 | Image admission p99, mutate + validate (one pod, 10 images, 64 rules) | ≤ 5 ms | `PERF_BUDGET_IMAGE_P99_MS` | Our CPU on each side of two webhook calls bounded by `webhook.timeoutSeconds` (5 s); fifty times the first measurement, so only a change of complexity — a scan gone quadratic, a parse per rule per pattern — trips it. |
+| `devfile-contract` p99 added to a DevWorkspace admission | ≤ 1 ms | `PERF_BUDGET_DEVFILE_P99_MS` | RFC 0019's *Capacity*: the route's p99 grows by under 1 ms; twenty times the first measurement. |
 
 Latency is timed from each namespace's `create` returning to the first list that shows its
 baseline. The list polls every 100 ms while the fleet is still being created, so a figure is at
@@ -73,6 +85,19 @@ own, left for when the nightly figures confirm it.
 | `/mutate/v1/pods` p50 / p99 | 19 µs / 48 µs |
 | `/validate/v1/pods` p99 | 43 µs |
 | Mutate + validate p99 | 92 µs |
+
+### 2026-11-25, release build, laptop, devfile-contract (RFC 0019)
+
+| Measure | Measured |
+| --- | --- |
+| `devfile-contract` p50 / p99 (added to the route) | 20 µs / 49 µs |
+
+### 2026-11-25, release build, laptop, pod-identity (RFC 0018)
+
+| Measure | Measured |
+| --- | --- |
+| `/mutate/v1/pods/identity` p50 / p99 | 5 µs / 9 µs |
+| `/validate/v1/pods/identity` p50 / p99 | 3 µs / 7 µs |
 
 Add the first nightly run's table here, with its date and run link, once it has run.
 

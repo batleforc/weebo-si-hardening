@@ -21,7 +21,7 @@
 use std::sync::{Arc, RwLock};
 
 use weebo_si_chassis::{Context, Decision, DomainError, Feature, FeatureId, Subject};
-use weebo_si_crd::{NamespaceName, ResolvedNetworkProfilesConfig};
+use weebo_si_crd::{NamespaceName, ProfileKey, ResolvedNetworkProfilesConfig};
 
 use crate::exclusion::is_excluded_namespace;
 use crate::port::BaselineView;
@@ -52,6 +52,8 @@ pub struct WorkspaceAdmission {
     pub attribute: Option<String>,
     /// The raw value of `namespaceSelection.annotation`, if the namespace carries it.
     pub namespace_annotation: Option<String>,
+    /// The raw value of `namespaceGrant.annotation`, if the namespace carries it (RFC 0021).
+    pub namespace_grant: Option<String>,
 }
 
 impl Subject for WorkspaceAdmission {
@@ -100,57 +102,121 @@ impl Feature<WorkspaceAdmission> for WorkspaceGate {
         subject: &WorkspaceAdmission,
         ctx: &Context<'_>,
     ) -> Result<Decision<WorkspaceAdmission>, DomainError> {
+        let excluded = is_excluded_namespace(&subject.namespace, &self.operator_namespace);
+        let config = self
+            .config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        // Computed before the CREATE-only check, and refusing nothing on its own (RFC 0021): a
+        // restricted key the namespace does not grant is dropped by the reconcile, and the
+        // warning tells a `kubectl` user why at the write that asked for it.
+        let resolved = match (&config, excluded) {
+            (Some(config), false) => Some(resolve::resolve(
+                ctx.teams(),
+                config,
+                &ctx.namespace().labels,
+                subject.namespace_annotation.as_deref(),
+                subject.namespace_grant.as_deref(),
+                subject.attribute.as_deref(),
+            )),
+            _ => None,
+        };
+        let grant_annotation = config
+            .as_ref()
+            .map(|config| config.namespace_grant.annotation.as_str())
+            .unwrap_or_default();
+        let refused: &[ProfileKey] = match &resolved {
+            Some(Ok(provenance)) => &provenance.restricted_refused,
+            Some(Err(not_granted)) => &not_granted.restricted_refused,
+            None => &[],
+        };
+        let warnings: Vec<String> = if refused.is_empty() {
+            Vec::new()
+        } else {
+            // Under `Deny` the reconcile writes nothing beyond the baseline for a refused request.
+            let effect = if matches!(resolved, Some(Err(_))) {
+                "Deny: baseline only"
+            } else {
+                "not applied"
+            };
+            // Terser than the denial: the chassis cuts a warning at MAX_WARNING_CHARS.
+            let clause = if grant_annotation.is_empty() {
+                "grants disabled (namespaceGrant.annotation empty)".to_string()
+            } else {
+                format!("no namespace grant ({grant_annotation})")
+            };
+            let tail = format!("]: restricted, {clause}; {effect}");
+            let head = "network profile(s) [";
+            let budget = weebo_si_chassis::admit::MAX_WARNING_CHARS
+                .saturating_sub(head.chars().count())
+                .saturating_sub(tail.chars().count());
+            vec![format!("{head}{}{tail}", join_within(refused, budget))]
+        };
+
         // An UPDATE to a workspace that already exists is past the point this check protects:
         // its pods are running, and refusing the update neither un-starts them nor produces the
         // missing baseline. It would only wedge a workspace nobody can now edit.
         if subject.operation != WorkspaceOperation::Create {
-            return Ok(Decision::new(Vec::new(), None, None, "not_a_create"));
+            return Ok(
+                Decision::new(Vec::new(), None, None, "not_a_create").with_warnings(warnings)
+            );
         }
 
-        if is_excluded_namespace(&subject.namespace, &self.operator_namespace) {
+        if excluded {
             return Ok(Decision::new(Vec::new(), None, None, "namespace_excluded"));
         }
 
-        let config = {
-            let guard = self
-                .config
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.clone().ok_or_else(|| {
-                DomainError::InvalidConfiguration(
-                    "network-profiles evaluated with no spec.features.networkProfiles configured"
-                        .to_string(),
-                )
-            })?
-        };
+        let resolved = resolved.ok_or_else(|| {
+            DomainError::InvalidConfiguration(
+                "network-profiles evaluated with no spec.features.networkProfiles configured"
+                    .to_string(),
+            )
+        })?;
 
         // `resolve` only ever returns `Err` under `onNotGranted: Deny` — under `Default` an
         // ungranted key is dropped, which is a reconcile-side outcome and not something to
         // refuse a workspace over.
-        if let Err(not_granted) = resolve::resolve(
-            ctx.teams(),
-            &config,
-            &ctx.namespace().labels,
-            subject.namespace_annotation.as_deref(),
-            subject.attribute.as_deref(),
-        ) {
-            let keys: Vec<&str> = not_granted
-                .requested
-                .iter()
-                .map(|key| key.as_str())
-                .collect();
+        if let Err(not_granted) = resolved {
             let team = not_granted
                 .team
                 .as_ref()
                 .map(|team| team.as_str().to_string())
                 .unwrap_or_else(|| "<none>".to_string());
+            if not_granted.restricted() {
+                return Ok(Decision::deny(
+                    format!(
+                        "workspace {} requests network profile(s) [{}], which {}",
+                        subject.name,
+                        join(&not_granted.requested),
+                        restricted_clause(&subject.namespace, grant_annotation)
+                    ),
+                    not_granted.team,
+                    Some("restricted".to_string()),
+                    "denied_restricted",
+                ));
+            }
+            // Only the keys outside the team grant: the restricted ones get their own clause.
+            let outside_team: Vec<ProfileKey> = not_granted
+                .requested
+                .iter()
+                .filter(|key| !not_granted.restricted_refused.contains(key))
+                .cloned()
+                .collect();
+            let mut reason = format!(
+                "workspace {} requests network profile(s) [{}], which team {team} is not granted",
+                subject.name,
+                join(&outside_team)
+            );
+            if !not_granted.restricted_refused.is_empty() {
+                reason.push_str(&format!(
+                    "; [{}] {}",
+                    join(&not_granted.restricted_refused),
+                    restricted_clause(&subject.namespace, grant_annotation)
+                ));
+            }
             return Ok(Decision::deny(
-                format!(
-                    "workspace {} requests network profile(s) [{}], which team {team} is not \
-                     granted",
-                    subject.name,
-                    keys.join(",")
-                ),
+                reason,
                 not_granted.team,
                 Some("not_granted".to_string()),
                 "denied_not_granted",
@@ -170,7 +236,57 @@ impl Feature<WorkspaceAdmission> for WorkspaceGate {
             ));
         }
 
-        Ok(Decision::new(Vec::new(), None, None, "allowed"))
+        Ok(Decision::new(Vec::new(), None, None, "allowed").with_warnings(warnings))
+    }
+}
+
+fn join(keys: &[ProfileKey]) -> String {
+    keys.iter()
+        .map(ProfileKey::as_str)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The keys comma-joined within `budget` characters: what does not fit becomes `+N more`, so the
+/// warning's clause and effect are never the part the chassis cuts. Always names at least the
+/// count, even when `budget` is too small for one key.
+fn join_within(keys: &[ProfileKey], budget: usize) -> String {
+    let mut out = String::new();
+    for (shown, key) in keys.iter().enumerate() {
+        let rest = keys.len().saturating_sub(shown).saturating_sub(1);
+        let candidate = if out.is_empty() {
+            key.as_str().to_string()
+        } else {
+            format!("{out},{}", key.as_str())
+        };
+        // The candidate must still fit once the count of what follows is appended.
+        let with_rest = if rest == 0 {
+            candidate.clone()
+        } else {
+            format!("{candidate},+{rest} more")
+        };
+        if with_rest.chars().count() > budget {
+            let left = keys.len().saturating_sub(shown);
+            return if out.is_empty() {
+                format!("+{left} more")
+            } else {
+                format!("{out},+{left} more")
+            };
+        }
+        out = candidate;
+    }
+    out
+}
+
+/// Why a restricted key is refused, in the RFC 0021 mock's words.
+fn restricted_clause(namespace: &NamespaceName, annotation: &str) -> String {
+    if annotation.is_empty() {
+        "are restricted: restricted grants are disabled (namespaceGrant.annotation is empty)"
+            .to_string()
+    } else {
+        format!(
+            "are restricted: namespace {namespace} does not grant them (annotation {annotation})"
+        )
     }
 }
 
@@ -207,6 +323,7 @@ mod tests {
                     namespace: NamespaceName::new("weebo-si-hardening"),
                 },
             }],
+            restricted: false,
         }
     }
 
@@ -215,19 +332,28 @@ mod tests {
         grants.insert(
             "team-1".to_string(),
             ProfileGrant {
-                allowed: vec![ProfileKey::new("git")],
+                allowed: vec![ProfileKey::new("git"), ProfileKey::new("internet")],
                 default: vec![ProfileKey::new("git")],
             },
         );
         Resolved::without_teams(NetworkProfilesConfig {
             mode: FeatureMode::Enforce,
             namespace_selector: None,
-            catalog: ProfileCatalog::new(vec![profile("base"), profile("git"), profile("vault")]),
+            catalog: ProfileCatalog::new(vec![
+                profile("base"),
+                profile("git"),
+                profile("vault"),
+                Profile {
+                    restricted: true,
+                    ..profile("internet")
+                },
+            ]),
             baseline: ProfileKey::new("base"),
             namespace_selection: ProfileNamespaceSelection::default(),
             workspace_selection: WorkspaceSelection::default(),
             on_not_granted,
             enforcement: Enforcement::default(),
+            namespace_grant: Default::default(),
         })
         .with_grants(grants)
     }
@@ -269,6 +395,7 @@ mod tests {
             operation: WorkspaceOperation::Create,
             attribute: attribute.map(str::to_string),
             namespace_annotation: None,
+            namespace_grant: None,
         }
     }
 
@@ -409,5 +536,121 @@ mod tests {
             gate.evaluate(&workspace(WORKSPACE_NS, None), &ctx),
             Err(DomainError::InvalidConfiguration(_))
         ));
+    }
+
+    /// The RFC 0021 *Mocks* refusal under `onNotGranted: Deny`.
+    #[test]
+    fn a_restricted_key_under_deny_is_refused_as_restricted() {
+        let decision = evaluate(
+            &gate(OnNotGranted::Deny, &[WORKSPACE_NS]),
+            &workspace(WORKSPACE_NS, Some("internet")),
+        );
+        assert_eq!(
+            decision.denial.as_deref(),
+            Some(
+                "workspace data-pipeline requests network profile(s) [internet], which are \
+                 restricted: namespace user-alice does not grant them (annotation \
+                 hardening.weebo.io/network-grants)"
+            )
+        );
+        assert_eq!(decision.result, "denied_restricted");
+    }
+
+    /// A refusal mixing both kinds blames the team only for the keys outside its grant.
+    #[test]
+    fn a_mixed_refusal_names_the_restricted_key_only_in_the_restricted_clause() {
+        let decision = evaluate(
+            &gate(OnNotGranted::Deny, &[WORKSPACE_NS]),
+            &workspace(WORKSPACE_NS, Some("internet,nope")),
+        );
+        let denial = decision.denial.unwrap_or_default();
+        assert!(
+            denial.contains("[nope], which team") && denial.contains("; [internet] are restricted"),
+            "{denial}"
+        );
+        assert_eq!(decision.result, "denied_not_granted");
+    }
+
+    #[test]
+    fn a_granted_restricted_key_under_deny_is_allowed_without_a_warning() {
+        let mut subject = workspace(WORKSPACE_NS, Some("internet"));
+        subject.namespace_grant = Some("internet".to_string());
+        let decision = evaluate(&gate(OnNotGranted::Deny, &[WORKSPACE_NS]), &subject);
+        assert_eq!(decision.denial, None);
+        assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn many_restricted_keys_are_counted_not_cut() {
+        let keys: Vec<ProfileKey> = (0..30)
+            .map(|i| ProfileKey::new(format!("profile-{i}")))
+            .collect();
+        let joined = join_within(&keys, 40);
+        assert!(joined.chars().count() <= 40, "{joined}");
+        assert!(joined.ends_with(" more"), "{joined}");
+        assert_eq!(join_within(&keys[..2], 40), "profile-0,profile-1");
+        assert_eq!(join_within(&keys, 3), "+30 more");
+    }
+
+    /// R-11: an UPDATE is never refused; the warning is the only admission-side trace.
+    #[test]
+    fn an_update_naming_an_ungranted_restricted_key_is_allowed_with_a_warning() {
+        let mut subject = workspace(WORKSPACE_NS, Some("internet"));
+        subject.operation = WorkspaceOperation::Update;
+        let decision = evaluate(&gate(OnNotGranted::Deny, &[WORKSPACE_NS]), &subject);
+        assert_eq!(decision.denial, None);
+        assert_eq!(
+            decision.warnings,
+            vec![
+                "network profile(s) [internet]: restricted, no namespace grant \
+                 (hardening.weebo.io/network-grants); Deny: baseline only"
+                    .to_string()
+            ]
+        );
+        let decision = evaluate(&gate(OnNotGranted::Default, &[WORKSPACE_NS]), &subject);
+        assert_eq!(decision.denial, None);
+        assert_eq!(
+            decision.warnings,
+            vec![
+                "network profile(s) [internet]: restricted, no namespace grant \
+                 (hardening.weebo.io/network-grants); not applied"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// The realistic warning fits the chassis bound, so neither the annotation nor the effect is cut.
+    #[test]
+    fn a_restricted_key_warning_fits_the_chassis_bound() {
+        for on_not_granted in [OnNotGranted::Deny, OnNotGranted::Default] {
+            let mut subject = workspace("dev-ws-batleforc-test", Some("internet"));
+            subject.operation = WorkspaceOperation::Update;
+            let decision = evaluate(&gate(on_not_granted, &["dev-ws-batleforc-test"]), &subject);
+            let warning = decision.warnings.first().unwrap();
+            assert!(
+                warning.chars().count() <= weebo_si_chassis::admit::MAX_WARNING_CHARS,
+                "{warning}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_create_under_default_naming_an_ungranted_restricted_key_is_allowed_with_a_warning() {
+        let decision = evaluate(
+            &gate(OnNotGranted::Default, &[WORKSPACE_NS]),
+            &workspace(WORKSPACE_NS, Some("git,internet")),
+        );
+        assert_eq!(decision.denial, None);
+        assert_eq!(decision.result, "allowed");
+        assert_eq!(decision.warnings.len(), 1);
+    }
+
+    #[test]
+    fn no_restricted_key_no_warning() {
+        let decision = evaluate(
+            &gate(OnNotGranted::Default, &[WORKSPACE_NS]),
+            &workspace(WORKSPACE_NS, Some("git")),
+        );
+        assert!(decision.warnings.is_empty());
     }
 }

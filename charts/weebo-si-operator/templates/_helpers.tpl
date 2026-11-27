@@ -98,3 +98,11 @@ appVersion, which the release workflow sets from the same `v*` git tag that prod
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+RFC 0020's template namespace: `teamTools.templateNamespace.name`, or the resource-quotas one
+when empty (the default), so both features share one pod-less namespace unless told otherwise.
+*/}}
+{{- define "weebo-si-operator.teamToolsTemplateNamespace" -}}
+{{- default .Values.resourceQuotas.templateNamespace.name .Values.teamTools.templateNamespace.name -}}
+{{- end -}}

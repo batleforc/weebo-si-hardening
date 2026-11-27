@@ -29,7 +29,20 @@ never admitted through its own webhook.
   `kubectl apply --server-side -f charts/weebo-si-operator/crds/`, or new
   fields are pruned and their feature stays `Off`. From 0.3.x to 0.4.x,
   `helm upgrade` twice: with `--set imageRewrite.webhooks.enabled=false`,
-  then with the default — see the operator page's *Upgrading*.
+  then with the default — see the operator page's *Upgrading*. Before
+  upgrading to a release with RFC 0020, add every cert-manager issuer your
+  workspace `Ingress`es name (Che's `CheCluster`
+  `spec.networking.annotations`, devfile endpoints) to
+  `endpointAuth.allowedIssuers`, default `[vault-issuer]`: any other issuer
+  is refused and the workspace does not start — see
+  [*Certificate annotations*](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/endpoint-gateway.md#certificate-annotations).
+</Callout>
+
+<Callout type="info">
+  `podIdentity.webhooks.enabled` is `false` by default. Turn it on once the
+  release runs and **before** `podIdentity.mode: DryRun`, or `DryRun` sees
+  no pod at all — see
+  [`docs/bricks/pod-identity.md`](https://github.com/batleforc/weebo-si-hardening/blob/main/docs/bricks/pod-identity.md).
 </Callout>
 
 With no `WeeboSiConfig` yet, every feature is `Off` and every request

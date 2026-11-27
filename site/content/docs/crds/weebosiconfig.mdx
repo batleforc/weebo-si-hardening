@@ -39,6 +39,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| [`devfileContract`](#spec.features.devfileContract) | `object` | no |  | `spec.features.devfileContract`, per RFC 0019. |
 | [`dwocPin`](#spec.features.dwocPin) | `object` | no |  | `spec.features.dwocPin`. |
 | [`endpointAuth`](#spec.features.endpointAuth) | `object` | no |  | `spec.features.endpointAuth`, per RFC 0009. |
 | [`identity`](#spec.features.identity) | `object` | no |  | `spec.features.identity`, per RFC 0011 — the only feature that creates objects in systems other than this cluster's own, and the only one with allow-lists of its own. |
@@ -46,10 +47,60 @@ spec:
 | [`imageRewrite`](#spec.features.imageRewrite) | `object` | no |  | `spec.features.imageRewrite`, per RFC 0017. |
 | [`kubearmorPolicy`](#spec.features.kubearmorPolicy) | `object` | no |  | `spec.features.kubearmorPolicy`, per RFC 0006. |
 | [`networkProfiles`](#spec.features.networkProfiles) | `object` | no |  | `spec.features.networkProfiles`, per RFC 0004. |
+| [`podIdentity`](#spec.features.podIdentity) | `object` | no |  | `spec.features.podIdentity`, per RFC 0018. |
 | [`podSecurity`](#spec.features.podSecurity) | `object` | no |  | `spec.features.podSecurity`, per RFC 0013. |
 | [`policyGuard`](#spec.features.policyGuard) | `object` | no |  | `spec.features.policyGuard`, per RFC 0004. |
 | [`registryConfig`](#spec.features.registryConfig) | `object` | no |  | `spec.features.registryConfig`, per RFC 0007. |
 | [`resourceQuotas`](#spec.features.resourceQuotas) | `object` | no |  | `spec.features.resourceQuotas`, per RFC 0014. |
+| [`teamTools`](#spec.features.teamTools) | `object` | no |  | `spec.features.teamTools`, per RFC 0020. |
+
+### `spec.features.devfileContract` [#spec.features.devfileContract]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `currentContract` | `integer` | yes |  | The newest contract the User Guide publishes.<br /><br />Constraints: `minimum: 0` |
+| `deniedContracts` | `integer[]` | no | `[]` | Contracts refused at a start; empty refuses nothing.<br /><br />Constraints: `maxItems: 64` |
+| [`deniedParents`](#spec.features.devfileContract.deniedParents) | `object[]` | no | `[]` | Parents refused at a start; empty refuses nothing.<br /><br />Constraints: `maxItems: 64` |
+| `minimumContract` | `integer` | yes |  | Below this a devfile is `outdated` (a warning, never a refusal).<br /><br />Constraints: `minimum: 0` |
+| `minimumSchemaVersion` | `string` | no |  | The lowest `schemaVersion` accepted without a warning, checked only when the Che dashboard kept it.<br /><br />Constraints: `maxLength: 32` |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.devfileContract.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| `onDenied` | `string` | no | `"Deny"` | What a denied-list match does on a start.<br /><br />Values: `"Deny"`, `"Warn"` |
+
+**Rules**
+
+- contracts start at 1 and minimumContract cannot exceed currentContract — `1 <= self.minimumContract && self.minimumContract <= self.currentContract && self.currentContract <= 1000`
+- a denied contract must be a published one — `!has(self.deniedContracts) || self.deniedContracts.all(c, 1 <= c && c <= self.currentContract)`
+- minimumSchemaVersion is MAJOR.MINOR.PATCH — `!has(self.minimumSchemaVersion) || self.minimumSchemaVersion.matches('^[0-9]+\\.[0-9]+\\.[0-9]+$')`
+
+### `spec.features.devfileContract.deniedParents[]` [#spec.features.devfileContract.deniedParents]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `id` | `string` | no |  | A registry stack id (`parent.id`).<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `uriPrefix` | `string` | no |  | A `parent.uri` prefix, matched after normalisation.<br /><br />Constraints: `minLength: 8`, `maxLength: 2048` |
+| `versions` | `string[]` | no |  | The denied versions of `id`; empty denies every version, an absent one included.<br /><br />Constraints: `maxItems: 32` |
+
+**Rules**
+
+- a denied parent names a uriPrefix or an id, not both — `has(self.uriPrefix) != has(self.id)`
+- uriPrefix must be an http(s) URL prefix — `!has(self.uriPrefix) || self.uriPrefix.startsWith('https://') || self.uriPrefix.startsWith('http://')`
+- versions apply to a registry id only — `!has(self.versions) || size(self.versions) == 0 || has(self.id)`
+
+### `spec.features.devfileContract.namespaceSelector` [#spec.features.devfileContract.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.devfileContract.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.devfileContract.namespaceSelector.matchExpressions[]` [#spec.features.devfileContract.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
 
 ### `spec.features.dwocPin` [#spec.features.dwocPin]
 
@@ -96,6 +147,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| `allowedIssuers` | `string[]` | no | `["vault-issuer"]` | The cert-manager issuers a routing object in scope may name in `cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3). Any other value is refused at admission, so ingress-shim cannot mint a certificate from a team CA. Empty refuses every issuer annotation.<br /><br />Constraints: `maxItems: 16` |
 | `breakGlassIdentities` | `string[]` | no | `[]` | Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object. |
 | [`catalog`](#spec.features.endpointAuth.catalog) | `object[]` | yes |  | The catalogue of access profiles. |
 | `default` | `string` | yes |  | The key a namespace belonging to no team resolves to. |
@@ -108,6 +160,10 @@ spec:
 | [`owner`](#spec.features.endpointAuth.owner) | `object` | yes |  | How a namespace names its owner, and which identity DevWorkspace Operator writes as. |
 | [`selfOrigin`](#spec.features.endpointAuth.selfOrigin) | `object` | no | `{"podNetwork":"Auto","serviceAccountToken":true}` | Whether, and how, a workspace may prove it is itself. |
 
+**Rules**
+
+- `allowedIssuers`: allowedIssuers names the same issuer twice — `self.all(i, self.exists_one(j, j == i))`
+
 ### `spec.features.endpointAuth.catalog[]` [#spec.features.endpointAuth.catalog]
 
 | Field | Type | Required | Default | Description |
@@ -115,6 +171,7 @@ spec:
 | `anonymous` | `boolean` | no | `false` | No authentication at all. `delegation` is rejected on an anonymous entry. |
 | `delegation` | `string[]` | no | `[]` | Who else, besides the owner, this profile lets in.<br /><br />Values: `"Team"`, `"UsersAndGroups"` |
 | `key` | `string` | yes |  | The key a grant, an annotation or a path rule names. |
+| `restricted` | `boolean` | no | `false` | Honoured only if the endpoint's Namespace names this key in `hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries included, so an upgrade changes nothing a catalogue grants. |
 
 ### `spec.features.endpointAuth.endpointSelection` [#spec.features.endpointAuth.endpointSelection]
 
@@ -424,16 +481,23 @@ spec:
 | [`catalog`](#spec.features.networkProfiles.catalog) | `object[]` | yes |  | Every profile a workspace may be granted. |
 | [`enforcement`](#spec.features.networkProfiles.enforcement) | `object` | no | `{"backend":"Auto","canary":{"enabled":true,"intervalSeconds":300}}` | The enforcement backend and its canary. |
 | `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceGrant`](#spec.features.networkProfiles.namespaceGrant) | `object` | no | `{"annotation":"hardening.weebo.io/network-grants"}` | The namespace annotation granting restricted profile keys. |
 | [`namespaceSelection`](#spec.features.networkProfiles.namespaceSelection) | `object` | no | `{"annotation":"hardening.weebo.io/network-profiles"}` | The namespace annotation naming a profile key list. |
 | [`namespaceSelector`](#spec.features.networkProfiles.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the controller's own scope. |
 | `onNotGranted` | `string` | no | `"Default"` | What to do when a workspace names a profile key its team's grant does not allow.<br /><br />Values: `"Default"`, `"Deny"` |
 | [`workspaceSelection`](#spec.features.networkProfiles.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/network-profiles"}` | The devfile attribute naming a profile key list. |
+
+**Rules**
+
+- namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select — `!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation`
+- the baseline profile may not be restricted: it applies to every namespace, granted or not — `self.catalog.all(p, p.key != self.baseline || !has(p.restricted) || !p.restricted)`
 
 ### `spec.features.networkProfiles.catalog[]` [#spec.features.networkProfiles.catalog]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `key` | `string` | yes |  | The short identifier a grant, an attribute, or a resolved decision names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 63` |
+| `restricted` | `boolean` | no | `false` | Honoured only if the workspace's Namespace also names this key in `namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue is the grant. |
 | [`variants`](#spec.features.networkProfiles.catalog.variants) | `object[]` | yes |  | This profile's variants, at most one per [`Backend`]. |
 
 ### `spec.features.networkProfiles.catalog[].variants[]` [#spec.features.networkProfiles.catalog.variants]
@@ -464,11 +528,17 @@ spec:
 | `enabled` | `boolean` | yes |  | Whether the canary probe runs. |
 | `intervalSeconds` | `integer` | yes |  | How often the probe runs.<br /><br />Constraints: `minimum: 0` |
 
+### `spec.features.networkProfiles.namespaceGrant` [#spec.features.networkProfiles.namespaceGrant]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `annotation` | `string` | no | `"hardening.weebo.io/network-grants"` | Namespace annotation naming a comma-separated list of restricted profile keys this namespace may use. The empty string disables restricted grants: every restricted key is refused.<br /><br />Constraints: `maxLength: 317` |
+
 ### `spec.features.networkProfiles.namespaceSelection` [#spec.features.networkProfiles.namespaceSelection]
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `annotation` | `string` | no | `"hardening.weebo.io/network-profiles"` | Namespace annotation naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+| `annotation` | `string` | no | `"hardening.weebo.io/network-profiles"` | Namespace annotation naming a comma-separated profile key list. The empty string disables this selection step entirely.<br /><br />Constraints: `maxLength: 317` |
 
 ### `spec.features.networkProfiles.namespaceSelector` [#spec.features.networkProfiles.namespaceSelector]
 
@@ -490,6 +560,37 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `attribute` | `string` | no | `"hardening.weebo.io/network-profiles"` | DevWorkspace attribute naming a comma-separated profile key list. The empty string disables this selection step entirely. |
+
+### `spec.features.podIdentity` [#spec.features.podIdentity]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `exemptDwocKeys` | `string[]` | no | `[]` | `dwoc-pin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left untouched, e.g. `[build]` (RFC 0018, L27).<br /><br />Constraints: `maxItems: 64` |
+| `grantGroupZero` | `boolean` | no | `false` | Last resort, off by default. `true` lets pods in scope run with group 0 (`fsGroup: 0` or a `0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on every group-0-writable (`g=u`) file of the image; the feature's status says so for as long as it is on. |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.podIdentity.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows within the webhook's own scope. |
+| `runAsGroup` | `integer` | no | `1234` | The pod-level gid and `fsGroup` set when a pod gives none or gives 0; a pod's own non-zero gid is kept. Never 0. |
+| `runAsUser` | `integer` | no | `1234` | The pod-level uid set when a pod gives none; a pod's own non-zero uid is kept. Never 0. |
+
+**Rules**
+
+- `runAsGroup`: runAsGroup must be between 1 and 65535 (group 0 writes the image's system files) — `1 <= self && self <= 65535`
+- `runAsUser`: runAsUser must be between 1 and 65535 (uid 0 is root in the image) — `1 <= self && self <= 65535`
+
+### `spec.features.podIdentity.namespaceSelector` [#spec.features.podIdentity.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.podIdentity.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.podIdentity.namespaceSelector.matchExpressions[]` [#spec.features.podIdentity.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
 
 ### `spec.features.podSecurity` [#spec.features.podSecurity]
 
@@ -653,6 +754,93 @@ spec:
 | `key` | `string` | yes |  | The label key this expression tests. |
 | `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
 | `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.teamTools` [#spec.features.teamTools]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`catalog`](#spec.features.teamTools.catalog) | `object[]` | yes |  | Every tool a team may be granted. Required, may be empty.<br /><br />Constraints: `maxItems: 32` |
+| `idleGraceSeconds` | `integer` | no | `600` | Time a tool stays up after its last requester stops.<br /><br />Constraints: `minimum: 0`, `maximum: 4294967295` |
+| `mode` | `string` | yes |  | Required, per the chassis: `Off` \| `DryRun` \| `Enforce`.<br /><br />Values: `"Off"`, `"DryRun"`, `"Enforce"` |
+| [`namespaceSelector`](#spec.features.teamTools.namespaceSelector) | `object` | no |  | Optional, per the chassis: narrows which requesting namespaces are read. |
+| `onNotGranted` | `string` | no | `"Default"` | What a requested key the team is not granted gets: dropped, or the request refused.<br /><br />Values: `"Default"`, `"Deny"` |
+| [`workspaceSelection`](#spec.features.teamTools.workspaceSelection) | `object` | no | `{"attribute":"hardening.weebo.io/team-tools"}` | The DevWorkspace attribute naming the requested keys. |
+
+**Rules**
+
+- `catalog`: two catalog entries share the same key — `self.all(e, self.exists_one(f, f.key == e.key))`
+
+### `spec.features.teamTools.catalog[]` [#spec.features.teamTools.catalog]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clientEnv` | `string` | no |  | The key of the generated endpoint `ConfigMap`, an environment variable name.<br /><br />Constraints: `pattern: ^[A-Za-z_][A-Za-z0-9_]*$`, `minLength: 1`, `maxLength: 128` |
+| `idleGraceSeconds` | `integer` | no |  | Overrides the block's `idleGraceSeconds` for this tool.<br /><br />Constraints: `minimum: 0`, `maximum: 4294967295` |
+| `key` | `string` | yes |  | The key a devfile attribute or a team grant names.<br /><br />Constraints: `pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `minLength: 1`, `maxLength: 40` |
+| [`requesterTemplates`](#spec.features.teamTools.catalog.requesterTemplates) | `object[]` | no | `[]` | `ConfigMap`s rendered into each requesting namespace.<br /><br />Constraints: `maxItems: 16` |
+| [`service`](#spec.features.teamTools.catalog.service) | `object` | yes |  | The port the network policies open. |
+| [`tls`](#spec.features.teamTools.catalog.tls) | `object` | no |  | Absent means no mTLS: allowed, and logged (RFC 0020, Resolved 14). |
+| [`toolTemplates`](#spec.features.teamTools.catalog.toolTemplates) | `object[]` | yes |  | Rendered into the team's tools namespace.<br /><br />Constraints: `maxItems: 16` |
+| [`workload`](#spec.features.teamTools.catalog.workload) | `object` | yes |  | The tool template scaled on demand. |
+
+### `spec.features.teamTools.catalog[].requesterTemplates[]` [#spec.features.teamTools.catalog.requesterTemplates]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | The object's kind; the allowed kinds are checked by `validate()`.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `name` | `string` | yes |  | The object's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `namespace` | `string` | yes |  | The namespace it lives in.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+
+### `spec.features.teamTools.catalog[].service` [#spec.features.teamTools.catalog.service]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  | The `Service` template's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `port` | `integer` | yes |  | One of its ports.<br /><br />Constraints: `minimum: 1`, `maximum: 65535` |
+
+### `spec.features.teamTools.catalog[].tls` [#spec.features.teamTools.catalog.tls]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clientDuration` | `string` | yes |  | The client certificate's lifetime, a Go duration (`24h`).<br /><br />Constraints: `minLength: 1`, `maxLength: 32` |
+| `clientMountPath` | `string` | yes |  | Where DWO mounts the client certificate in the workspace.<br /><br />Constraints: `pattern: ^/`, `minLength: 2`, `maxLength: 1024` |
+| `serverSecretName` | `string` | yes |  | The `Secret` the server `Certificate` writes, mounted by the tool template.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+
+### `spec.features.teamTools.catalog[].toolTemplates[]` [#spec.features.teamTools.catalog.toolTemplates]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | The object's kind; the allowed kinds are checked by `validate()`.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+| `name` | `string` | yes |  | The object's name.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+| `namespace` | `string` | yes |  | The namespace it lives in.<br /><br />Constraints: `minLength: 1`, `maxLength: 63` |
+
+### `spec.features.teamTools.catalog[].workload` [#spec.features.teamTools.catalog.workload]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | yes |  | `Deployment` or `StatefulSet`.<br /><br />Values: `"Deployment"`, `"StatefulSet"` |
+| `name` | `string` | yes |  | Its name among the tool templates.<br /><br />Constraints: `minLength: 1`, `maxLength: 253` |
+
+### `spec.features.teamTools.namespaceSelector` [#spec.features.teamTools.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.features.teamTools.namespaceSelector.matchExpressions) | `object[]` | no |  | Every expression must hold. |
+| `matchLabels` | `map[string]` | no |  | Every key must be present with exactly this value. |
+
+### `spec.features.teamTools.namespaceSelector.matchExpressions[]` [#spec.features.teamTools.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | The label key this expression tests. |
+| `operator` | `string` | yes |  | How `values` is compared against the label's value, if any.<br /><br />Values: `"In"`, `"NotIn"`, `"Exists"`, `"DoesNotExist"` |
+| `values` | `string[]` | no | `[]` | The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`. |
+
+### `spec.features.teamTools.workspaceSelection` [#spec.features.teamTools.workspaceSelection]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `attribute` | `string` | no | `"hardening.weebo.io/team-tools"` | DevWorkspace attribute naming a comma-separated key list. `""` disables requests.<br /><br />Constraints: `maxLength: 317` |
 
 ## Build a manifest
 

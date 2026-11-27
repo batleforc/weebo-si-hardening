@@ -25,11 +25,11 @@ use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client, ResourceExt};
 use weebo_si_crd::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, DEVWORKSPACE_ID_LABEL,
-    RULES_ANNOTATION, ResolvedEndpointAuthConfig, SINGLETON_NAME, Team, UPSTREAM_ANNOTATION,
-    WeeboSiConfig, WeeboSiTeam, team_views,
+    ENDPOINT_ACCESS_NAMESPACE_ANNOTATION, RULES_ANNOTATION, ResolvedEndpointAuthConfig,
+    SINGLETON_NAME, Team, UPSTREAM_ANNOTATION, WeeboSiConfig, WeeboSiTeam, team_views,
 };
 use weebo_si_endpoint_auth::compile::{
-    Catalogue, CompileSettings, Grant, Override, OverrideMatch, RawEndpoint,
+    Catalogue, CompileSettings, Grant, Override, OverrideMatch, RawEndpoint, namespace_grant,
 };
 use weebo_si_endpoint_auth::host::{Host, HostScope};
 use weebo_si_endpoint_auth::identity::{NamespaceName, TeamName, Username};
@@ -369,6 +369,9 @@ struct Stores {
 struct Owner {
     username: String,
     team: Option<weebo_si_crd::TeamName>,
+    /// The restricted keys the namespace grants (RFC 0021), from
+    /// `hardening.weebo.io/endpoint-access`.
+    grant: BTreeSet<CatalogueKey>,
 }
 
 /// The team each user belongs to, read off the namespaces they own.
@@ -428,12 +431,15 @@ fn owners_of(
         .into_iter()
         .filter_map(|namespace| {
             let name = namespace.metadata.name.clone()?;
-            let username = namespace
-                .metadata
-                .annotations
-                .as_ref()?
+            let annotations = namespace.metadata.annotations.as_ref()?;
+            let username = annotations
                 .get(&feature.owner.namespace_annotation)?
                 .clone();
+            let grant = namespace_grant(
+                annotations
+                    .get(ENDPOINT_ACCESS_NAMESPACE_ANNOTATION)
+                    .map(String::as_str),
+            );
             let labels: BTreeMap<String, String> = namespace
                 .metadata
                 .labels
@@ -447,7 +453,14 @@ fn owners_of(
                 .iter()
                 .find(|team| team.namespace_selector.matches(&labels))
                 .map(|team| team.name.clone());
-            Some((name, Owner { username, team }))
+            Some((
+                name,
+                Owner {
+                    username,
+                    team,
+                    grant,
+                },
+            ))
         })
         .collect()
 }
@@ -477,6 +490,7 @@ fn raw_endpoint(ingress: &Ingress, owner: &Owner) -> RawEndpoint {
         } else {
             Provenance::Author
         },
+        namespace_grant: owner.grant.clone(),
     }
 }
 
@@ -486,10 +500,10 @@ fn raw_endpoint(ingress: &Ingress, owner: &Owner) -> RawEndpoint {
 /// catalogue empty (`unwrap_or_default`), closing every endpoint with no hint why. Only the
 /// offending entry goes: its key is then unknown, so every endpoint naming it is indexed closed,
 /// which is the same fail-closed answer for the one entry that is wrong.
-fn catalogue_from(entries: Vec<(CatalogueKey, bool, BTreeSet<Delegation>)>) -> Catalogue {
+fn catalogue_from(entries: Vec<(CatalogueKey, bool, bool, BTreeSet<Delegation>)>) -> Catalogue {
     let entries: Vec<_> = entries
         .into_iter()
-        .filter(|(key, anonymous, delegation)| {
+        .filter(|(key, anonymous, _restricted, delegation)| {
             let bad = *anonymous && !delegation.is_empty();
             if bad {
                 println!(
@@ -513,6 +527,7 @@ fn translate(feature: &ResolvedEndpointAuthConfig) -> (Catalogue, Vec<Override>)
         (
             CatalogueKey::new(entry.key.as_str()),
             entry.anonymous,
+            entry.restricted,
             entry
                 .delegation
                 .iter()
@@ -592,6 +607,7 @@ mod tests {
         Owner {
             username: username.to_owned(),
             team: Some(weebo_si_crd::TeamName::new(team)),
+            grant: BTreeSet::new(),
         }
     }
 
@@ -608,10 +624,11 @@ mod tests {
     #[test]
     fn an_anonymous_and_delegating_entry_is_dropped_alone() {
         let catalogue = catalogue_from(vec![
-            (CatalogueKey::new("private"), false, BTreeSet::new()),
+            (CatalogueKey::new("private"), false, false, BTreeSet::new()),
             (
                 CatalogueKey::new("bad"),
                 true,
+                false,
                 BTreeSet::from([Delegation::Team]),
             ),
         ]);

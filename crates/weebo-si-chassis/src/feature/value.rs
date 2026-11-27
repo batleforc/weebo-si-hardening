@@ -65,6 +65,9 @@ pub struct FeatureOutcome {
     pub mutated: bool,
     /// Whether this decision was a refusal rather than a patch.
     pub denied: bool,
+    /// How many admission warnings the decision carried, counted before the mode drops them so
+    /// a `DryRun` shows what `Enforce` would print (RFC 0019).
+    pub warnings: usize,
 }
 
 impl FeatureOutcome {
@@ -80,6 +83,7 @@ impl FeatureOutcome {
             result: decision.result,
             mutated: !decision.mutations.is_empty(),
             denied: decision.denial.is_some(),
+            warnings: decision.warnings.len(),
         }
     }
 }
@@ -100,6 +104,9 @@ pub struct Decision<S> {
     pub mutations: Vec<Mutation>,
     /// Set when the decision is a refusal rather than a patch.
     pub denial: Option<String>,
+    /// Admission warnings for the client, kept only under `Enforce` and bounded once per
+    /// response by the route that renders them (RFC 0019, D-14).
+    pub warnings: Vec<String>,
     /// The team the resolution attributed this decision to, if any.
     pub team: Option<TeamName>,
     /// A feature-rendered explanation of how it reached this decision (e.g. which catalogue key
@@ -121,6 +128,7 @@ impl<S> Decision<S> {
         Self {
             mutations,
             denial: None,
+            warnings: Vec::new(),
             team,
             note,
             result,
@@ -138,11 +146,18 @@ impl<S> Decision<S> {
         Self {
             mutations: Vec::new(),
             denial: Some(reason),
+            warnings: Vec::new(),
             team,
             note,
             result,
             _subject: PhantomData,
         }
+    }
+
+    /// The same decision, carrying `warnings` for the client.
+    #[must_use]
+    pub fn with_warnings(self, warnings: Vec<String>) -> Self {
+        Self { warnings, ..self }
     }
 }
 

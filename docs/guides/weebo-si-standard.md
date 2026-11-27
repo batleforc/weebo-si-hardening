@@ -203,7 +203,7 @@ explicitly:
 
 | Field | Value | Why |
 | --- | --- | --- |
-| `runAsUser` / `runAsGroup` / `fsGroup` | 1234 / 0 / 1234 | `che-min-mise` is `USER 1234` in group 0; its entrypoint, `/home/tooling` and `/etc/passwd` are group-0-writable on that assumption |
+| `runAsUser` / `runAsGroup` / `fsGroup` | 1234 / 1234 / 1234 | never group 0: [`pod-identity`](../bricks/pod-identity.md) rewrites a pod-level gid 0 and refuses a container-level one. `che-min-mise`'s group-0-writable files (`/home/tooling`, `/globals`) need the image change *Asked of WeeboDevImage* 5 first |
 | `runAsNonRoot` | `true` | required by `restricted`; satisfied because 1234 is numeric |
 | `seccompProfile` | `RuntimeDefault` | required by `restricted`; the node default does not count |
 | `allowPrivilegeEscalation` | `false` | required by `restricted`; sets `no_new_privs`, so the setuid binaries in the image (`su`, `passwd`, `newuidmap`) cannot elevate |
@@ -557,9 +557,22 @@ until rules move to `Block`):
 | reach a teammate's private endpoint | ❌ 403 | ❌ | endpoint-auth |
 | `su` | runs, cannot elevate | elevates inside the user namespace, until step 8's Block | pod-security / KubeArmor |
 
+Three later features add to it:
+
+- **pod-identity**: the workspace runs as `1234:1234` in its own user namespace, without group 0.
+  A devfile that sets `runAsUser: 0`, `runAsGroup: 0` or `hostUsers: true` fails to start, with
+  the reason in the workspace status ([`pod-identity`](../bricks/pod-identity.md)).
+- **devfile-contract**: `kubectl apply` of a DevWorkspace prints `Warning:` lines for a devfile
+  without `weebo.io/platform-contract` or with an unpinned parent; the Che dashboard shows none.
+  Only a contract or parent an admin denied refuses a start
+  ([`devfile-contract`](../bricks/devfile-contract.md)).
+- **team-tools**: a workspace that asks for a granted tool with the `hardening.weebo.io/team-tools`
+  attribute gets its client side mounted (for example `BUILDKIT_HOST`) at its next start; an
+  ungranted key is dropped with an Event ([`team-tools`](../bricks/team-tools.md)).
+
 ## Asked of WeeboDevImage
 
-`che-min-mise` was written before this standard. Four changes make the controls above tighter
+`che-min-mise` was written before this standard. Five changes make the controls above tighter
 and their exceptions unnecessary. The measured, prioritised version, with image size, is
 [`che-min-mise-review.md`](../che-min-mise-review.md).
 
@@ -579,6 +592,11 @@ and their exceptions unnecessary. The measured, prioritised version, with image 
    repository is the cost.
 4. **Stop making `/home/tooling` and `/globals` group-writable** once the stow step no longer needs
    it. Then step 8's second rule can `Block` with nothing to measure first.
+5. **Own the runtime-written directories as 1234** (RFC 0018 Q20), a prerequisite of
+   `pod-identity`'s `Enforce`: replace `chgrp -R 0` by `chown -R 1234:0` and keep `chmod -R g=u`,
+   in the same `RUN` as each install (a separate `RUN` copies every file into a new layer);
+   `COPY --chown=0:0` of user-edited config becomes `--chown=1234:0`. Owner 1234 writes under
+   `pod-identity` (no group 0), and group 0 still writes for an arbitrary uid on OpenShift.
 
 ## Asked of weebo-si
 
@@ -603,6 +621,9 @@ unless you mean it:
 | pod-security | stops reconciling | **restores** the labels each namespace had before |
 | endpoint-auth | stops refusing | strips the annotations the sweep wrote |
 | dwoc-pin, image-policy, policy-guard | admits everything | admits everything |
+| pod-identity | rewrites nothing, refuses nothing (counts and logs) | rewrites nothing, refuses nothing; running pods keep their identity until restarted; the two `Fail` webhooks stay registered until `podIdentity.webhooks.enabled=false` |
+| devfile-contract | no warning, annotation or refusal (counts and logs) | the same; the verdict annotations already written stay, stale |
+| team-tools | renders nothing, deletes nothing (logs the diff) | **deletes** every object it wrote, **except the StatefulSets' PVCs**: the cache survives |
 
 For an emergency, deleting a feature's `ValidatingWebhookConfiguration` is the break-glass for that
 feature alone. [`bricks/weebo-si-operator.md`](../bricks/weebo-si-operator.md#rollback) lists them.

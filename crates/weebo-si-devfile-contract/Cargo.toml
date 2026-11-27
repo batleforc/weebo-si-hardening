@@ -1,0 +1,22 @@
+[package]
+name = "weebo-si-devfile-contract"
+version = "0.1.0"
+description = "The devfile-contract feature: warns when a devfile was written for old platform rules or follows a moving parent"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+# The contract attribute is free-form devfile JSON (RFC 0019, *Supply chain*).
+serde_json = { workspace = true }
+# Parses the parent host as DevWorkspace Operator does (IDNA, ports).
+url = "2.5.9"
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

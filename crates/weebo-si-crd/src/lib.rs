@@ -7,6 +7,7 @@
 //! doing any I/O.
 
 pub mod argo;
+pub mod devfile_contract;
 pub mod dwoc;
 pub mod dwoc_pin;
 pub mod endpoint_auth;
@@ -20,6 +21,7 @@ pub mod labels;
 mod merge;
 pub mod namespace;
 pub mod network_profiles;
+pub mod pod_identity;
 pub mod pod_security;
 pub mod policy_guard;
 pub mod registry_config;
@@ -28,12 +30,18 @@ pub mod resource_quotas;
 pub mod selector;
 pub mod spec;
 pub mod team;
+pub mod team_tools;
 pub mod template;
 pub mod user;
 
 pub use argo::{
     ApplicationDestination, ApplicationSource, ApplicationTemplate, ApplicationTemplateViolation,
     RenderedApplication, SyncAutomated, SyncPolicy,
+};
+pub use devfile_contract::{
+    DEVFILE_CONTRACT_ANNOTATION, DEVFILE_CONTRACT_REASON_ANNOTATION, DEVFILE_PARENT_ATTRIBUTE,
+    DeniedParent, DevfileContractConfig, GENERATOR_ATTRIBUTE, MAX_CONTRACT, MAX_DENIED_ENTRIES,
+    MAX_DENIED_VERSIONS, OnDenied, PLATFORM_CONTRACT_ATTRIBUTE,
 };
 pub use dwoc::DwocRef;
 pub use dwoc_pin::{
@@ -43,11 +51,12 @@ pub use dwoc_pin::{
 pub use endpoint_auth::{
     ACCESS_ANNOTATION, ALLOW_GROUPS_ANNOTATION, ALLOW_USERS_ANNOTATION, AccessEntry, AccessGrant,
     AccessKey, Attachment, AttachmentMode, COMPANION_SERVICE, CustomDialect, DEVELOPER_ANNOTATIONS,
-    DelegationKind, Dialect, ENDPOINT_AUTH_ANNOTATION, ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED,
-    EndpointAuthConfig, EndpointAuthConfigViolation, EndpointOverride, EndpointSelection,
-    GateEnforcement, GatewayRef, HostOwnership, HostsConfig, MIDDLEWARE_NAME, OverrideMatch,
-    OwnerConfig, RULES_ANNOTATION, ResolvedEndpointAuthConfig, Retarget, RoutingKind,
-    SelfOriginConfig, ServiceRef, TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
+    DelegationKind, Dialect, ENDPOINT_ACCESS_NAMESPACE_ANNOTATION, ENDPOINT_AUTH_ANNOTATION,
+    ENDPOINT_AUTH_BYPASS, ENDPOINT_AUTH_MANAGED, EndpointAuthConfig, EndpointAuthConfigViolation,
+    EndpointOverride, EndpointSelection, GateEnforcement, GatewayRef, HostOwnership, HostsConfig,
+    MAX_ALLOWED_ISSUERS, MIDDLEWARE_NAME, OverrideMatch, OwnerConfig, RULES_ANNOTATION,
+    ResolvedEndpointAuthConfig, Retarget, RoutingKind, SelfOriginConfig, ServiceRef,
+    TeamEndpointAuth, TriState, UPSTREAM_ANNOTATION,
 };
 pub use feature_mode::FeatureMode;
 pub use identity::{
@@ -71,7 +80,7 @@ pub use kubearmor_policy::{
 };
 pub use labels::{
     BACKEND_LABEL, CANARY_LABEL, DEVWORKSPACE_ID_LABEL, KUBEARMOR_ENFORCER_LABEL, MANAGED_BY_LABEL,
-    MANAGED_BY_VALUE, PROFILE_LABEL,
+    MANAGED_BY_VALUE, PROFILE_LABEL, TEAM_TOOL_LABEL, TEAM_TOOLS_NAMESPACE_LABEL,
 };
 pub use namespace::NamespaceName;
 pub use network_profiles::{
@@ -80,6 +89,7 @@ pub use network_profiles::{
     ProfileKey, ProfileNamespaceSelection, ResolvedNetworkProfilesConfig, TeamNetworkProfiles,
     TemplateRef, Variant, WorkspaceSelection,
 };
+pub use pod_identity::{DEFAULT_POD_ID, MAX_EXEMPT_DWOC_KEYS, PodIdentityConfig};
 pub use pod_security::{
     PodSecurityBackend, PodSecurityConfig, PodSecurityConfigViolation, PodSecurityLevel,
     PodSecurityNamespaceSelection, PodSecurityVersion, ResolvedPodSecurityConfig, TeamPodSecurity,
@@ -104,6 +114,12 @@ pub use spec::{
 pub use team::{
     DEFAULT_PRIORITY, Team, TeamAuthentik, TeamFeatures, TeamIdentity, TeamName, TeamWorkspace,
     WeeboSiTeam, WeeboSiTeamSpec, WeeboSiTeamStatus, resolution_order, team_views,
+};
+pub use team_tools::{
+    DEFAULT_IDLE_GRACE_SECONDS, MAX_REQUESTED_TOOLS, MAX_TOOL_ENTRIES, MAX_TOOL_TEMPLATES,
+    ResolvedTeamToolsConfig, TEAM_TOOLS_ATTRIBUTE, TeamTeamTools, TeamToolState, TeamToolStatus,
+    TeamToolsConfig, ToolEntry, ToolGrant, ToolIssuerRef, ToolKey, ToolService, ToolTemplateRef,
+    ToolTls, ToolWorkload, ToolWorkspaceSelection, WorkloadKind,
 };
 pub use template::{
     Bindings, DISPLAY_NAME, EMAIL, OBJECT_NAME, TEAM_NAME as TEMPLATE_TEAM_NAME,

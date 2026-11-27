@@ -191,6 +191,7 @@ delegation means. What this page adds is how a team's block combines with the cl
 | [`endpointAuth`](#featuresendpointauth) | `{key, anonymous, delegation[]}` | **one** key, **required** | its own keys, plus the cluster `default` |
 | [`podSecurity`](#featurespodsecurity) | — no catalogue | `level`, `warnLevel` | its `level`, never looser than the cluster `ceiling` |
 | [`resourceQuotas`](#featuresresourcequotas) | `{key, quotaRef?, limitRangeRef?}` | **one** key, **required** | its own profiles, plus the cluster `default` |
+| [`teamTools`](#featuresteamtools) | — no catalogue | list of keys, `[]` | the keys in its `allowed` |
 
 Four rules hold for every block:
 
@@ -239,6 +240,7 @@ name it.
 | `catalog[].key` | string | yes | — | **DNS-1123 label**, 1–63 characters, `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, checked by the API server — it is interpolated into object names and label values. |
 | `catalog[].variants[].backend` | `NetworkPolicy`/`Cilium` | yes | — | At most one variant per backend. |
 | `catalog[].variants[].templateRef` | `{name, namespace}` | yes | — | The template whose `policyTypes`/`ingress`/`egress` are copied. |
+| `catalog[].restricted` | bool | no | `false` | Honoured only through the Namespace grant annotation (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). Re-declaring a cluster entry with a different value is `CatalogKeyConflict`. |
 | `default` | list of keys | no | `[]` | Profiles a workspace of this team gets when it names none. Each item has the same DNS-1123 pattern. May be empty: the cluster `baseline` applies either way. |
 
 ### `features.imagePolicy`
@@ -287,6 +289,7 @@ cluster-level `default`, so a team reaches exactly the entries it catalogues —
 | `catalog[].key` | string | yes | — | What a developer's `hardening.weebo.io/access` annotation names. |
 | `catalog[].anonymous` | bool | no | `false` | No authentication at all. May not be combined with a non-empty `delegation`. |
 | `catalog[].delegation` | `[Team\|UsersAndGroups]` | no | `[]` | Who besides the owner the profile lets in. `[]` is "the owner and nobody else". |
+| `catalog[].restricted` | bool | no | `false`, anonymous entries included | Honoured only if the Namespace names the key in `hardening.weebo.io/endpoint-access` (RFC 0021, [`guides/namespace-grants.md`](./guides/namespace-grants.md)). Re-declaring a cluster entry with a different value is `CatalogKeyConflict`. |
 | `default` | key | **yes** | — | The **one** profile an endpoint of this team resolves to when it names none. |
 
 The cluster `default` stays reachable whatever the team catalogues: a team never loses the profile
@@ -319,6 +322,32 @@ that builds images needs `baseline` plus the build seccomp profile, set through 
 
 One profile per namespace, never a set: the team reaches its own profiles plus the cluster
 `default`, and a namespace picks one of them with `hardening.weebo.io/resource-quota`.
+
+### `features.teamTools`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `namespace` | namespace name | **yes** | — | The tools namespace. It must carry `hardening.weebo.io/team-tools=<this team>` and a quota, and not be a workspace namespace; otherwise nothing is written there. |
+| `issuerRef` | `{kind: ClusterIssuer, name}` | when an allowed entry has `tls` | — | This team's CA. `kind` must be `ClusterIssuer` (refused at apply otherwise): a namespaced `Issuer` cannot serve workspace namespaces. |
+| `allowed` | list of keys, at most 32 | no | `[]` | The cluster catalogue keys this team may request. |
+| `default` | list of keys, at most 8 | no | `[]` | What a workspace with no attribute gets; within `allowed`. |
+
+```yaml
+features:
+  teamTools:
+    namespace: team-weebo-tools
+    issuerRef: {kind: ClusterIssuer, name: team-weebo-tools-ca}
+    allowed: [buildkit]
+    default: []              # nobody gets a tool without asking
+```
+
+**The exception to "a team never writes an `allowed` list"**: a team declares no tool, only
+which cluster tools it may request. `status.teamTools[]` lists each tool with its namespace,
+`replicas`, `requesters` (a count, never who) and `state` (`Running`, `Grace`, `Idle`, `Held`,
+`Unbound`, `Invalid`), and the condition `TeamToolsReady` says whether the tools namespace is
+bound (`Bound`, `NamespaceNotBound`, `NoQuota`, `Forbidden`) or the team block ignored
+(`Invalid`); a block with `allowed: []` reads `Bound` without a namespace check. See
+[`bricks/team-tools.md`](./bricks/team-tools.md).
 
 ## `spec.identity`
 

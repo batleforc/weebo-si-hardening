@@ -15,8 +15,15 @@ use crate::port::observer::Observer;
 /// What admission does with the mutations every enabled feature computed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmitOutcome {
-    /// Apply these mutations (empty if nothing changed).
-    Allow(Vec<Mutation>),
+    /// Apply these mutations (empty if nothing changed) and return these warnings to the client.
+    /// The warnings are not bounded yet: a route merges several registries, then bounds the
+    /// merged list once with [`bound_warnings`].
+    Allow {
+        /// The mutations to apply.
+        mutations: Vec<Mutation>,
+        /// The admission warnings, in registry order.
+        warnings: Vec<String>,
+    },
     /// Deny the admission with this reason.
     Deny(String),
 }
@@ -47,6 +54,7 @@ pub fn admit<S: Subject>(
     let teams = gate.teams();
 
     let mut mutations = Vec::new();
+    let mut warnings = Vec::new();
 
     for feature in registry.iter() {
         let mode = gate.mode_for_admission(feature.id(), subject.namespace());
@@ -78,10 +86,60 @@ pub fn admit<S: Subject>(
 
         if mode == FeatureMode::Enforce {
             mutations.extend(decision.mutations);
+            warnings.extend(decision.warnings);
         }
     }
 
-    Ok(AdmitOutcome::Allow(mutations))
+    Ok(AdmitOutcome::Allow {
+        mutations,
+        warnings,
+    })
+}
+
+/// Most warnings one admission response carries, every registry of the route together.
+pub const MAX_WARNINGS: usize = 6;
+/// Longest warning, in characters, the length the Kubernetes documentation asks for. Six of
+/// them stay under the apiserver's 4 096 limit for a request's warnings, a budget other
+/// webhooks on the same request share.
+pub const MAX_WARNING_CHARS: usize = 120;
+
+/// Bound the merged warnings of one response: every control character (CR, LF, ESC, ...) and
+/// every invisible format character (bidi override, zero-width) becomes a space, so a warning
+/// cannot drive or reorder another person's terminal; a blank warning is dropped (the apiserver
+/// would drop it, wasting a slot); each warning is cut to
+/// [`MAX_WARNING_CHARS`] characters ending in `…`; duplicates are dropped; the first
+/// [`MAX_WARNINGS`] are kept.
+pub fn bound_warnings(raw: Vec<String>) -> Vec<String> {
+    let mut bounded: Vec<String> = Vec::new();
+    for warning in raw {
+        if bounded.len() == MAX_WARNINGS {
+            break;
+        }
+        let clean = warning
+            .chars()
+            .map(|c| if is_unsafe_char(c) { ' ' } else { c });
+        if clean.clone().all(char::is_whitespace) {
+            continue;
+        }
+        let warning: String = if warning.chars().count() > MAX_WARNING_CHARS {
+            clean
+                .take(MAX_WARNING_CHARS.saturating_sub(1))
+                .chain(std::iter::once('…'))
+                .collect()
+        } else {
+            clean.collect()
+        };
+        if !bounded.contains(&warning) {
+            bounded.push(warning);
+        }
+    }
+    bounded
+}
+
+/// Control characters, plus the format characters that hide or reorder text on a terminal.
+fn is_unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 #[cfg(test)]
@@ -133,7 +191,8 @@ mod tests {
                 None,
                 None,
                 "mutated",
-            ))
+            )
+            .with_warnings(vec!["mutated".to_string()]))
         }
     }
 
@@ -148,6 +207,13 @@ mod tests {
             _ctx: &Context<'_>,
         ) -> Result<Decision<Workspace>, DomainError> {
             Ok(Decision::deny("no".to_string(), None, None, "denied"))
+        }
+    }
+
+    fn allowed_nothing() -> AdmitOutcome {
+        AdmitOutcome::Allow {
+            mutations: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -189,7 +255,7 @@ mod tests {
             &observer,
         )
         .unwrap();
-        assert_eq!(outcome, AdmitOutcome::Allow(Vec::new()));
+        assert_eq!(outcome, allowed_nothing());
         assert!(observer.events().is_empty());
     }
 
@@ -207,7 +273,7 @@ mod tests {
             &observer,
         )
         .unwrap();
-        assert_eq!(outcome, AdmitOutcome::Allow(Vec::new()));
+        assert_eq!(outcome, allowed_nothing());
         assert_eq!(observer.events().len(), 1);
         assert!(observer.events()[0].2.mutated);
     }
@@ -227,7 +293,7 @@ mod tests {
         )
         .unwrap();
         match outcome {
-            AdmitOutcome::Allow(mutations) => assert!(!mutations.is_empty()),
+            AdmitOutcome::Allow { mutations, .. } => assert!(!mutations.is_empty()),
             AdmitOutcome::Deny(reason) => {
                 panic!("expected mutations to be applied, got denial: {reason}")
             }
@@ -349,8 +415,12 @@ mod tests {
             .map(|(id, _, outcome)| (id, outcome))
             .collect();
         assert_eq!(dry_run_decisions, enforce_decisions);
-        assert_eq!(dry_run_outcome, AdmitOutcome::Allow(Vec::new()));
+        assert_eq!(dry_run_decisions[0].1.warnings, 1);
+        assert_eq!(dry_run_outcome, allowed_nothing());
         assert_ne!(dry_run_outcome, enforce_outcome);
+        assert!(
+            matches!(&enforce_outcome, AdmitOutcome::Allow { warnings, .. } if warnings == &["mutated"])
+        );
     }
 
     #[test]
@@ -384,7 +454,7 @@ mod tests {
             &observer,
         )
         .unwrap();
-        assert_eq!(outcome, AdmitOutcome::Allow(Vec::new()));
+        assert_eq!(outcome, allowed_nothing());
         assert_eq!(observer.events().len(), 1);
     }
 
@@ -461,6 +531,106 @@ mod tests {
             &dwoc_catalog(),
             &observer,
         );
-        assert_eq!(result.unwrap(), AdmitOutcome::Allow(Vec::new()));
+        assert_eq!(result.unwrap(), allowed_nothing());
+    }
+
+    struct Warns(&'static str, &'static [&'static str]);
+    impl Feature<Workspace> for Warns {
+        fn id(&self) -> FeatureId {
+            FeatureId::new(self.0)
+        }
+        fn evaluate(
+            &self,
+            _subject: &Workspace,
+            _ctx: &Context<'_>,
+        ) -> Result<Decision<Workspace>, DomainError> {
+            Ok(Decision::new(Vec::new(), None, None, "warned")
+                .with_warnings(self.1.iter().map(|w| (*w).to_string()).collect()))
+        }
+    }
+
+    fn admit_with(registry: &Registry<Workspace>, mode: FeatureMode) -> AdmitOutcome {
+        admit(
+            registry,
+            &subject(),
+            &FakeFeatureGate::new(mode, Vec::new()),
+            &namespace_view(),
+            &dwoc_catalog(),
+            &RecordingObserver::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn warnings_are_dropped_in_dry_run() {
+        let registry = registry(Warns("warns", &["old devfile"]));
+        assert_eq!(
+            admit_with(&registry, FeatureMode::DryRun),
+            allowed_nothing()
+        );
+    }
+
+    #[test]
+    fn warnings_from_two_features_are_merged_in_registry_order() {
+        let mut registry: Registry<Workspace> = Registry::new();
+        registry.register(Warns("first", &["a", "b"]));
+        registry.register(Warns("second", &["c"]));
+        assert_eq!(
+            admit_with(&registry, FeatureMode::Enforce),
+            AdmitOutcome::Allow {
+                mutations: Vec::new(),
+                warnings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            }
+        );
+    }
+
+    /// `admit` leaves the bound to the route, which merges several registries first (D-14).
+    #[test]
+    fn admit_does_not_bound_the_warnings() {
+        const MANY: [&str; MAX_WARNINGS + 1] = ["w"; MAX_WARNINGS + 1];
+        let registry = registry(Warns("noisy", &MANY));
+        let AdmitOutcome::Allow { warnings, .. } = admit_with(&registry, FeatureMode::Enforce)
+        else {
+            panic!("expected an allow");
+        };
+        assert_eq!(warnings.len(), MAX_WARNINGS + 1);
+    }
+
+    #[test]
+    fn warnings_are_capped_and_truncated() {
+        let long = "x".repeat(MAX_WARNING_CHARS + 50);
+        let mut raw = vec![long, "dup".to_string(), "dup".to_string()];
+        raw.extend((0..10).map(|i| format!("w{i}")));
+        let bounded = bound_warnings(raw);
+
+        assert_eq!(bounded.len(), MAX_WARNINGS);
+        assert_eq!(bounded[0].chars().count(), MAX_WARNING_CHARS);
+        assert!(bounded[0].ends_with('…'));
+        assert_eq!(&bounded[1..], ["dup", "w0", "w1", "w2", "w3"]);
+        // Exactly at the limit is kept whole; multi-byte characters are cut on a boundary.
+        let exact = "é".repeat(MAX_WARNING_CHARS);
+        assert_eq!(bound_warnings(vec![exact.clone()]), [exact]);
+        let cut = bound_warnings(vec!["é".repeat(MAX_WARNING_CHARS + 1)]);
+        assert_eq!(cut[0].chars().count(), MAX_WARNING_CHARS);
+        assert!(bound_warnings(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_control_character_never_reaches_a_warning() {
+        let bounded = bound_warnings(vec![
+            "red \u{1b}[31m text\r\nWarning: forged\t\u{7f}\u{85}".to_string(),
+        ]);
+        assert_eq!(bounded, ["red  [31m text  Warning: forged   "]);
+        assert!(!bounded[0].chars().any(char::is_control));
+        assert_eq!(
+            bound_warnings(vec!["a\u{202e}b\u{200b}c\u{2066}d".to_string()]),
+            ["a b c d"]
+        );
+    }
+
+    #[test]
+    fn a_blank_warning_takes_no_slot() {
+        let raw = ["", "\r\n", " ", "a"].map(str::to_string).to_vec();
+        assert_eq!(bound_warnings(raw), ["a"]);
     }
 }

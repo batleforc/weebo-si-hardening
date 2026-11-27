@@ -1,10 +1,10 @@
 ---
 rfc: 0020
 title: team tools
-status: Accepted
+status: Implemented
 authors: [batleforc]
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-26
 decided: 2026-11-24
 brick: crates/weebo-si-team-tools
 supersedes: []
@@ -824,8 +824,10 @@ workspace pod into the privileged namespace; a `RUN` step into the network.
 | I2 | The client key leaks from the workspace | workspace ns | 24 h certificate, the key is the user's own credential, readable only in their namespace | `the_client_certificate_lasts_24h` | A compromised workspace builds as its user for ≤ 24 h |
 | D1 | Tools exhaust the single node | tools ns | binding refused without a `ResourceQuota` on `limits.memory`: `bind::has_memory_quota` | `a_namespace_without_quota_is_unbound` | Quota sizing is the admin's |
 | D2 | Tool stuck on with no requester (T-41) | scale | grace state machine: `scale::ScaleDecision`; alert on `up_without_requester` | `zero_requesters_reach_idle_after_grace` + obs. 8 | +1 grace after a restart |
-| D3 | Many keys in the attribute | admission/reconcile | at most 8 keys parsed, rest dropped: `resolve::requested_keys` | `a_ninth_key_is_dropped` | none |
+| D3 | Many keys in the attribute | admission/reconcile | at most 8 keys parsed; a ninth stops the read and is reported as `<invalid>` (refused under `Deny`, warned under `Default`): `resolve::parse_keys` | `a_ninth_key_is_reported_as_invalid` | none |
 | E1 | BuildKit as a springboard (T-40): `RUN` egress, SA token, bind mounts | tools ns | tool egress CNP template; `automountServiceAccountToken: false` validated; bind mounts only from context or stages (BuildKit semantics); insecure entitlements off [R23] | obs. 10; `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`, `added_capabilities_are_invalid` | Only if V-16 forces `--oci-worker-no-process-sandbox`: a teammate's `RUN` step can signal or ptrace daemon processes and read the server key. The exception, owned by the RFC owner (batleforc), recorded in the runbook with the V-16 result |
+| T6 | A hand edit of a rendered object in the tools namespace persists (added 2026-11-25) | tools ns | the tools namespace is admin-only (RBAC) | — (accepted) | Drift detection compares the stored fingerprint annotation, not the live body: an edit is not reverted while that annotation is unchanged, until the template or the render inputs change |
+| E3 | A template runs the tool as root or in the host user namespace (added 2026-11-25) | tools ns | templates are admin-written; the tools quota and CNPs bound the namespace | — (accepted) | Tool pods are outside the pod-identity webhooks (the tools namespace carries no `workspace-namespace` label), and `validate::pod_spec_violations` does not check `runAsUser: 0`, `allowPrivilegeEscalation`, `procMount` or `hostUsers`; a template mistake there is not refused |
 | E2 | Compromised controller writes privileged pods, ConfigMaps or certificates anywhere | RBAC | Deployment/StatefulSet write only through per-namespace RoleBindings the admin creates in tools namespaces; ConfigMap and `Certificate` write only through a RoleBinding in each workspace namespace, rendered by `2.helm/user-app` | `the_controller_cannot_write_outside_a_bound_namespace` (e2e kind with the chart's RBAC: `kubectl auth can-i create deployments -n kube-system --as=<controller SA>` = no) | Within a bound workspace namespace, a `Certificate` naming any allow-listed `ClusterIssuer` |
 
 **Privileges (RBAC delta), controller role only.**
@@ -860,6 +862,11 @@ granted keys. The `che.eclipse.org/username` annotation is not user-writable [R1
 their cert can build as themselves, which they already may. Requesting a tool in a namespace
 outside the feature's `namespaceSelector`: not read, so not rendered. Pointing `BUILDKIT_HOST`
 elsewhere: the egress CNP allows only the tool; network-profiles governs the rest.
+
+*Note (2026-11-25).* The egress CNP sets `enableDefaultDeny: {egress: false, ingress: false}`
+(Cilium ≥ 1.15; the cluster runs 1.19): it only adds the path to the tool. Without it, its
+`egress` section would put the workspace into default-deny egress, cutting DNS and the kube-api
+in a namespace where network-profiles is not enforcing.
 
 **Blast radius.** A rendering bug starts a privileged daemon in a bound tools namespace, under
 its quota; never outside it (RoleBinding). A scale bug leaves a tool up (alerted) or down
@@ -1018,7 +1025,7 @@ None: every question raised by this draft is resolved above.
   `an_unlabelled_namespace_is_never_written`, `a_workspace_namespace_is_never_a_tools_namespace`; T4
   `a_privileged_template_is_invalid` (and hostPath, hostNetwork, hostPID, hostIPC); I2
   `the_client_certificate_lasts_24h`; D1 `a_namespace_without_quota_is_unbound`; D2
-  `zero_requesters_reach_idle_after_grace`; D3 `a_ninth_key_is_dropped`; E1
+  `zero_requesters_reach_idle_after_grace`; D3 `a_ninth_key_is_reported_as_invalid`; E1
   `a_workload_with_a_token_is_invalid`, `a_projected_token_volume_is_invalid`,
   `added_capabilities_are_invalid`; E2 e2e kind with the chart RBAC
   `the_controller_cannot_write_outside_a_bound_namespace`; S3
@@ -1038,27 +1045,30 @@ None: every question raised by this draft is resolved above.
 
 ## Implementation plan
 
-- [ ] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL (incl.
+- [x] PR 1 — `weebo-si-crd`: `TeamToolsConfig`, team block, status, labels, CEL (incl.
       `issuerRef.kind: ClusterIssuer`). A configuration validates and does nothing; the feature
       is listed in `crates/weebo-si-operator/src/features.rs` only in PR 4, with its wiring.
-- [ ] PR 2 — `weebo-si-team-tools`: resolution, validation table, `ScaleDecision`, three
+- [x] PR 2 — `weebo-si-team-tools`: resolution, validation table, `ScaleDecision`, three
       subjects' `desired()`, admission gate type; all unit tests above.
-- [ ] PR 3a — endpoint-auth: the Ingress issuer allow-list and subject-key refusal (S3). Lands
+- [x] PR 3a — endpoint-auth: the Ingress issuer allow-list and subject-key refusal (S3). Lands
       before any team CA exists, so the shim path is closed first.
-- [ ] PR 3 — chart: unbound ClusterRoles `weebo-si-team-tools` and
+- [x] PR 3 — chart: unbound ClusterRoles `weebo-si-team-tools` and
       `weebo-si-team-tools-requester`, cluster-wide read of `certificates` and `configmaps`
       behind `teamTools.rbac.enabled` (default `false`), template-namespace Role,
       `--team-tools-template-namespace`. Lands **before** any writer so the boundary exists
       first.
-- [ ] PR 4 — `weebo-si-team-tools-adapters`: stores, `/scale`, controller loop, metrics,
+- [x] PR 4 — `weebo-si-team-tools-adapters`: stores, `/scale`, controller loop, metrics,
       status, `features.rs` entry; envtest; the network-profiles invariant test. Gated by the
       remaining V-16 items. Security controls (binding gate,
       quota gate, template validation) are in PR 2 and wired here, never after.
-- [ ] PR 5 — webhook: fold `mutate_devworkspaces` into one loop over the ordered registries,
+- [x] PR 5 — webhook: fold `mutate_devworkspaces` into one loop over the ordered registries,
       `TeamToolsAdmission` as the fourth, verdict annotation, router tests. After RFC 0019 PR 1
       (chassis `warnings`).
-- [ ] PR 6 — e2e `team-tools` suite on kind with cert-manager and BuildKit.
-- [ ] PR 7 — docs: brick page, CRD pages; RFC to `Implemented`.
+- [x] PR 6 — e2e `team-tools` suite on kind with cert-manager and BuildKit.
+- [x] PR 7 — docs: brick page, CRD pages; RFC to `Implemented`.
+- [ ] On the cluster and in weebo-si (not done in this branch): the remaining V-16 items, phase 0
+      and phase 1 of *Integration in weebo-si*, ≥ 7 days of `DryRun`, T-39 to T-42, and the
+      `trivy image` scan of the BuildKit image (CI does not run one yet).
 
 ### Estimate
 
@@ -1151,6 +1161,33 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | R30 | `charts/weebo-si-operator/templates/webhookconfiguration-endpoints.yaml:65`, `:89` | c412ee3 | endpoint-auth already admits Ingresses at `/mutate/v1/ingresses` |
 | R31 | `crates/weebo-si-envtest-support/src/lib.rs:23`, `:67`, `:129` | c412ee3 | `start` is `AlwaysAllow`; `start_rbac` exists |
 
+## Revision against the tree (2026-11-26)
+
+Shipped on the branch `feat/rfc-0018-0021` (PR #24): the CRD blocks and status, the
+`allowedIssuers` allow-list of endpoint-auth (S3, default `[vault-issuer]`), the chart RBAC behind
+`teamTools.rbac.enabled`, `weebo-si-team-tools` and its adapters (controller, stores, `/scale`,
+metrics), the admission gate as the fourth registry of the DevWorkspace route, the `team-tools`
+e2e suite on kind with cert-manager and BuildKit, and [`docs/bricks/team-tools.md`](../bricks/team-tools.md).
+
+**What differs from the text above:**
+
+1. **Refusals print a bare `Error from server:`**, not the mock's `Error from server (Forbidden)`:
+   the route's denials carry no status reason (seen on kind, Kubernetes 1.35).
+2. **The BuildKit entry needs a `buildkitd-subid` ConfigMap template.** The rootless image's
+   `/etc/subuid` is `user:100000:65536`, beyond the 65536 ids a `hostUsers: false` pod owns, so
+   rootlesskit's `newuidmap` failed and `buildkitd` crash-looped. The template maps every pod id
+   but 0 and 1000; the process sandbox and `hostUsers: false` stay.
+3. **The per-workspace egress CNP is additive** (`enableDefaultDeny` off), as the 2026-11-25
+   changelog row records.
+4. **Template validation refuses more than the table lists**: a template named like a system
+   object (`kube-*`, `openshift-*`), a template with `immutable: true`, and a workload whose
+   `persistentVolumeClaimRetentionPolicy.whenDeleted` is `Delete`. A rendered `Service` drops the
+   template's allocated `clusterIP` and `nodePorts`.
+5. **The node pulls the BuildKit image itself in the e2e suite** instead of `kind load`.
+
+**Not done here:** the remaining V-16 items, *Integration in weebo-si* (phases 0 and 1), the
+`DryRun` week, T-39 to T-42, and the `trivy` scan of the BuildKit image.
+
 ## Changelog
 
 | Date | Change |
@@ -1159,3 +1196,5 @@ validation on the cluster** are calendar-bound: phase 0 one day; the remaining V
 | 2026-11-24 | Last review applied (6 lenses): Resolved 15–20, STRIDE S3 and T5, validation and RBAC tightened, adoption runbook, router fold. |
 | 2026-11-24 | Still-open 1–5 resolved by the owner as recommended (Resolved 10–14); BuildKit template keeps the process sandbox by default, mTLS mandatory for the BuildKit entry. |
 | 2026-11-24 | Accepted by the owner |
+| 2026-11-25 | Implementation review: the egress CNP is additive (`enableDefaultDeny` off); residual risks T6 (hand edits kept) and E3 (tool pod-spec checks) added. |
+| 2026-11-26 | `Implemented` (PR #24): PRs 1–7 shipped; *Revision against the tree* records the bare `Error from server:`, the `buildkitd-subid` template and the extra template checks. V-16, the weebo-si phases and the BuildKit image scan are still owed. |

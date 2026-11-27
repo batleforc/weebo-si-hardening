@@ -1,0 +1,25 @@
+[package]
+name = "weebo-si-team-tools"
+version = "0.1.0"
+description = "The team-tools feature: per-team tools rendered into an admin-bound namespace and scaled on demand"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+# Templates travel as JSON, without this crate knowing `k8s-openapi`: only the fields the
+# validation table reads are projected out of them (RFC 0014's pattern).
+serde_json = { workspace = true }
+
+[features]
+# In-memory fakes for this crate's own ports, otherwise only built under `cfg(test)`.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

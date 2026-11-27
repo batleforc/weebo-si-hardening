@@ -833,6 +833,7 @@ mod tests {
                 key: CatalogueKey::new("open"),
                 anonymous: true,
                 delegation: BTreeSet::new(),
+                restricted: false,
             },
             bearer: None,
         }];

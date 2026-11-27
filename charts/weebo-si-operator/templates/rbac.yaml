@@ -247,6 +247,20 @@ rules:
     resources: ["authentikusers"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   {{- end }}
+  {{- if .Values.teamTools.rbac.enabled }}
+  # RFC 0020's `team-tools`, cluster-wide half: **read only**, for the watches filtered by
+  # `hardening.weebo.io/team-tool` (the requester ConfigMaps and client Certificates in every
+  # workspace namespace). Every write is in the two unbound ClusterRoles below, which grant
+  # nothing until an admin (tools namespace) or weebo-si's `2.helm/user-app` (workspace
+  # namespace) binds them in one namespace (Resolved 9 and 19). Like `registryConfig`'s rule,
+  # this reads every ConfigMap: RBAC has no label-scoped read, the filter is the adapter's.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -293,6 +307,109 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "weebo-si-operator.fullname" . }}-controller-applications
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.teamTools.rbac.enabled }}
+---
+# RFC 0020, tools namespace half — a ClusterRole bound by **nobody here**. The admin writes one
+# RoleBinding to it per tools namespace, in Git, next to the Namespace, its
+# `hardening.weebo.io/team-tools=<team>` label and its quota:
+#
+#   kind: RoleBinding
+#   metadata: {name: weebo-si-team-tools, namespace: team-weebo-tools}
+#   roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: weebo-si-team-tools}
+#   subjects: [{kind: ServiceAccount, name: <controller SA>, namespace: <release namespace>}]
+#
+# Chosen over a cluster-wide grant plus a namespace check in code (Resolved 9, threat E2): a bug
+# in the label check, or a compromised controller, still cannot create a StatefulSet in
+# `kube-system`; the apiserver answers 403. The name is fixed, not release-prefixed, because Git
+# outside this chart references it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-si-team-tools
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The controller's replicas writer: it scales only through `/scale` and strips `spec.replicas`
+  # from its applies (RFC 0020 *Data and state*). RBAC cannot enforce that — the rule above also
+  # allows patching the workload itself — so it is the adapter's, reviewed as code.
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The quota gate (threat D1): no `ResourceQuota` on `limits.memory`, no binding.
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "watch"]
+---
+# RFC 0020, workspace namespace half — also bound by nobody here. weebo-si's `2.helm/user-app`
+# renders one RoleBinding to it in each workspace namespace it creates (Resolved 19): RBAC cannot
+# scope a write by namespace label, so the RoleBinding is the scope. A namespace without it
+# reports `forbidden` for this feature and nothing else breaks. Writes only: the read is the
+# cluster-wide rule on the controller role. Once bound, the write reaches every ConfigMap and
+# Certificate of that namespace, the user's own included: RBAC cannot narrow a write by label, so
+# the narrowing is the adapter's (it writes and deletes only objects carrying
+# `hardening.weebo.io/managed-by`), the same trade as the resource-quotas rule.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-si-team-tools-requester
+  labels:
+    {{- include "weebo-si-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["create", "update", "patch", "delete"]
+---
+# RFC 0020's templates: read on the five template kinds, in the template namespace only. A Role,
+# so reading templates never widens into reading workloads elsewhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-team-tool-templates
+  namespace: {{ include "weebo-si-operator.teamToolsTemplateNamespace" . }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-team-tool-templates
+  namespace: {{ include "weebo-si-operator.teamToolsTemplateNamespace" . }}
+  labels:
+    {{- include "weebo-si-operator.controller.selectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-si-operator.fullname" . }}-controller-team-tool-templates
 subjects:
   - kind: ServiceAccount
     name: {{ include "weebo-si-operator.controllerServiceAccountName" . }}

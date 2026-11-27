@@ -1,0 +1,23 @@
+[package]
+name = "weebo-si-pod-identity"
+version = "0.1.0"
+description = "The pod-identity feature: workspace pods run as one non-root identity in their own user namespace, with no group 0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+weebo-si-crd = { version = "0.1.0", path = "../weebo-si-crd" }
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis" }
+
+[features]
+# In-memory fake of this crate's port, otherwise only built under `cfg(test)` — same pattern as
+# weebo-si-image-policy's `testing` feature.
+testing = []
+
+[dev-dependencies]
+weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
+
+[lints]
+workspace = true

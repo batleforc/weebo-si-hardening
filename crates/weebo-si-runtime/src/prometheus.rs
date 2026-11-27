@@ -5,7 +5,8 @@
 //! gauges, not decision events) aren't driven from this port — they belong at the HTTP-handler
 //! and reconcile-loop call sites respectively, which know things `Observer::decided` never
 //! sees. This adapter covers what an admission *decision* can report:
-//! `weebo_si_admission_requests_total` and `weebo_si_dwoc_pin_total`.
+//! `weebo_si_admission_requests_total`, `weebo_si_admission_warnings_total`,
+//! `weebo_si_dwoc_pin_total` and `weebo_si_devfile_contract_total`.
 
 use prometheus::{IntCounterVec, Opts, Registry};
 use weebo_si_chassis::port::observer::Observer;
@@ -15,7 +16,9 @@ use weebo_si_crd::FeatureMode;
 /// The `Observer` port's outbound implementation.
 pub struct PrometheusObserver {
     admission_requests_total: IntCounterVec,
+    admission_warnings_total: IntCounterVec,
     dwoc_pin_total: IntCounterVec,
+    devfile_contract_total: IntCounterVec,
 }
 
 impl PrometheusObserver {
@@ -28,6 +31,13 @@ impl PrometheusObserver {
             ),
             &["feature", "resource", "mode", "outcome"],
         )?;
+        let admission_warnings_total = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_admission_warnings_total",
+                "Admission warnings decided, by feature and mode, counted before the mode drops them",
+            ),
+            &["feature", "mode"],
+        )?;
         let dwoc_pin_total = IntCounterVec::new(
             Opts::new(
                 "weebo_si_dwoc_pin_total",
@@ -35,11 +45,22 @@ impl PrometheusObserver {
             ),
             &["result", "team"],
         )?;
+        let devfile_contract_total = IntCounterVec::new(
+            Opts::new(
+                "weebo_si_devfile_contract_total",
+                "devfile-contract decisions, by result and mode",
+            ),
+            &["result", "mode"],
+        )?;
         registry.register(Box::new(admission_requests_total.clone()))?;
+        registry.register(Box::new(admission_warnings_total.clone()))?;
         registry.register(Box::new(dwoc_pin_total.clone()))?;
+        registry.register(Box::new(devfile_contract_total.clone()))?;
         Ok(Self {
             admission_requests_total,
+            admission_warnings_total,
             dwoc_pin_total,
+            devfile_contract_total,
         })
     }
 }
@@ -78,10 +99,25 @@ impl Observer for PrometheusObserver {
             ])
             .inc();
 
+        // Only a decision that warned touches the series, so no feature grows a zero series.
+        if outcome.warnings > 0 {
+            self.admission_warnings_total
+                .with_label_values(&[feature.kebab(), mode_label(mode)])
+                .inc_by(u64::try_from(outcome.warnings).unwrap_or(u64::MAX));
+        }
+
         if feature.kebab() == "dwoc-pin" {
             let team = outcome.team.as_ref().map(|t| t.as_str()).unwrap_or("_none");
             self.dwoc_pin_total
                 .with_label_values(&[outcome.result, team])
+                .inc();
+        }
+
+        // `result` ∈ current|outdated|unknown|denied, all compile-time constants (RFC 0019);
+        // `no_config` (the block removed mid-request) judged nothing, so it is not counted.
+        if feature.kebab() == "devfile-contract" && outcome.result != "no_config" {
+            self.devfile_contract_total
+                .with_label_values(&[outcome.result, mode_label(mode)])
                 .inc();
         }
     }
@@ -107,6 +143,7 @@ mod tests {
             result: "denied_managed_object",
             mutated: false,
             denied,
+            warnings: 0,
         }
     }
 
@@ -205,5 +242,104 @@ mod tests {
             .map(|metric| metric.get_counter().value() as u64)
             .sum();
         assert_eq!(total, 0);
+    }
+
+    /// DryRun counts what Enforce would print, and a decision without a warning adds no series.
+    #[test]
+    fn warnings_are_counted_per_feature_and_mode_in_every_mode() {
+        let registry = Registry::new();
+        let observer = PrometheusObserver::new(&registry).expect("metrics should register");
+        let warned = |warnings| FeatureOutcome {
+            warnings,
+            ..outcome("DevWorkspace", false)
+        };
+        observer.decided(
+            FeatureId::new("devfile-contract"),
+            FeatureMode::DryRun,
+            &warned(2),
+        );
+        observer.decided(
+            FeatureId::new("devfile-contract"),
+            FeatureMode::Enforce,
+            &warned(1),
+        );
+        observer.decided(FeatureId::new("dwoc-pin"), FeatureMode::Enforce, &warned(0));
+
+        let mut series: Vec<(String, String, u64)> = registry
+            .gather()
+            .iter()
+            .filter(|family| family.name() == "weebo_si_admission_warnings_total")
+            .flat_map(|family| family.get_metric())
+            .map(|metric| {
+                let label = |name: &str| {
+                    metric
+                        .get_label()
+                        .iter()
+                        .find(|l| l.name() == name)
+                        .map(|l| l.value().to_string())
+                        .unwrap_or_default()
+                };
+                (
+                    label("feature"),
+                    label("mode"),
+                    metric.get_counter().value() as u64,
+                )
+            })
+            .collect();
+        series.sort();
+        assert_eq!(
+            series,
+            vec![
+                ("devfile-contract".to_string(), "dry_run".to_string(), 2),
+                ("devfile-contract".to_string(), "enforce".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn devfile_contract_decisions_are_counted_by_result_and_mode() {
+        let registry = Registry::new();
+        let observer = PrometheusObserver::new(&registry).expect("metrics should register");
+        let decided = |result, mode| {
+            observer.decided(
+                FeatureId::new("devfile-contract"),
+                mode,
+                &FeatureOutcome {
+                    result,
+                    ..outcome("DevWorkspace", false)
+                },
+            );
+        };
+        decided("outdated", FeatureMode::DryRun);
+        decided("denied", FeatureMode::Enforce);
+        decided("denied", FeatureMode::Enforce);
+        decided("no_config", FeatureMode::Enforce);
+        observer.decided(
+            FeatureId::new("dwoc-pin"),
+            FeatureMode::Enforce,
+            &outcome("DevWorkspace", false),
+        );
+
+        let counter = registry
+            .gather()
+            .into_iter()
+            .find(|family| family.name() == "weebo_si_devfile_contract_total")
+            .expect("the counter is registered");
+        let mut series: Vec<(String, u64)> = counter
+            .get_metric()
+            .iter()
+            .map(|metric| {
+                let labels: Vec<&str> = metric.get_label().iter().map(|l| l.value()).collect();
+                (labels.join("/"), metric.get_counter().value() as u64)
+            })
+            .collect();
+        series.sort();
+        assert_eq!(
+            series,
+            vec![
+                ("dry_run/outdated".to_string(), 1),
+                ("enforce/denied".to_string(), 2),
+            ]
+        );
     }
 }

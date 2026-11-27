@@ -39,6 +39,7 @@ usage: weebo-si-operator <features|webhook|controller|crd|backends|canary|images
               --operator-identity <system:serviceaccount:ns:name>
   controller  [--metrics-addr :8080] [--health-addr :8081] [--leader-election]
               [--canary-image <ref>] [--quota-template-namespace <ns>]
+              [--team-tools-template-namespace <ns>]
   crd         [weebosiconfigs|weebositeams|weebosiusers]
               print the generated CRD YAML — every kind as a multi-document
               stream, or the one named

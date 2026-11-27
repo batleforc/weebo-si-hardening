@@ -14,7 +14,7 @@ use k8s_openapi::api::core::v1::{Namespace, ObjectReference};
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::core::DynamicObject;
 use kube::runtime::controller::Action;
-use kube::runtime::events::{Recorder, Reporter};
+use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::{Client, Resource, ResourceExt};
 use weebo_kit_domain::{Reason, Severity};
 use weebo_si_crd::{WeeboSiConfig, WeeboSiTeam, WeeboSiUser};
@@ -53,6 +53,18 @@ mod reason {
             PodSecurityFailed,
             /// A `resource-quotas` pass failed on a namespace.
             ResourceQuotasFailed,
+            /// A restricted catalogue key is in use, granted by the namespace (RFC 0021).
+            RestrictedGrantHonoured,
+            /// A restricted catalogue key was refused: the namespace does not grant it.
+            RestrictedGrantRefused,
+            /// A DevWorkspace requests a team tool its team is not granted (RFC 0020).
+            TeamToolNotGranted,
+            /// A requesting namespace gets no client certificate: no identity to put in it.
+            TeamToolNoIdentity,
+            /// A team tool was added to a running workspace: one restart mounts its client side.
+            TeamToolRestartNeeded,
+            /// A namespace matches the selectors of two teams that both have team tools.
+            TeamToolsSelectorOverlap,
         }
     }
 }
@@ -66,7 +78,10 @@ impl Reason for ReasonCode {
     }
 
     fn severity(self) -> Severity {
-        Severity::Blocking
+        match self {
+            Self::RestrictedGrantHonoured => Severity::Advisory,
+            _ => Severity::Blocking,
+        }
     }
 }
 
@@ -130,6 +145,57 @@ pub fn retry<K: Regarding>(
         weebo_kit_runtime::events::RECONCILE,
         error,
     )
+}
+
+/// Publish the RFC 0021 Event on `object`: `RestrictedGrantHonoured` (Normal) or
+/// `RestrictedGrantRefused` (Warning), with `note`. A failed publish is logged and dropped: the
+/// counter and the INFO line already carry the same fact.
+pub async fn restricted_grant<K: Regarding>(
+    recorder: &Recorder,
+    object: &K,
+    honoured: bool,
+    note: String,
+) {
+    let (type_, reason) = if honoured {
+        (EventType::Normal, ReasonCode::RestrictedGrantHonoured)
+    } else {
+        (EventType::Warning, ReasonCode::RestrictedGrantRefused)
+    };
+    let event = Event {
+        type_,
+        reason: reason.as_str().to_string(),
+        note: Some(note),
+        action: weebo_kit_runtime::events::RECONCILE.to_string(),
+        secondary: None,
+    };
+    if let Err(err) = recorder.publish(&event, &object.regarding()).await {
+        tracing::warn!("could not publish the {reason} Event: {err}");
+    }
+}
+
+/// Publish one Event on `object`, `Warning` or `Normal`. A failed publish is logged and dropped:
+/// the caller logs the same fact.
+pub async fn publish<K: Regarding>(
+    recorder: &Recorder,
+    object: &K,
+    warning: bool,
+    reason: ReasonCode,
+    note: String,
+) {
+    let event = Event {
+        type_: if warning {
+            EventType::Warning
+        } else {
+            EventType::Normal
+        },
+        reason: reason.as_str().to_string(),
+        note: Some(note),
+        action: weebo_kit_runtime::events::RECONCILE.to_string(),
+        secondary: None,
+    };
+    if let Err(err) = recorder.publish(&event, &object.regarding()).await {
+        tracing::warn!("could not publish the {reason} Event: {err}");
+    }
 }
 
 /// End `object`'s failure streak after a pass that succeeded.

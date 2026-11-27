@@ -5,6 +5,7 @@
 
 pub mod events;
 pub mod reconcile;
+pub mod restricted;
 pub mod workspace;
 
 use std::sync::Arc;
@@ -18,6 +19,16 @@ use weebo_si_crd::WeeboSiConfig;
 use weebo_si_runtime::{KubeConfigStore, KubeDwocStore, KubeNsStore};
 
 pub use reconcile::{Ctx, Error, error_policy, reconcile as reconcile_fn};
+
+/// What the team-tools loop reports into `WeeboSiConfig.status.features` (RFC 0020): it alone
+/// holds the templates an entry is validated against, and the namespaces an overlap shows on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TeamToolsReport {
+    /// Invalid catalogue entries and team blocks: the feature is `Degraded`.
+    pub invalid: Vec<String>,
+    /// Warnings kept in the message (overlapping team selectors).
+    pub warnings: Vec<String>,
+}
 
 /// What every feature's reconcile loops may use, built once by the composition root
 /// (`weebo-si-operator controller`) and handed to each adapters crate's `spawn_controllers`
@@ -46,6 +57,15 @@ pub struct ControllerShared {
     /// Where `resource-quotas`' templates live (`--quota-template-namespace`): a namespace that
     /// runs no pods, because a `ResourceQuota` or `LimitRange` is enforced where it lives.
     pub quota_template_namespace: String,
+    /// Where `team-tools`' templates live (`--team-tools-template-namespace`, RFC 0020); defaults
+    /// to `quota_template_namespace`.
+    pub team_tools_template_namespace: String,
+    /// What the team-tools loop found that the `WeeboSiConfig` status reports (RFC 0020).
+    /// `None` until the loop has run once.
+    pub team_tools_report: Arc<std::sync::RwLock<Option<TeamToolsReport>>>,
+    /// `weebo_si_restricted_grant_total`, registered once and shared by every feature that
+    /// reports restricted keys (RFC 0021).
+    pub restricted_grants: restricted::RestrictedGrantCounter,
 }
 
 /// Run the `WeeboSiConfig` status loop until the process is asked to stop. Every feature's own
@@ -59,9 +79,14 @@ pub async fn run(shared: &ControllerShared) {
     let ctx = Arc::new(Ctx {
         client: shared.client.clone(),
         recorder: shared.recorder.clone(),
+        team_tools: Arc::clone(&shared.team_tools_report),
     });
     let api: Api<WeeboSiConfig> = Api::all(shared.client.clone());
     Controller::new(api, Config::default())
+        // The team-tools loop's findings land here without a `WeeboSiConfig` event.
+        .reconcile_all_on(workspace::config_changes(Arc::clone(
+            &shared.team_tools_report,
+        )))
         .shutdown_on_signal()
         .run(
             |object, ctx| events::tracked(Arc::clone(&object), reconcile_fn(object, ctx)),

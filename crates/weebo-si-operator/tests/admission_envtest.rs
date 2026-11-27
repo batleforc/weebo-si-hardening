@@ -166,6 +166,14 @@ async fn start_webhook(env_test: &EnvTest, cert_dir: &std::path::Path) -> u16 {
         // `dwoc-pin`'s own scenarios below run without `network-profiles`' gate in the way —
         // RFC 0004's admission half has its own suite at the bottom of this file.
         network_profiles: None,
+        // Inert until a scenario writes `spec.features.devfileContract` (the gate answers `Off`).
+        devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
+            config_store.devfile_contract_config(),
+        )),
+        // Inert until a scenario writes `spec.features.teamTools`.
+        team_tools: Some(weebo_si_webhook::team_tools_route(
+            config_store.team_tools_config(),
+        )),
         gate: Arc::new(config_store),
         namespace_view: ns_store,
         dwoc_catalog: dwoc_store,
@@ -452,6 +460,292 @@ async fn a_devworkspace_is_pinned_by_a_real_running_webhook() {
     let _ = devworkspaces
         .delete("python-web", &DeleteParams::default())
         .await;
+}
+
+/// `POST` a DevWorkspace and return the status, the `Warning` headers and the body — `Api`
+/// drops the headers, and the warnings are only there.
+async fn create_reading_warnings(
+    client: &kube::Client,
+    obj: &DynamicObject,
+) -> (u16, Vec<String>, serde_json::Value) {
+    let namespace = obj.metadata.namespace.clone().unwrap_or_default();
+    for _ in 0..40 {
+        let request = kube::core::Request::new(format!(
+            "/apis/workspace.devfile.io/v1alpha2/namespaces/{namespace}/devworkspaces"
+        ))
+        .create(&PostParams::default(), serde_json::to_vec(obj).unwrap())
+        .unwrap();
+        let response = client
+            .send(request.map(kube::client::Body::from))
+            .await
+            .expect("the apiserver should answer");
+        let status = response.status().as_u16();
+        let warnings =
+            weebo_si_pod_security_adapters::namespace_label_store::warnings(response.headers());
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect_bytes().await.unwrap()).unwrap();
+        // Only "webhook not reachable yet" is retried; a verdict is the answer.
+        if body.to_string().contains("failed calling webhook") {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        return (status, warnings, body);
+    }
+    panic!("the webhook never became reachable");
+}
+
+/// RFC 0019 PR 4 over a real apiserver: the warnings reach the client, one patch carries
+/// dwoc-pin's `SetConfigRef` and devfile-contract's annotations onto an object that had no
+/// annotations, and a denied parent is refused at creation.
+#[tokio::test]
+async fn devfile_contract_warns_and_annotates_beside_the_pin_live() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    start_webhook(&env_test, cert_dir.path()).await;
+
+    create_config(
+        client.clone(),
+        serde_json::json!({"features": {
+            "dwocPin": {
+                "mode": "Enforce",
+                "catalog": [{"key": "baseline", "name": "weebo-hardened-config", "namespace": "eclipse-che"}],
+                "default": "baseline",
+            },
+            "devfileContract": {
+                "mode": "Enforce",
+                "currentContract": 3,
+                "minimumContract": 2,
+                "deniedParents": [{"uriPrefix": "https://example.com/denied/"}],
+            },
+        }}),
+    )
+    .await;
+    for name in ["user-alice", "eclipse-che"] {
+        create_namespace(client.clone(), name, BTreeMap::new(), BTreeMap::new()).await;
+    }
+    create_target(client.clone(), "eclipse-che", "weebo-hardened-config").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The real-world case (RFC 0019, *Proof* row 2): no contract, parent on a branch.
+    let mut obj = devworkspace("user-alice", "weebo-che-project");
+    obj.data["spec"]["template"]["parent"] = serde_json::json!({
+        "uri": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml",
+    });
+    let (status, warnings, created) = create_reading_warnings(&client, &obj).await;
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(
+        warnings,
+        vec![
+            "devfile has no weebo.io/platform-contract attribute; add \"weebo.io/platform-contract: 3\" to its attributes".to_string(),
+            "devfile parent follows branch \"main\": pin parent.uri to a tag or a commit".to_string(),
+        ]
+    );
+    let annotations = &created["metadata"]["annotations"];
+    assert_eq!(
+        annotations["hardening.weebo.io/devfile-contract"], "unknown",
+        "{created}"
+    );
+    assert_eq!(
+        annotations["hardening.weebo.io/devfile-contract-reason"],
+        "contract-absent,parent-branch,schema-unknown"
+    );
+    assert_eq!(
+        created["spec"]["template"]["attributes"]["controller.devfile.io/devworkspace-config"]["name"],
+        "weebo-hardened-config",
+        "dwoc-pin's patch must land in the same response: {created}"
+    );
+
+    // A denied parent: refused before a pin is computed, quoting the admin's entry.
+    let mut denied = devworkspace("user-alice", "old-base");
+    denied.data["spec"]["template"]["parent"] =
+        serde_json::json!({"uri": "https://example.com/denied/devfile.yaml"});
+    let (status, _, body) = create_reading_warnings(&client, &denied).await;
+    // 400, not the mock's 403: `AdmissionResponse::deny` sets no code (RFC 0019, R9), as for
+    // every denial on this route.
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("devfile parent is denied by the platform (deniedParents entry 1: https://example.com/denied/)"),
+        "{body}"
+    );
+}
+
+/// `PATCH` (merge) a DevWorkspace and return the status, the `Warning` headers and the body.
+async fn patch_reading_warnings(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+    patch: serde_json::Value,
+) -> (u16, Vec<String>, serde_json::Value) {
+    let request = kube::core::Request::new(format!(
+        "/apis/workspace.devfile.io/v1alpha2/namespaces/{namespace}/devworkspaces"
+    ))
+    .patch(name, &PatchParams::default(), &Patch::Merge(patch))
+    .unwrap();
+    let response = client
+        .send(request.map(kube::client::Body::from))
+        .await
+        .expect("the apiserver should answer");
+    let status = response.status().as_u16();
+    let warnings =
+        weebo_si_pod_security_adapters::namespace_label_store::warnings(response.headers());
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect_bytes().await.unwrap()).unwrap();
+    (status, warnings, body)
+}
+
+/// RFC 0020 PR 5 over a real apiserver, `onNotGranted: Deny` (Resolved 15): a granted key is
+/// annotated; a `CREATE` naming an ungranted key is refused; once the grant is revoked, an
+/// `UPDATE` that does not start the workspace is admitted with the key dropped and a warning,
+/// and the `UPDATE` that starts it is refused.
+#[tokio::test]
+async fn team_tools_refuses_only_a_create_or_a_start_under_deny_live() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    start_webhook(&env_test, cert_dir.path()).await;
+
+    create_config(
+        client.clone(),
+        serde_json::json!({"features": {"teamTools": {
+            "mode": "Enforce",
+            "onNotGranted": "Deny",
+            "catalog": [{
+                "key": "buildkit",
+                "workload": {"kind": "StatefulSet", "name": "buildkitd"},
+                "service": {"name": "buildkitd", "port": 1234},
+                "toolTemplates": [
+                    {"kind": "StatefulSet", "name": "buildkitd", "namespace": "weebo-si-hardening-templates"},
+                ],
+            }],
+        }}}),
+    )
+    .await;
+    let team_spec = |allowed: serde_json::Value| {
+        serde_json::json!({
+            "namespaceSelector": {"matchLabels": {"weebo.io/team": "weebo"}},
+            "features": {"teamTools": {"namespace": "team-weebo-tools", "allowed": allowed}},
+        })
+    };
+    create_team(
+        client.clone(),
+        "weebo",
+        team_spec(serde_json::json!(["buildkit"])),
+    )
+    .await;
+    let labels = BTreeMap::from([("weebo.io/team".to_string(), "weebo".to_string())]);
+    create_namespace(client.clone(), "user-alice", labels, BTreeMap::new()).await;
+
+    let requesting = |name: &str, keys: &str| {
+        let mut obj = devworkspace("user-alice", name);
+        obj.data["spec"]["started"] = serde_json::json!(false);
+        obj.data["spec"]["template"]["attributes"] =
+            serde_json::json!({"hardening.weebo.io/team-tools": keys});
+        obj
+    };
+    let verdict = |obj: &serde_json::Value| {
+        obj["metadata"]["annotations"]["hardening.weebo.io/team-tools"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Probe workspaces until the config and team watches have reached the webhook.
+    for attempt in 0..40 {
+        let (_, _, probe) = create_reading_warnings(
+            &client,
+            &requesting(&format!("probe-{attempt}"), "buildkit"),
+        )
+        .await;
+        if verdict(&probe) == "granted=buildkit;dropped=" {
+            break;
+        }
+        assert!(
+            attempt < 39,
+            "the team-tools config never reached the webhook: {probe}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let (status, warnings, created) =
+        create_reading_warnings(&client, &requesting("python-web", "buildkit")).await;
+    assert_eq!(status, 201, "{created}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(verdict(&created), "granted=buildkit;dropped=");
+
+    // A non-starting UPDATE while granted keeps the verdict and warns nothing.
+    let (status, warnings, body) = patch_reading_warnings(
+        &client,
+        "user-alice",
+        "python-web",
+        serde_json::json!({"metadata": {"labels": {"touch": "granted"}}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(verdict(&body), "granted=buildkit;dropped=");
+
+    let (status, _, body) =
+        create_reading_warnings(&client, &requesting("android-ws", "android")).await;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("team tool \"android\" is not granted to team weebo"),
+        "{body}"
+    );
+
+    // Revoke the grant, then touch a label (not a start) until the webhook sees the revocation.
+    let teams: Api<WeeboSiTeam> = Api::all(client.clone());
+    teams
+        .patch(
+            "weebo",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"spec": team_spec(serde_json::json!([]))})),
+        )
+        .await
+        .expect("the team should be patched");
+    let mut last = None;
+    for attempt in 0..40 {
+        let touch = serde_json::json!({"metadata": {"labels": {"touch": attempt.to_string()}}});
+        let (status, warnings, body) =
+            patch_reading_warnings(&client, "user-alice", "python-web", touch).await;
+        assert_eq!(
+            status, 200,
+            "a non-starting UPDATE is never refused: {body}"
+        );
+        if verdict(&body) == "granted=;dropped=buildkit" {
+            last = Some(warnings);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        last.expect("the revocation never reached the webhook"),
+        vec!["team tool \"buildkit\" is no longer granted to team weebo; dropped".to_string()]
+    );
+
+    let (status, _, body) = patch_reading_warnings(
+        &client,
+        "user-alice",
+        "python-web",
+        serde_json::json!({"spec": {"started": true}}),
+    )
+    .await;
+    assert_eq!(status, 400, "the start is refused: {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("team tool \"buildkit\" is not granted to team weebo"),
+        "{body}"
+    );
 }
 
 /// `failurePolicy: Fail`: with the webhook unreachable, admission is refused rather than
@@ -1596,12 +1890,14 @@ fn rfc4_config(mode: FeatureMode) -> ResolvedNetworkProfilesConfig {
                     namespace: NamespaceName::new(OPERATOR_NAMESPACE),
                 },
             }],
+            restricted: false,
         }]),
         baseline: ProfileKey::new("base"),
         namespace_selection: ProfileNamespaceSelection::default(),
         workspace_selection: WorkspaceSelection::default(),
         on_not_granted: OnNotGranted::default(),
         enforcement: Enforcement::default(),
+        namespace_grant: Default::default(),
     })
 }
 
@@ -2025,7 +2321,13 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
     )
     .await;
     create_policy_template(admin.clone()).await;
-    create_config(admin.clone(), rfc4_config_spec("Enforce", "Off")).await;
+    // `devfile-contract` would refuse this devfile too (no contract attribute counts as 1): the
+    // gate runs first on the route (RFC 0019, D-14), so its message is the one returned.
+    let mut spec = rfc4_config_spec("Enforce", "Off");
+    spec["features"]["devfileContract"] = serde_json::json!({
+        "mode": "Enforce", "currentContract": 2, "minimumContract": 1, "deniedContracts": [1],
+    });
+    create_config(admin.clone(), spec).await;
 
     let stack = rfc4_stack(admin.clone()).await;
     let mut dwoc_pin_registry: Registry<Workspace> = Registry::new();
@@ -2042,6 +2344,12 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
             registry: gate_registry,
             config: stack.config_store.network_profiles_config(),
         }),
+        devfile_contract: Some(weebo_si_webhook::devfile_contract_registry(
+            stack.config_store.devfile_contract_config(),
+        )),
+        team_tools: Some(weebo_si_webhook::team_tools_route(
+            stack.config_store.team_tools_config(),
+        )),
         gate: Arc::clone(&stack.config_store) as _,
         namespace_view: Arc::clone(&stack.ns_store) as _,
         dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
@@ -2145,15 +2453,13 @@ async fn a_devworkspace_is_refused_until_its_namespace_has_a_baseline_live() {
     .expect("the baseline should be written");
 
     // --- After it lands in the gate's watch cache: admitted. ---
+    // Declaring contract 2, so `devfile-contract` lets it through as well.
+    let mut in_time = devworkspace(RFC4_WORKSPACE_NAMESPACE, "in-time");
+    in_time.data["spec"]["template"]["attributes"] =
+        serde_json::json!({"weebo.io/platform-contract": 2});
     let mut admitted = false;
     for _ in 0..40 {
-        match workspaces
-            .create(
-                &PostParams::default(),
-                &devworkspace(RFC4_WORKSPACE_NAMESPACE, "in-time"),
-            )
-            .await
-        {
+        match workspaces.create(&PostParams::default(), &in_time).await {
             Ok(_) => {
                 admitted = true;
                 break;
@@ -3487,4 +3793,445 @@ fn unguarded_count(registry: &prometheus::Registry) -> u64 {
         .flat_map(|family| family.get_metric())
         .map(|metric| metric.get_counter().value() as u64)
         .sum()
+}
+
+// ---------------------------------------------------------------------------------------------
+// RFC 0018 — `pod-identity`'s two Pod webhooks, at `Fail`, on workspace namespaces only.
+//
+// The envtest apiserver may run without the `UserNamespacesSupport` and `SupplementalGroupsPolicy`
+// gates (1.32 ships them off): it then drops `hostUsers` and `supplementalGroupsPolicy` between
+// the mutation and the validation, so no test here relies on a rewritten pod being admitted.
+// Each assertion holds with and without the gates.
+// ---------------------------------------------------------------------------------------------
+
+use weebo_si_pod_identity_adapters::{
+    PodIdentityMetrics, PodIdentityState, pod_identity_router, validate_review,
+};
+
+const IDENTITY_NAMESPACE: &str = "dev-ws-identity";
+const IDENTITY_SCOPE_LABEL: &str = "weebo.io/identity-scope";
+
+/// `helm template` with `podIdentity.webhooks.enabled=true`, the object named `*-<suffix>` of
+/// `kind`, parsed.
+fn chart_identity_webhook<K: serde::de::DeserializeOwned + kube::Resource>(
+    template: &str,
+    kind: &str,
+) -> K {
+    let chart_dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../charts/weebo-si-operator"
+    );
+    let output = std::process::Command::new("helm")
+        .args([
+            "template",
+            "ci",
+            chart_dir,
+            "--namespace",
+            "weebo-si-hardening",
+            "--set",
+            "podIdentity.webhooks.enabled=true",
+            "--show-only",
+            template,
+        ])
+        .output()
+        .expect("helm must be on PATH to render charts/weebo-si-operator — see task helm:lint");
+    assert!(
+        output.status.success(),
+        "helm template failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("helm output should be utf8");
+    rendered
+        .split("\n---")
+        .filter(|document| document.contains(&format!("kind: {kind}")))
+        .map(|document| {
+            serde_yaml_bw::from_str::<K>(document).expect("the rendered manifest should parse")
+        })
+        .find(|object| {
+            object
+                .meta()
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("-pods-identity"))
+        })
+        .expect("the chart should render the -pods-identity configuration")
+}
+
+/// The two webhooks exactly as the chart renders them, pointed at `url_base`.
+fn chart_identity_webhooks(
+    url_base: &str,
+    ca_bundle: &[u8],
+) -> (MutatingWebhookConfiguration, ValidatingWebhookConfiguration) {
+    let client_config = |path: &str| WebhookClientConfig {
+        url: Some(format!("{url_base}{path}")),
+        ca_bundle: Some(k8s_openapi::ByteString(ca_bundle.to_vec())),
+        service: None::<ServiceReference>,
+    };
+    let mut mutating: MutatingWebhookConfiguration = chart_identity_webhook(
+        "templates/mutatingwebhookconfiguration.yaml",
+        "MutatingWebhookConfiguration",
+    );
+    for webhook in mutating.webhooks.iter_mut().flatten() {
+        webhook.client_config = client_config("/mutate/v1/pods/identity");
+    }
+    let mut validating: ValidatingWebhookConfiguration = chart_identity_webhook(
+        "templates/validatingwebhookconfiguration-identity.yaml",
+        "ValidatingWebhookConfiguration",
+    );
+    for webhook in validating.webhooks.iter_mut().flatten() {
+        webhook.client_config = client_config("/validate/v1/pods/identity");
+    }
+    (mutating, validating)
+}
+
+fn bare_pod(namespace: &str, name: &str, spec_extra: serde_json::Value) -> Pod {
+    let mut spec = serde_json::json!({"containers": [{"name": "tools", "image": "x"}]});
+    if let (Some(spec), Some(extra)) = (spec.as_object_mut(), spec_extra.as_object()) {
+        spec.extend(extra.clone());
+    }
+    serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": spec,
+    }))
+    .expect("the pod should deserialize")
+}
+
+/// The chart's two webhooks pointed at a dead port: only the apiserver's selector decides
+/// whether a pod is admitted. Both are `Fail` and the validating one has no `pods` UPDATE (L21).
+#[tokio::test]
+async fn identity_webhooks_skip_excluded_namespaces() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+
+    let dead_port = free_port().expect("a free port should be available");
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (_key, cert) =
+        generate_webhook_tls(cert_dir.path()).expect("cert generation should succeed");
+    let ca_bundle =
+        weebo_si_envtest_support::read_ca_bundle(&cert).expect("cert should be readable");
+    let (mutating, validating) =
+        chart_identity_webhooks(&format!("https://127.0.0.1:{dead_port}"), &ca_bundle);
+
+    let mutate = mutating.webhooks.as_ref().and_then(|w| w.first()).unwrap();
+    let validate = validating
+        .webhooks
+        .as_ref()
+        .and_then(|w| w.first())
+        .unwrap();
+    assert_eq!(mutate.name, "pod-identity-mutate.hardening.weebo.io");
+    assert_eq!(validate.name, "pod-identity-validate.hardening.weebo.io");
+    assert_eq!(mutate.failure_policy.as_deref(), Some("Fail"));
+    assert_eq!(validate.failure_policy.as_deref(), Some("Fail"));
+    let covered: Vec<(String, String)> = validate
+        .rules
+        .iter()
+        .flatten()
+        .flat_map(|rule| {
+            let operations = rule.operations.clone().unwrap_or_default();
+            rule.resources
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(move |resource| {
+                    operations
+                        .clone()
+                        .into_iter()
+                        .map(move |operation| (resource.clone(), operation))
+                })
+        })
+        .collect();
+    assert_eq!(
+        covered,
+        [
+            ("pods".to_string(), "CREATE".to_string()),
+            ("pods/ephemeralcontainers".to_string(), "UPDATE".to_string()),
+        ]
+    );
+    let exclusion_label = mutate
+        .namespace_selector
+        .as_ref()
+        .and_then(|selector| selector.match_expressions.as_ref())
+        .and_then(|exprs| exprs.first())
+        .map(|expr| expr.key.clone())
+        .expect("the rendered selector should name the exclusion label first");
+
+    Api::<MutatingWebhookConfiguration>::all(client.clone())
+        .create(&PostParams::default(), &mutating)
+        .await
+        .expect("the mutating configuration should be accepted");
+    Api::<ValidatingWebhookConfiguration>::all(client.clone())
+        .create(&PostParams::default(), &validating)
+        .await
+        .expect("the validating configuration should be accepted");
+
+    let workspace = (WORKSPACE_NAMESPACE_LABEL.to_string(), String::new());
+    create_namespace(
+        client.clone(),
+        "identity-excluded",
+        BTreeMap::from([workspace.clone(), (exclusion_label, "true".to_string())]),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        client.clone(),
+        "identity-not-workspace",
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .await;
+    create_namespace(
+        client.clone(),
+        "identity-workspace",
+        BTreeMap::from([workspace]),
+        BTreeMap::new(),
+    )
+    .await;
+
+    for namespace in ["identity-excluded", "identity-not-workspace"] {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+        pods.create(
+            &PostParams::default(),
+            &bare_pod(namespace, "passes", serde_json::json!({})),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{namespace} is outside both webhooks' selector: {err}"));
+    }
+
+    let pods: Api<Pod> = Api::namespaced(client.clone(), "identity-workspace");
+    let mut refused = None;
+    for _ in 0..40 {
+        match pods
+            .create(
+                &PostParams::default(),
+                &bare_pod("identity-workspace", "refused", serde_json::json!({})),
+            )
+            .await
+        {
+            Err(err) if err.to_string().contains("pod-identity-") => {
+                refused = Some(err);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+            Ok(_) => {
+                let _ = pods.delete("refused", &DeleteParams::default()).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    assert!(
+        refused.is_some(),
+        "a workspace namespace must reach the (dead) webhooks, at Fail"
+    );
+}
+
+/// The live stack: the real config and namespace stores, the adapters crate's router over TLS,
+/// and the chart's webhooks pointed at it — the mutating one only when `with_mutation`.
+async fn pod_identity_stack(
+    env_test: &EnvTest,
+    cert_dir: &std::path::Path,
+    pod_identity: serde_json::Value,
+    with_mutation: bool,
+) -> (kube::Client, Arc<PodIdentityState>) {
+    let client = env_test.client().expect("client should build");
+    install_crds(client.clone()).await;
+    let stack = rfc4_stack(client.clone()).await;
+    let config = stack.config_store.pod_identity_config();
+    let observer = PodIdentityMetrics::register(
+        &stack.prometheus_registry,
+        Arc::clone(&stack.config_store) as _,
+        Arc::clone(&config),
+    )
+    .expect("pod-identity metrics should register");
+    let (mutation, validation) =
+        weebo_si_pod_identity_adapters::registries(config, Arc::new(observer));
+    let state = Arc::new(PodIdentityState {
+        mutation,
+        validation,
+        gate: Arc::clone(&stack.config_store) as _,
+        namespace_view: Arc::clone(&stack.ns_store) as _,
+        dwoc_catalog: Arc::clone(&stack.dwoc_store) as _,
+        observer: Arc::clone(&stack.observer) as _,
+        metrics: stack.metrics.clone(),
+    });
+    let (port, ca_bundle) = serve_router(cert_dir, pod_identity_router(Arc::clone(&state))).await;
+    let (mutating, validating) =
+        chart_identity_webhooks(&format!("https://127.0.0.1:{port}"), &ca_bundle);
+    if with_mutation {
+        Api::<MutatingWebhookConfiguration>::all(client.clone())
+            .create(&PostParams::default(), &mutating)
+            .await
+            .expect("the mutating configuration should be accepted");
+    }
+    Api::<ValidatingWebhookConfiguration>::all(client.clone())
+        .create(&PostParams::default(), &validating)
+        .await
+        .expect("the validating configuration should be accepted");
+
+    create_config(
+        client.clone(),
+        serde_json::json!({"features": {"podIdentity": pod_identity}}),
+    )
+    .await;
+    create_namespace(
+        client.clone(),
+        IDENTITY_NAMESPACE,
+        BTreeMap::from([(WORKSPACE_NAMESPACE_LABEL.to_string(), String::new())]),
+        BTreeMap::new(),
+    )
+    .await;
+    // Both watches must have caught up, or the first admission reads `Off` or "not observed".
+    let namespace = NamespaceName::new(IDENTITY_NAMESPACE);
+    for _ in 0..100 {
+        let config = stack
+            .config_store
+            .pod_identity_config()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some();
+        if config
+            && weebo_si_chassis::port::namespace_view::NamespaceView::facts(
+                stack.ns_store.as_ref(),
+                &namespace,
+            )
+            .is_some()
+        {
+            return (client, state);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the config and namespace watches never caught up");
+}
+
+/// Out of `namespaceSelector`, both webhooks answer and change nothing: the pod keeps no
+/// `securityContext` at all.
+#[tokio::test]
+async fn out_of_scope_namespace_is_untouched() {
+    let env_test = envtest_or_skip!();
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (client, _) = pod_identity_stack(
+        &env_test,
+        cert_dir.path(),
+        serde_json::json!({
+            "mode": "Enforce",
+            "namespaceSelector": {"matchLabels": {IDENTITY_SCOPE_LABEL: "in"}},
+        }),
+        true,
+    )
+    .await;
+
+    let pods: Api<Pod> = Api::namespaced(client, IDENTITY_NAMESPACE);
+    let created = retry_until_webhook_routes(|| async {
+        pods.create(
+            &PostParams::default(),
+            &bare_pod(IDENTITY_NAMESPACE, "outside", serde_json::json!({})),
+        )
+        .await
+    })
+    .await
+    .expect("a namespace outside the selector is admitted, refusal or not");
+    let spec = created.spec.expect("a pod has a spec");
+    assert_eq!(spec.host_users, None);
+    assert!(
+        spec.security_context
+            .is_none_or(|context| context.run_as_group.is_none() && context.fs_group.is_none()),
+        "nothing may be rewritten out of scope"
+    );
+}
+
+/// RFC 0018's observation 3 with only the validating webhook registered: `hostUsers: true`
+/// refused under `Enforce`, read through the real config store (the `resolve_mode` arm).
+#[tokio::test]
+async fn enforce_refuses_host_users_true() {
+    let env_test = envtest_or_skip!();
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (client, _) = pod_identity_stack(
+        &env_test,
+        cert_dir.path(),
+        serde_json::json!({"mode": "Enforce"}),
+        false,
+    )
+    .await;
+
+    let pods: Api<Pod> = Api::namespaced(client, IDENTITY_NAMESPACE);
+    let err = retry_until_webhook_routes(|| async {
+        pods.create(
+            &PostParams::default(),
+            &bare_pod(
+                IDENTITY_NAMESPACE,
+                "probe",
+                serde_json::json!({
+                    "hostUsers": true,
+                    "securityContext": {"runAsUser": 1234, "runAsGroup": 1234},
+                }),
+            ),
+        )
+        .await
+    })
+    .await
+    .expect_err("a pod in the node's user namespace must be refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("pod-identity-validate.hardening.weebo.io"),
+        "{message}"
+    );
+    // `hostUsers=true` with the gate on, `hostUsers unset` where the apiserver dropped it.
+    assert!(message.contains("hostUsers"), "{message}");
+    assert!(
+        pods.get_opt("probe").await.expect("get").is_none(),
+        "no pod object may exist after a refusal"
+    );
+}
+
+/// `mode_for_admission`: a namespace the watch has never seen is refused, not waved through.
+/// Called in-process, because a namespace created through the apiserver would race its watch.
+#[tokio::test]
+async fn fresh_namespace_is_refused() {
+    let env_test = envtest_or_skip!();
+    let cert_dir = tempfile::tempdir().expect("scratch dir");
+    let (_, state) = pod_identity_stack(
+        &env_test,
+        cert_dir.path(),
+        serde_json::json!({"mode": "Enforce"}),
+        true,
+    )
+    .await;
+
+    let review: kube::core::admission::AdmissionReview<DynamicObject> =
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "fresh",
+                "kind": {"group": "", "version": "v1", "kind": "Pod"},
+                "resource": {"group": "", "version": "v1", "resource": "pods"},
+                "operation": "CREATE",
+                "userInfo": {},
+                "namespace": "dev-ws-not-yet-observed",
+                "object": serde_json::to_value(bare_pod(
+                    "dev-ws-not-yet-observed",
+                    "early",
+                    serde_json::json!({
+                        "hostUsers": false,
+                        "securityContext": {
+                            "runAsUser": 1234, "runAsGroup": 1234, "fsGroup": 1234,
+                            "supplementalGroupsPolicy": "Strict",
+                        },
+                    }),
+                ))
+                .expect("the pod should serialize"),
+                "dryRun": false,
+            },
+        }))
+        .expect("the review should deserialize");
+    let response = validate_review(&state, review)
+        .response
+        .expect("a review answers");
+    assert!(!response.allowed, "an unobserved namespace must be refused");
+    assert!(
+        response.result.message.contains("not observed"),
+        "{}",
+        response.result.message
+    );
 }

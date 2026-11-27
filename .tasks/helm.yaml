@@ -28,7 +28,14 @@ tasks:
       # that only exist behind this switch, so the default render never covers them.
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set identity.rbac.enabled=true > /dev/null
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set imageRewrite.webhooks.enabled=false > /dev/null
+      # RFC 0018's two Pod webhooks exist only behind this switch (off by default, L7).
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set podIdentity.webhooks.enabled=true > /dev/null
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set podIdentity.webhooks.enabled=true --set certificates.provider=openshift > /dev/null
       - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set podSecurity.rbac.enabled=true --set resourceQuotas.rbac.enabled=true > /dev/null
+      # RFC 0020's team-tools grants: two unbound ClusterRoles, a cluster-wide read and the template
+      # namespace Role, all behind this switch; rendered with resource-quotas on too so the shared
+      # template Namespace is deduplicated.
+      - helm template ci charts/weebo-si-operator --namespace weebo-si-hardening --set teamTools.rbac.enabled=true --set resourceQuotas.rbac.enabled=true > /dev/null
       # The NetworkPolicies are off by default in all three charts, so the default renders never
       # cover them. The operator's needs the apiserver CIDR (the render fails without it, on
       # purpose); preauth-proxy's needs a narrowing gateway selector, for the same reason.

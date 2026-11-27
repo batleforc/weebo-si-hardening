@@ -25,7 +25,7 @@ use crate::identity::{GroupName, NamespaceName, TeamName, Username};
 use crate::path::normalise;
 use crate::policy::{
     AccessProfile, BearerMode, CatalogueKey, Delegation, EndpointPolicy, MatchKind, Method,
-    MethodSet, PathRule, Provenance, Upstream,
+    MethodSet, PathRule, Provenance, RestrictedResult, Upstream,
 };
 
 /// The admin's catalogue: what each key means. Admin vocabulary, cluster-wide, and the only place
@@ -36,16 +36,16 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
-    /// Build a catalogue from `(key, anonymous, delegation)` triples.
+    /// Build a catalogue from `(key, anonymous, restricted, delegation)` entries.
     ///
     /// A key that is both `anonymous` and delegating is refused here rather than resolved later:
     /// "no authentication at all" and "these named people" are two different answers to the same
     /// question, and a profile that claims both has no meaning a developer could reason about.
     pub fn new(
-        entries: impl IntoIterator<Item = (CatalogueKey, bool, BTreeSet<Delegation>)>,
+        entries: impl IntoIterator<Item = (CatalogueKey, bool, bool, BTreeSet<Delegation>)>,
     ) -> Result<Self, CompileError> {
         let mut map = BTreeMap::new();
-        for (key, anonymous, delegation) in entries {
+        for (key, anonymous, restricted, delegation) in entries {
             if anonymous && !delegation.is_empty() {
                 return Err(CompileError::AnonymousWithDelegation(key));
             }
@@ -55,6 +55,7 @@ impl Catalogue {
                     key,
                     anonymous,
                     delegation,
+                    restricted,
                 },
             );
         }
@@ -148,6 +149,15 @@ pub struct RawEndpoint {
     pub upstream: Option<String>,
     /// Devfile projection, or the developer's own object.
     pub provenance: Provenance,
+    /// The keys the namespace's `hardening.weebo.io/endpoint-access` annotation grants (RFC
+    /// 0021), read with [`namespace_grant`]. It unlocks restricted keys and never selects one.
+    pub namespace_grant: BTreeSet<CatalogueKey>,
+}
+
+/// The `hardening.weebo.io/endpoint-access` annotation read as a set: a comma list, order,
+/// whitespace and duplicates ignored. Absent and empty both grant nothing.
+pub fn namespace_grant(raw: Option<&str>) -> BTreeSet<CatalogueKey> {
+    split_names(raw).map(CatalogueKey::new).collect()
 }
 
 /// What a cluster decides once, and every endpoint in it inherits.
@@ -190,6 +200,15 @@ pub enum CompileError {
     UnknownKey(CatalogueKey),
     /// The annotation names a key the team's grant — or the admin's override — does not allow.
     NotGranted(CatalogueKey),
+    /// RFC 0021: the effective default is a restricted key the namespace does not grant, so the
+    /// endpoint has nothing to fall back to and is indexed closed. `requested` is the restricted
+    /// key that was asked for and fell back to that default, when it was not the default itself.
+    RestrictedNotGranted {
+        /// The effective default.
+        default: CatalogueKey,
+        /// The restricted key the annotation or a rule named, if other than the default.
+        requested: Option<CatalogueKey>,
+    },
     /// The grant's own default is not in its allowed set, or an override narrowed the allowed set
     /// to something the default is no longer in. A configuration bug, and a closed endpoint until
     /// it is fixed.
@@ -221,6 +240,9 @@ impl fmt::Display for CompileError {
             }
             Self::UnknownKey(key) => write!(f, "no catalogue entry named {key}"),
             Self::NotGranted(key) => write!(f, "{key} is not granted here"),
+            Self::RestrictedNotGranted { default: key, .. } => {
+                write!(f, "{key} is not granted here (a restricted default)")
+            }
             Self::DefaultNotAllowed(key) => write!(f, "default {key} is not in the allowed set"),
             Self::UnparseableRules(why) => write!(f, "rules did not parse: {why}"),
             Self::TooManyRules { found, max } => write!(f, "{found} rules, at most {max} allowed"),
@@ -301,9 +323,18 @@ pub fn compile(
         Some(key) => key,
         None => default.clone(),
     };
+    let reach = Reach {
+        catalogue,
+        allowed: &allowed,
+        ceiling,
+        default: &default,
+        granted: &raw.namespace_grant,
+    };
+    let mut restricted = Vec::new();
+    let key = reach.unlock(key, &mut restricted)?;
     let profile = resolve_profile(&key, catalogue, &allowed, ceiling)?;
 
-    let rules = compile_rules(raw, catalogue, &allowed, ceiling, settings)?;
+    let rules = compile_rules(raw, &reach, settings, &mut restricted)?;
 
     Ok(EndpointPolicy {
         namespace: raw.namespace.clone(),
@@ -321,7 +352,79 @@ pub fn compile(
         provenance: raw.provenance,
         upstream: raw.upstream.as_deref().and_then(Upstream::parse),
         generation,
+        restricted,
     })
+}
+
+/// What a key is resolved against on one endpoint: the catalogue, the narrowed allowed set and
+/// delegation ceiling, the effective default (team default narrowed by an override) and the
+/// namespace's grant.
+struct Reach<'a> {
+    catalogue: &'a Catalogue,
+    allowed: &'a BTreeSet<CatalogueKey>,
+    ceiling: Option<&'a BTreeSet<Delegation>>,
+    default: &'a CatalogueKey,
+    granted: &'a BTreeSet<CatalogueKey>,
+}
+
+impl Reach<'_> {
+    /// RFC 0021: a restricted key the namespace does not grant is replaced by the effective
+    /// default; a default that is itself restricted and ungranted does not compile, so the
+    /// endpoint is indexed closed. A restricted key outside `allowed` is left for
+    /// [`resolve_profile`] to refuse as before. Each restricted key met is recorded once.
+    fn unlock(
+        &self,
+        key: CatalogueKey,
+        seen: &mut Vec<(CatalogueKey, RestrictedResult)>,
+    ) -> Result<CatalogueKey, CompileError> {
+        let restricted = self
+            .catalogue
+            .profile(&key)
+            .is_some_and(|profile| profile.restricted)
+            && self.allowed.contains(&key);
+        if !restricted {
+            return Ok(key);
+        }
+        if self.granted.contains(&key) {
+            record(seen, &key, RestrictedResult::Honoured);
+            return Ok(key);
+        }
+        if &key == self.default {
+            return Err(CompileError::RestrictedNotGranted {
+                default: key,
+                requested: None,
+            });
+        }
+        let served_as = self
+            .unlock(self.default.clone(), seen)
+            .map_err(|err| match err {
+                CompileError::RestrictedNotGranted { default, .. } => {
+                    CompileError::RestrictedNotGranted {
+                        default,
+                        requested: Some(key.clone()),
+                    }
+                }
+                other => other,
+            })?;
+        record(
+            seen,
+            &key,
+            RestrictedResult::Refused {
+                served_as: served_as.clone(),
+            },
+        );
+        Ok(served_as)
+    }
+}
+
+fn record(
+    seen: &mut Vec<(CatalogueKey, RestrictedResult)>,
+    key: &CatalogueKey,
+    result: RestrictedResult,
+) {
+    if !seen.iter().any(|(known, _)| known == key) {
+        seen.push((key.clone(), result));
+    }
 }
 
 /// The profile a key resolves to here, with the admin's delegation ceiling already applied.
@@ -345,15 +448,15 @@ fn resolve_profile(
         key: profile.key.clone(),
         anonymous: profile.anonymous,
         delegation,
+        restricted: profile.restricted,
     })
 }
 
 fn compile_rules(
     raw: &RawEndpoint,
-    catalogue: &Catalogue,
-    allowed: &BTreeSet<CatalogueKey>,
-    ceiling: Option<&BTreeSet<Delegation>>,
+    reach: &Reach<'_>,
     settings: &CompileSettings,
+    restricted: &mut Vec<(CatalogueKey, RestrictedResult)>,
 ) -> Result<Vec<PathRule>, CompileError> {
     let Some(document) = raw
         .rules
@@ -372,15 +475,14 @@ fn compile_rules(
         });
     }
     wire.into_iter()
-        .map(|rule| compile_rule(rule, catalogue, allowed, ceiling))
+        .map(|rule| compile_rule(rule, reach, restricted))
         .collect()
 }
 
 fn compile_rule(
     wire: WireRule,
-    catalogue: &Catalogue,
-    allowed: &BTreeSet<CatalogueKey>,
-    ceiling: Option<&BTreeSet<Delegation>>,
+    reach: &Reach<'_>,
+    restricted: &mut Vec<(CatalogueKey, RestrictedResult)>,
 ) -> Result<PathRule, CompileError> {
     // A rule's path is normalised here, against the same function a request's path goes through,
     // so that the two are compared in one alphabet. A path that does not survive — or that
@@ -408,8 +510,8 @@ fn compile_rule(
             MethodSet::of(parsed)
         }
     };
-    let key = CatalogueKey::new(wire.access);
-    let profile = resolve_profile(&key, catalogue, allowed, ceiling)?;
+    let key = reach.unlock(CatalogueKey::new(wire.access), restricted)?;
+    let profile = resolve_profile(&key, reach.catalogue, reach.allowed, reach.ceiling)?;
     Ok(PathRule {
         path: normalised.as_str().to_owned(),
         kind: match wire.r#match {
@@ -456,6 +558,7 @@ impl EndpointPolicy {
             // would turn a mistyped rule into an endpoint nobody can reach at all.
             upstream: raw.upstream.as_deref().and_then(Upstream::parse),
             generation,
+            restricted: Vec::new(),
         }
     }
 }
@@ -773,12 +876,187 @@ mod tests {
             Catalogue::new([(
                 CatalogueKey::new("open"),
                 true,
+                false,
                 BTreeSet::from([Delegation::Team])
             )]),
             Err(CompileError::AnonymousWithDelegation(CatalogueKey::new(
                 "open"
             )))
         );
+    }
+
+    /// The fixture catalogue with `open` marked restricted (RFC 0021).
+    fn restricted_open() -> Catalogue {
+        let mut catalogue = catalogue();
+        if let Some(open) = catalogue.entries.get_mut(&CatalogueKey::new("open")) {
+            open.restricted = true;
+        }
+        catalogue
+    }
+
+    fn compile_restricted(
+        raw: &RawEndpoint,
+        grant: &Grant,
+        overrides: &[Override],
+    ) -> Result<EndpointPolicy, CompileError> {
+        compile(
+            raw,
+            &restricted_open(),
+            grant,
+            overrides,
+            &CompileSettings::default(),
+            1,
+        )
+    }
+
+    fn refused_as(key: &str) -> RestrictedResult {
+        RestrictedResult::Refused {
+            served_as: CatalogueKey::new(key),
+        }
+    }
+
+    /// RFC 0021 S2, endpoint half.
+    #[test]
+    fn an_open_endpoint_without_the_namespace_grant_serves_the_default() {
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("open".into());
+        let policy = compile_restricted(&raw, &full_grant(), &[]).unwrap();
+        assert_eq!(policy.profile.key, CatalogueKey::new("private"));
+        assert!(!policy.profile.anonymous);
+        assert_eq!(
+            policy.restricted,
+            vec![(CatalogueKey::new("open"), refused_as("private"))]
+        );
+
+        raw.namespace_grant = namespace_grant(Some(" team ,open,,open"));
+        let policy = compile_restricted(&raw, &full_grant(), &[]).unwrap();
+        assert!(policy.profile.anonymous);
+        assert_eq!(
+            policy.restricted,
+            vec![(CatalogueKey::new("open"), RestrictedResult::Honoured)]
+        );
+    }
+
+    /// RFC 0021 S2, path-rule half.
+    #[test]
+    fn an_open_rule_without_the_namespace_grant_serves_the_default() {
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("team".into());
+        raw.rules = Some(
+            [
+                "- { path: /healthz, match: exact, access: open }",
+                "- { path: /hooks/, match: prefix, access: open }",
+            ]
+            .join("\n"),
+        );
+        let policy = compile_restricted(&raw, &full_grant(), &[]).unwrap();
+        assert_eq!(policy.profile.key, CatalogueKey::new("team"));
+        let healthz = policy.select("/healthz", Method::Get).profile;
+        assert_eq!(healthz.key, CatalogueKey::new("private"));
+        assert!(!healthz.anonymous);
+        assert_eq!(
+            policy.restricted,
+            vec![(CatalogueKey::new("open"), refused_as("private"))],
+            "two rules naming open are one refusal"
+        );
+    }
+
+    /// RFC 0021 S5, runtime side.
+    #[test]
+    fn a_restricted_default_without_the_grant_indexes_the_endpoint_closed() {
+        let grant = Grant {
+            allowed: keys(&["private", "open"]),
+            default: CatalogueKey::new("open"),
+        };
+        let mut raw = raw_endpoint("user-alice", "alice");
+        assert_eq!(
+            compile_restricted(&raw, &grant, &[]),
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("open"),
+                requested: None,
+            })
+        );
+        raw.namespace_grant = namespace_grant(Some("open"));
+        let policy = compile_restricted(&raw, &grant, &[]).unwrap();
+        assert!(policy.profile.anonymous);
+    }
+
+    /// A restricted key falling back to a restricted, ungranted default names both in the error,
+    /// so the audit can report the key the developer asked for.
+    #[test]
+    fn a_closed_endpoint_names_the_requested_key_and_the_default() {
+        let mut catalogue = restricted_open();
+        if let Some(private) = catalogue.entries.get_mut(&CatalogueKey::new("private")) {
+            private.restricted = true;
+        }
+        let grant = Grant {
+            allowed: keys(&["private", "open"]),
+            default: CatalogueKey::new("private"),
+        };
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("open".into());
+        assert_eq!(
+            compile(
+                &raw,
+                &catalogue,
+                &grant,
+                &[],
+                &CompileSettings::default(),
+                1
+            ),
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("private"),
+                requested: Some(CatalogueKey::new("open")),
+            })
+        );
+    }
+
+    /// Coordinator decision after patch 03: the fallback is the *effective* default, so an
+    /// override's restricted default is filtered like a team one.
+    #[test]
+    fn a_restricted_override_default_indexes_the_endpoint_closed() {
+        let open_by_default = Override {
+            matcher: OverrideMatch::Users(vec!["alice".into()]),
+            allowed: None,
+            default: Some(CatalogueKey::new("open")),
+            delegation: None,
+        };
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("open".into());
+        assert_eq!(
+            compile_restricted(&raw, &full_grant(), std::slice::from_ref(&open_by_default)),
+            Err(CompileError::RestrictedNotGranted {
+                default: CatalogueKey::new("open"),
+                requested: None,
+            })
+        );
+        // Without the override the same endpoint falls back to the team default.
+        assert!(compile_restricted(&raw, &full_grant(), &[]).is_ok());
+    }
+
+    #[test]
+    fn a_grant_naming_a_key_the_team_lacks_unlocks_nothing() {
+        let grant = Grant {
+            allowed: keys(&["private", "team"]),
+            default: CatalogueKey::new("private"),
+        };
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.access = Some("open".into());
+        raw.namespace_grant = namespace_grant(Some("open"));
+        assert_eq!(
+            compile_restricted(&raw, &grant, &[]),
+            Err(CompileError::NotGranted(CatalogueKey::new("open")))
+        );
+    }
+
+    /// RFC 0021 S11, endpoint half.
+    #[test]
+    fn a_grant_never_selects() {
+        let mut raw = raw_endpoint("user-alice", "alice");
+        raw.namespace_grant = namespace_grant(Some("open"));
+        let policy = compile_restricted(&raw, &full_grant(), &[]).unwrap();
+        assert_eq!(policy.profile.key, CatalogueKey::new("private"));
+        assert!(policy.restricted.is_empty());
     }
 
     #[test]

@@ -284,6 +284,9 @@ mod tests {
             not_granted: Vec::new(),
             unsupported: Vec::new(),
             held: Vec::new(),
+            resolved: Vec::new(),
+            restricted_honoured: Vec::new(),
+            restricted_refused: Vec::new(),
         }
     }
 

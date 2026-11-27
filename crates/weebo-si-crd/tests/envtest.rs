@@ -316,3 +316,496 @@ async fn image_rewrite_cel_rules_accept_the_standard_and_refuse_each_mistake() {
         );
     }
 }
+
+/// RFC 0019's CEL rules, against a real apiserver: the RFC's own example is accepted, and each
+/// row of its *Validation* table is refused at write with the rule's own message.
+#[tokio::test]
+async fn devfile_contract_cel_rules_accept_the_example_and_refuse_each_mistake() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |extra: serde_json::Value| {
+        let mut block = serde_json::json!({
+            "mode": "DryRun",
+            "currentContract": 3,
+            "minimumContract": 2,
+        });
+        block
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"devfileContract": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    api.create(
+        &PostParams::default(),
+        &spec(serde_json::json!({
+            "minimumSchemaVersion": "2.2.0",
+            "deniedContracts": [1, 3],
+            "deniedParents": [
+                {"uriPrefix": "https://raw.githubusercontent.com/batleforc/WeeboDevImage/v1.2.0/"},
+                {"id": "che-min-mise", "versions": ["1.2.0"]},
+                {"id": "go"},
+            ],
+            "onDenied": "Warn",
+        })),
+    )
+    .await
+    .expect("the RFC's example should be accepted");
+    let _ = api.delete("cluster", &DeleteParams::default()).await;
+
+    for (extra, expected) in [
+        (
+            serde_json::json!({"minimumContract": 0}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"minimumContract": 4}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"currentContract": 1001, "minimumContract": 1}),
+            "minimumContract cannot exceed currentContract",
+        ),
+        (
+            serde_json::json!({"deniedContracts": [4]}),
+            "a denied contract must be a published one",
+        ),
+        (
+            serde_json::json!({"deniedContracts": [0]}),
+            "a denied contract must be a published one",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "https://a.example/", "id": "go"}]}),
+            "names a uriPrefix or an id, not both",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"versions": ["1.0.0"]}]}),
+            "names a uriPrefix or an id, not both",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "ftp://a.example/devfile"}]}),
+            "uriPrefix must be an http(s) URL prefix",
+        ),
+        (
+            serde_json::json!({"deniedParents": [{"uriPrefix": "https://a.example/", "versions": ["1"]}]}),
+            "versions apply to a registry id only",
+        ),
+        (
+            serde_json::json!({"minimumSchemaVersion": "2.2"}),
+            "minimumSchemaVersion is MAJOR.MINOR.PATCH",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(extra.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{extra}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0018's CEL rules, against a real apiserver: the defaults and the RFC's example are
+/// accepted, and an id outside 1..=65535 is refused at write with the RFC's message.
+#[tokio::test]
+async fn pod_identity_cel_rules_accept_the_example_and_refuse_ids_out_of_range() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |block: serde_json::Value| {
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"podIdentity": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    for block in [
+        serde_json::json!({"mode": "Off"}),
+        serde_json::json!({
+            "mode": "DryRun",
+            "runAsUser": 1234,
+            "runAsGroup": 65535,
+            "exemptDwocKeys": ["build"],
+            "grantGroupZero": true,
+        }),
+    ] {
+        api.create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{block} should be accepted: {error}"));
+        let _ = api.delete("cluster", &DeleteParams::default()).await;
+    }
+
+    for (block, expected) in [
+        (
+            serde_json::json!({"mode": "DryRun", "runAsGroup": 0}),
+            "runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsGroup": 65536}),
+            "runAsGroup must be between 1 and 65535",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsUser": 0}),
+            "runAsUser must be between 1 and 65535",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "runAsUser": -1}),
+            "runAsUser must be between 1 and 65535",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{block}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0020 S3's issuer allow-list: defaulted to `[vault-issuer]` by the schema, bounded, and a
+/// name listed twice is refused at write.
+#[tokio::test]
+async fn endpoint_auth_allowed_issuers_default_and_refuse_duplicates() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |issuers: Option<serde_json::Value>| {
+        let mut block = serde_json::json!({
+            "mode": "Enforce",
+            "gateway": {
+                "externalUrl": "https://auth.weebo.si",
+                "service": {"name": "endpoint-gateway", "namespace": "weebo-si-hardening", "port": 4180},
+                "dialect": "Traefik"
+            },
+            "owner": {"namespaceAnnotation": "che.eclipse.org/username", "devworkspaceOperatorIdentity": "dwo"},
+            "hosts": {"suffix": ".weebo.si", "ownership": [{"template": "{user}-{workspace}-{endpoint}"}]},
+            "catalog": [{"key": "private"}],
+            "default": "private"
+        });
+        if let Some(issuers) = issuers {
+            block["allowedIssuers"] = issuers;
+        }
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"endpointAuth": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    let created = api
+        .create(&PostParams::default(), &spec(None))
+        .await
+        .expect("a block without allowedIssuers should be accepted");
+    assert_eq!(
+        created.data["spec"]["features"]["endpointAuth"]["allowedIssuers"],
+        serde_json::json!(["vault-issuer"])
+    );
+    let _ = api.delete("cluster", &DeleteParams::default()).await;
+
+    for (issuers, expected) in [
+        (
+            serde_json::json!(["vault-issuer", "vault-issuer"]),
+            "allowedIssuers names the same issuer twice",
+        ),
+        (serde_json::json!([""]), "should be at least 1 chars long"),
+        (
+            serde_json::json!((0..17).map(|i| format!("issuer-{i}")).collect::<Vec<_>>()),
+            "must have at most 16 items",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(Some(issuers.clone())))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{issuers}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0021's CEL rule, against a real apiserver: a grant annotation equal to the selection one is
+/// refused at write (a grant must never select), and the defaults, an explicit distinct grant and
+/// the empty (disabled) grant are accepted.
+#[tokio::test]
+async fn network_profiles_grant_annotation_may_not_be_the_selection_annotation() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |extra: serde_json::Value| {
+        let mut block = serde_json::json!({
+            "mode": "DryRun",
+            "catalog": [{"key": "base", "variants": [], "restricted": false}],
+            "baseline": "base",
+        });
+        block
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"networkProfiles": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    for accepted in [
+        serde_json::json!({}),
+        serde_json::json!({"namespaceGrant": {"annotation": "example.com/grants"}}),
+        serde_json::json!({"namespaceGrant": {"annotation": ""}, "namespaceSelection": {"annotation": ""}}),
+    ] {
+        api.create(&PostParams::default(), &spec(accepted.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{accepted} should be accepted: {error}"));
+        api.delete("cluster", &DeleteParams::default())
+            .await
+            .expect("the accepted object should be deleted before the next case");
+    }
+
+    for refused in [
+        serde_json::json!({"namespaceGrant": {"annotation": "hardening.weebo.io/network-profiles"}}),
+        serde_json::json!({
+            "namespaceGrant": {"annotation": "example.com/x"},
+            "namespaceSelection": {"annotation": "example.com/x"},
+        }),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(refused.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains("a grant must never select"),
+            "{refused}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0021's CEL rule, against a real apiserver: the baseline applies to every namespace, so a
+/// `restricted: true` baseline is refused at write; a restricted non-baseline key is accepted.
+#[tokio::test]
+async fn network_profiles_baseline_may_not_be_restricted() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |base_restricted: bool| {
+        serde_json::from_value::<kube::api::DynamicObject>(config(
+            "cluster",
+            serde_json::json!({"features": {"networkProfiles": {
+                "mode": "DryRun",
+                "catalog": [
+                    {"key": "base", "variants": [], "restricted": base_restricted},
+                    {"key": "internet", "variants": [], "restricted": true},
+                ],
+                "baseline": "base",
+            }}}),
+        ))
+        .expect("resource should deserialize")
+    };
+
+    api.create(&PostParams::default(), &spec(false))
+        .await
+        .expect("a restricted non-baseline key should be accepted");
+    api.delete("cluster", &DeleteParams::default())
+        .await
+        .expect("the accepted object should be deleted before the next case");
+
+    let error = api
+        .create(&PostParams::default(), &spec(true))
+        .await
+        .expect_err("the apiserver should refuse a restricted baseline");
+    assert!(
+        error
+            .to_string()
+            .contains("the baseline profile may not be restricted"),
+        "unexpected error: {error}"
+    );
+}
+
+/// RFC 0020's CRD bounds on `teamTools`, against a real apiserver: the RFC's entry is accepted,
+/// and each structural mistake is refused at write.
+#[tokio::test]
+async fn team_tools_bounds_accept_the_example_and_refuse_each_mistake() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    install_crd(client.clone()).await.expect("CRD install");
+    wait_for_crd(client.clone()).await;
+    let api = configs(client);
+    let spec = |block: serde_json::Value| {
+        serde_json::from_value(config(
+            "cluster",
+            serde_json::json!({"features": {"teamTools": block}}),
+        ))
+        .expect("resource should deserialize")
+    };
+    let entry = |key: &str| {
+        serde_json::json!({
+            "key": key,
+            "workload": {"kind": "StatefulSet", "name": "buildkitd"},
+            "service": {"name": "buildkitd", "port": 1234},
+            "clientEnv": "BUILDKIT_HOST",
+            "tls": {
+                "serverSecretName": "buildkitd-tls",
+                "clientDuration": "24h",
+                "clientMountPath": "/home/user/.config/weebo/buildkit",
+            },
+            "toolTemplates": [
+                {"kind": "StatefulSet", "name": "buildkitd", "namespace": "weebo-si-hardening-templates"},
+            ],
+        })
+    };
+
+    for block in [
+        serde_json::json!({"mode": "Off", "catalog": []}),
+        serde_json::json!({"mode": "DryRun", "catalog": [entry("buildkit"), entry("android")]}),
+    ] {
+        api.create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{block} should be accepted: {error}"));
+        let _ = api.delete("cluster", &DeleteParams::default()).await;
+    }
+
+    let with = |pointer: &str, value: serde_json::Value| {
+        let mut entry = entry("buildkit");
+        match entry.pointer_mut(pointer) {
+            Some(field) => *field = value,
+            None => {
+                entry[pointer.trim_start_matches('/')] = value;
+            }
+        }
+        serde_json::json!({"mode": "DryRun", "catalog": [entry]})
+    };
+    for (block, expected) in [
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": [entry("buildkit"), entry("buildkit")]}),
+            "two catalog entries share the same key",
+        ),
+        (with("/key", serde_json::json!("BuildKit")), "should match"),
+        (with("/key", serde_json::json!("a".repeat(41))), "Too long"),
+        (
+            with("/service/port", serde_json::json!(0)),
+            "should be greater than or equal to 1",
+        ),
+        (
+            with("/workload/kind", serde_json::json!("DaemonSet")),
+            "Unsupported value",
+        ),
+        (
+            with("/clientEnv", serde_json::json!("1BAD")),
+            "should match",
+        ),
+        (
+            with("/tls/clientMountPath", serde_json::json!("relative")),
+            "should match",
+        ),
+        (
+            with(
+                "/toolTemplates",
+                serde_json::json!(vec![
+                    serde_json::json!({"kind": "ConfigMap", "name": "c", "namespace": "t"});
+                    17
+                ]),
+            ),
+            "Too many",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": (0..33).map(|i| entry(&format!("t{i}"))).collect::<Vec<_>>()}),
+            "Too many",
+        ),
+        (
+            serde_json::json!({"mode": "DryRun", "catalog": [], "idleGraceSeconds": 4_294_967_296_u64}),
+            "should be less than or equal to 4294967295",
+        ),
+        (
+            with("/idleGraceSeconds", serde_json::json!(4_294_967_296_u64)),
+            "should be less than or equal to 4294967295",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &spec(block.clone()))
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "{block}: unexpected error: {error}"
+        );
+    }
+}
+
+/// RFC 0020, Resolved 18: a team's `issuerRef.kind` is `ClusterIssuer` only, refused at write.
+#[tokio::test]
+async fn a_team_tools_issuer_must_be_a_cluster_issuer() {
+    let env_test = envtest_or_skip!();
+    let client = env_test.client().expect("client should build");
+    apply_crd(client.clone(), WeeboSiTeam::crd())
+        .await
+        .expect("the generated team CRD should be accepted");
+    wait_for_named_crd(client.clone(), "weebositeams.hardening.weebo.io").await;
+    let api = teams(client);
+    let team = |kind: &str, default: serde_json::Value| {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "hardening.weebo.io/v1alpha1",
+            "kind": "WeeboSiTeam",
+            "metadata": {"name": "weebo"},
+            "spec": {
+                "namespaceSelector": {"matchLabels": {"weebo.io/team": "weebo"}},
+                "features": {"teamTools": {
+                    "namespace": "team-weebo-tools",
+                    "issuerRef": {"kind": kind, "name": "team-weebo-tools-ca"},
+                    "allowed": ["buildkit"],
+                    "default": default,
+                }},
+            },
+        }))
+        .expect("resource should deserialize")
+    };
+
+    api.create(
+        &PostParams::default(),
+        &team("ClusterIssuer", serde_json::json!([])),
+    )
+    .await
+    .expect("a ClusterIssuer should be accepted");
+    let _ = api.delete("weebo", &DeleteParams::default()).await;
+
+    for (object, expected) in [
+        (
+            team("Issuer", serde_json::json!([])),
+            "issuerRef.kind must be ClusterIssuer",
+        ),
+        (
+            team(
+                "ClusterIssuer",
+                serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+            ),
+            "Too many",
+        ),
+    ] {
+        let error = api
+            .create(&PostParams::default(), &object)
+            .await
+            .expect_err("the apiserver should refuse it");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}

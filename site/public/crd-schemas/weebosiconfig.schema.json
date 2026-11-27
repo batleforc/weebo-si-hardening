@@ -11,6 +11,179 @@
       "default": {},
       "description": "One optional field per registered feature.\n\n`spec.teams` used to sit beside this and does not any more: RFC 0011 moved teams to their\nown `WeeboSiTeam` objects, and removed the field rather than deprecating it. A manifest\nstill carrying it is pruned by the API server, which reads as \"my teams vanished\" — the\nloud failure a hard cut should have.",
       "properties": {
+        "devfileContract": {
+          "description": "`spec.features.devfileContract`, per RFC 0019.",
+          "nullable": true,
+          "properties": {
+            "currentContract": {
+              "description": "The newest contract the User Guide publishes.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "deniedContracts": {
+              "default": [],
+              "description": "Contracts refused at a start; empty refuses nothing.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "deniedParents": {
+              "default": [],
+              "description": "Parents refused at a start; empty refuses nothing.",
+              "items": {
+                "description": "One `deniedParents` entry: a URI prefix, or a registry stack id and its denied versions.",
+                "properties": {
+                  "id": {
+                    "description": "A registry stack id (`parent.id`).",
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "uriPrefix": {
+                    "description": "A `parent.uri` prefix, matched after normalisation.",
+                    "maxLength": 2048,
+                    "minLength": 8,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "versions": {
+                    "description": "The denied versions of `id`; empty denies every version, an absent one included.",
+                    "items": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
+                },
+                "type": "object",
+                "x-kubernetes-validations": [
+                  {
+                    "message": "a denied parent names a uriPrefix or an id, not both",
+                    "rule": "has(self.uriPrefix) != has(self.id)"
+                  },
+                  {
+                    "message": "uriPrefix must be an http(s) URL prefix",
+                    "rule": "!has(self.uriPrefix) || self.uriPrefix.startsWith('https://') || self.uriPrefix.startsWith('http://')"
+                  },
+                  {
+                    "message": "versions apply to a registry id only",
+                    "rule": "!has(self.versions) || size(self.versions) == 0 || has(self.id)"
+                  }
+                ]
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "minimumContract": {
+              "description": "Below this a devfile is `outdated` (a warning, never a refusal).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minimumSchemaVersion": {
+              "description": "The lowest `schemaVersion` accepted without a warning, checked only when the Che\ndashboard kept it.",
+              "maxLength": 32,
+              "nullable": true,
+              "type": "string"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the webhook's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "onDenied": {
+              "default": "Deny",
+              "description": "What a denied-list match does on a start.",
+              "enum": [
+                "Deny",
+                "Warn"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "currentContract",
+            "minimumContract",
+            "mode"
+          ],
+          "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "contracts start at 1 and minimumContract cannot exceed currentContract",
+              "rule": "1 <= self.minimumContract && self.minimumContract <= self.currentContract && self.currentContract <= 1000"
+            },
+            {
+              "message": "a denied contract must be a published one",
+              "rule": "!has(self.deniedContracts) || self.deniedContracts.all(c, 1 <= c && c <= self.currentContract)"
+            },
+            {
+              "message": "minimumSchemaVersion is MAJOR.MINOR.PATCH",
+              "rule": "!has(self.minimumSchemaVersion) || self.minimumSchemaVersion.matches('^[0-9]+\\\\.[0-9]+\\\\.[0-9]+$')"
+            }
+          ]
+        },
         "dwocPin": {
           "description": "`spec.features.dwocPin`.",
           "nullable": true,
@@ -150,6 +323,25 @@
           "description": "`spec.features.endpointAuth`, per RFC 0009.",
           "nullable": true,
           "properties": {
+            "allowedIssuers": {
+              "default": [
+                "vault-issuer"
+              ],
+              "description": "The cert-manager issuers a routing object in scope may name in\n`cert-manager.io/cluster-issuer` or `cert-manager.io/issuer` (RFC 0020, S3). Any other\nvalue is refused at admission, so ingress-shim cannot mint a certificate from a team CA.\nEmpty refuses every issuer annotation.",
+              "items": {
+                "maxLength": 253,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 16,
+              "type": "array",
+              "x-kubernetes-validations": [
+                {
+                  "message": "allowedIssuers names the same issuer twice",
+                  "rule": "self.all(i, self.exists_one(j, j == i))"
+                }
+              ]
+            },
             "breakGlassIdentities": {
               "default": [],
               "description": "Identities that may set `hardening.weebo.io/endpoint-auth: bypass` on one object.",
@@ -184,6 +376,11 @@
                   "key": {
                     "description": "The key a grant, an annotation or a path rule names.",
                     "type": "string"
+                  },
+                  "restricted": {
+                    "default": false,
+                    "description": "Honoured only if the endpoint's Namespace names this key in\n`hardening.weebo.io/endpoint-access` (RFC 0021). `false` by default, anonymous entries\nincluded, so an upgrade changes nothing a catalogue grants.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -1194,6 +1391,11 @@
                     "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                     "type": "string"
                   },
+                  "restricted": {
+                    "default": false,
+                    "description": "Honoured only if the workspace's Namespace also names this key in\n`namespaceGrant.annotation` (RFC 0021). `false` keeps today's behaviour: the team catalogue\nis the grant.",
+                    "type": "boolean"
+                  },
                   "variants": {
                     "description": "This profile's variants, at most one per [`Backend`].",
                     "items": {
@@ -1299,6 +1501,21 @@
               ],
               "type": "string"
             },
+            "namespaceGrant": {
+              "default": {
+                "annotation": "hardening.weebo.io/network-grants"
+              },
+              "description": "The namespace annotation granting restricted profile keys.",
+              "properties": {
+                "annotation": {
+                  "default": "hardening.weebo.io/network-grants",
+                  "description": "Namespace annotation naming a comma-separated list of restricted profile keys this\nnamespace may use. The empty string disables restricted grants: every restricted key is\nrefused.",
+                  "maxLength": 317,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
             "namespaceSelection": {
               "default": {
                 "annotation": "hardening.weebo.io/network-profiles"
@@ -1308,6 +1525,7 @@
                 "annotation": {
                   "default": "hardening.weebo.io/network-profiles",
                   "description": "Namespace annotation naming a comma-separated profile key list. The empty string disables\nthis selection step entirely.",
+                  "maxLength": 317,
                   "type": "string"
                 }
               },
@@ -1390,6 +1608,125 @@
           "required": [
             "baseline",
             "catalog",
+            "mode"
+          ],
+          "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "namespaceGrant.annotation must differ from namespaceSelection.annotation: a grant must never select",
+              "rule": "!has(self.namespaceGrant) || self.namespaceGrant.annotation == '' || self.namespaceGrant.annotation != self.namespaceSelection.annotation"
+            },
+            {
+              "message": "the baseline profile may not be restricted: it applies to every namespace, granted or not",
+              "rule": "self.catalog.all(p, p.key != self.baseline || !has(p.restricted) || !p.restricted)"
+            }
+          ]
+        },
+        "podIdentity": {
+          "description": "`spec.features.podIdentity`, per RFC 0018.",
+          "nullable": true,
+          "properties": {
+            "exemptDwocKeys": {
+              "default": [],
+              "description": "`dwoc-pin` keys whose namespaces (by their `hardening.weebo.io/dwoc` annotation) are left\nuntouched, e.g. `[build]` (RFC 0018, L27).",
+              "items": {
+                "maxLength": 253,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "grantGroupZero": {
+              "default": false,
+              "description": "Last resort, off by default. `true` lets pods in scope run with group 0 (`fsGroup: 0` or a\n`0` in `supplementalGroups` is no longer refused; nothing adds it), which grants write on\nevery group-0-writable (`g=u`) file of the image; the feature's status says so for as long\nas it is on.",
+              "type": "boolean"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows within the webhook's own scope.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "runAsGroup": {
+              "default": 1234,
+              "description": "The pod-level gid and `fsGroup` set when a pod gives none or gives 0; a pod's own non-zero\ngid is kept. Never 0.",
+              "format": "int64",
+              "type": "integer",
+              "x-kubernetes-validations": [
+                {
+                  "message": "runAsGroup must be between 1 and 65535 (group 0 writes the image's system files)",
+                  "rule": "1 <= self && self <= 65535"
+                }
+              ]
+            },
+            "runAsUser": {
+              "default": 1234,
+              "description": "The pod-level uid set when a pod gives none; a pod's own non-zero uid is kept. Never 0.",
+              "format": "int64",
+              "type": "integer",
+              "x-kubernetes-validations": [
+                {
+                  "message": "runAsUser must be between 1 and 65535 (uid 0 is root in the image)",
+                  "rule": "1 <= self && self <= 65535"
+                }
+              ]
+            }
+          },
+          "required": [
             "mode"
           ],
           "type": "object"
@@ -1907,6 +2244,301 @@
           "required": [
             "catalog",
             "default",
+            "mode"
+          ],
+          "type": "object"
+        },
+        "teamTools": {
+          "description": "`spec.features.teamTools`, per RFC 0020.",
+          "nullable": true,
+          "properties": {
+            "catalog": {
+              "description": "Every tool a team may be granted. Required, may be empty.",
+              "items": {
+                "description": "One entry of `spec.features.teamTools.catalog`.",
+                "properties": {
+                  "clientEnv": {
+                    "description": "The key of the generated endpoint `ConfigMap`, an environment variable name.",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "nullable": true,
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                    "type": "string"
+                  },
+                  "idleGraceSeconds": {
+                    "description": "Overrides the block's `idleGraceSeconds` for this tool.",
+                    "format": "uint32",
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "key": {
+                    "description": "The key a devfile attribute or a team grant names.",
+                    "maxLength": 40,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "requesterTemplates": {
+                    "default": [],
+                    "description": "`ConfigMap`s rendered into each requesting namespace.",
+                    "items": {
+                      "description": "A template object, in the template namespace (checked by `validate()`).",
+                      "properties": {
+                        "kind": {
+                          "description": "The object's kind; the allowed kinds are checked by `validate()`.",
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "The object's name.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "namespace": {
+                          "description": "The namespace it lives in.",
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "namespace"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "service": {
+                    "description": "The port the network policies open.",
+                    "properties": {
+                      "name": {
+                        "description": "The `Service` template's name.",
+                        "maxLength": 63,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "One of its ports.",
+                        "format": "uint16",
+                        "maximum": 65535,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "port"
+                    ],
+                    "type": "object"
+                  },
+                  "tls": {
+                    "description": "Absent means no mTLS: allowed, and logged (RFC 0020, Resolved 14).",
+                    "nullable": true,
+                    "properties": {
+                      "clientDuration": {
+                        "description": "The client certificate's lifetime, a Go duration (`24h`).",
+                        "maxLength": 32,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "clientMountPath": {
+                        "description": "Where DWO mounts the client certificate in the workspace.",
+                        "maxLength": 1024,
+                        "minLength": 2,
+                        "pattern": "^/",
+                        "type": "string"
+                      },
+                      "serverSecretName": {
+                        "description": "The `Secret` the server `Certificate` writes, mounted by the tool template.",
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "clientDuration",
+                      "clientMountPath",
+                      "serverSecretName"
+                    ],
+                    "type": "object"
+                  },
+                  "toolTemplates": {
+                    "description": "Rendered into the team's tools namespace.",
+                    "items": {
+                      "description": "A template object, in the template namespace (checked by `validate()`).",
+                      "properties": {
+                        "kind": {
+                          "description": "The object's kind; the allowed kinds are checked by `validate()`.",
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "The object's name.",
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "namespace": {
+                          "description": "The namespace it lives in.",
+                          "maxLength": 63,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "namespace"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "workload": {
+                    "description": "The tool template scaled on demand.",
+                    "properties": {
+                      "kind": {
+                        "description": "`Deployment` or `StatefulSet`.",
+                        "enum": [
+                          "Deployment",
+                          "StatefulSet"
+                        ],
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "Its name among the tool templates.",
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "name"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key",
+                  "service",
+                  "toolTemplates",
+                  "workload"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array",
+              "x-kubernetes-validations": [
+                {
+                  "message": "two catalog entries share the same key",
+                  "rule": "self.all(e, self.exists_one(f, f.key == e.key))"
+                }
+              ]
+            },
+            "idleGraceSeconds": {
+              "default": 600,
+              "description": "Time a tool stays up after its last requester stops.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "description": "Required, per the chassis: `Off` | `DryRun` | `Enforce`.",
+              "enum": [
+                "Off",
+                "DryRun",
+                "Enforce"
+              ],
+              "type": "string"
+            },
+            "namespaceSelector": {
+              "description": "Optional, per the chassis: narrows which requesting namespaces are read.",
+              "nullable": true,
+              "properties": {
+                "matchExpressions": {
+                  "description": "Every expression must hold.",
+                  "items": {
+                    "description": "One `matchExpressions` entry.",
+                    "properties": {
+                      "key": {
+                        "description": "The label key this expression tests.",
+                        "type": "string"
+                      },
+                      "operator": {
+                        "description": "How `values` is compared against the label's value, if any.",
+                        "enum": [
+                          "In",
+                          "NotIn",
+                          "Exists",
+                          "DoesNotExist"
+                        ],
+                        "type": "string"
+                      },
+                      "values": {
+                        "default": [],
+                        "description": "The comparison values `operator` reads. Unused by `Exists`/`DoesNotExist`.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "operator"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "matchLabels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Every key must be present with exactly this value.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "onNotGranted": {
+              "default": "Default",
+              "description": "What a requested key the team is not granted gets: dropped, or the request refused.",
+              "enum": [
+                "Default",
+                "Deny"
+              ],
+              "type": "string"
+            },
+            "workspaceSelection": {
+              "default": {
+                "attribute": "hardening.weebo.io/team-tools"
+              },
+              "description": "The DevWorkspace attribute naming the requested keys.",
+              "properties": {
+                "attribute": {
+                  "default": "hardening.weebo.io/team-tools",
+                  "description": "DevWorkspace attribute naming a comma-separated key list. `\"\"` disables requests.",
+                  "maxLength": 317,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "catalog",
             "mode"
           ],
           "type": "object"
