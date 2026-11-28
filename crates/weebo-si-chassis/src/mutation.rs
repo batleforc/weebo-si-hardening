@@ -9,7 +9,9 @@
 //! which RFC 0009's `ReverseProxy` dialect needs — on OpenShift the gate *is* the route's
 //! backend, so attaching it means writing `spec.to.name`, which no annotation variant can
 //! express. RFC 0018 adds [`Mutation::SetInt`] and [`Mutation::SetBool`] for the ids and flags of
-//! a pod's `securityContext`; still scalars only, for the same reason.
+//! a pod's `securityContext`; still scalars only, for the same reason. [`Mutation::SetStrings`]
+//! is the one list: a container's `securityContext.capabilities.drop` (`[ALL]`), a list of names
+//! rather than a structure.
 
 use weebo_si_crd::DwocRef;
 
@@ -53,5 +55,13 @@ pub enum Mutation {
         path: Vec<String>,
         /// The value to set.
         value: bool,
+    },
+    /// Set one field to a list of strings, named like [`Mutation::SetString`] — a container's
+    /// `securityContext.capabilities.drop` (RFC 0018). The whole list is replaced.
+    SetStrings {
+        /// The path to the field, from the object's root.
+        path: Vec<String>,
+        /// The values to set, in order.
+        values: Vec<String>,
     },
 }

@@ -61,7 +61,8 @@ fn log_admission(
             Mutation::Annotate { .. }
             | Mutation::SetString { .. }
             | Mutation::SetInt { .. }
-            | Mutation::SetBool { .. } => None,
+            | Mutation::SetBool { .. }
+            | Mutation::SetStrings { .. } => None,
         })
         .unwrap_or_else(|| "<unchanged>".to_string());
     match denial {

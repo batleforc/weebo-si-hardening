@@ -1,8 +1,9 @@
 //! The bounded projection of a `Pod` this feature is entitled to see (RFC 0018, *Architecture*).
 //!
 //! Only the identity fields: `hostUsers`, the pod-level `securityContext` ids and group policy,
-//! and each container's own `runAsUser`/`runAsGroup`. The adapter reads the `Pod`; nothing else
-//! of it reaches the domain.
+//! and each container's own `runAsUser`/`runAsGroup`, `allowPrivilegeEscalation`, whether it has
+//! a `capabilities.drop` list, and whether it asks for privilege (`privileged`, `SYS_ADMIN`). The
+//! adapter reads the `Pod`; nothing else of it reaches the domain.
 
 use weebo_si_chassis::Subject;
 use weebo_si_crd::NamespaceName;
@@ -11,6 +12,8 @@ use weebo_si_crd::NamespaceName;
 pub const STRICT: &str = "Strict";
 /// `fsGroupChangePolicy` value set when pod-level ids are rewritten (L10).
 pub const ON_ROOT_MISMATCH: &str = "OnRootMismatch";
+/// The capability a container drops to have none (PSA `restricted`).
+pub const DROP_ALL: &str = "ALL";
 
 /// The pod-level `spec.securityContext` fields this feature reads. `Default` is an absent
 /// `securityContext`: the domain does not need to tell it apart from an empty one.
@@ -65,6 +68,13 @@ pub struct ContainerIdentity {
     pub run_as_user: Option<i64>,
     /// `securityContext.runAsGroup`.
     pub run_as_group: Option<i64>,
+    /// `securityContext.allowPrivilegeEscalation`.
+    pub allow_privilege_escalation: Option<bool>,
+    /// Whether `securityContext.capabilities.drop` is set, whatever it holds.
+    pub drop_set: bool,
+    /// `privileged: true`, or `SYS_ADMIN` in `capabilities.add`: the apiserver refuses
+    /// `allowPrivilegeEscalation: false` next to either.
+    pub needs_privilege: bool,
 }
 
 /// Which admission call this is (L21: `pods` CREATE and `pods/ephemeralcontainers` UPDATE only).

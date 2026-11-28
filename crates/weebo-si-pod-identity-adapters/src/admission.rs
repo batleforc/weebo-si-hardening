@@ -97,6 +97,18 @@ fn container(kind: ContainerKind, entry: &Value) -> ContainerIdentity {
         name: string(entry, "/name").unwrap_or_default(),
         run_as_user: int(entry, "/securityContext/runAsUser"),
         run_as_group: int(entry, "/securityContext/runAsGroup"),
+        allow_privilege_escalation: entry
+            .pointer("/securityContext/allowPrivilegeEscalation")
+            .and_then(Value::as_bool),
+        drop_set: entry
+            .pointer("/securityContext/capabilities/drop")
+            .is_some_and(|drop| !drop.is_null()),
+        needs_privilege: entry
+            .pointer("/securityContext/privileged")
+            .and_then(Value::as_bool)
+            == Some(true)
+            || list(entry, "/securityContext/capabilities/add")
+                .any(|cap| matches!(cap.as_str(), Some("SYS_ADMIN" | "CAP_SYS_ADMIN"))),
     }
 }
 
@@ -504,6 +516,36 @@ mod tests {
         assert!(response(validate_review(&state, update)).allowed);
     }
 
+    /// What the container half reads: a set `drop` list (even empty), and `privileged` or
+    /// `SYS_ADMIN` under either spelling as asking for privilege.
+    #[test]
+    fn container_privilege_fields_are_projected() {
+        let pod = serde_json::json!({
+            "apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": "p", "namespace": NS},
+            "spec": {"containers": [
+                {"name": "a", "securityContext": {"privileged": true}},
+                {"name": "b", "securityContext": {"capabilities": {"add": ["CAP_SYS_ADMIN"], "drop": []}}},
+                {"name": "c", "securityContext": {"allowPrivilegeEscalation": false}},
+            ]},
+        });
+        let request = review("CREATE", None, NS, pod, None).request.unwrap();
+        let subject = pod_subject_from_request(&request).unwrap();
+        let got: Vec<(Option<bool>, bool, bool)> = subject
+            .containers
+            .iter()
+            .map(|c| (c.allow_privilege_escalation, c.drop_set, c.needs_privilege))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (None, false, true),
+                (None, true, true),
+                (Some(false), false, false)
+            ]
+        );
+    }
+
     #[test]
     fn enforce_patches_the_dwo_pod_and_refuses_it_unpatched() {
         let state = state(FeatureMode::Enforce, true);
@@ -521,6 +563,19 @@ mod tests {
         ] {
             assert!(patch.contains(expected), "{expected} missing from {patch}");
         }
+        // PSA restricted's container half: on the bare project-clone, and on tools next to the
+        // securityContext field it already had.
+        let mut pod = dwo_pod();
+        let ops: json_patch::Patch = serde_json::from_str(&patch).unwrap();
+        json_patch::patch(&mut pod, &ops.0).unwrap();
+        let hardened = serde_json::json!({"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]}});
+        assert_eq!(
+            pod["spec"]["initContainers"][0]["securityContext"],
+            hardened
+        );
+        let mut tools = hardened;
+        tools["runAsGroup"] = 7.into();
+        assert_eq!(pod["spec"]["containers"][0]["securityContext"], tools);
         // The validating webhook seeing the raw pod means the mutation did not run.
         let validated = response(validate_review(
             &state,

@@ -4164,6 +4164,7 @@ name = "weebo-si-pod-identity-adapters"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "json-patch",
  "kube",
  "prometheus",
  "serde_json",

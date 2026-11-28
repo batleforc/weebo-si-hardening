@@ -471,6 +471,11 @@ fn dry_run_is_quiet_on_a_pod_already_in_shape() {
                     "supplementalGroupsPolicy": "Strict",
                     "runAsNonRoot": true,
                 },
+                // The container half of the mutation, as weebo-si's CheCluster sets it.
+                "containerSecurityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": { "drop": ["ALL"] },
+                },
             } },
         })
         .to_string(),
