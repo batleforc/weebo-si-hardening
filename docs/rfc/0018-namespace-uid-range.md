@@ -946,6 +946,26 @@ behind `podIdentity.webhooks.enabled` (default `false`), admission and perf envt
 **Not done here:** the WeeboDevImage change (Q20), PSA `restricted` and the `DryRun` week on the
 cluster, and every item of *Integration in weebo-si*. `Enforce` waits for them.
 
+## Revision against the cluster (2026-11-28)
+
+Q20 shipped (WeeboDevImage#212), `Enforce` on every weebo-si workspace namespace since
+2026-11-28. The PSA `restricted` precondition did not hold: DevWorkspace Operator v1.1.1 renders
+`project-clone` with no `securityContext` (the DWOC's `containerSecurityContext` is not applied to
+it, and `projectClone` takes only `env`, `image`, `imagePullPolicy`, `resources`), so `restricted`
+refused every workspace pod with a project.
+
+**Amendment:** the mutation also writes PSA `restricted`'s container half on every init container
+and container of a pod CREATE, **only where the container says nothing**:
+`allowPrivilegeEscalation: false` when it is unset, and `capabilities.drop: [ALL]` when there is
+no `drop` list. An explicit value is a choice and stays: RFC 0013's build DWOC asks for
+escalation, and `drop: [ALL]` would empty the bounding set `newuidmap` needs, so a container with
+`allowPrivilegeEscalation: true` gets neither. Nothing is written next to `privileged: true` or
+`SYS_ADMIN` in `capabilities.add`, which the apiserver refuses alongside `false`. The paths name
+the container's index in its own list, so they always exist. The chassis gains
+`Mutation::SetStrings` for the list. Validation is unchanged: PSA `restricted` stays the refusal,
+the mutation only makes a DWO pod pass it. Ephemeral containers (`kubectl debug`) are never
+mutated: under `restricted`, use `kubectl debug --profile=restricted`.
+
 ## Changelog
 
 | Date | Change |
@@ -961,3 +981,4 @@ cluster, and every item of *Integration in weebo-si*. `Enforce` waits for them.
 | 2026-11-24 | Accepted by the owner |
 | 2026-11-24 | Q23: webhook HA prerequisite waived for the lab (1 replica, single node accepted) |
 | 2026-11-26 | `Implemented` (PR #24): PRs 1–4 shipped; *Revision against the tree* records the bare `Error from server:` and `grantGroupZero` adding nothing. Q20 and the cluster validation are still owed. |
+| 2026-11-28 | Amendment: the mutation writes `allowPrivilegeEscalation: false` and `drop: [ALL]` on every container, `project-clone` included (*Revision against the cluster*) |

@@ -15,7 +15,7 @@ Two webhooks do it, both `failurePolicy: Fail`:
 
 | Webhook | Path | Does |
 | --- | --- | --- |
-| `pod-identity-mutate.hardening.weebo.io` | `/mutate/v1/pods/identity` | on `pods` CREATE, writes the pod level only: `hostUsers: false`, `runAsUser`/`runAsGroup`/`fsGroup` where absent, gid and `fsGroup` 0 rewritten to `runAsGroup`, `fsGroupChangePolicy: OnRootMismatch`, `supplementalGroupsPolicy: Strict`, `runAsNonRoot: true`. Never refuses. |
+| `pod-identity-mutate.hardening.weebo.io` | `/mutate/v1/pods/identity` | on `pods` CREATE, writes the pod level: `hostUsers: false`, `runAsUser`/`runAsGroup`/`fsGroup` where absent, gid and `fsGroup` 0 rewritten to `runAsGroup`, `fsGroupChangePolicy: OnRootMismatch`, `supplementalGroupsPolicy: Strict`, `runAsNonRoot: true`; and on every init container and container that leaves them unset, `allowPrivilegeEscalation: false` and `capabilities.drop: [ALL]` (PSA `restricted`'s container half, which DWO leaves off `project-clone`; an explicit value, `privileged` or `SYS_ADMIN` is left as written, and ephemeral containers are never mutated: `kubectl debug --profile=restricted`). Never refuses. |
 | `pod-identity-validate.hardening.weebo.io` | `/validate/v1/pods/identity` | on `pods` CREATE and `pods/ephemeralcontainers` UPDATE, refuses what is still wrong after every mutation: one reason each, below. |
 
 A non-zero id someone chose (a devfile's `pod-overrides` with `10100`, a sidecar image built for
@@ -201,7 +201,7 @@ is refused under `Enforce`.
 | Metric | Labels |
 | --- | --- |
 | `weebo_si_pod_identity_refusals_total` | `mode` (`Off`/`DryRun`/`Enforce`), `reason` (table above), `fixable_by_mutation` |
-| `weebo_si_pod_identity_rewrites_total` | `mode`, `field` (`host_users`, `run_as_user`, `run_as_group`, `fs_group`, `fs_group_change_policy`, `supplemental_groups_policy`, `run_as_non_root`) |
+| `weebo_si_pod_identity_rewrites_total` | `mode`, `field` (`host_users`, `run_as_user`, `run_as_group`, `fs_group`, `fs_group_change_policy`, `supplemental_groups_policy`, `run_as_non_root`, `allow_privilege_escalation`, `capabilities_drop`) |
 | `weebo_si_admission_requests_total`, `weebo_si_admission_duration_seconds` | `feature="pod-identity"` |
 
 Alert on `refusals_total{mode="Enforce"}` increasing (page when `fixable_by_mutation="true"`: the

@@ -1,16 +1,20 @@
-//! `identity_rewrite`: what the mutation changes at the pod level (RFC 0018, Q21, L10, L14).
+//! `identity_rewrite`: what the mutation changes (RFC 0018, Q21, L10, L14).
 //!
-//! Only pod-level paths (`spec.hostUsers`, `spec.securityContext.*`), never a container's: the
-//! chassis renderer creates a missing parent as an object even before an array index, so a
-//! container path the pod does not have would corrupt it (review of patch 02). No path here is
-//! the parent of another, and `securityContext` itself is never written as a scalar.
+//! Pod-level paths (`spec.hostUsers`, `spec.securityContext.*`), plus two fields of each init
+//! container and container when it leaves them unset: `allowPrivilegeEscalation: false` and
+//! `capabilities.drop: [ALL]`, PSA `restricted`'s container half, which DevWorkspace Operator
+//! leaves off `project-clone`. A container that states its privilege is left as written.
+//! A container path always names an index the pod has (counted from the pod's own lists): the
+//! chassis renderer creates a missing parent as an object even before an array index, so an
+//! index the pod does not have would corrupt it (review of patch 02). No path here is the parent
+//! of another, and `securityContext` itself is never written as a scalar.
 
 use std::fmt;
 
 use weebo_si_chassis::Mutation;
 use weebo_si_crd::PodIdentityConfig;
 
-use crate::subject::{Admission, ON_ROOT_MISMATCH, PodSubject, STRICT};
+use crate::subject::{Admission, ContainerKind, DROP_ALL, ON_ROOT_MISMATCH, PodSubject, STRICT};
 
 /// A field the mutation may write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +33,10 @@ pub enum Field {
     SupplementalGroupsPolicy,
     /// `spec.securityContext.runAsNonRoot`.
     RunAsNonRoot,
+    /// A container's `securityContext.allowPrivilegeEscalation`.
+    AllowPrivilegeEscalation,
+    /// A container's `securityContext.capabilities.drop`.
+    CapabilitiesDrop,
 }
 
 impl Field {
@@ -42,6 +50,8 @@ impl Field {
             Self::FsGroupChangePolicy => "fs_group_change_policy",
             Self::SupplementalGroupsPolicy => "supplemental_groups_policy",
             Self::RunAsNonRoot => "run_as_non_root",
+            Self::AllowPrivilegeEscalation => "allow_privilege_escalation",
+            Self::CapabilitiesDrop => "capabilities_drop",
         }
     }
 
@@ -55,17 +65,38 @@ impl Field {
             Self::FsGroupChangePolicy => "fsGroupChangePolicy",
             Self::SupplementalGroupsPolicy => "supplementalGroupsPolicy",
             Self::RunAsNonRoot => "runAsNonRoot",
+            Self::AllowPrivilegeEscalation => "allowPrivilegeEscalation",
+            Self::CapabilitiesDrop => "capabilities.drop",
         }
     }
 
-    fn path(self) -> Vec<String> {
+    /// The path under the `securityContext` that holds it, pod or container (`hostUsers` aside).
+    fn context_path(self) -> Vec<String> {
         match self {
-            Self::HostUsers => vec!["spec".to_string(), "hostUsers".to_string()],
-            other => vec![
-                "spec".to_string(),
-                "securityContext".to_string(),
-                other.name().to_string(),
-            ],
+            Self::CapabilitiesDrop => vec!["capabilities".to_string(), "drop".to_string()],
+            other => vec![other.name().to_string()],
+        }
+    }
+}
+
+/// The container a [`Rewrite`] lands on: its list, its index in that list, and its name (for the
+/// `DryRun` line only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerSlot {
+    /// Which list it comes from.
+    pub kind: ContainerKind,
+    /// Its index in that list, as the pod has it.
+    pub index: usize,
+    /// Its name, as written (attacker-shaped: printed with `{:?}`).
+    pub name: String,
+}
+
+impl ContainerSlot {
+    fn list(&self) -> &'static str {
+        match self.kind {
+            ContainerKind::Init => "initContainers",
+            ContainerKind::Container => "containers",
+            ContainerKind::Ephemeral => "ephemeralContainers",
         }
     }
 }
@@ -79,6 +110,8 @@ pub enum Value {
     Bool(bool),
     /// A policy name.
     Str(String),
+    /// A list of names (`capabilities.drop`).
+    Strings(Vec<String>),
 }
 
 impl fmt::Display for Value {
@@ -87,6 +120,7 @@ impl fmt::Display for Value {
             Self::Int(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
             Self::Str(value) => f.write_str(value),
+            Self::Strings(values) => write!(f, "[{}]", values.join(",")),
         }
     }
 }
@@ -94,6 +128,8 @@ impl fmt::Display for Value {
 /// One field the mutation changes, with what it held before (`None`: unset).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
+    /// The container it lands on, `None` for a pod-level field.
+    pub container: Option<ContainerSlot>,
     /// The field.
     pub field: Field,
     /// Its value before, `None` when unset.
@@ -105,7 +141,7 @@ pub struct Rewrite {
 impl Rewrite {
     /// The chassis mutation that writes it.
     pub fn mutation(&self) -> Mutation {
-        let path = self.field.path();
+        let path = self.path();
         match &self.to {
             Value::Int(value) => Mutation::SetInt {
                 path,
@@ -119,11 +155,52 @@ impl Rewrite {
                 path,
                 value: value.clone(),
             },
+            Value::Strings(values) => Mutation::SetStrings {
+                path,
+                values: values.clone(),
+            },
         }
+    }
+
+    fn path(&self) -> Vec<String> {
+        let mut path = vec!["spec".to_string()];
+        match &self.container {
+            Some(slot) => {
+                path.push(slot.list().to_string());
+                path.push(slot.index.to_string());
+                path.push("securityContext".to_string());
+            }
+            None if self.field == Field::HostUsers => {
+                path.push("hostUsers".to_string());
+                return path;
+            }
+            None => path.push("securityContext".to_string()),
+        }
+        path.extend(self.field.context_path());
+        path
     }
 
     /// Apply it to an in-memory pod, for judging the pod as the mutation would leave it (L23).
     fn apply(&self, pod: &mut PodSubject) {
+        if let Some(slot) = &self.container {
+            let Some(container) = pod
+                .containers
+                .iter_mut()
+                .filter(|container| container.kind == slot.kind)
+                .nth(slot.index)
+            else {
+                return;
+            };
+            match (self.field, &self.to) {
+                (Field::AllowPrivilegeEscalation, Value::Bool(value)) => {
+                    container.allow_privilege_escalation = Some(*value);
+                }
+                (Field::CapabilitiesDrop, Value::Strings(_)) => container.drop_set = true,
+                // identity_rewrite writes no other field on a container.
+                _ => {}
+            }
+            return;
+        }
         let context = &mut pod.security_context;
         match (self.field, &self.to) {
             (Field::HostUsers, Value::Bool(value)) => pod.host_users = Some(*value),
@@ -144,8 +221,12 @@ impl Rewrite {
 }
 
 impl fmt::Display for Rewrite {
-    /// `runAsGroup=0->1234`, the `DryRun` line's shape.
+    /// `runAsGroup=0->1234`, the `DryRun` line's shape; a container field is prefixed with its
+    /// list and name, `initContainers["project-clone"].allowPrivilegeEscalation=unset->false`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(slot) = &self.container {
+            write!(f, "{}[{:?}].", slot.list(), slot.name)?;
+        }
         match &self.from {
             Some(from) => write!(f, "{}={from}->{}", self.field.name(), self.to),
             None => write!(f, "{}=unset->{}", self.field.name(), self.to),
@@ -171,6 +252,8 @@ impl PodSubject {
 /// or `fsGroup: 0` (unless `grantGroupZero`) → the configured gid; any other non-zero id kept; `runAsUser: 0` kept for
 /// validation to refuse. `hostUsers` → `false`, `supplementalGroupsPolicy` → `Strict`,
 /// `runAsNonRoot` → `true`, and `fsGroupChangePolicy: OnRootMismatch` when an id is rewritten.
+/// On every init container and container, only where unset: `allowPrivilegeEscalation` →
+/// `false`, and `capabilities.drop` → `[ALL]`.
 pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rewrite> {
     if pod.admission != Admission::Create {
         return Vec::new();
@@ -179,6 +262,7 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
     let mut out = Vec::new();
     if pod.host_users != Some(false) {
         out.push(Rewrite {
+            container: None,
             field: Field::HostUsers,
             from: pod.host_users.map(Value::Bool),
             to: Value::Bool(false),
@@ -210,6 +294,7 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
         if current.is_none() || current == also {
             ids_rewritten = true;
             out.push(Rewrite {
+                container: None,
                 field,
                 from: current.map(Value::Int),
                 to: Value::Int(to),
@@ -218,6 +303,7 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
     }
     if ids_rewritten && context.fs_group_change_policy.as_deref() != Some(ON_ROOT_MISMATCH) {
         out.push(Rewrite {
+            container: None,
             field: Field::FsGroupChangePolicy,
             from: context.fs_group_change_policy.clone().map(Value::Str),
             to: Value::Str(ON_ROOT_MISMATCH.to_string()),
@@ -225,6 +311,7 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
     }
     if context.supplemental_groups_policy.as_deref() != Some(STRICT) {
         out.push(Rewrite {
+            container: None,
             field: Field::SupplementalGroupsPolicy,
             from: context.supplemental_groups_policy.clone().map(Value::Str),
             to: Value::Str(STRICT.to_string()),
@@ -232,10 +319,56 @@ pub fn identity_rewrite(pod: &PodSubject, config: &PodIdentityConfig) -> Vec<Rew
     }
     if context.run_as_non_root != Some(true) {
         out.push(Rewrite {
+            container: None,
             field: Field::RunAsNonRoot,
             from: context.run_as_non_root.map(Value::Bool),
             to: Value::Bool(true),
         });
+    }
+    out.extend(container_rewrites(pod));
+    out
+}
+
+/// The container half: PSA `restricted`'s `allowPrivilegeEscalation: false` and `drop: [ALL]`,
+/// written only where the container says nothing. An explicit value is a choice (RFC 0013's build
+/// DWOC asks for escalation, and `drop: [ALL]` would empty the bounding set `newuidmap` needs):
+/// it is kept, and PSA or validation refuses it if it must. Nothing is written next to
+/// `privileged: true` or `SYS_ADMIN`, which the apiserver refuses with `false`.
+/// The index is counted per list over the pod's own containers, so it always exists.
+fn container_rewrites(pod: &PodSubject) -> Vec<Rewrite> {
+    let mut out = Vec::new();
+    let (mut init, mut regular) = (0_usize, 0_usize);
+    for container in &pod.containers {
+        let counter = match container.kind {
+            ContainerKind::Init => &mut init,
+            ContainerKind::Container => &mut regular,
+            // Only on an ephemeral update, which identity_rewrite never rewrites.
+            ContainerKind::Ephemeral => continue,
+        };
+        let slot = ContainerSlot {
+            kind: container.kind,
+            index: *counter,
+            name: container.name.clone(),
+        };
+        *counter = counter.saturating_add(1);
+        if container.allow_privilege_escalation.is_none() && !container.needs_privilege {
+            out.push(Rewrite {
+                container: Some(slot.clone()),
+                field: Field::AllowPrivilegeEscalation,
+                from: None,
+                to: Value::Bool(false),
+            });
+        }
+        let asks_privilege =
+            container.allow_privilege_escalation == Some(true) || container.needs_privilege;
+        if !container.drop_set && !asks_privilege {
+            out.push(Rewrite {
+                container: Some(slot),
+                field: Field::CapabilitiesDrop,
+                from: None,
+                to: Value::Strings(vec![DROP_ALL.to_string()]),
+            });
+        }
     }
     out
 }
@@ -250,7 +383,7 @@ pub(crate) mod tests {
     use weebo_si_crd::{FeatureMode, NamespaceName};
 
     use super::*;
-    use crate::subject::{ContainerIdentity, ContainerKind, PodSecurityContext};
+    use crate::subject::{ContainerIdentity, PodSecurityContext};
 
     pub(crate) fn config() -> PodIdentityConfig {
         PodIdentityConfig {
@@ -269,6 +402,9 @@ pub(crate) mod tests {
             name: name.to_string(),
             run_as_user: uid,
             run_as_group: gid,
+            allow_privilege_escalation: Some(false),
+            drop_set: true,
+            needs_privilege: false,
         }
     }
 
@@ -465,6 +601,130 @@ pub(crate) mod tests {
         assert!(identity_rewrite(&pod.rewritten(&rewrites), &config()).is_empty());
     }
 
+    fn bare(kind: ContainerKind, name: &str) -> ContainerIdentity {
+        ContainerIdentity {
+            kind,
+            allow_privilege_escalation: None,
+            drop_set: false,
+            ..container(name, None, None)
+        }
+    }
+
+    /// DWO's `project-clone`: no `securityContext` at all. Both PSA `restricted` fields land on
+    /// its own index, and nothing else changes.
+    #[test]
+    fn project_clone_gets_no_escalation_and_drop_all() {
+        let mut pod = fixed_pod();
+        pod.containers
+            .insert(0, bare(ContainerKind::Init, "project-clone"));
+        let rewrites = identity_rewrite(&pod, &config());
+        assert_eq!(
+            rewrites.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                r#"initContainers["project-clone"].allowPrivilegeEscalation=unset->false"#,
+                r#"initContainers["project-clone"].capabilities.drop=unset->[ALL]"#,
+            ]
+        );
+        let at = |tail: &[&str]| {
+            ["spec", "initContainers", "0", "securityContext"]
+                .iter()
+                .chain(tail)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rewrites.iter().map(Rewrite::mutation).collect::<Vec<_>>(),
+            [
+                Mutation::SetBool {
+                    path: at(&["allowPrivilegeEscalation"]),
+                    value: false,
+                },
+                Mutation::SetStrings {
+                    path: at(&["capabilities", "drop"]),
+                    values: vec!["ALL".to_string()],
+                },
+            ]
+        );
+    }
+
+    /// The index is counted per list, init containers apart from containers.
+    #[test]
+    fn container_index_counted_per_list() {
+        let mut pod = fixed_pod();
+        pod.containers = vec![
+            ContainerIdentity {
+                kind: ContainerKind::Init,
+                ..container("hardened-init", None, None)
+            },
+            bare(ContainerKind::Init, "second-init"),
+            ContainerIdentity {
+                drop_set: true,
+                ..bare(ContainerKind::Container, "tools")
+            },
+        ];
+        let paths: Vec<String> = identity_rewrite(&pod, &config())
+            .iter()
+            .map(|rewrite| rewrite.path().join("/"))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "spec/initContainers/1/securityContext/allowPrivilegeEscalation",
+                "spec/initContainers/1/securityContext/capabilities/drop",
+                "spec/containers/0/securityContext/allowPrivilegeEscalation",
+            ]
+        );
+    }
+
+    #[test]
+    /// RFC 0013's build DWOC: escalation asked for, no capabilities. Both are left alone —
+    /// `drop: [ALL]` would empty the bounding set `newuidmap` needs.
+    fn container_asking_for_escalation_is_left_as_written() {
+        let mut pod = fixed_pod();
+        pod.containers = vec![ContainerIdentity {
+            allow_privilege_escalation: Some(true),
+            ..bare(ContainerKind::Container, "tools")
+        }];
+        assert!(rendered(&pod).is_empty());
+    }
+
+    /// `privileged: true` or `SYS_ADMIN`: the apiserver refuses `allowPrivilegeEscalation: false`
+    /// next to them, so nothing is written and PSA or validation gives the refusal.
+    #[test]
+    fn privileged_container_is_left_as_written() {
+        let mut pod = fixed_pod();
+        pod.containers = vec![ContainerIdentity {
+            needs_privilege: true,
+            ..bare(ContainerKind::Container, "tools")
+        }];
+        assert!(rendered(&pod).is_empty());
+    }
+
+    /// A drop list someone wrote is kept, even without `ALL`; only an unset escalation is filled.
+    #[test]
+    fn an_existing_drop_list_is_kept() {
+        let mut pod = fixed_pod();
+        pod.containers = vec![ContainerIdentity {
+            drop_set: true,
+            ..bare(ContainerKind::Container, "tools")
+        }];
+        assert_eq!(
+            rendered(&pod),
+            [r#"containers["tools"].allowPrivilegeEscalation=unset->false"#]
+        );
+    }
+
+    #[test]
+    fn the_rewritten_pod_with_bare_containers_is_a_fixed_point() {
+        let mut pod = dwo_pod();
+        pod.containers = vec![
+            bare(ContainerKind::Init, "project-clone"),
+            bare(ContainerKind::Container, "tools"),
+        ];
+        let rewrites = identity_rewrite(&pod, &config());
+        assert!(identity_rewrite(&pod.rewritten(&rewrites), &config()).is_empty());
+    }
+
     #[test]
     fn an_ephemeral_update_is_never_rewritten() {
         let mut pod = dwo_pod();
@@ -480,7 +740,7 @@ pub(crate) mod tests {
         pod.security_context = PodSecurityContext::default();
         let paths: Vec<Vec<String>> = identity_rewrite(&pod, &config())
             .iter()
-            .map(|rewrite| rewrite.field.path())
+            .map(Rewrite::path)
             .collect();
         for path in &paths {
             assert!(path.len() >= 2);

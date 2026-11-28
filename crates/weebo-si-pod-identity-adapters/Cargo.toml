@@ -20,6 +20,7 @@ tracing = { workspace = true }
 axum = { workspace = true }
 
 [dev-dependencies]
+json-patch = { workspace = true }
 weebo-si-chassis = { version = "0.1.0", path = "../weebo-si-chassis", features = ["testing"] }
 
 [lints]

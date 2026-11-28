@@ -65,6 +65,10 @@ pub fn render_patch(object: &Value, mutations: &[Mutation]) -> Patch {
             Mutation::SetBool { path, value } => {
                 set(object, &mut created, &mut ops, path, Value::Bool(*value));
             }
+            Mutation::SetStrings { path, values } => {
+                let values = values.iter().cloned().map(Value::String).collect();
+                set(object, &mut created, &mut ops, path, Value::Array(values));
+            }
             Mutation::Annotate { key, value } => {
                 ops.push(if !creates(object, &mut created, ANNOTATIONS) {
                     add(
@@ -393,6 +397,40 @@ mod tests {
         assert_eq!(
             patched["metadata"]["annotations"],
             serde_json::json!({"a": "1", "b": "2"})
+        );
+    }
+
+    /// RFC 0018: a container's `allowPrivilegeEscalation` and `capabilities.drop` under a
+    /// missing `securityContext` of an existing init container. The parents are added once each,
+    /// the list keeps its type, and the container's other fields stay.
+    #[test]
+    fn container_flag_and_drop_list_under_missing_parents() {
+        let object = serde_json::json!({"spec": {"initContainers": [
+            {"name": "project-clone", "image": "clone"}
+        ]}});
+        let mutations = vec![
+            Mutation::SetBool {
+                path: path("spec/initContainers/0/securityContext/allowPrivilegeEscalation"),
+                value: false,
+            },
+            Mutation::SetStrings {
+                path: path("spec/initContainers/0/securityContext/capabilities/drop"),
+                values: vec!["ALL".into()],
+            },
+        ];
+        let mut patched = object.clone();
+        json_patch::patch(&mut patched, &render_patch(&object, &mutations).0)
+            .expect("the patch must apply");
+        assert_eq!(
+            patched["spec"]["initContainers"][0],
+            serde_json::json!({
+                "name": "project-clone",
+                "image": "clone",
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": {"drop": ["ALL"]}
+                }
+            })
         );
     }
 

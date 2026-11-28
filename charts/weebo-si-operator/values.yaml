@@ -406,7 +406,8 @@ imageRewrite:
     enabled: true
 
 # RFC 0018's `pod-identity` webhooks: `/mutate/v1/pods/identity` (sets `hostUsers: false`, the
-# pod-level ids and `supplementalGroupsPolicy: Strict`) and `/validate/v1/pods/identity` (refuses
+# pod-level ids, `supplementalGroupsPolicy: Strict`, and each container's
+# `allowPrivilegeEscalation: false` and `capabilities.drop: [ALL]`) and `/validate/v1/pods/identity` (refuses
 # the node's user namespace and any uid, gid or group 0; group 0 is allowed under
 # `grantGroupZero`). Both at `failurePolicy: Fail`, fixed, on
 # workspace namespaces only. **Off by default (L7):** an upgrade never registers paths the old

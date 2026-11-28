@@ -367,6 +367,9 @@ mod tests {
             name: "copy-vault-env".to_string(),
             run_as_user: Some(0),
             run_as_group: None,
+            allow_privilege_escalation: Some(false),
+            drop_set: true,
+            needs_privilege: false,
         });
         assert_eq!(reasons(&pod, &config()), ["uid_zero"]);
     }
@@ -440,6 +443,9 @@ mod tests {
             name: "debugger-x7".to_string(),
             run_as_user: uid,
             run_as_group: None,
+            allow_privilege_escalation: Some(false),
+            drop_set: true,
+            needs_privilege: false,
         }];
         pod
     }
@@ -505,6 +511,9 @@ mod tests {
                 name: "init".to_string(),
                 run_as_user: None,
                 run_as_group: Some(70000),
+                allow_privilege_escalation: Some(false),
+                drop_set: true,
+                needs_privilege: false,
             },
         ];
         assert_eq!(

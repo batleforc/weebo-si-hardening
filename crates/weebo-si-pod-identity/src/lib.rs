@@ -19,5 +19,7 @@ pub mod violation;
 pub use feature::{FEATURE_ID, PodIdentityMutation, PodIdentityValidation};
 pub use port::{Judged, PodIdentityObserver};
 pub use rewrite::{Field, Rewrite, Value, identity_rewrite};
-pub use subject::{Admission, ContainerIdentity, ContainerKind, PodSecurityContext, PodSubject};
+pub use subject::{
+    Admission, ContainerIdentity, ContainerKind, DROP_ALL, PodSecurityContext, PodSubject,
+};
 pub use violation::{ContainerRef, Violation, identity_violations};
