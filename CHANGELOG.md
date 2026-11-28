@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.7.0](https://github.com/batleforc/weebo-si-hardening/compare/c094e927f11d5c99cfba2067d5d2ecd1c4a6f52c..v0.7.0) - 2026-11-28
+#### Features
+- (**pod-identity**) PSA restricted's container half on containers that leave it unset (#25) - ([c094e92](https://github.com/batleforc/weebo-si-hardening/commit/c094e927f11d5c99cfba2067d5d2ecd1c4a6f52c)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.6.0](https://github.com/batleforc/weebo-si-hardening/compare/863660eedca8d7c1f021c100eb1d338201bc9c2b..v0.6.0) - 2026-11-27
 #### Features
 - implement RFCs 0018 to 0021 (pod identity, devfile contract, team tools, namespace-only grants) (#24) - ([2ea4e2e](https://github.com/batleforc/weebo-si-hardening/commit/2ea4e2ef6d22f7450eaf7c9ff4759d98b073b96c)) - Maxime, Claude Opus 5.5 (1M context)
